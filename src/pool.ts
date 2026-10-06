@@ -1,9 +1,11 @@
-// Runs every ready task, refilling free slots as tasks finish. `ready` is re-read after each
-// completion so work unblocked by a finished task starts right away.
+// Runs every ready task, refilling free slots. `ready` is re-read when a task finishes, so work
+// unblocked by it starts right away, and every `pollMs`, so tasks added or answered while others
+// run do not wait for them.
 export async function runPool<T extends { id: number }>(
   ready: () => T[],
   run: (task: T) => Promise<void>,
   max = Number.POSITIVE_INFINITY,
+  pollMs = 1000,
 ): Promise<void> {
   const running = new Map<number, Promise<number>>()
   while (true) {
@@ -16,6 +18,7 @@ export async function runPool<T extends { id: number }>(
         )
     }
     if (running.size === 0) return
-    running.delete(await Promise.race(running.values()))
+    const finished = await Promise.race([...running.values(), Bun.sleep(pollMs)])
+    if (typeof finished === 'number') running.delete(finished)
   }
 }

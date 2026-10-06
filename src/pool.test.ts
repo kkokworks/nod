@@ -46,3 +46,21 @@ test('picks up tasks that become ready while others run', async () => {
   )
   expect(order).toEqual([1, 2])
 })
+
+test('starts tasks added while others run, without waiting for them to finish', async () => {
+  const events: string[] = []
+  const tasks = [{ id: 1, done: false }]
+  setTimeout(() => tasks.push({ id: 2, done: false }), 5)
+  await runPool(
+    () => tasks.filter((t) => !t.done),
+    async (t) => {
+      events.push(`start ${t.id}`)
+      await Bun.sleep(t.id === 1 ? 100 : 1)
+      events.push(`end ${t.id}`)
+      t.done = true
+    },
+    Number.POSITIVE_INFINITY,
+    10,
+  )
+  expect(events).toEqual(['start 1', 'start 2', 'end 2', 'end 1'])
+})

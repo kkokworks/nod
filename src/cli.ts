@@ -9,10 +9,11 @@ import { DEFAULT_SETTINGS, runTask } from './runner'
 
 const USAGE = `usage:
   nod                              open decisions
-  nod <decision> <answer...>       answer a decision; the task resumes on the next run
+  nod <decision> <answer...>       answer a decision; the task resumes in \`nod run\`
   nod drop <decision>              end the task instead of answering
   nod add <brief> [--repo <path>] [--check <command>]
   nod run [--max <n>] [--model <model>] [--permission-mode <mode>] [--settings <file|json>]
+  nod watch                        print decisions as they open, until no runner is left
   nod ls
   nod show <task>
   nod stats
@@ -22,6 +23,9 @@ const USAGE = `usage:
 const [command, ...rest] = Bun.argv.slice(2)
 const home = nodHome()
 const ledger = new Ledger(home)
+const runPidPath = join(home, 'run.pid')
+// Also covers a runner that is still starting when `watch` begins.
+const WATCH_GRACE_SECS = 5
 
 switch (command) {
   case undefined:
@@ -32,6 +36,9 @@ switch (command) {
     break
   case 'run':
     await run(rest)
+    break
+  case 'watch':
+    await watch()
     break
   case 'ls':
     for (const t of ledger.list()) printTask(t)
@@ -57,7 +64,7 @@ switch (command) {
       process.exit(1)
     }
     ledger.answer(id, answer)
-    console.log(`answered; task #${ledger.decision(id).taskId} resumes on the next \`nod run\``)
+    console.log(`answered; task #${ledger.decision(id).taskId} resumes in \`nod run\``)
   }
 }
 
@@ -127,13 +134,31 @@ async function run(args: string[]): Promise<void> {
 
 // One runner at a time: a second one would treat the first one's tasks as interrupted.
 function acquireRunLock(): () => void {
-  const path = join(home, 'run.pid')
-  if (existsSync(path)) {
-    const pid = Number(readFileSync(path, 'utf8'))
-    if (isAlive(pid)) throw new Error(`nod run is already running (pid ${pid})`)
+  const pid = runnerPid()
+  if (pid !== null) throw new Error(`nod run is already running (pid ${pid})`)
+  writeFileSync(runPidPath, String(process.pid))
+  return () => rmSync(runPidPath, { force: true })
+}
+
+function runnerPid(): number | null {
+  if (!existsSync(runPidPath)) return null
+  const pid = Number(readFileSync(runPidPath, 'utf8'))
+  return isAlive(pid) ? pid : null
+}
+
+// Lets a Claude session relay each decision as soon as it opens instead of when the run ends.
+async function watch(): Promise<void> {
+  const seen = new Set(ledger.openDecisions().map((d) => d.id))
+  let idleSecs = 0
+  while (idleSecs < WATCH_GRACE_SECS) {
+    await Bun.sleep(1000)
+    for (const d of ledger.openDecisions()) {
+      if (seen.has(d.id)) continue
+      seen.add(d.id)
+      printDecision(d)
+    }
+    idleSecs = runnerPid() === null ? idleSecs + 1 : 0
   }
-  writeFileSync(path, String(process.pid))
-  return () => rmSync(path, { force: true })
 }
 
 function isAlive(pid: number): boolean {
@@ -167,12 +192,14 @@ function printDecisions(decisions: Decision[]): void {
     console.log('nothing to decide')
     return
   }
-  for (const d of decisions) {
-    const task = ledger.get(d.taskId)
-    console.log(`#${d.id}  ${d.reason}  (task #${task.id}: ${oneLine(task.brief, 60)})`)
-    console.log(`${indent(d.question)}\n`)
-  }
+  for (const d of decisions) printDecision(d)
   console.log('answer: nod <decision> <answer>   end the task: nod drop <decision>')
+}
+
+function printDecision(d: Decision): void {
+  const task = ledger.get(d.taskId)
+  console.log(`#${d.id}  ${d.reason}  (task #${task.id}: ${oneLine(task.brief, 60)})`)
+  console.log(`${indent(d.question)}\n`)
 }
 
 function printTask(t: Task): void {
