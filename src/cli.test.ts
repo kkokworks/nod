@@ -18,6 +18,7 @@ test('watch prints each decision once as it opens, and ends once no worker is ru
       checkCmd: null,
       model: null,
       after: [],
+      triggerId: null,
     })
     ledger.setRunning(taskId, home)
     const attemptId = ledger.startAttempt({
@@ -37,6 +38,7 @@ test('watch prints each decision once as it opens, and ends once no worker is ru
     checkCmd: null,
     model: null,
     after: [],
+    triggerId: null,
   })
   ledger.setRunning(worker, home)
   const watch = Bun.spawn(['bun', cli, 'watch'], { env: { ...process.env, NOD_HOME: home } })

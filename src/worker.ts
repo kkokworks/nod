@@ -1,7 +1,8 @@
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { z } from 'zod'
-import type { AttemptKind, Ledger, Task } from './ledger'
+import type { AttemptKind, DecisionReason, Ledger, Task } from './ledger'
+import { notify, taskRef } from './notify'
 import { Terminals } from './tmux'
 
 // Each worker is an interactive Claude Code session in tmux. It reports when it stops through
@@ -195,7 +196,7 @@ export async function onStop(
   const taskId = ledger.taskOfSession(event.session_id)
   if (taskId === null) return null
   const attemptId = currentAttempt(ledger, taskId, event.session_id)
-  const out = await settle(ledger, ledger.get(taskId), attemptId, event).catch((error) => {
+  const out = await settle(ledger, home, ledger.get(taskId), attemptId, event).catch((error) => {
     ledger.failAttempt(attemptId, message(error))
     ledger.error(taskId, message(error))
     return null
@@ -207,18 +208,20 @@ export async function onStop(
 
 // Called by the Notification hook. A permission prompt pauses the worker mid-turn, so it becomes a
 // decision; the other notifications need nothing from nod.
-export function onNotification(
+export async function onNotification(
   ledger: Ledger,
   home: string,
   event: z.infer<typeof NotificationEvent>,
-): void {
+): Promise<void> {
   if (event.notification_type !== 'permission_prompt') return
   const taskId = ledger.taskOfSession(event.session_id)
   if (taskId === null) return
   const attemptId = currentAttempt(ledger, taskId, event.session_id)
   const screen = Terminals.of(home).screen(sessionName(taskId))
   const prompt = screen.trimEnd().split('\n').slice(-15).join('\n')
-  ledger.ask(
+  await decide(
+    ledger,
+    home,
     taskId,
     attemptId,
     'permission',
@@ -226,34 +229,51 @@ export function onNotification(
   )
 }
 
+// Every decision opens here, so the human hears about each one.
+async function decide(
+  ledger: Ledger,
+  home: string,
+  taskId: number,
+  attemptId: number,
+  reason: DecisionReason,
+  question: string,
+): Promise<void> {
+  const id = ledger.ask(taskId, attemptId, reason, question)
+  const task = taskRef(ledger.get(taskId))
+  await notify(home, { event: 'decision', task, decision: { id, reason, question } })
+}
+
 async function settle(
   ledger: Ledger,
+  home: string,
   task: Task,
   attemptId: number,
   event: z.infer<typeof StopEvent>,
 ): Promise<string | null> {
   const text = event.last_assistant_message.trim()
   const report = parseReport(text)
+  const summary = report?.text ?? oneLine(text)
   // A worker that keeps going after a failed check often drops the report line; the check decides.
   const done = report?.status === 'done' || (report === null && event.stop_hook_active)
   if (!done) {
     const failed = report?.status === 'failed'
-    ledger.endAttempt(attemptId, {
-      outcome: failed ? 'failed' : 'needs_decision',
-      summary: report?.text ?? oneLine(text),
-    })
-    ledger.ask(task.id, attemptId, failed ? 'failed' : 'question', text.slice(-QUESTION_LIMIT))
+    ledger.endAttempt(attemptId, { outcome: failed ? 'failed' : 'needs_decision', summary })
+    const reason = failed ? 'failed' : 'question'
+    await decide(ledger, home, task.id, attemptId, reason, text.slice(-QUESTION_LIMIT))
     return null
   }
-  ledger.endAttempt(attemptId, { outcome: 'succeeded', summary: report?.text ?? oneLine(text) })
+  ledger.endAttempt(attemptId, { outcome: 'succeeded', summary })
   const check = await verify(task)
   if (check !== null) ledger.recordCheck(attemptId, check.passed, check.output)
   if (check === null || check.passed) {
     ledger.succeed(task.id)
+    await notify(home, { event: 'succeeded', task: taskRef(task), summary })
     return null
   }
   if (trailingRetries(ledger, task.id) >= CHECK_RETRIES) {
-    ledger.ask(
+    await decide(
+      ledger,
+      home,
       task.id,
       attemptId,
       'check_failed',
@@ -460,7 +480,9 @@ async function awaitStart(
   while (!existsSync(started)) {
     const screen = terminals.screen(name)
     if (screen.includes(TRUST_DIALOG)) {
-      ledger.ask(
+      await decide(
+        ledger,
+        home,
         task.id,
         attemptId,
         'trust',
@@ -560,6 +582,6 @@ function oneLine(s: string): string {
   return s.replaceAll('\n', ' ').slice(0, 200)
 }
 
-function message(error: unknown): string {
+export function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }

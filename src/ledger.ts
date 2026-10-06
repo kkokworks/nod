@@ -20,11 +20,27 @@ export type Task = {
   repo: string | null
   checkCmd: string | null
   model: string | null
+  triggerId: number | null
   workspace: string | null
   status: TaskStatus
   error: string | null
   createdAt: string
   finishedAt: string | null
+}
+
+// Adds tasks on a schedule. With a source command, each line it prints that the trigger has not
+// seen before becomes a task.
+export type Trigger = {
+  id: number
+  cron: string
+  brief: string
+  repo: string | null
+  checkCmd: string | null
+  model: string | null
+  source: string | null
+  lastRunAt: string | null
+  lastError: string | null
+  createdAt: string
 }
 
 export type Attempt = {
@@ -118,10 +134,36 @@ const MIGRATIONS = [
   );
   alter table tasks add column model text;
   `,
+  // v4: triggers, the source items each has seen, and which trigger added a task.
+  `
+  create table triggers (
+    id integer primary key,
+    cron text not null,
+    brief text not null,
+    repo text,
+    check_cmd text,
+    model text,
+    source text,
+    last_run_at text,
+    last_error text,
+    created_at text not null,
+    removed_at text
+  );
+  create table trigger_items (
+    trigger_id integer not null references triggers(id),
+    key text not null,
+    task_id integer references tasks(id),
+    seen_at text not null,
+    primary key (trigger_id, key)
+  );
+  alter table tasks add column trigger_id integer references triggers(id);
+  `,
 ]
 
-const TASK = `id, brief, repo, check_cmd as checkCmd, model, workspace, status, error,
-  created_at as createdAt, finished_at as finishedAt`
+const TASK = `id, brief, repo, check_cmd as checkCmd, model, trigger_id as triggerId, workspace,
+  status, error, created_at as createdAt, finished_at as finishedAt`
+const TRIGGER = `id, cron, brief, repo, check_cmd as checkCmd, model, source,
+  last_run_at as lastRunAt, last_error as lastError, created_at as createdAt`
 const ATTEMPT = `id, task_id as taskId, kind, decision_id as decisionId, session_id as sessionId,
   prompt, outcome, summary, check_result as checkResult, check_output as checkOutput,
   cost_usd as costUsd, error, started_at as startedAt, finished_at as finishedAt`
@@ -159,6 +201,7 @@ export class Ledger {
     checkCmd: string | null
     model: string | null
     after: number[]
+    triggerId: number | null
   }): number {
     return this.db.transaction(() => {
       const after = t.after.map((id) => this.get(id))
@@ -170,9 +213,16 @@ export class Ledger {
         )
       }
       const id = this.insert(
-        `insert into tasks (brief, repo, check_cmd, model, created_at)
-         values ($brief, $repo, $checkCmd, $model, $at)`,
-        { brief: t.brief, repo: t.repo, checkCmd: t.checkCmd, model: t.model, at: now() },
+        `insert into tasks (brief, repo, check_cmd, model, trigger_id, created_at)
+         values ($brief, $repo, $checkCmd, $model, $triggerId, $at)`,
+        {
+          brief: t.brief,
+          repo: t.repo,
+          checkCmd: t.checkCmd,
+          model: t.model,
+          triggerId: t.triggerId,
+          at: now(),
+        },
       )
       for (const a of after) {
         this.db
@@ -235,6 +285,109 @@ export class Ledger {
 
   error(id: number, message: string): void {
     this.setStatus(id, 'error', message)
+  }
+
+  // ── triggers ──
+
+  // `seen`: keys the source lists already, which never become tasks.
+  addTrigger(t: {
+    cron: string
+    brief: string
+    repo: string | null
+    checkCmd: string | null
+    model: string | null
+    source: string | null
+    seen: string[]
+  }): number {
+    return this.db.transaction(() => {
+      const id = this.insert(
+        `insert into triggers (cron, brief, repo, check_cmd, model, source, created_at)
+         values ($cron, $brief, $repo, $checkCmd, $model, $source, $at)`,
+        {
+          cron: t.cron,
+          brief: t.brief,
+          repo: t.repo,
+          checkCmd: t.checkCmd,
+          model: t.model,
+          source: t.source,
+          at: now(),
+        },
+      )
+      for (const key of t.seen) {
+        this.db
+          .query(
+            `insert or ignore into trigger_items (trigger_id, key, seen_at)
+             values ($id, $key, $at)`,
+          )
+          .run({ id, key, at: now() })
+      }
+      return id
+    })()
+  }
+
+  triggers(): Trigger[] {
+    return this.db
+      .query<Trigger, []>(`select ${TRIGGER} from triggers where removed_at is null order by id`)
+      .all()
+  }
+
+  trigger(id: number): Trigger {
+    const t = this.db
+      .query<Trigger, { id: number }>(`select ${TRIGGER} from triggers where id = $id`)
+      .get({ id })
+    if (!t) throw new Error(`trigger ${id} not found`)
+    return t
+  }
+
+  removeTrigger(id: number): void {
+    const removed = this.db
+      .query<{ id: number }, { id: number; at: string }>(
+        'update triggers set removed_at = $at where id = $id and removed_at is null returning id',
+      )
+      .get({ id, at: now() })
+    if (!removed) throw new Error(`trigger ${id} not found`)
+  }
+
+  // Records a run at `at` unless another tick has recorded one since `last`, so a run happens once
+  // even if two ticks overlap. Returns whether this caller got the run.
+  claimRun(id: number, last: string | null, at: string): boolean {
+    const row = this.db
+      .query<{ id: number }, { id: number; last: string | null; at: string }>(
+        `update triggers set last_run_at = $at
+         where id = $id and last_run_at is $last returning id`,
+      )
+      .get({ id, last, at })
+    return row !== null
+  }
+
+  recordRunError(id: number, error: string | null): void {
+    this.db.query('update triggers set last_error = $error where id = $id').run({ id, error })
+  }
+
+  // Adds a task for a source item the trigger has not seen, in one transaction with marking it
+  // seen. Returns null for an item seen before.
+  addItemTask(trigger: Trigger, key: string, brief: string): number | null {
+    return this.db.transaction(() => {
+      const fresh = this.db
+        .query<{ key: string }, { id: number; key: string; at: string }>(
+          `insert or ignore into trigger_items (trigger_id, key, seen_at) values ($id, $key, $at)
+           returning key`,
+        )
+        .get({ id: trigger.id, key, at: now() })
+      if (!fresh) return null
+      const taskId = this.add({
+        brief,
+        repo: trigger.repo,
+        checkCmd: trigger.checkCmd,
+        model: trigger.model,
+        after: [],
+        triggerId: trigger.id,
+      })
+      this.db
+        .query('update trigger_items set task_id = $taskId where trigger_id = $id and key = $key')
+        .run({ taskId, id: trigger.id, key })
+      return taskId
+    })()
   }
 
   // ── attempts ──

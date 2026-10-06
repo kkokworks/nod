@@ -41,6 +41,7 @@ test('gc removes old finished workspaces and their session folders, and keeps th
       checkCmd: null,
       model: null,
       after: [],
+      triggerId: null,
     })
     const cwd = workspaceOf(home, id)
     if (withRepo) sh(['git', 'worktree', 'add', '-q', '-b', `nod/${id}`, cwd], repo)

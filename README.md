@@ -31,4 +31,21 @@ nod attach 1         # 작업 1의 화면 열기
 nod ls               # 작업 상태
 ```
 
+정해진 때나 새 항목마다 할 일은 트리거로 맡깁니다. 트리거가 있는 동안 OS 스케줄러(macOS launchd, Linux crontab)가 매분 `nod tick` 을 돌립니다.
+
+```sh
+nod trigger add '0 9 * * MON-FRI' '어제 머지된 PR 을 요약해 줘' --repo ~/code/app
+nod trigger add '*/10 * * * *' '이 이슈의 원인을 조사해 줘' \
+  --source "gh issue list --assignee @me --json number,title --jq '.[] | \"\(.number)\t\(.title)\"'"
+nod trigger ls
+```
+
+`~/.nod/notify` 실행 파일을 두면 결정이 열리거나 작업이 끝날 때 nod 가 JSON 을 stdin 으로 넘겨 부릅니다. 예를 들어 macOS 알림은 이렇게 받습니다.
+
+```sh
+#!/bin/sh
+bun -e 'const e = await Bun.stdin.json(); const t = e.decision ? `결정 #${e.decision.id}` : e.event
+Bun.spawnSync(["osascript", "-e", "on run a", "-e", "display notification (item 2 of a) with title (item 1 of a)", "-e", "end run", "nod", `${t}: ${e.task?.brief ?? e.error}`])'
+```
+
 설계와 실측 기록은 [docs/design.md](docs/design.md) 에 있습니다.

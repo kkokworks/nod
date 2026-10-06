@@ -1,9 +1,10 @@
 import { afterAll, beforeEach, expect, test } from 'bun:test'
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { tempDirs } from '../test/tmp'
 import { Ledger, type TaskStatus } from './ledger'
 import { Terminals } from './tmux'
+import { addTrigger, tick } from './triggers'
 import {
   answer,
   drop,
@@ -82,7 +83,14 @@ const fail = (id: number): never => {
 }
 
 async function add(brief: string, check: string | null = null): Promise<number> {
-  const id = ledger.add({ brief, repo: null, checkCmd: check, model: null, after: [] })
+  const id = ledger.add({
+    brief,
+    repo: null,
+    checkCmd: check,
+    model: null,
+    after: [],
+    triggerId: null,
+  })
   await startTask(ledger, home, id)
   return id
 }
@@ -214,6 +222,7 @@ test('a task that comes after another starts once that one succeeds, and hears i
     checkCmd: null,
     model: null,
     after: [first],
+    triggerId: null,
   })
   expect(await startReady(ledger, home)).toEqual([])
   expect(status(next)).toBe('queued')
@@ -252,6 +261,7 @@ test('in a repo, done needs the work committed, and the next task starts from th
     checkCmd: 'test -f ok.txt',
     model: null,
     after: [],
+    triggerId: null,
   })
   await startTask(ledger, home, first)
   await reaches(first, 'succeeded')
@@ -267,6 +277,7 @@ test('in a repo, done needs the work committed, and the next task starts from th
     checkCmd: null,
     model: null,
     after: [first],
+    triggerId: null,
   })
   expect(await startReady(ledger, home)).toEqual([next])
   await reaches(next, 'succeeded')
@@ -285,7 +296,14 @@ function newRepo(): string {
 test('a repo Claude Code does not trust yet becomes a decision: yes trusts and starts, no cancels', async () => {
   process.env.FAKE_AGENT_UNTRUSTED = '1'
   const addIn = (repo: string): number =>
-    ledger.add({ brief: 'work here', repo, checkCmd: null, model: null, after: [] })
+    ledger.add({
+      brief: 'work here',
+      repo,
+      checkCmd: null,
+      model: null,
+      after: [],
+      triggerId: null,
+    })
   const trusted = addIn(newRepo())
   const refused = addIn(newRepo())
   await startTask(ledger, home, trusted)
@@ -302,4 +320,40 @@ test('a repo Claude Code does not trust yet becomes a decision: yes trusts and s
   await answer(ledger, home, no.id, 'not this one')
   expect(status(refused)).toBe('cancelled')
   expect(Terminals.of(home).alive(sessionName(refused))).toBe(false)
+})
+
+test('due triggers add tasks, a source only for lines it has not printed before, and notify hears', async () => {
+  // One file per event, renamed into place, so a read never sees half an event.
+  const events = join(home, 'events')
+  mkdirSync(events)
+  writeFileSync(
+    join(home, 'notify'),
+    `#!/bin/sh\nf=${JSON.stringify(events)}/$$\ncat > "$f.tmp" && mv "$f.tmp" "$f.json"\n`,
+  )
+  chmodSync(join(home, 'notify'), 0o755)
+  const items = join(home, 'items.txt')
+  writeFileSync(items, 'a\told item\n')
+  const base = { cron: '* * * * *', repo: null, checkCmd: null, model: null }
+  const source = `cat ${JSON.stringify(items)}`
+  await addTrigger(ledger, home, { ...base, brief: 'triage', source })
+  await addTrigger(ledger, home, { ...base, brief: 'ask-first', source: null })
+  writeFileSync(items, 'a\told item\nb\tnew item\n')
+
+  const now = new Date(Date.now() + 120_000)
+  const [fromSource, scheduled] = await tick(ledger, home, now)
+  expect(await tick(ledger, home, now)).toEqual([]) // both ran this minute already
+  if (fromSource === undefined || scheduled === undefined) throw new Error('triggers added no task')
+  expect(ledger.get(fromSource).brief).toContain('> new item')
+  expect(ledger.get(scheduled).triggerId).not.toBeNull()
+
+  await reaches(fromSource, 'succeeded')
+  await reaches(scheduled, 'needs_decision')
+  const heard = (): [string, number][] =>
+    readdirSync(events)
+      .filter((f) => f.endsWith('.json'))
+      .map((f) => JSON.parse(readFileSync(join(events, f), 'utf8')))
+      .map((e) => [e.event, e.task.id])
+  await until(() => heard().length === 2)
+  expect(heard()).toContainEqual(['succeeded', fromSource])
+  expect(heard()).toContainEqual(['decision', scheduled])
 })

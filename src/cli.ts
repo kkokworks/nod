@@ -3,8 +3,9 @@ import { existsSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { parseArgs } from 'node:util'
 import { collect } from './gc'
-import { type Attempt, type Decision, Ledger, nodHome, type Task } from './ledger'
+import { type Attempt, type Decision, Ledger, nodHome, type Task, type Trigger } from './ledger'
 import { Terminals } from './tmux'
+import { addTrigger, nextRun, syncSchedule, tick } from './triggers'
 import {
   answer,
   drop,
@@ -37,7 +38,18 @@ const USAGE = `usage:
   nod gc [--older-than <days>]     close sessions and delete workspaces, worktrees and session
                                    folders of tasks finished that long ago (default 7);
                                    ledger rows and branches stay
-  nod hook stop|notification       called by Claude Code hooks in worker sessions`
+  nod trigger add <cron> <brief...> [--source <command>] [--repo <path>] [--check <command>]
+                  [--model <model>]
+                                   add a task on a schedule (5-field cron, local time); with
+                                   --source, one task per line the command prints that it has
+                                   not printed before (text after a tab; before it, the key)
+  nod trigger ls | rm <trigger>
+  nod tick                         run the triggers that are due; the OS scheduler calls this
+                                   every minute while any trigger exists
+  nod hook stop|notification       called by Claude Code hooks in worker sessions
+
+When <home>/notify exists, nod runs it with a JSON event on stdin whenever a decision opens, a
+task succeeds or fails to start, or a trigger fails. <home> is $NOD_HOME, or ~/.nod.`
 
 const [command, ...rest] = Bun.argv.slice(2)
 const home = nodHome()
@@ -83,6 +95,14 @@ switch (command) {
   case 'stats':
     console.log(JSON.stringify(ledger.stats(), null, 2))
     break
+  case 'trigger':
+    await trigger(rest)
+    break
+  case 'tick': {
+    const added = await tick(ledger, home, new Date())
+    console.log(added.length > 0 ? `added task(s) ${added.join(', ')}` : 'nothing due')
+    break
+  }
   case 'hook':
     await hook(rest[0])
     break
@@ -109,21 +129,74 @@ async function add(args: string[]): Promise<void> {
     allowPositionals: true,
   })
   const brief = words(positionals)
-  const repo = values.repo === undefined ? null : resolve(values.repo)
-  if (repo !== null && !existsSync(join(repo, '.git'))) throw new Error(`not a git repo: ${repo}`)
   const after = (values.after ?? '').split(',').filter(Boolean).map(Number)
   if (!after.every(Number.isInteger)) throw new Error(`--after takes task numbers: ${values.after}`)
   const id = ledger.add({
     brief,
-    repo,
+    repo: repoPath(values.repo),
     checkCmd: values.check ?? null,
     model: values.model ?? null,
     after,
+    triggerId: null,
   })
   // A task that comes after others starts here only if they have all succeeded already.
   if (after.length === 0) await startTask(ledger, home, id)
   else await startReady(ledger, home)
   console.log(id)
+}
+
+async function trigger([sub, ...args]: string[]): Promise<void> {
+  if (sub === 'add') {
+    const { values, positionals } = parseArgs({
+      args,
+      options: {
+        source: { type: 'string' },
+        repo: { type: 'string' },
+        check: { type: 'string' },
+        model: { type: 'string' },
+      },
+      allowPositionals: true,
+    })
+    const [cron, ...brief] = positionals
+    if (cron === undefined) throw new Error(USAGE)
+    const { id, seen } = await addTrigger(ledger, home, {
+      cron,
+      brief: words(brief),
+      repo: repoPath(values.repo),
+      checkCmd: values.check ?? null,
+      model: values.model ?? null,
+      source: values.source ?? null,
+    })
+    await syncSchedule(ledger, home)
+    console.log(id)
+    if (values.source) console.log(`the source lists ${seen} item(s) now; only new ones add tasks`)
+    printTrigger(ledger.trigger(id))
+  } else if (sub === 'ls') {
+    for (const t of ledger.triggers()) printTrigger(t)
+  } else if (sub === 'rm') {
+    ledger.removeTrigger(Number(args[0]))
+    await syncSchedule(ledger, home)
+    console.log('removed')
+  } else {
+    throw new Error(USAGE)
+  }
+}
+
+function printTrigger(t: Trigger): void {
+  const next = nextRun(t.cron, new Date(t.lastRunAt ?? t.createdAt))
+  const when = next === null ? 'never' : next.toLocaleString('sv-SE')
+  console.log(
+    `#${String(t.id).padEnd(4)} ${t.cron.padEnd(16)} next ${when}  ${oneLine(t.brief, 60)}`,
+  )
+  if (t.source) console.log(`  source: ${t.source}`)
+  if (t.lastError) console.log(`  last run failed: ${oneLine(t.lastError, 200)}`)
+}
+
+function repoPath(path: string | undefined): string | null {
+  if (path === undefined) return null
+  const repo = resolve(path)
+  if (!existsSync(join(repo, '.git'))) throw new Error(`not a git repo: ${repo}`)
+  return repo
 }
 
 async function hook(event: string | undefined): Promise<void> {
@@ -132,7 +205,7 @@ async function hook(event: string | undefined): Promise<void> {
     const out = await onStop(ledger, home, StopEvent.parse(input))
     if (out !== null) console.log(out)
   } else if (event === 'notification') {
-    onNotification(ledger, home, NotificationEvent.parse(input))
+    await onNotification(ledger, home, NotificationEvent.parse(input))
   } else {
     throw new Error(USAGE)
   }
@@ -183,6 +256,7 @@ function show(id: number): void {
   if (task.repo) console.log(`  repo: ${task.repo} (branch nod/${task.id})`)
   if (task.workspace) console.log(`  workspace: ${task.workspace}`)
   if (task.checkCmd) console.log(`  check: ${task.checkCmd}`)
+  if (task.triggerId !== null) console.log(`  added by trigger #${task.triggerId}`)
   const after = ledger.after(id)
   if (after.length > 0) {
     console.log(`  after: ${after.map((a) => `#${a.id} (${a.status})`).join(', ')}`)

@@ -1,12 +1,15 @@
 const EXIT_TIMEOUT_MS = 10_000
 
+// Names what nod keeps per home outside it: the tmux socket and the OS scheduler job.
+export const homeId = (home: string): string => Bun.hash(home).toString(36)
+
 // Workers run in tmux so they outlive nod's own processes and a person can attach to watch or step
 // in. Each nod home gets its own tmux server (socket), and each task its own tmux session.
 export class Terminals {
   private constructor(private readonly socket: string) {}
 
   static of(home: string): Terminals {
-    return new Terminals(`nod-${Bun.hash(home).toString(36)}`)
+    return new Terminals(`nod-${homeId(home)}`)
   }
 
   // tmux starts commands with its server's environment, so pass what the worker needs in `env`.
