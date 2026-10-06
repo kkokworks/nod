@@ -23,6 +23,7 @@ Claude 세션에서 `/nod` 를 부르거나 "이 일들 nod 에 맡겨줘" 라�
 
 ```sh
 nod add '로그인 버그 고치기' --repo ~/code/app --check 'bun test'   # 워커가 바로 시작
+nod add '로그인 화면 문구 정리' --repo ~/code/app --after 1        # 작업 1이 끝나면 그 브랜치에서 이어서
 nod                  # 결정할 것
 nod 3 '그렇게 해'     # 결정 3에 답하기 (같은 세션에 들어감)
 nod tell 1 '테스트도 추가해 줘'   # 작업 1의 세션에 후속 지시

@@ -9,15 +9,21 @@ const freshHome = (): string => tmp.make('nod-ledger-')
 
 test('reopening a ledger keeps its data and does not re-run migrations', () => {
   const home = freshHome()
-  const id = new Ledger(home).add('keep me', null, null)
+  const id = new Ledger(home).add({
+    brief: 'keep me',
+    repo: null,
+    checkCmd: null,
+    model: null,
+    after: [],
+  })
   const reopened = new Ledger(home)
   expect(reopened.get(id).brief).toBe('keep me')
-  expect(reopened.db.query('pragma user_version').get()).toEqual({ user_version: 2 })
+  expect(reopened.db.query('pragma user_version').get()).toEqual({ user_version: 3 })
 })
 
 test('a decision can be answered once, and answering puts the task back to running', () => {
   const ledger = new Ledger(freshHome())
-  const taskId = ledger.add('t', null, null)
+  const taskId = ledger.add({ brief: 't', repo: null, checkCmd: null, model: null, after: [] })
   const attemptId = ledger.startAttempt({
     taskId,
     kind: 'start',
@@ -37,7 +43,7 @@ test('a decision can be answered once, and answering puts the task back to runni
 
 test('median decision wait uses answered decisions only', () => {
   const ledger = new Ledger(freshHome())
-  const taskId = ledger.add('t', null, null)
+  const taskId = ledger.add({ brief: 't', repo: null, checkCmd: null, model: null, after: [] })
   const attemptId = ledger.startAttempt({
     taskId,
     kind: 'start',
@@ -56,4 +62,63 @@ test('median decision wait uses answered decisions only', () => {
   }
   ledger.ask(taskId, attemptId, 'question', 'still open')
   expect(ledger.stats().decisions).toEqual({ total: 4, open: 1, medianWaitSecs: 20 })
+})
+
+const task = (ledger: Ledger, t: { repo?: string; after?: number[] } = {}): number =>
+  ledger.add({
+    brief: 't',
+    repo: t.repo ?? null,
+    checkCmd: null,
+    model: null,
+    after: t.after ?? [],
+  })
+
+test('a waiting task is claimed once, and only after every task it comes after has succeeded', () => {
+  const ledger = new Ledger(freshHome())
+  const a = task(ledger)
+  const b = task(ledger)
+  const c = task(ledger, { after: [a, b] })
+  expect(ledger.claimReady()).toEqual([]) // a and b wait for nothing; `nod add` starts those
+  ledger.succeed(a)
+  expect(ledger.claimReady()).toEqual([])
+  ledger.succeed(b)
+  expect(ledger.claimReady()).toEqual([c])
+  expect(ledger.claimReady()).toEqual([])
+  expect(ledger.get(c).status).toBe('running')
+})
+
+test('dropping a task cancels every task waiting on it, all the way down', () => {
+  const ledger = new Ledger(freshHome())
+  const a = task(ledger)
+  const attemptId = ledger.startAttempt({
+    taskId: a,
+    kind: 'start',
+    decisionId: null,
+    sessionId: 's',
+    prompt: 't',
+  })
+  const decisionId = ledger.ask(a, attemptId, 'question', 'ok?')
+  const b = task(ledger, { after: [a] })
+  const c = task(ledger, { after: [b] })
+  const unrelated = task(ledger)
+  ledger.drop(decisionId)
+  expect([a, b, c].map((id) => ledger.get(id).status)).toEqual([
+    'cancelled',
+    'cancelled',
+    'cancelled',
+  ])
+  expect(ledger.get(c).error).toBe(`task #${b} it waits for was cancelled`)
+  expect(ledger.get(unrelated).status).toBe('queued')
+})
+
+test('in one repo a task can come after only one task, and after only tasks that exist', () => {
+  const ledger = new Ledger(freshHome())
+  const a = task(ledger, { repo: '/r' })
+  const b = task(ledger, { repo: '/r' })
+  const elsewhere = task(ledger, { repo: '/s' })
+  expect(() => task(ledger, { repo: '/r', after: [a, b] })).toThrow('chain them')
+  expect(() => task(ledger, { after: [999] })).toThrow('task 999 not found')
+  const c = task(ledger, { repo: '/r', after: [a, elsewhere] })
+  expect(ledger.after(c).map((t) => t.id)).toEqual([a, elsewhere])
+  expect(ledger.list().map((t) => t.id)).toEqual([a, b, elsewhere, c]) // failed adds left nothing
 })

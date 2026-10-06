@@ -35,7 +35,13 @@ test('gc removes old finished workspaces and their session folders, and keeps th
   )
 
   const task = (brief: string, withRepo: boolean, finishedAt: string): number => {
-    const id = ledger.add(brief, withRepo ? repo : null, null)
+    const id = ledger.add({
+      brief,
+      repo: withRepo ? repo : null,
+      checkCmd: null,
+      model: null,
+      after: [],
+    })
     const cwd = workspaceOf(home, id)
     if (withRepo) sh(['git', 'worktree', 'add', '-q', '-b', `nod/${id}`, cwd], repo)
     else mkdirSync(cwd, { recursive: true })

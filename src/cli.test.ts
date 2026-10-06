@@ -12,7 +12,13 @@ test('watch prints each decision once as it opens, and ends once no worker is ru
   const home = tmp.make('nod-watch-')
   const ledger = new Ledger(home)
   const ask = (question: string): number => {
-    const taskId = ledger.add('some task', null, null)
+    const taskId = ledger.add({
+      brief: 'some task',
+      repo: null,
+      checkCmd: null,
+      model: null,
+      after: [],
+    })
     ledger.setRunning(taskId, home)
     const attemptId = ledger.startAttempt({
       taskId,
@@ -25,7 +31,13 @@ test('watch prints each decision once as it opens, and ends once no worker is ru
     return taskId
   }
   ask('open before watching')
-  const worker = ledger.add('still working', null, null)
+  const worker = ledger.add({
+    brief: 'still working',
+    repo: null,
+    checkCmd: null,
+    model: null,
+    after: [],
+  })
   ledger.setRunning(worker, home)
   const watch = Bun.spawn(['bun', cli, 'watch'], { env: { ...process.env, NOD_HOME: home } })
 

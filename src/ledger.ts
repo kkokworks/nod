@@ -12,13 +12,14 @@ export type TaskStatus =
   | 'error'
 export type Outcome = 'succeeded' | 'failed' | 'needs_decision'
 export type AttemptKind = 'start' | 'retry' | 'answer' | 'resume' | 'followup'
-export type DecisionReason = 'question' | 'failed' | 'check_failed' | 'permission'
+export type DecisionReason = 'question' | 'failed' | 'check_failed' | 'permission' | 'trust'
 
 export type Task = {
   id: number
   brief: string
   repo: string | null
   checkCmd: string | null
+  model: string | null
   workspace: string | null
   status: TaskStatus
   error: string | null
@@ -108,9 +109,18 @@ const MIGRATIONS = [
   `,
   // v2: the worker process, so a new runner can wait for a worker its dead predecessor started.
   'alter table attempts add column pid integer;',
+  // v3: tasks that wait for others, and the model, since a waiting task starts long after `nod add`.
+  `
+  create table task_deps (
+    task_id integer not null references tasks(id),
+    after_id integer not null references tasks(id),
+    primary key (task_id, after_id)
+  );
+  alter table tasks add column model text;
+  `,
 ]
 
-const TASK = `id, brief, repo, check_cmd as checkCmd, workspace, status, error,
+const TASK = `id, brief, repo, check_cmd as checkCmd, model, workspace, status, error,
   created_at as createdAt, finished_at as finishedAt`
 const ATTEMPT = `id, task_id as taskId, kind, decision_id as decisionId, session_id as sessionId,
   prompt, outcome, summary, check_result as checkResult, check_output as checkOutput,
@@ -141,11 +151,64 @@ export class Ledger {
 
   // ── tasks ──
 
-  add(brief: string, repo: string | null, checkCmd: string | null): number {
-    return this.insert(
-      'insert into tasks (brief, repo, check_cmd, created_at) values ($brief, $repo, $checkCmd, $at)',
-      { brief, repo, checkCmd, at: now() },
-    )
+  // `after`: tasks that must succeed before this one starts. In one repo they must form a chain,
+  // because a task's worktree starts from the branch of the task it comes after.
+  add(t: {
+    brief: string
+    repo: string | null
+    checkCmd: string | null
+    model: string | null
+    after: number[]
+  }): number {
+    return this.db.transaction(() => {
+      const after = t.after.map((id) => this.get(id))
+      const sameRepo = after.filter((a) => t.repo !== null && a.repo === t.repo)
+      if (sameRepo.length > 1) {
+        const ids = sameRepo.map((a) => `#${a.id}`).join(', ')
+        throw new Error(
+          `${ids} all work in ${t.repo}; a task can come after only one task in its repo, so chain them`,
+        )
+      }
+      const id = this.insert(
+        `insert into tasks (brief, repo, check_cmd, model, created_at)
+         values ($brief, $repo, $checkCmd, $model, $at)`,
+        { brief: t.brief, repo: t.repo, checkCmd: t.checkCmd, model: t.model, at: now() },
+      )
+      for (const a of after) {
+        this.db
+          .query('insert into task_deps (task_id, after_id) values ($id, $after)')
+          .run({ id, after: a.id })
+      }
+      return id
+    })()
+  }
+
+  // The tasks this one comes after.
+  after(id: number): Task[] {
+    return this.db
+      .query<Task, { id: number }>(
+        `select ${TASK} from tasks where id in (select after_id from task_deps where task_id = $id)
+         order by id`,
+      )
+      .all({ id })
+  }
+
+  // Marks running the waiting tasks whose earlier tasks have all succeeded, and returns them. One
+  // statement, so two workers finishing at once cannot both start the same task.
+  claimReady(): number[] {
+    return this.db
+      .query<{ id: number }, []>(
+        `update tasks set status = 'running'
+         where status = 'queued'
+           and exists (select 1 from task_deps d where d.task_id = tasks.id)
+           and not exists (
+             select 1 from task_deps d join tasks a on a.id = d.after_id
+             where d.task_id = tasks.id and a.status != 'succeeded'
+           )
+         returning id`,
+      )
+      .all()
+      .map((r) => r.id)
   }
 
   get(id: number): Task {
@@ -347,6 +410,18 @@ export class Ledger {
         'update tasks set status = $status, error = $error, finished_at = $finishedAt where id = $id',
       )
       .run({ id, status, error, finishedAt })
+    // A task that waits for a cancelled one can never start. An error is left alone: the task can
+    // still be resumed and succeed.
+    if (status !== 'cancelled') return
+    const waiting = this.db
+      .query<{ id: number }, { id: number }>(
+        `select t.id from task_deps d join tasks t on t.id = d.task_id
+         where d.after_id = $id and t.status = 'queued'`,
+      )
+      .all({ id })
+    for (const w of waiting) {
+      this.setStatus(w.id, 'cancelled', `task #${id} it waits for was cancelled`)
+    }
   }
 
   private insert(sql: string, params: Record<string, string | number | null>): number {

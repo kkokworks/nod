@@ -10,6 +10,7 @@ import {
   onStop,
   parseReport,
   sessionName,
+  startReady,
   startTask,
   tell,
   workspaceOf,
@@ -46,9 +47,10 @@ beforeEach(() => {
   home = tmp.make('nod-worker-')
   homes.push(home)
   mkdirSync(join(home, 'work'))
-  writeFileSync(join(home, 'work', '.trusted'), '') // the fake has no trust dialog
+  writeFileSync(join(home, 'work', '.trusted'), '') // nod's own work folder counts as trusted
   log = join(home, 'agent.log')
   process.env.FAKE_AGENT_LOG = log // a new tmux server per home starts with this environment
+  delete process.env.FAKE_AGENT_UNTRUSTED
   ledger = new Ledger(home)
 })
 
@@ -80,8 +82,8 @@ const fail = (id: number): never => {
 }
 
 async function add(brief: string, check: string | null = null): Promise<number> {
-  const id = ledger.add(brief, null, check)
-  await startTask(ledger, home, id, null)
+  const id = ledger.add({ brief, repo: null, checkCmd: check, model: null, after: [] })
+  await startTask(ledger, home, id)
   return id
 }
 
@@ -186,7 +188,7 @@ test('tell continues the same session, and reopens it from the transcript once i
 })
 
 test('a stop from a session nod did not start changes nothing', async () => {
-  const out = await onStop(ledger, {
+  const out = await onStop(ledger, home, {
     session_id: 'not-ours',
     last_assistant_message: 'NOD: done | x',
     stop_hook_active: false,
@@ -201,4 +203,103 @@ test('the report line is read from the end, through Markdown emphasis', () => {
     text: 'shipped',
   })
   expect(parseReport('no report here')).toBeNull()
+})
+
+test('a task that comes after another starts once that one succeeds, and hears its report', async () => {
+  const first = await add('ask-first')
+  const decision = await until(() => ledger.decisions(first)[0])
+  const next = ledger.add({
+    brief: 'then this',
+    repo: null,
+    checkCmd: null,
+    model: null,
+    after: [first],
+  })
+  expect(await startReady(ledger, home)).toEqual([])
+  expect(status(next)).toBe('queued')
+
+  await answer(ledger, home, decision.id, 'yes')
+  await reaches(next, 'succeeded')
+  const message = entries('turn').find((t) => t.message?.startsWith('then this'))?.message
+  expect(message).toContain(`- #${first} ask-first: did it`)
+})
+
+// A fixed identity and no hooks, so commits do not depend on this machine's git config.
+function git(cwd: string, ...args: string[]): void {
+  const result = Bun.spawnSync(
+    [
+      'git',
+      '-c',
+      'user.name=nod test',
+      '-c',
+      'user.email=nod-test@example.invalid',
+      '-c',
+      'core.hooksPath=/dev/null',
+      '-c',
+      'commit.gpgsign=false',
+      ...args,
+    ],
+    { cwd },
+  )
+  if (result.exitCode !== 0) throw new Error(`git ${args[0]}: ${result.stderr.toString()}`)
+}
+
+test('in a repo, done needs the work committed, and the next task starts from that branch', async () => {
+  const repo = newRepo()
+  const first = ledger.add({
+    brief: 'make ok',
+    repo,
+    checkCmd: 'test -f ok.txt',
+    model: null,
+    after: [],
+  })
+  await startTask(ledger, home, first)
+  await reaches(first, 'succeeded')
+  expect(ledger.attempts(first).map((a) => [a.kind, a.checkResult])).toEqual([
+    ['start', 'failed'], // no ok.txt yet
+    ['retry', 'failed'], // ok.txt written but not committed
+    ['retry', 'passed'],
+  ])
+
+  const next = ledger.add({
+    brief: 'build on it',
+    repo,
+    checkCmd: null,
+    model: null,
+    after: [first],
+  })
+  expect(await startReady(ledger, home)).toEqual([next])
+  await reaches(next, 'succeeded')
+  expect(existsSync(join(workspaceOf(home, next), 'ok.txt'))).toBe(true)
+  const message = entries('turn').find((t) => t.message?.startsWith('build on it'))?.message
+  expect(message).toContain(`starts from task #${first}'s branch`)
+})
+
+function newRepo(): string {
+  const repo = tmp.make('nod-repo-')
+  git(repo, 'init', '-q')
+  git(repo, 'commit', '--allow-empty', '-qm', 'init')
+  return repo
+}
+
+test('a repo Claude Code does not trust yet becomes a decision: yes trusts and starts, no cancels', async () => {
+  process.env.FAKE_AGENT_UNTRUSTED = '1'
+  const addIn = (repo: string): number =>
+    ledger.add({ brief: 'work here', repo, checkCmd: null, model: null, after: [] })
+  const trusted = addIn(newRepo())
+  const refused = addIn(newRepo())
+  await startTask(ledger, home, trusted)
+  await startTask(ledger, home, refused)
+  const [yes, no] = [trusted, refused].map((id) => ledger.decisions(id)[0])
+  expect([yes?.reason, no?.reason]).toEqual(['trust', 'trust'])
+  expect(entries('turn')).toEqual([])
+
+  if (!yes || !no) throw new Error('no trust decision')
+  await answer(ledger, home, yes.id, 'yes')
+  await reaches(trusted, 'succeeded')
+  expect(entries('turn').map((t) => t.message)).toEqual(['work here'])
+
+  await answer(ledger, home, no.id, 'not this one')
+  expect(status(refused)).toBe('cancelled')
+  expect(Terminals.of(home).alive(sessionName(refused))).toBe(false)
 })

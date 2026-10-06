@@ -14,6 +14,7 @@ import {
   resume,
   StopEvent,
   sessionName,
+  startReady,
   startTask,
   tell,
 } from './worker'
@@ -22,8 +23,10 @@ const USAGE = `usage:
   nod                              open decisions
   nod <decision> <answer...>       answer a decision; the worker gets it in its own session
   nod drop <decision>              end the task instead of answering
-  nod add <brief> [--repo <path>] [--check <command>] [--model <model>]
-                                   start a worker on the task now
+  nod add <brief> [--repo <path>] [--check <command>] [--model <model>] [--after <task,...>]
+                                   start a worker on the task now, or once the tasks it comes
+                                   after have succeeded; in the same repo it starts from the
+                                   earlier task's branch
   nod tell <task> <message...>     send a follow-up into the task's session
   nod resume <task>                reopen a task whose session ended, from its transcript
   nod attach <task>                open the worker's terminal (tmux)
@@ -97,21 +100,36 @@ switch (command) {
 async function add(args: string[]): Promise<void> {
   const { values, positionals } = parseArgs({
     args,
-    options: { repo: { type: 'string' }, check: { type: 'string' }, model: { type: 'string' } },
+    options: {
+      repo: { type: 'string' },
+      check: { type: 'string' },
+      model: { type: 'string' },
+      after: { type: 'string' },
+    },
     allowPositionals: true,
   })
   const brief = words(positionals)
   const repo = values.repo === undefined ? null : resolve(values.repo)
   if (repo !== null && !existsSync(join(repo, '.git'))) throw new Error(`not a git repo: ${repo}`)
-  const id = ledger.add(brief, repo, values.check ?? null)
-  await startTask(ledger, home, id, values.model ?? null)
+  const after = (values.after ?? '').split(',').filter(Boolean).map(Number)
+  if (!after.every(Number.isInteger)) throw new Error(`--after takes task numbers: ${values.after}`)
+  const id = ledger.add({
+    brief,
+    repo,
+    checkCmd: values.check ?? null,
+    model: values.model ?? null,
+    after,
+  })
+  // A task that comes after others starts here only if they have all succeeded already.
+  if (after.length === 0) await startTask(ledger, home, id)
+  else await startReady(ledger, home)
   console.log(id)
 }
 
 async function hook(event: string | undefined): Promise<void> {
   const input: unknown = JSON.parse(await Bun.stdin.text())
   if (event === 'stop') {
-    const out = await onStop(ledger, StopEvent.parse(input))
+    const out = await onStop(ledger, home, StopEvent.parse(input))
     if (out !== null) console.log(out)
   } else if (event === 'notification') {
     onNotification(ledger, home, NotificationEvent.parse(input))
@@ -165,6 +183,10 @@ function show(id: number): void {
   if (task.repo) console.log(`  repo: ${task.repo} (branch nod/${task.id})`)
   if (task.workspace) console.log(`  workspace: ${task.workspace}`)
   if (task.checkCmd) console.log(`  check: ${task.checkCmd}`)
+  const after = ledger.after(id)
+  if (after.length > 0) {
+    console.log(`  after: ${after.map((a) => `#${a.id} (${a.status})`).join(', ')}`)
+  }
   if (terminals.alive(sessionName(id))) console.log(`  terminal: nod attach ${id}`)
   for (const a of ledger.attempts(id)) printAttempt(a)
   for (const d of ledger.decisions(id)) {
@@ -193,7 +215,10 @@ function printDecision(d: Decision): void {
 function printTask(t: Task): void {
   const attempts = ledger.attempts(t.id)
   const last = attempts.at(-1)
-  const note = t.error ?? last?.summary ?? t.brief
+  const waiting = t.status === 'queued' ? ledger.after(t.id) : []
+  const waitsFor =
+    waiting.length > 0 ? `waits for ${waiting.map((a) => `#${a.id}`).join(', ')}: ${t.brief}` : null
+  const note = t.error ?? waitsFor ?? last?.summary ?? t.brief
   // A running task without a session was cut off (exit, restart); `nod resume` reopens it.
   const status =
     t.status === 'running' && !terminals.alive(sessionName(t.id)) ? 'session ended' : t.status
