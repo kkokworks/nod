@@ -11,8 +11,8 @@ export type TaskStatus =
   | 'cancelled'
   | 'error'
 export type Outcome = 'succeeded' | 'failed' | 'needs_decision'
-export type AttemptKind = 'start' | 'retry' | 'answer' | 'resume'
-export type DecisionReason = 'question' | 'failed' | 'check_failed'
+export type AttemptKind = 'start' | 'retry' | 'answer' | 'resume' | 'followup'
+export type DecisionReason = 'question' | 'failed' | 'check_failed' | 'permission'
 
 export type Task = {
   id: number
@@ -32,7 +32,6 @@ export type Attempt = {
   kind: AttemptKind
   decisionId: number | null
   sessionId: string
-  pid: number | null
   prompt: string
   outcome: Outcome | 'error' | null
   summary: string | null
@@ -114,7 +113,7 @@ const MIGRATIONS = [
 const TASK = `id, brief, repo, check_cmd as checkCmd, workspace, status, error,
   created_at as createdAt, finished_at as finishedAt`
 const ATTEMPT = `id, task_id as taskId, kind, decision_id as decisionId, session_id as sessionId,
-  pid, prompt, outcome, summary, check_result as checkResult, check_output as checkOutput,
+  prompt, outcome, summary, check_result as checkResult, check_output as checkOutput,
   cost_usd as costUsd, error, started_at as startedAt, finished_at as finishedAt`
 const DECISION = `id, task_id as taskId, attempt_id as attemptId, reason, question, answer,
   created_at as createdAt, answered_at as answeredAt`
@@ -161,12 +160,6 @@ export class Ledger {
     return this.db.query<Task, []>(`select ${TASK} from tasks order by id`).all()
   }
 
-  ready(): Task[] {
-    return this.db
-      .query<Task, []>(`select ${TASK} from tasks where status = 'queued' order by id`)
-      .all()
-  }
-
   setRunning(id: number, workspace: string): void {
     this.db
       .query(`update tasks set status = 'running', workspace = $workspace where id = $id`)
@@ -179,13 +172,6 @@ export class Ledger {
 
   error(id: number, message: string): void {
     this.setStatus(id, 'error', message)
-  }
-
-  // A previous `nod run` died mid-task. Its open attempts stay open: the next runner adopts
-  // them (see runner.recover), so a worker that finished or is still running is not repeated.
-  requeueRunning(): number {
-    return this.db.query(`update tasks set status = 'queued' where status = 'running'`).run()
-      .changes
   }
 
   // ── attempts ──
@@ -204,14 +190,12 @@ export class Ledger {
     )
   }
 
-  endAttempt(
-    id: number,
-    r: { sessionId: string; outcome: Outcome; summary: string; costUsd: number },
-  ): void {
+  // Interactive sessions do not report cost, so cost_usd stays empty for these attempts.
+  endAttempt(id: number, r: { outcome: Outcome; summary: string }): void {
     this.db
       .query(
-        `update attempts set session_id = $sessionId, outcome = $outcome, summary = $summary,
-           cost_usd = $costUsd, finished_at = $at where id = $id`,
+        `update attempts set outcome = $outcome, summary = $summary, finished_at = $at
+         where id = $id`,
       )
       .run({ id, ...r, at: now() })
   }
@@ -238,16 +222,23 @@ export class Ledger {
       .all({ taskId })
   }
 
-  setPid(id: number, pid: number): void {
-    this.db.query('update attempts set pid = $pid where id = $id').run({ id, pid })
-  }
-
   openAttempt(taskId: number): Attempt | null {
     return this.attempts(taskId).find((a) => a.finishedAt === null) ?? null
   }
 
   lastAttempt(taskId: number): Attempt | null {
     return this.attempts(taskId).at(-1) ?? null
+  }
+
+  // The task a worker session belongs to; null for a session nod did not start.
+  taskOfSession(sessionId: string): number | null {
+    const row = this.db
+      .query<{ taskId: number }, { sessionId: string }>(
+        `select task_id as taskId from attempts where session_id = $sessionId
+         order by id desc limit 1`,
+      )
+      .get({ sessionId })
+    return row === null ? null : row.taskId
   }
 
   // ── decisions ──
@@ -264,10 +255,10 @@ export class Ledger {
   }
 
   answer(decisionId: number, answer: string): void {
-    this.close(decisionId, answer, 'queued')
+    this.close(decisionId, answer, 'running')
   }
 
-  // The human ends the task instead of answering, so no worker runs (and nothing counts it a success).
+  // The human ends the task instead of answering, so nothing counts it a success.
   drop(decisionId: number): void {
     this.close(decisionId, '(dropped)', 'cancelled')
   }
@@ -303,19 +294,6 @@ export class Ledger {
     return this.db
       .query<Decision, []>(`select ${DECISION} from decisions where answer is null order by id`)
       .all()
-  }
-
-  // An answer no attempt has acted on yet.
-  pendingAnswer(taskId: number): Decision | null {
-    return (
-      this.db
-        .query<Decision, { taskId: number }>(
-          `select ${DECISION} from decisions d where task_id = $taskId and answer is not null
-           and not exists (select 1 from attempts a where a.decision_id = d.id)
-           order by id limit 1`,
-        )
-        .get({ taskId }) ?? null
-    )
   }
 
   // ── reporting ──

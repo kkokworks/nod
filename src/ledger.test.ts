@@ -15,7 +15,7 @@ test('reopening a ledger keeps its data and does not re-run migrations', () => {
   expect(reopened.db.query('pragma user_version').get()).toEqual({ user_version: 2 })
 })
 
-test('a decision can be answered once, and the answer is pending until an attempt uses it', () => {
+test('a decision can be answered once, and answering puts the task back to running', () => {
   const ledger = new Ledger(freshHome())
   const taskId = ledger.add('t', null, null)
   const attemptId = ledger.startAttempt({
@@ -26,14 +26,13 @@ test('a decision can be answered once, and the answer is pending until an attemp
     prompt: 't',
   })
   const decisionId = ledger.ask(taskId, attemptId, 'question', 'ok?')
-  expect(ledger.pendingAnswer(taskId)).toBeNull()
+  expect(ledger.get(taskId).status).toBe('needs_decision')
 
   ledger.answer(decisionId, 'yes')
-  expect(ledger.pendingAnswer(taskId)?.id).toBe(decisionId)
+  expect(ledger.get(taskId).status).toBe('running')
   expect(() => ledger.answer(decisionId, 'again')).toThrow('already answered')
-
-  ledger.startAttempt({ taskId, kind: 'answer', decisionId, sessionId: 's', prompt: 'yes' })
-  expect(ledger.pendingAnswer(taskId)).toBeNull()
+  expect(ledger.taskOfSession('s')).toBe(taskId)
+  expect(ledger.taskOfSession('unknown')).toBeNull()
 })
 
 test('median decision wait uses answered decisions only', () => {

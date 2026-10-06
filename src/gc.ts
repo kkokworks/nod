@@ -2,14 +2,15 @@ import { existsSync, realpathSync, rmSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import type { Ledger, TaskStatus } from './ledger'
-import { resultFiles, spawn } from './runner'
+import { Terminals } from './tmux'
+import { sessionName, spawn } from './worker'
 
 const FINISHED: ReadonlySet<TaskStatus> = new Set(['succeeded', 'cancelled', 'error'])
 
 export type GcReport = { removed: number[]; skipped: { id: number; reason: string }[] }
 
-// Removes what tasks finished before `cutoff` left on disk: the workspace or worktree, Claude Code's
-// session folder for it, and the result files. Ledger rows and `nod/<id>` branches stay, so stats
+// Removes what tasks finished before `cutoff` left behind: the worker's tmux session, the workspace
+// or worktree, and Claude Code's session folder for it. Ledger rows and `nod/<id>` branches stay, so stats
 // and commits survive. A plain workspace's files are the task's output, hence the age cutoff.
 export async function collect(ledger: Ledger, home: string, cutoff: Date): Promise<GcReport> {
   const report: GcReport = { removed: [], skipped: [] }
@@ -23,6 +24,7 @@ export async function collect(ledger: Ledger, home: string, cutoff: Date): Promi
       continue
     }
     const sessions = sessionFolder(task.workspace) // needs the workspace to exist for realpath
+    await Terminals.of(home).close(sessionName(task.id))
 
     if (task.repo !== null) {
       const status = await spawn(['git', '-C', task.workspace, 'status', '--porcelain'], undefined)
@@ -43,11 +45,6 @@ export async function collect(ledger: Ledger, home: string, cutoff: Date): Promi
     }
 
     if (existsSync(sessions)) rmSync(sessions, { recursive: true })
-    for (const attempt of ledger.attempts(task.id)) {
-      const files = resultFiles(home, attempt.id)
-      rmSync(files.out, { force: true })
-      rmSync(files.err, { force: true })
-    }
     report.removed.push(task.id)
   }
   return report

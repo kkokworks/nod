@@ -1,30 +1,46 @@
 #!/usr/bin/env bun
-import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { parseArgs } from 'node:util'
 import { collect } from './gc'
 import { type Attempt, type Decision, Ledger, nodHome, type Task } from './ledger'
-import { runPool } from './pool'
-import { DEFAULT_SETTINGS, runTask } from './runner'
+import { Terminals } from './tmux'
+import {
+  answer,
+  drop,
+  NotificationEvent,
+  onNotification,
+  onStop,
+  resume,
+  StopEvent,
+  sessionName,
+  startTask,
+  tell,
+} from './worker'
 
 const USAGE = `usage:
   nod                              open decisions
-  nod <decision> <answer...>       answer a decision; the task resumes in \`nod run\`
+  nod <decision> <answer...>       answer a decision; the worker gets it in its own session
   nod drop <decision>              end the task instead of answering
-  nod add <brief> [--repo <path>] [--check <command>]
-  nod run [--max <n>] [--model <model>] [--permission-mode <mode>] [--settings <file|json>]
-  nod watch                        print decisions as they open, until no runner is left
+  nod add <brief> [--repo <path>] [--check <command>] [--model <model>]
+                                   start a worker on the task now
+  nod tell <task> <message...>     send a follow-up into the task's session
+  nod resume <task>                reopen a task whose session ended, from its transcript
+  nod attach <task>                open the worker's terminal (tmux)
+  nod watch                        print decisions as they open, until no worker is running
   nod ls
   nod show <task>
   nod stats
-  nod gc [--older-than <days>]     delete workspaces, worktrees and session folders of tasks
-                                   finished that long ago (default 7); ledger rows and branches stay`
+  nod gc [--older-than <days>]     close sessions and delete workspaces, worktrees and session
+                                   folders of tasks finished that long ago (default 7);
+                                   ledger rows and branches stay
+  nod hook stop|notification       called by Claude Code hooks in worker sessions`
 
 const [command, ...rest] = Bun.argv.slice(2)
 const home = nodHome()
 const ledger = new Ledger(home)
-const runPidPath = join(home, 'run.pid')
-// Also covers a runner that is still starting when `watch` begins.
+const terminals = Terminals.of(home)
+// Also covers a decision that opens just as the last worker stops.
 const WATCH_GRACE_SECS = 5
 
 switch (command) {
@@ -32,10 +48,18 @@ switch (command) {
     printDecisions(ledger.openDecisions())
     break
   case 'add':
-    add(rest)
+    await add(rest)
     break
-  case 'run':
-    await run(rest)
+  case 'tell':
+    tell(ledger, home, Number(rest[0]), words(rest.slice(1)))
+    console.log('sent')
+    break
+  case 'resume':
+    resume(ledger, home, Number(rest[0]))
+    console.log('reopened')
+    break
+  case 'attach':
+    attach(Number(rest[0]))
     break
   case 'watch':
     await watch()
@@ -47,7 +71,7 @@ switch (command) {
     show(Number(rest[0]))
     break
   case 'drop':
-    ledger.drop(Number(rest[0]))
+    await drop(ledger, home, Number(rest[0]))
     console.log('dropped')
     break
   case 'gc':
@@ -56,15 +80,68 @@ switch (command) {
   case 'stats':
     console.log(JSON.stringify(ledger.stats(), null, 2))
     break
+  case 'hook':
+    await hook(rest[0])
+    break
   default: {
     const id = Number(command)
-    const answer = rest.join(' ').trim()
-    if (!Number.isInteger(id) || !answer) {
+    if (!Number.isInteger(id)) {
       console.error(USAGE)
       process.exit(1)
     }
-    ledger.answer(id, answer)
-    console.log(`answered; task #${ledger.decision(id).taskId} resumes in \`nod run\``)
+    await answer(ledger, home, id, words(rest))
+    console.log(`answered; sent to task #${ledger.decision(id).taskId}`)
+  }
+}
+
+async function add(args: string[]): Promise<void> {
+  const { values, positionals } = parseArgs({
+    args,
+    options: { repo: { type: 'string' }, check: { type: 'string' }, model: { type: 'string' } },
+    allowPositionals: true,
+  })
+  const brief = words(positionals)
+  const repo = values.repo === undefined ? null : resolve(values.repo)
+  if (repo !== null && !existsSync(join(repo, '.git'))) throw new Error(`not a git repo: ${repo}`)
+  const id = ledger.add(brief, repo, values.check ?? null)
+  await startTask(ledger, home, id, values.model ?? null)
+  console.log(id)
+}
+
+async function hook(event: string | undefined): Promise<void> {
+  const input: unknown = JSON.parse(await Bun.stdin.text())
+  if (event === 'stop') {
+    const out = await onStop(ledger, StopEvent.parse(input))
+    if (out !== null) console.log(out)
+  } else if (event === 'notification') {
+    onNotification(ledger, home, NotificationEvent.parse(input))
+  } else {
+    throw new Error(USAGE)
+  }
+}
+
+function attach(taskId: number): void {
+  // Unset TMUX so this also works from inside another tmux session.
+  const { TMUX: _outer, ...env } = process.env
+  const result = Bun.spawnSync(terminals.attachCommand(sessionName(taskId)), {
+    stdio: ['inherit', 'inherit', 'inherit'],
+    env,
+  })
+  process.exit(result.exitCode)
+}
+
+// Lets a Claude session relay each decision as soon as it opens.
+async function watch(): Promise<void> {
+  const seen = new Set(ledger.openDecisions().map((d) => d.id))
+  let idleSecs = 0
+  while (idleSecs < WATCH_GRACE_SECS) {
+    await Bun.sleep(1000)
+    for (const d of ledger.openDecisions()) {
+      if (seen.has(d.id)) continue
+      seen.add(d.id)
+      printDecision(d)
+    }
+    idleSecs = ledger.stats().tasks.running > 0 ? 0 : idleSecs + 1
   }
 }
 
@@ -81,96 +158,6 @@ async function gc(args: string[]): Promise<void> {
   for (const s of report.skipped) console.log(`skipped #${s.id}: ${s.reason}`)
 }
 
-function add(args: string[]): void {
-  const { values, positionals } = parseArgs({
-    args,
-    options: { repo: { type: 'string' }, check: { type: 'string' } },
-    allowPositionals: true,
-  })
-  const brief = positionals.join(' ').trim()
-  if (!brief) throw new Error(USAGE)
-  const repo = values.repo === undefined ? null : resolve(values.repo)
-  if (repo !== null && !existsSync(join(repo, '.git'))) throw new Error(`not a git repo: ${repo}`)
-  console.log(ledger.add(brief, repo, values.check ?? null))
-}
-
-async function run(args: string[]): Promise<void> {
-  const { values } = parseArgs({
-    args,
-    options: {
-      max: { type: 'string' },
-      model: { type: 'string' },
-      'permission-mode': { type: 'string', default: 'acceptEdits' },
-      settings: { type: 'string', default: DEFAULT_SETTINGS },
-    },
-  })
-  const max = values.max === undefined ? Number.POSITIVE_INFINITY : Number(values.max)
-  if (!(max >= 1)) throw new Error(`--max must be a positive number: ${values.max}`)
-
-  const release = acquireRunLock()
-  try {
-    const requeued = ledger.requeueRunning()
-    if (requeued > 0) console.error(`picking up ${requeued} task(s) left by an earlier run`)
-    const opts = {
-      home,
-      permissionMode: values['permission-mode'],
-      settings: values.settings,
-      model: values.model,
-    }
-    await runPool(
-      () => ledger.ready(),
-      async (task) => {
-        await runTask(ledger, task, opts)
-        printTask(ledger.get(task.id))
-      },
-      max,
-    )
-    const open = ledger.openDecisions().length
-    if (open > 0) console.log(`${open} decision(s) waiting — run \`nod\``)
-  } finally {
-    release()
-  }
-}
-
-// One runner at a time: a second one would treat the first one's tasks as interrupted.
-function acquireRunLock(): () => void {
-  const pid = runnerPid()
-  if (pid !== null) throw new Error(`nod run is already running (pid ${pid})`)
-  writeFileSync(runPidPath, String(process.pid))
-  return () => rmSync(runPidPath, { force: true })
-}
-
-function runnerPid(): number | null {
-  if (!existsSync(runPidPath)) return null
-  const pid = Number(readFileSync(runPidPath, 'utf8'))
-  return isAlive(pid) ? pid : null
-}
-
-// Lets a Claude session relay each decision as soon as it opens instead of when the run ends.
-async function watch(): Promise<void> {
-  const seen = new Set(ledger.openDecisions().map((d) => d.id))
-  let idleSecs = 0
-  while (idleSecs < WATCH_GRACE_SECS) {
-    await Bun.sleep(1000)
-    for (const d of ledger.openDecisions()) {
-      if (seen.has(d.id)) continue
-      seen.add(d.id)
-      printDecision(d)
-    }
-    idleSecs = runnerPid() === null ? idleSecs + 1 : 0
-  }
-}
-
-function isAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0)
-    return true
-  } catch (error) {
-    // EPERM: the process exists but belongs to someone else.
-    return error instanceof Error && 'code' in error && error.code === 'EPERM'
-  }
-}
-
 function show(id: number): void {
   const task = ledger.get(id)
   printTask(task)
@@ -178,6 +165,7 @@ function show(id: number): void {
   if (task.repo) console.log(`  repo: ${task.repo} (branch nod/${task.id})`)
   if (task.workspace) console.log(`  workspace: ${task.workspace}`)
   if (task.checkCmd) console.log(`  check: ${task.checkCmd}`)
+  if (terminals.alive(sessionName(id))) console.log(`  terminal: nod attach ${id}`)
   for (const a of ledger.attempts(id)) printAttempt(a)
   for (const d of ledger.decisions(id)) {
     const answered = d.answeredAt
@@ -204,26 +192,33 @@ function printDecision(d: Decision): void {
 
 function printTask(t: Task): void {
   const attempts = ledger.attempts(t.id)
-  const cost = attempts.reduce((sum, a) => sum + (a.costUsd ?? 0), 0)
   const last = attempts.at(-1)
   const note = t.error ?? last?.summary ?? t.brief
+  // A running task without a session was cut off (exit, restart); `nod resume` reopens it.
+  const status =
+    t.status === 'running' && !terminals.alive(sessionName(t.id)) ? 'session ended' : t.status
   console.log(
-    `#${String(t.id).padEnd(4)} ${t.status.padEnd(14)} ${String(attempts.length).padStart(2)} tries ${`$${cost.toFixed(3)}`.padStart(7)}  ${oneLine(note, 70)}`,
+    `#${String(t.id).padEnd(4)} ${status.padEnd(14)} ${String(attempts.length).padStart(2)} turns  ${oneLine(note, 80)}`,
   )
 }
 
 function printAttempt(a: Attempt): void {
   const secs = a.finishedAt ? `${secsBetween(a.startedAt, a.finishedAt)}s` : 'running'
   const check = a.checkResult ? ` check ${a.checkResult}` : ''
-  const cost = a.costUsd === null ? '' : ` $${a.costUsd.toFixed(3)}`
   console.log(
-    `  ${a.kind.padEnd(6)} ${(a.outcome ?? '-').padEnd(14)} ${secs}${cost}${check}  session ${a.sessionId}`,
+    `  ${a.kind.padEnd(8)} ${(a.outcome ?? '-').padEnd(14)} ${secs}${check}  session ${a.sessionId}`,
   )
   const note = a.error ?? a.summary
   if (note) console.log(indent(oneLine(note, 200), 4))
 }
 
 // Function declarations, not consts: the top-level switch above runs before consts initialise.
+function words(args: string[]): string {
+  const text = args.join(' ').trim()
+  if (!text) throw new Error(USAGE)
+  return text
+}
+
 function secsBetween(from: string, to: string): number {
   return Math.round((Date.parse(to) - Date.parse(from)) / 1000)
 }

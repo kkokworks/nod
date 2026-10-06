@@ -1,6 +1,5 @@
 import { afterAll, expect, test } from 'bun:test'
-import { writeFileSync } from 'node:fs'
-import { join, resolve } from 'node:path'
+import { resolve } from 'node:path'
 import { tempDirs } from '../test/tmp'
 import { Ledger } from './ledger'
 
@@ -9,11 +8,12 @@ afterAll(tmp.removeAll)
 
 const cli = resolve(import.meta.dir, 'cli.ts')
 
-test('watch prints each decision once as it opens, and ends once no runner is left', async () => {
+test('watch prints each decision once as it opens, and ends once no worker is running', async () => {
   const home = tmp.make('nod-watch-')
   const ledger = new Ledger(home)
-  const ask = (question: string): void => {
+  const ask = (question: string): number => {
     const taskId = ledger.add('some task', null, null)
+    ledger.setRunning(taskId, home)
     const attemptId = ledger.startAttempt({
       taskId,
       kind: 'start',
@@ -22,17 +22,17 @@ test('watch prints each decision once as it opens, and ends once no runner is le
       prompt: 'some task',
     })
     ledger.ask(taskId, attemptId, 'question', question)
+    return taskId
   }
   ask('open before watching')
-  const runner = Bun.spawn(['sleep', '60'])
-  writeFileSync(join(home, 'run.pid'), String(runner.pid))
+  const worker = ledger.add('still working', null, null)
+  ledger.setRunning(worker, home)
   const watch = Bun.spawn(['bun', cli, 'watch'], { env: { ...process.env, NOD_HOME: home } })
 
   await Bun.sleep(1500)
   ask('opened while watching')
   await Bun.sleep(1500)
-  runner.kill()
-  await runner.exited
+  ledger.succeed(worker)
 
   expect(await watch.exited).toBe(0)
   const out = await new Response(watch.stdout).text()

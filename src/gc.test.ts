@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { tempDirs } from '../test/tmp'
 import { collect, sessionFolder } from './gc'
 import { Ledger } from './ledger'
-import { workspaceOf } from './runner'
+import { workspaceOf } from './worker'
 
 const tmp = tempDirs()
 afterAll(tmp.removeAll)

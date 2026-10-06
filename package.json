@@ -9,8 +9,7 @@
   "scripts": {
     "test": "bun test",
     "typecheck": "tsc --noEmit",
-    "lint": "biome check .",
-    "bench": "bun scripts/bench.ts"
+    "lint": "biome check ."
   },
   "dependencies": {
     "zod": "^4.6.5"
