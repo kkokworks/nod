@@ -48,4 +48,6 @@ bun -e 'const e = await Bun.stdin.json(); const t = e.decision ? `결정 #${e.de
 Bun.spawnSync(["osascript", "-e", "on run a", "-e", "display notification (item 2 of a) with title (item 1 of a)", "-e", "end run", "nod", `${t}: ${e.task?.brief ?? e.error}`])'
 ```
 
+검증에 되돌려졌거나 실패한 작업은 끝난 뒤 회고 워커가 돌아보고, 앞으로의 워커가 받을 규칙 한 줄을 결정으로 제안합니다. 받아들인 규칙은 `~/.nod/rules.md` 에 쌓이고 모든 워커에게 전해집니다. 이 파일은 직접 고쳐도 됩니다.
+
 설계와 실측 기록은 [docs/design.md](docs/design.md) 에 있습니다.

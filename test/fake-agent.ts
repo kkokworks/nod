@@ -146,7 +146,12 @@ async function trustDialog(): Promise<void> {
   }
 }
 
-log({ event: 'launch', sessionId, resumed: resumed !== null })
+log({
+  event: 'launch',
+  sessionId,
+  resumed: resumed !== null,
+  system: flag('--append-system-prompt'),
+})
 if (process.env.FAKE_AGENT_UNTRUSTED && resumed === null) await trustDialog()
 await runHooks('SessionStart', { session_id: sessionId })
 await turn(args.at(-1) ?? '', false)

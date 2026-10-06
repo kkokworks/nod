@@ -3,6 +3,7 @@ import { join } from 'node:path'
 import { z } from 'zod'
 import type { AttemptKind, DecisionReason, Ledger, Task } from './ledger'
 import { notify, taskRef } from './notify'
+import { addRule, hadTrouble, isNoRule, readRules, retroBrief, rulesPath } from './rules'
 import { Terminals } from './tmux'
 
 // Each worker is an interactive Claude Code session in tmux. It reports when it stops through
@@ -133,11 +134,20 @@ export async function answer(
 ): Promise<void> {
   const decision = ledger.decision(decisionId)
   const yes = /^y(es)?$/i.test(text.trim())
-  if (decision.reason === 'trust' && !yes) {
+  // Trust and rules are yes-or-nothing: anything but yes ends the task.
+  if ((decision.reason === 'trust' || decision.reason === 'rule') && !yes) {
     await drop(ledger, home, decisionId)
     return
   }
   ledger.answer(decisionId, text)
+  // The retrospective proposed the rule as its report; adding it is all that is left to do.
+  if (decision.reason === 'rule') {
+    const rule = ledger.attempt(decision.attemptId).summary
+    if (!rule) throw new Error(`decision ${decisionId} has no rule to add`)
+    addRule(home, rule)
+    ledger.succeed(decision.taskId)
+    return
+  }
   const terminals = Terminals.of(home)
   const name = sessionName(decision.taskId)
   if (decision.reason === 'trust') {
@@ -172,7 +182,21 @@ async function waitForScreen(terminals: Terminals, name: string, text: string): 
 
 export async function drop(ledger: Ledger, home: string, decisionId: number): Promise<void> {
   ledger.drop(decisionId)
-  await Terminals.of(home).close(sessionName(ledger.decision(decisionId).taskId))
+  const task = ledger.get(ledger.decision(decisionId).taskId)
+  await Terminals.of(home).close(sessionName(task.id))
+  await startRetro(ledger, home, task)
+}
+
+// Looks back on a task that ran into trouble, in a new session that gets only its history, and
+// turns the rule it proposes into a decision. Once per task, and never on a retrospective.
+// A retrospective that fails to start has the error on its own task, never on the one it is about.
+async function startRetro(ledger: Ledger, home: string, task: Task): Promise<void> {
+  if (task.retroOf !== null || ledger.retroFor(task.id) !== null) return
+  if (!hadTrouble(ledger, task.id)) return
+  const id = ledger.addRetro(task, retroBrief(ledger, task, workerPrompt(home)))
+  await startTask(ledger, home, id).catch((error) =>
+    notify(home, { event: 'error', task: taskRef(ledger.get(id)), error: message(error) }),
+  )
 }
 
 export function tell(ledger: Ledger, home: string, taskId: number, text: string): void {
@@ -266,8 +290,20 @@ async function settle(
   const check = await verify(task)
   if (check !== null) ledger.recordCheck(attemptId, check.passed, check.output)
   if (check === null || check.passed) {
+    if (task.retroOf !== null && !isNoRule(summary)) {
+      await decide(
+        ledger,
+        home,
+        task.id,
+        attemptId,
+        'rule',
+        `Task #${task.retroOf} ran into trouble, and its retrospective proposes this rule for every future worker:\n${summary}\nAnswer yes to add it to ${rulesPath(home)}; anything else drops it.`,
+      )
+      return null
+    }
     ledger.succeed(task.id)
     await notify(home, { event: 'succeeded', task: taskRef(task), summary })
+    await startRetro(ledger, home, task)
     return null
   }
   if (trailingRetries(ledger, task.id) >= CHECK_RETRIES) {
@@ -387,11 +423,18 @@ function launch(
     '--settings',
     workerSettings(started),
     '--append-system-prompt',
-    WORKER_PROMPT,
+    workerPrompt(home),
     ...(model === null ? [] : ['--model', model]),
     prompt,
   ]
   Terminals.of(home).start(sessionName(taskId), cwd, argv, workerEnv(home))
+}
+
+// The built-in rules, then the ones the human approved from retrospectives.
+function workerPrompt(home: string): string {
+  const rules = readRules(home)
+  if (rules === '') return WORKER_PROMPT
+  return `${WORKER_PROMPT}\nRules the human approved for every task:\n${rules}`
 }
 
 // `started`: a file the SessionStart hook creates, so nod knows the session got past the trust

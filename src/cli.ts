@@ -257,6 +257,7 @@ function show(id: number): void {
   if (task.workspace) console.log(`  workspace: ${task.workspace}`)
   if (task.checkCmd) console.log(`  check: ${task.checkCmd}`)
   if (task.triggerId !== null) console.log(`  added by trigger #${task.triggerId}`)
+  if (task.retroOf !== null) console.log(`  retrospective of #${task.retroOf}`)
   const after = ledger.after(id)
   if (after.length > 0) {
     console.log(`  after: ${after.map((a) => `#${a.id} (${a.status})`).join(', ')}`)

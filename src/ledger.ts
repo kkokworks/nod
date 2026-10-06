@@ -12,7 +12,13 @@ export type TaskStatus =
   | 'error'
 export type Outcome = 'succeeded' | 'failed' | 'needs_decision'
 export type AttemptKind = 'start' | 'retry' | 'answer' | 'resume' | 'followup'
-export type DecisionReason = 'question' | 'failed' | 'check_failed' | 'permission' | 'trust'
+export type DecisionReason =
+  | 'question'
+  | 'failed'
+  | 'check_failed'
+  | 'permission'
+  | 'trust'
+  | 'rule'
 
 export type Task = {
   id: number
@@ -21,6 +27,8 @@ export type Task = {
   checkCmd: string | null
   model: string | null
   triggerId: number | null
+  // Set on a retrospective: the task whose trouble it looks back on.
+  retroOf: number | null
   workspace: string | null
   status: TaskStatus
   error: string | null
@@ -158,10 +166,12 @@ const MIGRATIONS = [
   );
   alter table tasks add column trigger_id integer references triggers(id);
   `,
+  // v5: retrospectives, which are tasks that look back on another task.
+  'alter table tasks add column retro_of integer references tasks(id);',
 ]
 
-const TASK = `id, brief, repo, check_cmd as checkCmd, model, trigger_id as triggerId, workspace,
-  status, error, created_at as createdAt, finished_at as finishedAt`
+const TASK = `id, brief, repo, check_cmd as checkCmd, model, trigger_id as triggerId,
+  retro_of as retroOf, workspace, status, error, created_at as createdAt, finished_at as finishedAt`
 const TRIGGER = `id, cron, brief, repo, check_cmd as checkCmd, model, source,
   last_run_at as lastRunAt, last_error as lastError, created_at as createdAt`
 const ATTEMPT = `id, task_id as taskId, kind, decision_id as decisionId, session_id as sessionId,
@@ -390,6 +400,32 @@ export class Ledger {
     })()
   }
 
+  // A task that looks back on `of`, in an empty folder with the same model.
+  addRetro(of: Task, brief: string): number {
+    return this.db.transaction(() => {
+      const id = this.add({
+        brief,
+        repo: null,
+        checkCmd: null,
+        model: of.model,
+        after: [],
+        triggerId: null,
+      })
+      this.db.query('update tasks set retro_of = $of where id = $id').run({ of: of.id, id })
+      return id
+    })()
+  }
+
+  // The retrospective of a task, if one was started.
+  retroFor(taskId: number): number | null {
+    const row = this.db
+      .query<{ id: number }, { taskId: number }>(
+        'select id from tasks where retro_of = $taskId order by id limit 1',
+      )
+      .get({ taskId })
+    return row === null ? null : row.id
+  }
+
   // ── attempts ──
 
   startAttempt(a: {
@@ -436,6 +472,14 @@ export class Ledger {
         `select ${ATTEMPT} from attempts where task_id = $taskId order by id`,
       )
       .all({ taskId })
+  }
+
+  attempt(id: number): Attempt {
+    const a = this.db
+      .query<Attempt, { id: number }>(`select ${ATTEMPT} from attempts where id = $id`)
+      .get({ id })
+    if (!a) throw new Error(`attempt ${id} not found`)
+    return a
   }
 
   openAttempt(taskId: number): Attempt | null {

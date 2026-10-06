@@ -55,7 +55,13 @@ beforeEach(() => {
   ledger = new Ledger(home)
 })
 
-type LogEntry = { event: string; sessionId: string; resumed?: boolean; message?: string }
+type LogEntry = {
+  event: string
+  sessionId: string
+  resumed?: boolean
+  message?: string
+  system?: string | null
+}
 const entries = (event: string): LogEntry[] =>
   existsSync(log)
     ? readFileSync(log, 'utf8')
@@ -102,8 +108,10 @@ test('a failing check goes back into the same turn until it passes', async () =>
     ['start', 'succeeded', 'failed'],
     ['retry', 'succeeded', 'passed'],
   ])
-  expect(entries('launch')).toHaveLength(1)
-  expect(ledger.stats()).toMatchObject({ attempts: 2, retries: 1, succeededWithoutDecision: 1 })
+  // One launch of this task's session; the retrospective that follows has its own.
+  const session = ledger.attempts(id)[0]?.sessionId
+  expect(entries('launch').filter((l) => l.sessionId === session)).toHaveLength(1)
+  expect(ledger.stats()).toMatchObject({ retries: 1, succeededWithoutDecision: 1 })
 })
 
 test('a question becomes a decision, and the answer goes into the same live session', async () => {
@@ -356,4 +364,63 @@ test('due triggers add tasks, a source only for lines it has not printed before,
   await until(() => heard().length === 2)
   expect(heard()).toContainEqual(['succeeded', fromSource])
   expect(heard()).toContainEqual(['decision', scheduled])
+})
+
+test('a task that needed a retry gets a retrospective, and an approved rule reaches later workers', async () => {
+  const id = await add('make ok', 'test -f ok.txt')
+  await reaches(id, 'succeeded')
+  const retro = await until(() => ledger.list().find((t) => t.retroOf === id))
+  expect(retro.brief).toContain('Check failed')
+  const decision = await until(() => ledger.decisions(retro.id)[0])
+  expect(decision.reason).toBe('rule')
+
+  await answer(ledger, home, decision.id, 'yes')
+  expect(status(retro.id)).toBe('succeeded')
+  expect(readFileSync(join(home, 'rules.md'), 'utf8')).toBe('- did it\n')
+  const next = await add('plain')
+  await reaches(next, 'succeeded')
+  expect(entries('launch').at(-1)?.system).toContain('- did it')
+  // The smooth task and the retrospective get none of their own.
+  expect(ledger.list().filter((t) => t.retroOf !== null)).toHaveLength(1)
+})
+
+test('dropping a task that gave up starts a retrospective, and declining its rule cancels it', async () => {
+  const id = await add('give-up')
+  const decision = await until(() => ledger.decisions(id)[0])
+  expect(decision.reason).toBe('failed')
+  await drop(ledger, home, decision.id)
+  const retro = ledger.list().find((t) => t.retroOf === id)
+  if (retro === undefined) throw new Error('no retrospective')
+
+  const rule = await until(() => ledger.decisions(retro.id)[0])
+  await answer(ledger, home, rule.id, 'not this one')
+  expect(status(retro.id)).toBe('cancelled')
+  expect(existsSync(join(home, 'rules.md'))).toBe(false)
+  expect(ledger.list().filter((t) => t.retroOf !== null)).toHaveLength(1)
+})
+
+test('a retrospective that finds no general rule just succeeds', async () => {
+  const of = ledger.add({
+    brief: 'x',
+    repo: null,
+    checkCmd: null,
+    model: null,
+    after: [],
+    triggerId: null,
+  })
+  const retro = ledger.addRetro(ledger.get(of), 'look back')
+  ledger.startAttempt({
+    taskId: retro,
+    kind: 'start',
+    decisionId: null,
+    sessionId: 'retro-session',
+    prompt: 'look back',
+  })
+  await onStop(ledger, home, {
+    session_id: 'retro-session',
+    last_assistant_message: 'Nothing general here.\nNOD: done | none',
+    stop_hook_active: false,
+  })
+  expect(status(retro)).toBe('succeeded')
+  expect(ledger.decisions(retro)).toEqual([])
 })
