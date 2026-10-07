@@ -1,7 +1,18 @@
-import { Database } from 'bun:sqlite'
+import { Database, type SQLQueryBindings } from 'bun:sqlite'
 import { mkdirSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+import {
+  CamelCasePlugin,
+  type Compilable,
+  DummyDriver,
+  type Generated,
+  Kysely,
+  SqliteAdapter,
+  SqliteIntrospector,
+  SqliteQueryCompiler,
+  sql,
+} from 'kysely'
 
 export type TaskStatus =
   | 'queued'
@@ -173,15 +184,59 @@ const MIGRATIONS = [
   'alter table attempts add column report text;',
 ]
 
-const TASK = `id, brief, repo, check_cmd as checkCmd, model, trigger_id as triggerId,
-  retro_of as retroOf, workspace, status, error, created_at as createdAt, finished_at as finishedAt`
-const TRIGGER = `id, cron, brief, repo, check_cmd as checkCmd, model, source,
-  last_run_at as lastRunAt, last_error as lastError, created_at as createdAt`
-const ATTEMPT = `id, task_id as taskId, kind, decision_id as decisionId, session_id as sessionId,
-  prompt, outcome, summary, report, check_result as checkResult, check_output as checkOutput,
-  cost_usd as costUsd, error, started_at as startedAt, finished_at as finishedAt`
-const DECISION = `id, task_id as taskId, attempt_id as attemptId, reason, question, answer,
-  created_at as createdAt, answered_at as answeredAt`
+// The tables as the migrations leave them, in camelCase; CamelCasePlugin maps names to snake_case.
+type Tables = {
+  tasks: Omit<Task, 'id' | 'status'> & { id: Generated<number>; status: Generated<TaskStatus> }
+  taskDeps: { taskId: number; afterId: number }
+  triggers: Omit<Trigger, 'id'> & { id: Generated<number>; removedAt: string | null }
+  triggerItems: { triggerId: number; key: string; taskId: number | null; seenAt: string }
+  attempts: Omit<Attempt, 'id'> & { id: Generated<number>; pid: number | null }
+  decisions: Omit<Decision, 'id'> & { id: Generated<number> }
+}
+
+// Kysely only builds and type-checks the queries; bun:sqlite runs them, so the ledger stays
+// synchronous and its transactions stay bun:sqlite ones.
+const q = new Kysely<Tables>({
+  dialect: {
+    createAdapter: () => new SqliteAdapter(),
+    createDriver: () => new DummyDriver(),
+    createIntrospector: (db) => new SqliteIntrospector(db),
+    createQueryCompiler: () => new SqliteQueryCompiler(),
+  },
+  plugins: [new CamelCasePlugin()],
+})
+
+// Trigger and Attempt leave out a column their table has.
+const TRIGGER = [
+  'id',
+  'cron',
+  'brief',
+  'repo',
+  'checkCmd',
+  'model',
+  'source',
+  'lastRunAt',
+  'lastError',
+  'createdAt',
+] as const
+const ATTEMPT = [
+  'id',
+  'taskId',
+  'kind',
+  'decisionId',
+  'sessionId',
+  'prompt',
+  'outcome',
+  'summary',
+  'report',
+  'checkResult',
+  'checkOutput',
+  'costUsd',
+  'error',
+  'startedAt',
+  'finishedAt',
+] as const
+const count = q.fn.countAll<number>().as('n')
 
 export const nodHome = (): string => process.env.NOD_HOME ?? join(homedir(), '.nod')
 
@@ -226,21 +281,20 @@ export class Ledger {
         )
       }
       const id = this.insert(
-        `insert into tasks (brief, repo, check_cmd, model, trigger_id, created_at)
-         values ($brief, $repo, $checkCmd, $model, $triggerId, $at)`,
-        {
-          brief: t.brief,
-          repo: t.repo,
-          checkCmd: t.checkCmd,
-          model: t.model,
-          triggerId: t.triggerId,
-          at: now(),
-        },
+        q
+          .insertInto('tasks')
+          .values({
+            brief: t.brief,
+            repo: t.repo,
+            checkCmd: t.checkCmd,
+            model: t.model,
+            triggerId: t.triggerId,
+            createdAt: now(),
+          })
+          .returning('id'),
       )
       for (const a of after) {
-        this.db
-          .query('insert into task_deps (task_id, after_id) values ($id, $after)')
-          .run({ id, after: a.id })
+        this.run(q.insertInto('taskDeps').values({ taskId: id, afterId: a.id }))
       }
       return id
     })()
@@ -248,48 +302,55 @@ export class Ledger {
 
   // The tasks this one comes after.
   after(id: number): Task[] {
-    return this.db
-      .query<Task, { id: number }>(
-        `select ${TASK} from tasks where id in (select after_id from task_deps where task_id = $id)
-         order by id`,
-      )
-      .all({ id })
+    return this.run(
+      q
+        .selectFrom('tasks')
+        .selectAll()
+        .where('id', 'in', q.selectFrom('taskDeps').select('afterId').where('taskId', '=', id))
+        .orderBy('id'),
+    )
   }
 
   // Marks running the waiting tasks whose earlier tasks have all succeeded, and returns them. One
   // statement, so two workers finishing at once cannot both start the same task.
   claimReady(): number[] {
-    return this.db
-      .query<{ id: number }, []>(
-        `update tasks set status = 'running'
-         where status = 'queued'
-           and exists (select 1 from task_deps d where d.task_id = tasks.id)
-           and not exists (
-             select 1 from task_deps d join tasks a on a.id = d.after_id
-             where d.task_id = tasks.id and a.status != 'succeeded'
-           )
-         returning id`,
-      )
-      .all()
-      .map((r) => r.id)
+    return this.run(
+      q
+        .updateTable('tasks')
+        .set({ status: 'running' })
+        .where('status', '=', 'queued')
+        .where(({ exists, selectFrom }) =>
+          exists(
+            selectFrom('taskDeps as d').select('d.taskId').whereRef('d.taskId', '=', 'tasks.id'),
+          ),
+        )
+        .where(({ exists, not, selectFrom }) =>
+          not(
+            exists(
+              selectFrom('taskDeps as d')
+                .innerJoin('tasks as a', 'a.id', 'd.afterId')
+                .select('a.id')
+                .whereRef('d.taskId', '=', 'tasks.id')
+                .where('a.status', '!=', 'succeeded'),
+            ),
+          ),
+        )
+        .returning('id'),
+    ).map((r) => r.id)
   }
 
   get(id: number): Task {
-    const task = this.db
-      .query<Task, { id: number }>(`select ${TASK} from tasks where id = $id`)
-      .get({ id })
+    const task = this.first(q.selectFrom('tasks').selectAll().where('id', '=', id))
     if (!task) throw new Error(`task ${id} not found`)
     return task
   }
 
   list(): Task[] {
-    return this.db.query<Task, []>(`select ${TASK} from tasks order by id`).all()
+    return this.run(q.selectFrom('tasks').selectAll().orderBy('id'))
   }
 
   setRunning(id: number, workspace: string): void {
-    this.db
-      .query(`update tasks set status = 'running', workspace = $workspace where id = $id`)
-      .run({ id, workspace })
+    this.run(q.updateTable('tasks').set({ status: 'running', workspace }).where('id', '=', id))
   }
 
   succeed(id: number): void {
@@ -314,79 +375,81 @@ export class Ledger {
   }): number {
     return this.db.transaction(() => {
       const id = this.insert(
-        `insert into triggers (cron, brief, repo, check_cmd, model, source, created_at)
-         values ($cron, $brief, $repo, $checkCmd, $model, $source, $at)`,
-        {
-          cron: t.cron,
-          brief: t.brief,
-          repo: t.repo,
-          checkCmd: t.checkCmd,
-          model: t.model,
-          source: t.source,
-          at: now(),
-        },
+        q
+          .insertInto('triggers')
+          .values({
+            cron: t.cron,
+            brief: t.brief,
+            repo: t.repo,
+            checkCmd: t.checkCmd,
+            model: t.model,
+            source: t.source,
+            createdAt: now(),
+          })
+          .returning('id'),
       )
       for (const key of t.seen) {
-        this.db
-          .query(
-            `insert or ignore into trigger_items (trigger_id, key, seen_at)
-             values ($id, $key, $at)`,
-          )
-          .run({ id, key, at: now() })
+        this.run(
+          q.insertInto('triggerItems').orIgnore().values({ triggerId: id, key, seenAt: now() }),
+        )
       }
       return id
     })()
   }
 
   triggers(): Trigger[] {
-    return this.db
-      .query<Trigger, []>(`select ${TRIGGER} from triggers where removed_at is null order by id`)
-      .all()
+    return this.run(
+      q.selectFrom('triggers').select(TRIGGER).where('removedAt', 'is', null).orderBy('id'),
+    )
   }
 
   trigger(id: number): Trigger {
-    const t = this.db
-      .query<Trigger, { id: number }>(`select ${TRIGGER} from triggers where id = $id`)
-      .get({ id })
+    const t = this.first(q.selectFrom('triggers').select(TRIGGER).where('id', '=', id))
     if (!t) throw new Error(`trigger ${id} not found`)
     return t
   }
 
   removeTrigger(id: number): void {
-    const removed = this.db
-      .query<{ id: number }, { id: number; at: string }>(
-        'update triggers set removed_at = $at where id = $id and removed_at is null returning id',
-      )
-      .get({ id, at: now() })
+    const removed = this.first(
+      q
+        .updateTable('triggers')
+        .set({ removedAt: now() })
+        .where('id', '=', id)
+        .where('removedAt', 'is', null)
+        .returning('id'),
+    )
     if (!removed) throw new Error(`trigger ${id} not found`)
   }
 
   // Records a run at `at` unless another tick has recorded one since `last`, so a run happens once
   // even if two ticks overlap. Returns whether this caller got the run.
   claimRun(id: number, last: string | null, at: string): boolean {
-    const row = this.db
-      .query<{ id: number }, { id: number; last: string | null; at: string }>(
-        `update triggers set last_run_at = $at
-         where id = $id and last_run_at is $last returning id`,
-      )
-      .get({ id, last, at })
+    const row = this.first(
+      q
+        .updateTable('triggers')
+        .set({ lastRunAt: at })
+        .where('id', '=', id)
+        .where('lastRunAt', 'is', last)
+        .returning('id'),
+    )
     return row !== null
   }
 
   recordRunError(id: number, error: string | null): void {
-    this.db.query('update triggers set last_error = $error where id = $id').run({ id, error })
+    this.run(q.updateTable('triggers').set({ lastError: error }).where('id', '=', id))
   }
 
   // Adds a task for a source item the trigger has not seen, in one transaction with marking it
   // seen. Returns null for an item seen before.
   addItemTask(trigger: Trigger, key: string, brief: string): number | null {
     return this.db.transaction(() => {
-      const fresh = this.db
-        .query<{ key: string }, { id: number; key: string; at: string }>(
-          `insert or ignore into trigger_items (trigger_id, key, seen_at) values ($id, $key, $at)
-           returning key`,
-        )
-        .get({ id: trigger.id, key, at: now() })
+      const fresh = this.first(
+        q
+          .insertInto('triggerItems')
+          .orIgnore()
+          .values({ triggerId: trigger.id, key, seenAt: now() })
+          .returning('key'),
+      )
       if (!fresh) return null
       const taskId = this.add({
         brief,
@@ -396,9 +459,13 @@ export class Ledger {
         after: [],
         triggerId: trigger.id,
       })
-      this.db
-        .query('update trigger_items set task_id = $taskId where trigger_id = $id and key = $key')
-        .run({ taskId, id: trigger.id, key })
+      this.run(
+        q
+          .updateTable('triggerItems')
+          .set({ taskId })
+          .where('triggerId', '=', trigger.id)
+          .where('key', '=', key),
+      )
       return taskId
     })()
   }
@@ -414,18 +481,16 @@ export class Ledger {
         after: [],
         triggerId: null,
       })
-      this.db.query('update tasks set retro_of = $of where id = $id').run({ of: of.id, id })
+      this.run(q.updateTable('tasks').set({ retroOf: of.id }).where('id', '=', id))
       return id
     })()
   }
 
   // The retrospective of a task, if one was started.
   retroFor(taskId: number): number | null {
-    const row = this.db
-      .query<{ id: number }, { taskId: number }>(
-        'select id from tasks where retro_of = $taskId order by id limit 1',
-      )
-      .get({ taskId })
+    const row = this.first(
+      q.selectFrom('tasks').select('id').where('retroOf', '=', taskId).orderBy('id').limit(1),
+    )
     return row === null ? null : row.id
   }
 
@@ -439,48 +504,49 @@ export class Ledger {
     prompt: string
   }): number {
     return this.insert(
-      `insert into attempts (task_id, kind, decision_id, session_id, prompt, started_at)
-       values ($taskId, $kind, $decisionId, $sessionId, $prompt, $at)`,
-      { ...a, at: now() },
+      q
+        .insertInto('attempts')
+        .values({ ...a, startedAt: now() })
+        .returning('id'),
     )
   }
 
   // Interactive sessions do not report cost, so cost_usd stays empty for these attempts.
   endAttempt(id: number, r: { outcome: Outcome; summary: string; report: string | null }): void {
-    this.db
-      .query(
-        `update attempts set outcome = $outcome, summary = $summary, report = $report,
-         finished_at = $at where id = $id`,
-      )
-      .run({ id, ...r, at: now() })
+    this.run(
+      q
+        .updateTable('attempts')
+        .set({ ...r, finishedAt: now() })
+        .where('id', '=', id),
+    )
   }
 
   failAttempt(id: number, error: string): void {
-    this.db
-      .query(
-        `update attempts set outcome = 'error', error = $error, finished_at = $at where id = $id`,
-      )
-      .run({ id, error, at: now() })
+    this.run(
+      q
+        .updateTable('attempts')
+        .set({ outcome: 'error', error, finishedAt: now() })
+        .where('id', '=', id),
+    )
   }
 
   recordCheck(id: number, passed: boolean, output: string): void {
-    this.db
-      .query('update attempts set check_result = $result, check_output = $output where id = $id')
-      .run({ id, result: passed ? 'passed' : 'failed', output })
+    this.run(
+      q
+        .updateTable('attempts')
+        .set({ checkResult: passed ? 'passed' : 'failed', checkOutput: output })
+        .where('id', '=', id),
+    )
   }
 
   attempts(taskId: number): Attempt[] {
-    return this.db
-      .query<Attempt, { taskId: number }>(
-        `select ${ATTEMPT} from attempts where task_id = $taskId order by id`,
-      )
-      .all({ taskId })
+    return this.run(
+      q.selectFrom('attempts').select(ATTEMPT).where('taskId', '=', taskId).orderBy('id'),
+    )
   }
 
   attempt(id: number): Attempt {
-    const a = this.db
-      .query<Attempt, { id: number }>(`select ${ATTEMPT} from attempts where id = $id`)
-      .get({ id })
+    const a = this.first(q.selectFrom('attempts').select(ATTEMPT).where('id', '=', id))
     if (!a) throw new Error(`attempt ${id} not found`)
     return a
   }
@@ -495,12 +561,14 @@ export class Ledger {
 
   // The task a worker session belongs to; null for a session nod did not start.
   taskOfSession(sessionId: string): number | null {
-    const row = this.db
-      .query<{ taskId: number }, { sessionId: string }>(
-        `select task_id as taskId from attempts where session_id = $sessionId
-         order by id desc limit 1`,
-      )
-      .get({ sessionId })
+    const row = this.first(
+      q
+        .selectFrom('attempts')
+        .select('taskId')
+        .where('sessionId', '=', sessionId)
+        .orderBy('id', 'desc')
+        .limit(1),
+    )
     return row === null ? null : row.taskId
   }
 
@@ -510,9 +578,10 @@ export class Ledger {
     return this.db.transaction(() => {
       this.setStatus(taskId, 'needs_decision', null)
       return this.insert(
-        `insert into decisions (task_id, attempt_id, reason, question, created_at)
-         values ($taskId, $attemptId, $reason, $question, $at)`,
-        { taskId, attemptId, reason, question, at: now() },
+        q
+          .insertInto('decisions')
+          .values({ taskId, attemptId, reason, question, createdAt: now() })
+          .returning('id'),
       )
     })()
   }
@@ -530,33 +599,27 @@ export class Ledger {
     this.db.transaction(() => {
       const decision = this.decision(decisionId)
       if (decision.answer !== null) throw new Error(`decision ${decisionId} is already answered`)
-      this.db
-        .query('update decisions set answer = $answer, answered_at = $at where id = $id')
-        .run({ id: decisionId, answer, at: now() })
+      this.run(
+        q.updateTable('decisions').set({ answer, answeredAt: now() }).where('id', '=', decisionId),
+      )
       this.setStatus(decision.taskId, next, null)
     })()
   }
 
   decision(id: number): Decision {
-    const d = this.db
-      .query<Decision, { id: number }>(`select ${DECISION} from decisions where id = $id`)
-      .get({ id })
+    const d = this.first(q.selectFrom('decisions').selectAll().where('id', '=', id))
     if (!d) throw new Error(`decision ${id} not found`)
     return d
   }
 
   decisions(taskId: number): Decision[] {
-    return this.db
-      .query<Decision, { taskId: number }>(
-        `select ${DECISION} from decisions where task_id = $taskId order by id`,
-      )
-      .all({ taskId })
+    return this.run(
+      q.selectFrom('decisions').selectAll().where('taskId', '=', taskId).orderBy('id'),
+    )
   }
 
   openDecisions(): Decision[] {
-    return this.db
-      .query<Decision, []>(`select ${DECISION} from decisions where answer is null order by id`)
-      .all()
+    return this.run(q.selectFrom('decisions').selectAll().where('answer', 'is', null).orderBy('id'))
   }
 
   // ── reporting ──
@@ -570,68 +633,94 @@ export class Ledger {
       cancelled: 0,
       error: 0,
     }
-    for (const row of this.db
-      .query<{ status: TaskStatus; n: number }, []>(
-        'select status, count(*) as n from tasks group by status',
-      )
-      .all()) {
+    for (const row of this.run(q.selectFrom('tasks').select(['status', count]).groupBy('status'))) {
       tasks[row.status] = row.n
     }
-    const one = (sql: string): number => this.db.query<{ n: number | null }, []>(sql).get()?.n ?? 0
-    const waits = this.db
-      .query<{ secs: number }, []>(
-        `select (julianday(answered_at) - julianday(created_at)) * 86400 as secs
-         from decisions where answered_at is not null order by secs`,
-      )
-      .all()
-      .map((r) => r.secs)
+    const one = (query: Compilable<{ n: number | null }>): number => this.first(query)?.n ?? 0
+    const waits = this.run(
+      q
+        .selectFrom('decisions')
+        // Raw SQL is not renamed by CamelCasePlugin, so its columns are snake_case.
+        .select(sql<number>`(julianday(answered_at) - julianday(created_at)) * 86400`.as('secs'))
+        .where('answeredAt', 'is not', null)
+        .orderBy('secs'),
+    ).map((r) => r.secs)
     return {
       tasks,
       succeededWithoutDecision: one(
-        `select count(*) as n from tasks t where status = 'succeeded'
-         and not exists (select 1 from decisions d where d.task_id = t.id)`,
+        q
+          .selectFrom('tasks as t')
+          .select(count)
+          .where('status', '=', 'succeeded')
+          .where(({ exists, not, selectFrom }) =>
+            not(
+              exists(selectFrom('decisions as d').select('d.id').whereRef('d.taskId', '=', 't.id')),
+            ),
+          ),
       ),
-      attempts: one('select count(*) as n from attempts'),
-      retries: one(`select count(*) as n from attempts where kind = 'retry'`),
+      attempts: one(q.selectFrom('attempts').select(count)),
+      retries: one(q.selectFrom('attempts').select(count).where('kind', '=', 'retry')),
       decisions: {
-        total: one('select count(*) as n from decisions'),
-        open: one('select count(*) as n from decisions where answer is null'),
+        total: one(q.selectFrom('decisions').select(count)),
+        open: one(q.selectFrom('decisions').select(count).where('answer', 'is', null)),
         medianWaitSecs: median(waits),
       },
       // Rounded to 1/100 cent so float sums compare exactly.
-      costUsd: Math.round(one('select sum(cost_usd) as n from attempts') * 1e4) / 1e4,
+      costUsd:
+        Math.round(
+          one(q.selectFrom('attempts').select(q.fn.sum<number | null>('costUsd').as('n'))) * 1e4,
+        ) / 1e4,
     }
   }
 
   private setStatus(id: number, status: TaskStatus, error: string | null): void {
     const finishedAt = ['succeeded', 'cancelled', 'error'].includes(status) ? now() : null
-    this.db
-      .query(
-        'update tasks set status = $status, error = $error, finished_at = $finishedAt where id = $id',
-      )
-      .run({ id, status, error, finishedAt })
+    this.run(q.updateTable('tasks').set({ status, error, finishedAt }).where('id', '=', id))
     // A task that waits for a cancelled one can never start. An error is left alone: the task can
     // still be resumed and succeed.
     if (status !== 'cancelled') return
-    const waiting = this.db
-      .query<{ id: number }, { id: number }>(
-        `select t.id from task_deps d join tasks t on t.id = d.task_id
-         where d.after_id = $id and t.status = 'queued'`,
-      )
-      .all({ id })
+    const waiting = this.run(
+      q
+        .selectFrom('taskDeps as d')
+        .innerJoin('tasks as t', 't.id', 'd.taskId')
+        .select('t.id')
+        .where('d.afterId', '=', id)
+        .where('t.status', '=', 'queued'),
+    )
     for (const w of waiting) {
       this.setStatus(w.id, 'cancelled', `task #${id} it waits for was cancelled`)
     }
   }
 
-  private insert(sql: string, params: Record<string, string | number | null>): number {
-    const row = this.db
-      .query<{ id: number }, Record<string, string | number | null>>(`${sql} returning id`)
-      .get(params)
+  private insert(query: Compilable<{ id: number }>): number {
+    const row = this.first(query)
     if (!row) throw new Error('insert returned no id')
     return row.id
   }
+
+  // Runs a query and returns its rows, whether or not it reads any.
+  private run<O>(query: Compilable<O>): O[] {
+    const { sql, parameters } = query.compile()
+    const rows = this.db
+      .query<Record<string, unknown>, SQLQueryBindings[]>(sql)
+      // Kysely compiles only the values the query was typed with: strings, numbers and nulls.
+      .all(...(parameters as SQLQueryBindings[]))
+    // CamelCasePlugin renames result columns only when Kysely runs the query, so do it here.
+    return rows.map(camelKeys) as O[]
+  }
+
+  private first<O>(query: Compilable<O>): O | null {
+    return this.run(query)[0] ?? null
+  }
 }
+
+const camelKeys = (row: Record<string, unknown>): Record<string, unknown> =>
+  Object.fromEntries(
+    Object.entries(row).map(([k, v]) => [
+      k.replace(/_([a-z])/g, (_, c: string) => c.toUpperCase()),
+      v,
+    ]),
+  )
 
 function median(sorted: number[]): number | null {
   const mid = Math.floor(sorted.length / 2)

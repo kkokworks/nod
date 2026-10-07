@@ -12,6 +12,7 @@
     "lint": "biome check ."
   },
   "dependencies": {
+    "kysely": "^0.29.6",
     "zod": "^4.6.5"
   },
   "devDependencies": {
