@@ -12,7 +12,13 @@ export type NotifyEvent =
       task: TaskRef
       decision: { id: number; reason: DecisionReason; question: string }
     }
+  | {
+      event: 'answered'
+      task: TaskRef
+      decision: { id: number; reason: DecisionReason; answer: string }
+    }
   | { event: 'succeeded'; task: TaskRef; summary: string }
+  | { event: 'cancelled'; task: TaskRef }
   | { event: 'error'; task: TaskRef; error: string }
   | { event: 'trigger_failed'; trigger: { id: number; cron: string }; error: string }
 

@@ -60,6 +60,7 @@ export type Attempt = {
   prompt: string
   outcome: Outcome | 'error' | null
   summary: string | null
+  report: string | null
   checkResult: 'passed' | 'failed' | null
   checkOutput: string | null
   costUsd: number | null
@@ -168,6 +169,8 @@ const MIGRATIONS = [
   `,
   // v5: retrospectives, which are tasks that look back on another task.
   'alter table tasks add column retro_of integer references tasks(id);',
+  // v6: the worker's whole last message, since the report line alone drops the answer people read.
+  'alter table attempts add column report text;',
 ]
 
 const TASK = `id, brief, repo, check_cmd as checkCmd, model, trigger_id as triggerId,
@@ -175,7 +178,7 @@ const TASK = `id, brief, repo, check_cmd as checkCmd, model, trigger_id as trigg
 const TRIGGER = `id, cron, brief, repo, check_cmd as checkCmd, model, source,
   last_run_at as lastRunAt, last_error as lastError, created_at as createdAt`
 const ATTEMPT = `id, task_id as taskId, kind, decision_id as decisionId, session_id as sessionId,
-  prompt, outcome, summary, check_result as checkResult, check_output as checkOutput,
+  prompt, outcome, summary, report, check_result as checkResult, check_output as checkOutput,
   cost_usd as costUsd, error, started_at as startedAt, finished_at as finishedAt`
 const DECISION = `id, task_id as taskId, attempt_id as attemptId, reason, question, answer,
   created_at as createdAt, answered_at as answeredAt`
@@ -443,11 +446,11 @@ export class Ledger {
   }
 
   // Interactive sessions do not report cost, so cost_usd stays empty for these attempts.
-  endAttempt(id: number, r: { outcome: Outcome; summary: string }): void {
+  endAttempt(id: number, r: { outcome: Outcome; summary: string; report: string | null }): void {
     this.db
       .query(
-        `update attempts set outcome = $outcome, summary = $summary, finished_at = $at
-         where id = $id`,
+        `update attempts set outcome = $outcome, summary = $summary, report = $report,
+         finished_at = $at where id = $id`,
       )
       .run({ id, ...r, at: now() })
   }

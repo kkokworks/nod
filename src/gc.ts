@@ -32,8 +32,10 @@ export async function collect(ledger: Ledger, home: string, cutoff: Date): Promi
         report.skipped.push({ id: task.id, reason: 'uncommitted changes in worktree' })
         continue
       }
+      // --force only because git refuses any worktree with submodules; the status check above
+      // already made sure nothing uncommitted is lost.
       const removed = await spawn(
-        ['git', '-C', task.repo, 'worktree', 'remove', task.workspace],
+        ['git', '-C', task.repo, 'worktree', 'remove', '--force', task.workspace],
         undefined,
       )
       if (removed.code !== 0) {

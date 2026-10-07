@@ -19,7 +19,7 @@ test('reopening a ledger keeps its data and does not re-run migrations', () => {
   })
   const reopened = new Ledger(home)
   expect(reopened.get(id).brief).toBe('keep me')
-  expect(reopened.db.query('pragma user_version').get()).toEqual({ user_version: 5 })
+  expect(reopened.db.query('pragma user_version').get()).toEqual({ user_version: 6 })
 })
 
 test('a decision can be answered once, and answering puts the task back to running', () => {

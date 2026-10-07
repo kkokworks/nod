@@ -31,9 +31,10 @@ const USAGE = `usage:
   nod tell <task> <message...>     send a follow-up into the task's session
   nod resume <task>                reopen a task whose session ended, from its transcript
   nod attach <task>                open the worker's terminal (tmux)
+  nod peek <task>                  print what the worker's terminal shows right now
   nod watch                        print decisions as they open, until no worker is running
   nod ls
-  nod show <task>
+  nod show <task>                  history, then the worker's last full report
   nod stats
   nod gc [--older-than <days>]     close sessions and delete workspaces, worktrees and session
                                    folders of tasks finished that long ago (default 7);
@@ -75,6 +76,9 @@ switch (command) {
     break
   case 'attach':
     attach(Number(rest[0]))
+    break
+  case 'peek':
+    peek(Number(rest[0]))
     break
   case 'watch':
     await watch()
@@ -221,6 +225,21 @@ function attach(taskId: number): void {
   process.exit(result.exitCode)
 }
 
+// What the worker shows right now, for a Claude session that cannot attach a terminal.
+function peek(taskId: number): void {
+  ledger.get(taskId)
+  const name = sessionName(taskId)
+  if (!terminals.alive(name)) {
+    throw new Error(`task #${taskId} has no live session; nod show ${taskId} has its history`)
+  }
+  console.log(
+    terminals
+      .screen(name)
+      .replace(/\n\s*\n/g, '\n')
+      .trimEnd(),
+  )
+}
+
 // Lets a Claude session relay each decision as soon as it opens.
 async function watch(): Promise<void> {
   const seen = new Set(ledger.openDecisions().map((d) => d.id))
@@ -270,6 +289,11 @@ function show(id: number): void {
       : 'open'
     console.log(`  decision #${d.id} ${d.reason} — ${answered}`)
   }
+  const report = ledger
+    .attempts(id)
+    .filter((a) => a.report)
+    .at(-1)?.report
+  if (report) console.log(`\n${report}`)
 }
 
 function printDecisions(decisions: Decision[]): void {

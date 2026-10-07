@@ -2,6 +2,7 @@ import { afterAll, beforeEach, expect, test } from 'bun:test'
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { tempDirs } from '../test/tmp'
+import { collect } from './gc'
 import { Ledger, type TaskStatus } from './ledger'
 import { Terminals } from './tmux'
 import { addTrigger, tick } from './triggers'
@@ -124,10 +125,15 @@ test('a question becomes a decision, and the answer goes into the same live sess
   await reaches(id, 'succeeded')
   expect(entries('launch')).toHaveLength(1)
   expect(entries('turn').map((t) => t.message)).toEqual([
-    'ask-first, then write ok.txt',
+    'ask-first, then write ok.txt\n\nWhen you stop, nod runs this acceptance check in this directory and sends any failure back: `test -f ok.txt`',
     'Human decision: yes',
   ])
   expect(ledger.attempts(id).map((a) => a.kind)).toEqual(['start', 'answer'])
+  // The whole last message is kept, not just the report line.
+  expect(ledger.attempts(id).map((a) => a.report)).toEqual([
+    expect.stringContaining('May I proceed?'),
+    expect.stringContaining('NOD: done | did it'),
+  ])
 })
 
 test('a check that keeps failing becomes a decision after the retry budget', async () => {
@@ -278,6 +284,10 @@ test('in a repo, done needs the work committed, and the next task starts from th
     ['retry', 'failed'], // ok.txt written but not committed
     ['retry', 'passed'],
   ])
+  const brief = entries('turn').find((t) => t.message?.startsWith('make ok'))?.message
+  expect(brief).toContain(
+    'acceptance check in this directory and sends any failure back: `test -f ok.txt`',
+  )
 
   const next = ledger.add({
     brief: 'build on it',
@@ -292,6 +302,31 @@ test('in a repo, done needs the work committed, and the next task starts from th
   expect(existsSync(join(workspaceOf(home, next), 'ok.txt'))).toBe(true)
   const message = entries('turn').find((t) => t.message?.startsWith('build on it'))?.message
   expect(message).toContain(`starts from task #${first}'s branch`)
+})
+
+test('a repo task gets its submodules filled from the repo checkout, and gc still removes it', async () => {
+  const lib = newRepo()
+  writeFileSync(join(lib, 'a.txt'), 'lib')
+  git(lib, 'add', 'a.txt')
+  git(lib, 'commit', '-qm', 'lib')
+  const repo = newRepo()
+  git(repo, '-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', lib, 'lib')
+  git(repo, 'commit', '-qm', 'add lib')
+  const id = ledger.add({
+    brief: 'use the lib',
+    repo,
+    checkCmd: 'test -f lib/a.txt',
+    model: null,
+    after: [],
+    triggerId: null,
+  })
+  await startTask(ledger, home, id)
+  await reaches(id, 'succeeded')
+  expect(ledger.attempts(id).map((a) => a.checkResult)).toEqual(['passed'])
+
+  const report = await collect(ledger, home, new Date(Date.now() + 60_000))
+  expect(report.removed).toContain(id)
+  expect(existsSync(workspaceOf(home, id))).toBe(false)
 })
 
 function newRepo(): string {
@@ -330,7 +365,7 @@ test('a repo Claude Code does not trust yet becomes a decision: yes trusts and s
   expect(Terminals.of(home).alive(sessionName(refused))).toBe(false)
 })
 
-test('due triggers add tasks, a source only for lines it has not printed before, and notify hears', async () => {
+test('due triggers add tasks, a source only for lines it has not printed before, and notify hears every turn of a task', async () => {
   // One file per event, renamed into place, so a read never sees half an event.
   const events = join(home, 'events')
   mkdirSync(events)
@@ -364,6 +399,19 @@ test('due triggers add tasks, a source only for lines it has not printed before,
   await until(() => heard().length === 2)
   expect(heard()).toContainEqual(['succeeded', fromSource])
   expect(heard()).toContainEqual(['decision', scheduled])
+
+  // Answers and drops are heard too, so a to-do list that mirrors nod can close what is done.
+  const asked = ledger.decisions(scheduled)[0]
+  if (asked === undefined) throw new Error('no decision')
+  await answer(ledger, home, asked.id, 'yes')
+  await reaches(scheduled, 'succeeded')
+  const dropped = await add('ask-first')
+  const second = await until(() => ledger.decisions(dropped)[0])
+  await drop(ledger, home, second.id)
+  await until(() => heard().length === 6)
+  expect(heard()).toContainEqual(['answered', scheduled])
+  expect(heard()).toContainEqual(['succeeded', scheduled])
+  expect(heard()).toContainEqual(['cancelled', dropped])
 })
 
 test('a task that needed a retry gets a retrospective, and an approved rule reaches later workers', async () => {

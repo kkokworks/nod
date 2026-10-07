@@ -109,16 +109,22 @@ export async function startReady(ledger: Ledger, home: string): Promise<number[]
 
 // The worker knows only its first message, so a task that comes after others also gets what they
 // reported.
+// The worker hears the acceptance check up front: a retrospective found workers could not follow
+// a brief that disagreed with a check they only saw after failing it.
 function firstMessage(ledger: Ledger, task: Task): string {
+  const check =
+    task.checkCmd === null
+      ? ''
+      : `\n\nWhen you stop, nod runs this acceptance check in this directory and sends any failure back: \`${task.checkCmd}\``
   const after = ledger.after(task.id)
-  if (after.length === 0) return task.brief
+  if (after.length === 0) return `${task.brief}${check}`
   const reports = after.map(
     (a) => `- #${a.id} ${oneLine(a.brief)}: ${ledger.lastAttempt(a.id)?.summary || '(no summary)'}`,
   )
   const base = baseOf(ledger, task)
   const branch =
     base === null ? '' : `\nThis worktree starts from task #${base.id}'s branch, with its commits.`
-  return `${task.brief}\n\nThis task comes after these, which reported:\n${reports.join('\n')}${branch}`
+  return `${task.brief}\n\nThis task comes after these, which reported:\n${reports.join('\n')}${branch}${check}`
 }
 
 // The task whose branch this task's worktree starts from: the one it comes after in the same repo.
@@ -140,6 +146,12 @@ export async function answer(
     return
   }
   ledger.answer(decisionId, text)
+  // A to-do list that mirrors open decisions can close this one.
+  await notify(home, {
+    event: 'answered',
+    task: taskRef(ledger.get(decision.taskId)),
+    decision: { id: decisionId, reason: decision.reason, answer: text },
+  })
   // The retrospective proposed the rule as its report; adding it is all that is left to do.
   if (decision.reason === 'rule') {
     const rule = ledger.attempt(decision.attemptId).summary
@@ -167,7 +179,11 @@ export async function answer(
   // the attempt here and tell the worker in a new turn.
   terminals.keys(name, 'Escape')
   await waitForScreen(terminals, name, 'Interrupted')
-  ledger.endAttempt(decision.attemptId, { outcome: 'needs_decision', summary: 'permission denied' })
+  ledger.endAttempt(decision.attemptId, {
+    outcome: 'needs_decision',
+    summary: 'permission denied',
+    report: null,
+  })
   const reply = `Human decision: permission denied. ${text}`
   deliver(ledger, home, decision.taskId, 'answer', reply, decisionId)
 }
@@ -184,6 +200,7 @@ export async function drop(ledger: Ledger, home: string, decisionId: number): Pr
   ledger.drop(decisionId)
   const task = ledger.get(ledger.decision(decisionId).taskId)
   await Terminals.of(home).close(sessionName(task.id))
+  await notify(home, { event: 'cancelled', task: taskRef(task) })
   await startRetro(ledger, home, task)
 }
 
@@ -281,12 +298,16 @@ async function settle(
   const done = report?.status === 'done' || (report === null && event.stop_hook_active)
   if (!done) {
     const failed = report?.status === 'failed'
-    ledger.endAttempt(attemptId, { outcome: failed ? 'failed' : 'needs_decision', summary })
+    ledger.endAttempt(attemptId, {
+      outcome: failed ? 'failed' : 'needs_decision',
+      summary,
+      report: text,
+    })
     const reason = failed ? 'failed' : 'question'
     await decide(ledger, home, task.id, attemptId, reason, text.slice(-QUESTION_LIMIT))
     return null
   }
-  ledger.endAttempt(attemptId, { outcome: 'succeeded', summary })
+  ledger.endAttempt(attemptId, { outcome: 'succeeded', summary, report: text })
   const check = await verify(task)
   if (check !== null) ledger.recordCheck(attemptId, check.passed, check.output)
   if (check === null || check.passed) {
@@ -565,6 +586,41 @@ async function prepareWorkspace(ledger: Ledger, task: Task, cwd: string): Promis
     undefined,
   )
   if (code !== 0) throw new Error(`git worktree add failed: ${output.trim()}`)
+  await initSubmodules(task.repo, cwd)
+}
+
+// A new worktree has empty submodules, and the worker's sandbox cannot fetch them, so each one is
+// cloned from the repo's own checkout of it, which has the commit the branch points at.
+// ponytail: one level only; add --recursive with local URLs when a nested submodule shows up.
+async function initSubmodules(repo: string, worktree: string): Promise<void> {
+  if (!existsSync(join(worktree, '.gitmodules'))) return
+  const paths = await spawn(
+    ['git', 'config', '-f', '.gitmodules', '--get-regexp', String.raw`^submodule\..*\.path$`],
+    worktree,
+  )
+  for (const line of paths.stdout.trim().split('\n').filter(Boolean)) {
+    const [key, path] = line.split(' ')
+    if (key === undefined || path === undefined) throw new Error(`unexpected .gitmodules: ${line}`)
+    const name = key.slice('submodule.'.length, -'.path'.length)
+    const { code, output } = await spawn(
+      [
+        'git',
+        '-C',
+        worktree,
+        '-c',
+        'protocol.file.allow=always',
+        '-c',
+        `submodule.${name}.url=${join(repo, path)}`,
+        'submodule',
+        'update',
+        '--init',
+        '--',
+        path,
+      ],
+      undefined,
+    )
+    if (code !== 0) throw new Error(`submodule ${path} from ${repo} failed: ${output.trim()}`)
+  }
 }
 
 // What nod checks itself before a "done" counts: the task's check command, then, in a repo, that
