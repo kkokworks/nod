@@ -2,7 +2,7 @@
 import { existsSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { parseArgs } from 'node:util'
-import { collect } from './gc'
+import { collect, type GcPick } from './gc'
 import { type Attempt, type Decision, Ledger, nodHome, type Task, type Trigger } from './ledger'
 import { Terminals } from './tmux'
 import { addTrigger, nextRun, syncSchedule, tick } from './triggers'
@@ -36,9 +36,10 @@ const USAGE = `usage:
   nod ls
   nod show <task>                  history, then the worker's last full report
   nod stats
-  nod gc [--older-than <days>]     close sessions and delete workspaces, worktrees and session
-                                   folders of tasks finished that long ago (default 7);
-                                   ledger rows and branches stay
+  nod gc [<task...> | --older-than <days>]
+                                   close sessions and delete workspaces, worktrees and session
+                                   folders of the named finished tasks, or of tasks finished that
+                                   long ago (default 7); ledger rows and branches stay
   nod trigger add <cron> <brief...> [--source <command>] [--repo <path>] [--check <command>]
                   [--model <model>]
                                    add a task on a schedule (5-field cron, local time); with
@@ -256,16 +257,24 @@ async function watch(): Promise<void> {
 }
 
 async function gc(args: string[]): Promise<void> {
-  const { values } = parseArgs({
+  const { values, positionals } = parseArgs({
     args,
-    options: { 'older-than': { type: 'string', default: '7' } },
+    options: { 'older-than': { type: 'string' } },
+    allowPositionals: true,
   })
-  const days = Number(values['older-than'])
-  if (!(days >= 0))
-    throw new Error(`--older-than must be a number of days: ${values['older-than']}`)
-  const report = await collect(ledger, home, new Date(Date.now() - days * 86_400_000))
+  if (positionals.length > 0 && values['older-than'] !== undefined) {
+    throw new Error('name tasks or give --older-than, not both')
+  }
+  const report = await collect(ledger, home, gcPick(positionals, values['older-than'] ?? '7'))
   console.log(`removed ${report.removed.length} task(s): ${report.removed.join(', ') || '-'}`)
   for (const s of report.skipped) console.log(`skipped #${s.id}: ${s.reason}`)
+}
+
+function gcPick(tasks: string[], olderThan: string): GcPick {
+  if (tasks.length > 0) return { ids: tasks.map((t) => ledger.get(Number(t)).id) }
+  const days = Number(olderThan)
+  if (!(days >= 0)) throw new Error(`--older-than must be a number of days: ${olderThan}`)
+  return { before: new Date(Date.now() - days * 86_400_000) }
 }
 
 function show(id: number): void {

@@ -1,7 +1,7 @@
 import { existsSync, realpathSync, rmSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import type { Ledger, TaskStatus } from './ledger'
+import type { Ledger, Task, TaskStatus } from './ledger'
 import { Terminals } from './tmux'
 import { sessionName, spawn } from './worker'
 
@@ -9,15 +9,26 @@ const FINISHED: ReadonlySet<TaskStatus> = new Set(['succeeded', 'cancelled', 'er
 
 export type GcReport = { removed: number[]; skipped: { id: number; reason: string }[] }
 
-// Removes what tasks finished before `cutoff` left behind: the worker's tmux session, the workspace
-// or worktree, and Claude Code's session folder for it. Ledger rows and `nod/<id>` branches stay, so stats
-// and commits survive. A plain workspace's files are the task's output, hence the age cutoff.
-export async function collect(ledger: Ledger, home: string, cutoff: Date): Promise<GcReport> {
+// Which tasks to collect: those finished before a cutoff, or the ones the human named.
+export type GcPick = { before: Date } | { ids: number[] }
+
+// Removes what the picked finished tasks left behind: the worker's tmux session, the workspace or
+// worktree, and Claude Code's session folder for it. Ledger rows and `nod/<id>` branches stay, so
+// stats and commits survive. A plain workspace's files are the task's output, hence the age cutoff
+// unless the human names the task.
+export async function collect(ledger: Ledger, home: string, pick: GcPick): Promise<GcReport> {
   const report: GcReport = { removed: [], skipped: [] }
   const workRoot = `${join(home, 'work')}/`
+  const picked = (task: Task): boolean =>
+    'ids' in pick
+      ? pick.ids.includes(task.id)
+      : task.finishedAt !== null && Date.parse(task.finishedAt) <= pick.before.getTime()
   for (const task of ledger.list()) {
-    if (!FINISHED.has(task.status) || task.finishedAt === null) continue
-    if (Date.parse(task.finishedAt) > cutoff.getTime()) continue
+    if (!picked(task)) continue
+    if (!FINISHED.has(task.status)) {
+      report.skipped.push({ id: task.id, reason: `still ${task.status}` })
+      continue
+    }
     if (task.workspace === null || !existsSync(task.workspace)) continue
     if (!task.workspace.startsWith(workRoot)) {
       report.skipped.push({ id: task.id, reason: `workspace outside ${workRoot}` })

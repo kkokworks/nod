@@ -60,7 +60,7 @@ test('gc removes old finished workspaces and their session folders, and keeps th
   const recentSessions = sessionFolder(workspaceOf(home, recent))
   const oldPlainSessions = sessionFolder(workspaceOf(home, oldPlain))
 
-  const report = await collect(ledger, home, new Date(Date.now() - 7 * 86_400_000))
+  const report = await collect(ledger, home, { before: new Date(Date.now() - 7 * 86_400_000) })
 
   expect(report).toEqual({
     removed: [oldPlain, oldRepo],
@@ -74,6 +74,37 @@ test('gc removes old finished workspaces and their session folders, and keeps th
   expect(existsSync(workspaceOf(home, recent))).toBe(true)
   expect(existsSync(recentSessions)).toBe(true)
   expect(ledger.list()).toHaveLength(4)
+})
+
+test('gc collects the tasks the human names, however recent, and leaves unfinished ones', async () => {
+  const home = tmp.make('nod-gc-')
+  process.env.CLAUDE_CONFIG_DIR = tmp.make('nod-gc-claude-')
+  const ledger = new Ledger(home)
+  const task = (brief: string): number => {
+    const id = ledger.add({
+      brief,
+      repo: null,
+      checkCmd: null,
+      model: null,
+      after: [],
+      triggerId: null,
+    })
+    mkdirSync(workspaceOf(home, id), { recursive: true })
+    ledger.setRunning(id, workspaceOf(home, id))
+    return id
+  }
+  const named = task('named')
+  ledger.succeed(named)
+  const other = task('other')
+  ledger.succeed(other)
+  const running = task('running')
+
+  const report = await collect(ledger, home, { ids: [named, running] })
+
+  expect(report).toEqual({ removed: [named], skipped: [{ id: running, reason: 'still running' }] })
+  expect(existsSync(workspaceOf(home, named))).toBe(false)
+  expect(existsSync(workspaceOf(home, other))).toBe(true)
+  expect(existsSync(workspaceOf(home, running))).toBe(true)
 })
 
 function sh(cmd: string[], cwd: string): string {
