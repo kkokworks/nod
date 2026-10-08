@@ -4,7 +4,7 @@ import type { DecisionReason, Task } from './ledger'
 
 const NOTIFY_TIMEOUT_MS = 10_000
 
-type TaskRef = { id: number; brief: string }
+type TaskRef = { id: number; brief: string; issue: string | null }
 
 export type NotifyEvent =
   | {
@@ -22,7 +22,7 @@ export type NotifyEvent =
   | { event: 'error'; task: TaskRef; error: string }
   | { event: 'trigger_failed'; trigger: { id: number; cron: string }; error: string }
 
-export const taskRef = (t: Task): TaskRef => ({ id: t.id, brief: t.brief })
+export const taskRef = (t: Task): TaskRef => ({ id: t.id, brief: t.brief, issue: t.issue })
 
 // Runs `<home>/notify`, if the human made one, with the event as JSON on stdin: how a person hears
 // about a decision while away from the Claude session. A notification that fails is reported on

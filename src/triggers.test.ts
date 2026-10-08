@@ -10,10 +10,10 @@ import { addTrigger, nextRun, parseItems } from './triggers'
 const tmp = tempDirs()
 afterAll(tmp.removeAll)
 
-test('a source line is one item, keyed by what comes before a tab', () => {
+test('a source line is one item, keyed by what comes before a tab, which is also its issue', () => {
   expect(parseItems('12\tFix login\n\nplain line\n')).toEqual([
-    { key: '12', text: 'Fix login' },
-    { key: 'plain line', text: 'plain line' },
+    { key: '12', issue: '12', text: 'Fix login' },
+    { key: 'plain line', issue: null, text: 'plain line' },
   ])
 })
 
@@ -33,7 +33,7 @@ test('adding a trigger with a source records what it lists now, and a failing so
   const base = { cron: '*/5 * * * *', brief: 'look', repo: null, checkCmd: null, model: null }
   const added = await addTrigger(ledger, home, { ...base, source: `cat ${JSON.stringify(items)}` })
   expect(added.seen).toBe(2)
-  expect(ledger.addItemTask(ledger.trigger(added.id), 'a', 'look')).toBeNull()
+  expect(ledger.addItemTask(ledger.trigger(added.id), 'a', 'a', 'look')).toBeNull()
 
   await expect(addTrigger(ledger, home, { ...base, source: 'exit 3' })).rejects.toThrow('exited 3')
   expect(ledger.triggers().map((t) => t.id)).toEqual([added.id])

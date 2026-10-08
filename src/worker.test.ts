@@ -97,6 +97,7 @@ async function add(brief: string, check: string | null = null): Promise<number> 
     model: null,
     after: [],
     triggerId: null,
+    issue: null,
   })
   await startTask(ledger, home, id)
   return id
@@ -237,6 +238,7 @@ test('a task that comes after another starts once that one succeeds, and hears i
     model: null,
     after: [first],
     triggerId: null,
+    issue: null,
   })
   expect(await startReady(ledger, home)).toEqual([])
   expect(status(next)).toBe('queued')
@@ -276,6 +278,7 @@ test('in a repo, done needs the work committed, and the next task starts from th
     model: null,
     after: [],
     triggerId: null,
+    issue: null,
   })
   await startTask(ledger, home, first)
   await reaches(first, 'succeeded')
@@ -296,6 +299,7 @@ test('in a repo, done needs the work committed, and the next task starts from th
     model: null,
     after: [first],
     triggerId: null,
+    issue: null,
   })
   expect(await startReady(ledger, home)).toEqual([next])
   await reaches(next, 'succeeded')
@@ -319,6 +323,7 @@ test('a repo task gets its submodules filled from the repo checkout, and gc stil
     model: null,
     after: [],
     triggerId: null,
+    issue: null,
   })
   await startTask(ledger, home, id)
   await reaches(id, 'succeeded')
@@ -346,6 +351,7 @@ test('a repo Claude Code does not trust yet becomes a decision: yes trusts and s
       model: null,
       after: [],
       triggerId: null,
+      issue: null,
     })
   const trusted = addIn(newRepo())
   const refused = addIn(newRepo())
@@ -455,6 +461,7 @@ test('a retrospective that finds no general rule just succeeds', async () => {
     model: null,
     after: [],
     triggerId: null,
+    issue: null,
   })
   const retro = ledger.addRetro(ledger.get(of), 'look back')
   ledger.startAttempt({

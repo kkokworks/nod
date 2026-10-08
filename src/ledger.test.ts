@@ -16,10 +16,38 @@ test('reopening a ledger keeps its data and does not re-run migrations', () => {
     model: null,
     after: [],
     triggerId: null,
+    issue: null,
   })
   const reopened = new Ledger(home)
   expect(reopened.get(id).brief).toBe('keep me')
-  expect(reopened.db.query('pragma user_version').get()).toEqual({ user_version: 6 })
+  expect(reopened.db.query('pragma user_version').get()).toEqual({ user_version: 7 })
+})
+
+test('a task keeps its issue, and its retrospective and source items carry one', () => {
+  const ledger = new Ledger(freshHome())
+  const id = ledger.add({
+    brief: 't',
+    repo: null,
+    checkCmd: null,
+    model: null,
+    after: [],
+    triggerId: null,
+    issue: 'PROJ-1',
+  })
+  expect(ledger.get(id).issue).toBe('PROJ-1')
+  expect(ledger.get(ledger.addRetro(ledger.get(id), 'look back')).issue).toBe('PROJ-1')
+
+  const triggerId = ledger.addTrigger({
+    cron: '* * * * *',
+    brief: 'look',
+    repo: null,
+    checkCmd: null,
+    model: null,
+    source: 'true',
+    seen: [],
+  })
+  const fromItem = ledger.addItemTask(ledger.trigger(triggerId), 'PROJ-2', 'PROJ-2', 'look')
+  expect(fromItem === null ? null : ledger.get(fromItem).issue).toBe('PROJ-2')
 })
 
 test('a decision can be answered once, and answering puts the task back to running', () => {
@@ -31,6 +59,7 @@ test('a decision can be answered once, and answering puts the task back to runni
     model: null,
     after: [],
     triggerId: null,
+    issue: null,
   })
   const attemptId = ledger.startAttempt({
     taskId,
@@ -58,6 +87,7 @@ test('median decision wait uses answered decisions only', () => {
     model: null,
     after: [],
     triggerId: null,
+    issue: null,
   })
   const attemptId = ledger.startAttempt({
     taskId,
@@ -87,6 +117,7 @@ const task = (ledger: Ledger, t: { repo?: string; after?: number[] } = {}): numb
     model: null,
     after: t.after ?? [],
     triggerId: null,
+    issue: null,
   })
 
 test('a waiting task is claimed once, and only after every task it comes after has succeeded', () => {
@@ -154,10 +185,10 @@ test('a trigger run is claimed once, a source item adds a task once, and removal
   expect(ledger.claimRun(id, null, '2026-10-06T00:01:00.000Z')).toBe(false) // another tick won
 
   const trigger = ledger.trigger(id)
-  expect(ledger.addItemTask(trigger, 'old', 'b')).toBeNull()
-  const taskId = ledger.addItemTask(trigger, 'new', 'b')
+  expect(ledger.addItemTask(trigger, 'old', null, 'b')).toBeNull()
+  const taskId = ledger.addItemTask(trigger, 'new', null, 'b')
   if (taskId === null) throw new Error('a new item added no task')
-  expect(ledger.addItemTask(trigger, 'new', 'b')).toBeNull()
+  expect(ledger.addItemTask(trigger, 'new', null, 'b')).toBeNull()
   expect(ledger.get(taskId).triggerId).toBe(id)
 
   ledger.removeTrigger(id)

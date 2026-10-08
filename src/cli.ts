@@ -25,15 +25,17 @@ const USAGE = `usage:
   nod <decision> <answer...>       answer a decision; the worker gets it in its own session
   nod drop <decision>              end the task instead of answering
   nod add <brief> [--repo <path>] [--check <command>] [--model <model>] [--after <task,...>]
+          [--issue <key>]
                                    start a worker on the task now, or once the tasks it comes
                                    after have succeeded; in the same repo it starts from the
-                                   earlier task's branch
+                                   earlier task's branch. --issue names the issue it works on,
+                                   so ls, decisions and notify events show it
   nod tell <task> <message...>     send a follow-up into the task's session
   nod resume <task>                reopen a task whose session ended, from its transcript
   nod attach <task>                open the worker's terminal (tmux)
   nod peek <task>                  print what the worker's terminal shows right now
   nod watch                        print decisions as they open, until no worker is running
-  nod ls
+  nod ls                           tasks; those with an issue are listed under it
   nod show <task>                  history, then the worker's last full report
   nod stats
   nod gc [<task...> | --older-than <days>]
@@ -44,7 +46,8 @@ const USAGE = `usage:
                   [--model <model>]
                                    add a task on a schedule (5-field cron, local time); with
                                    --source, one task per line the command prints that it has
-                                   not printed before (text after a tab; before it, the key)
+                                   not printed before (text after a tab; before it, the key,
+                                   which is also the task's issue)
   nod trigger ls | rm <trigger>
   nod tick                         run the triggers that are due; the OS scheduler calls this
                                    every minute while any trigger exists
@@ -85,7 +88,7 @@ switch (command) {
     await watch()
     break
   case 'ls':
-    for (const t of ledger.list()) printTask(t)
+    printTasks(ledger.list())
     break
   case 'show':
     show(Number(rest[0]))
@@ -130,6 +133,7 @@ async function add(args: string[]): Promise<void> {
       check: { type: 'string' },
       model: { type: 'string' },
       after: { type: 'string' },
+      issue: { type: 'string' },
     },
     allowPositionals: true,
   })
@@ -143,6 +147,7 @@ async function add(args: string[]): Promise<void> {
     model: values.model ?? null,
     after,
     triggerId: null,
+    issue: values.issue ?? null,
   })
   // A task that comes after others starts here only if they have all succeeded already.
   if (after.length === 0) await startTask(ledger, home, id)
@@ -280,6 +285,7 @@ function gcPick(tasks: string[], olderThan: string): GcPick {
 function show(id: number): void {
   const task = ledger.get(id)
   printTask(task)
+  if (task.issue !== null) console.log(`  issue: ${task.issue}`)
   console.log(`  brief: ${task.brief}`)
   if (task.repo) console.log(`  repo: ${task.repo} (branch nod/${task.id})`)
   if (task.workspace) console.log(`  workspace: ${task.workspace}`)
@@ -316,11 +322,24 @@ function printDecisions(decisions: Decision[]): void {
 
 function printDecision(d: Decision): void {
   const task = ledger.get(d.taskId)
-  console.log(`#${d.id}  ${d.reason}  (task #${task.id}: ${oneLine(task.brief, 60)})`)
+  const issue = task.issue === null ? '' : ` ${task.issue}`
+  console.log(`#${d.id}  ${d.reason}  (task #${task.id}${issue}: ${oneLine(task.brief, 60)})`)
   console.log(`${indent(d.question)}\n`)
 }
 
-function printTask(t: Task): void {
+// Tasks without an issue first, as they always were; then each issue, in the order it first
+// appeared, with its tasks indented under it.
+function printTasks(tasks: Task[]): void {
+  const byIssue = Map.groupBy(tasks, (t) => t.issue)
+  for (const t of byIssue.get(null) ?? []) printTask(t)
+  for (const [issue, group] of byIssue) {
+    if (issue === null) continue
+    console.log(issue)
+    for (const t of group) printTask(t, '  ')
+  }
+}
+
+function printTask(t: Task, prefix = ''): void {
   const attempts = ledger.attempts(t.id)
   const last = attempts.at(-1)
   const waiting = t.status === 'queued' ? ledger.after(t.id) : []
@@ -331,7 +350,7 @@ function printTask(t: Task): void {
   const status =
     t.status === 'running' && !terminals.alive(sessionName(t.id)) ? 'session ended' : t.status
   console.log(
-    `#${String(t.id).padEnd(4)} ${status.padEnd(14)} ${String(attempts.length).padStart(2)} turns  ${oneLine(note, 80)}`,
+    `${prefix}#${String(t.id).padEnd(4)} ${status.padEnd(14)} ${String(attempts.length).padStart(2)} turns  ${oneLine(note, 80)}`,
   )
 }
 

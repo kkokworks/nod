@@ -42,6 +42,7 @@ test('gc removes old finished workspaces and their session folders, and keeps th
       model: null,
       after: [],
       triggerId: null,
+      issue: null,
     })
     const cwd = workspaceOf(home, id)
     if (withRepo) sh(['git', 'worktree', 'add', '-q', '-b', `nod/${id}`, cwd], repo)
@@ -88,6 +89,7 @@ test('gc collects the tasks the human names, however recent, and leaves unfinish
       model: null,
       after: [],
       triggerId: null,
+      issue: null,
     })
     mkdirSync(workspaceOf(home, id), { recursive: true })
     ledger.setRunning(id, workspaceOf(home, id))

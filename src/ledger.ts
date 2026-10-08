@@ -38,6 +38,9 @@ export type Task = {
   checkCmd: string | null
   model: string | null
   triggerId: number | null
+  // The issue the task works on, such as `PROJ-12`, so tasks and their decisions can be seen by
+  // issue. From `--issue`, or the key of the source item that added it.
+  issue: string | null
   // Set on a retrospective: the task whose trouble it looks back on.
   retroOf: number | null
   workspace: string | null
@@ -182,6 +185,8 @@ const MIGRATIONS = [
   'alter table tasks add column retro_of integer references tasks(id);',
   // v6: the worker's whole last message, since the report line alone drops the answer people read.
   'alter table attempts add column report text;',
+  // v7: the issue a task works on.
+  'alter table tasks add column issue text;',
 ]
 
 // The tables as the migrations leave them, in camelCase; CamelCasePlugin maps names to snake_case.
@@ -270,6 +275,7 @@ export class Ledger {
     model: string | null
     after: number[]
     triggerId: number | null
+    issue: string | null
   }): number {
     return this.db.transaction(() => {
       const after = t.after.map((id) => this.get(id))
@@ -289,6 +295,7 @@ export class Ledger {
             checkCmd: t.checkCmd,
             model: t.model,
             triggerId: t.triggerId,
+            issue: t.issue,
             createdAt: now(),
           })
           .returning('id'),
@@ -441,7 +448,7 @@ export class Ledger {
 
   // Adds a task for a source item the trigger has not seen, in one transaction with marking it
   // seen. Returns null for an item seen before.
-  addItemTask(trigger: Trigger, key: string, brief: string): number | null {
+  addItemTask(trigger: Trigger, key: string, issue: string | null, brief: string): number | null {
     return this.db.transaction(() => {
       const fresh = this.first(
         q
@@ -458,6 +465,7 @@ export class Ledger {
         model: trigger.model,
         after: [],
         triggerId: trigger.id,
+        issue,
       })
       this.run(
         q
@@ -480,6 +488,7 @@ export class Ledger {
         model: of.model,
         after: [],
         triggerId: null,
+        issue: of.issue,
       })
       this.run(q.updateTable('tasks').set({ retroOf: of.id }).where('id', '=', id))
       return id
