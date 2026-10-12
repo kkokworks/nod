@@ -44,6 +44,8 @@ export type Task = {
   // Set on a retrospective: the task whose trouble it looks back on.
   retroOf: number | null
   workspace: string | null
+  // Set by gc: the human has dealt with what the task produced, so ls stops listing it.
+  collectedAt: string | null
   status: TaskStatus
   error: string | null
   createdAt: string
@@ -187,12 +189,23 @@ const MIGRATIONS = [
   'alter table attempts add column report text;',
   // v7: the issue a task works on.
   'alter table tasks add column issue text;',
+  // v8: where a task's result went (a pull request, a posted review), and when gc collected it.
+  `
+  create table links (
+    task_id integer not null references tasks(id),
+    url text not null,
+    created_at text not null,
+    primary key (task_id, url)
+  );
+  alter table tasks add column collected_at text;
+  `,
 ]
 
 // The tables as the migrations leave them, in camelCase; CamelCasePlugin maps names to snake_case.
 type Tables = {
   tasks: Omit<Task, 'id' | 'status'> & { id: Generated<number>; status: Generated<TaskStatus> }
   taskDeps: { taskId: number; afterId: number }
+  links: { taskId: number; url: string; createdAt: string }
   triggers: Omit<Trigger, 'id'> & { id: Generated<number>; removedAt: string | null }
   triggerItems: { triggerId: number; key: string; taskId: number | null; seenAt: string }
   attempts: Omit<Attempt, 'id'> & { id: Generated<number>; pid: number | null }
@@ -366,6 +379,26 @@ export class Ledger {
 
   error(id: number, message: string): void {
     this.setStatus(id, 'error', message)
+  }
+
+  collected(id: number): void {
+    this.run(q.updateTable('tasks').set({ collectedAt: now() }).where('id', '=', id))
+  }
+
+  // Records where the task's result went. The same address twice is kept once.
+  link(id: number, urls: string[]): void {
+    this.db.transaction(() => {
+      this.get(id)
+      for (const url of urls) {
+        this.run(q.insertInto('links').orIgnore().values({ taskId: id, url, createdAt: now() }))
+      }
+    })()
+  }
+
+  links(id: number): string[] {
+    return this.run(
+      q.selectFrom('links').select('url').where('taskId', '=', id).orderBy('createdAt'),
+    ).map((r) => r.url)
   }
 
   // ── triggers ──

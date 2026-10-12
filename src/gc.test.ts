@@ -1,5 +1,5 @@
 import { afterAll, expect, test } from 'bun:test'
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tempDirs } from '../test/tmp'
 import { collect, sessionFolder } from './gc'
@@ -65,6 +65,7 @@ test('gc removes old finished workspaces and their session folders, and keeps th
 
   expect(report).toEqual({
     removed: [oldPlain, oldRepo],
+    clean: [],
     skipped: [{ id: dirty, reason: 'uncommitted changes in worktree' }],
   })
   expect(existsSync(workspaceOf(home, oldPlain))).toBe(false)
@@ -75,6 +76,14 @@ test('gc removes old finished workspaces and their session folders, and keeps th
   expect(existsSync(workspaceOf(home, recent))).toBe(true)
   expect(existsSync(recentSessions)).toBe(true)
   expect(ledger.list()).toHaveLength(4)
+  expect(ledger.get(oldRepo).collectedAt).not.toBeNull()
+  expect(ledger.get(dirty).collectedAt).toBeNull()
+  // Collected tasks are not picked again by age; the dirty one still is.
+  expect(await collect(ledger, home, { before: new Date() })).toEqual({
+    removed: [recent],
+    clean: [],
+    skipped: [{ id: dirty, reason: 'uncommitted changes in worktree' }],
+  })
 })
 
 test('gc collects the tasks the human names, however recent, and leaves unfinished ones', async () => {
@@ -100,10 +109,24 @@ test('gc collects the tasks the human names, however recent, and leaves unfinish
   const other = task('other')
   ledger.succeed(other)
   const running = task('running')
+  const gone = task('workspace already gone')
+  ledger.succeed(gone)
+  rmSync(workspaceOf(home, gone), { recursive: true })
 
-  const report = await collect(ledger, home, { ids: [named, running] })
+  const report = await collect(ledger, home, { ids: [named, running, gone] })
 
-  expect(report).toEqual({ removed: [named], skipped: [{ id: running, reason: 'still running' }] })
+  expect(report).toEqual({
+    removed: [named],
+    clean: [gone],
+    skipped: [{ id: running, reason: 'still running' }],
+  })
+  expect(ledger.get(gone).collectedAt).not.toBeNull()
+  expect(ledger.get(running).collectedAt).toBeNull()
+  expect(await collect(ledger, home, { ids: [named] })).toEqual({
+    removed: [],
+    clean: [named],
+    skipped: [],
+  })
   expect(existsSync(workspaceOf(home, named))).toBe(false)
   expect(existsSync(workspaceOf(home, other))).toBe(true)
   expect(existsSync(workspaceOf(home, running))).toBe(true)

@@ -35,13 +35,18 @@ const USAGE = `usage:
   nod attach <task>                open the worker's terminal (tmux)
   nod peek <task>                  print what the worker's terminal shows right now
   nod watch                        print decisions as they open, until no worker is running
-  nod ls                           tasks; those with an issue are listed under it
-  nod show <task>                  history, then the worker's last full report
+  nod link <task> <url...>         record where the task's result went (a pull request, a posted
+                                   review), so ls and show list it next to the task
+  nod ls [--all]                   tasks not yet collected by gc (--all: every task); those with an
+                                   issue are listed under it
+  nod show <task>                  history, links, then the worker's last full report
   nod stats
   nod gc [<task...> | --older-than <days>]
                                    close sessions and delete workspaces, worktrees and session
                                    folders of the named finished tasks, or of tasks finished that
-                                   long ago (default 7); ledger rows and branches stay
+                                   long ago (default 7); ledger rows and branches stay, and ls
+                                   stops listing the tasks. Session folders go too, so a collected
+                                   task cannot be resumed
   nod trigger add <cron> <brief...> [--source <command>] [--repo <path>] [--check <command>]
                   [--model <model>]
                                    add a task on a schedule (5-field cron, local time); with
@@ -87,9 +92,19 @@ switch (command) {
   case 'watch':
     await watch()
     break
-  case 'ls':
-    printTasks(ledger.list())
+  case 'link': {
+    const id = Number(rest[0])
+    const urls = rest.slice(1)
+    if (!Number.isInteger(id) || urls.length === 0) throw new Error(USAGE)
+    ledger.link(id, urls)
+    console.log(`linked #${id}: ${ledger.links(id).join(' ')}`)
     break
+  }
+  case 'ls': {
+    const { values } = parseArgs({ args: rest, options: { all: { type: 'boolean' } } })
+    printTasks(ledger.list().filter((t) => values.all || t.collectedAt === null))
+    break
+  }
   case 'show':
     show(Number(rest[0]))
     break
@@ -272,6 +287,7 @@ async function gc(args: string[]): Promise<void> {
   }
   const report = await collect(ledger, home, gcPick(positionals, values['older-than'] ?? '7'))
   console.log(`removed ${report.removed.length} task(s): ${report.removed.join(', ') || '-'}`)
+  if (report.clean.length > 0) console.log(`already clean: ${report.clean.join(', ')}`)
   for (const s of report.skipped) console.log(`skipped #${s.id}: ${s.reason}`)
 }
 
@@ -292,6 +308,8 @@ function show(id: number): void {
   if (task.checkCmd) console.log(`  check: ${task.checkCmd}`)
   if (task.triggerId !== null) console.log(`  added by trigger #${task.triggerId}`)
   if (task.retroOf !== null) console.log(`  retrospective of #${task.retroOf}`)
+  for (const url of ledger.links(id)) console.log(`  link: ${url}`)
+  if (task.collectedAt !== null) console.log(`  collected: ${task.collectedAt}`)
   const after = ledger.after(id)
   if (after.length > 0) {
     console.log(`  after: ${after.map((a) => `#${a.id} (${a.status})`).join(', ')}`)
@@ -352,6 +370,7 @@ function printTask(t: Task, prefix = ''): void {
   console.log(
     `${prefix}#${String(t.id).padEnd(4)} ${status.padEnd(14)} ${String(attempts.length).padStart(2)} turns  ${oneLine(note, 80)}`,
   )
+  for (const url of ledger.links(t.id)) console.log(`${prefix}      link ${url}`)
 }
 
 function printAttempt(a: Attempt): void {

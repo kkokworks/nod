@@ -20,7 +20,24 @@ test('reopening a ledger keeps its data and does not re-run migrations', () => {
   })
   const reopened = new Ledger(home)
   expect(reopened.get(id).brief).toBe('keep me')
-  expect(reopened.db.query('pragma user_version').get()).toEqual({ user_version: 7 })
+  expect(reopened.db.query('pragma user_version').get()).toEqual({ user_version: 8 })
+})
+
+test('links are kept once each, and only for a task that exists', () => {
+  const ledger = new Ledger(freshHome())
+  const id = ledger.add({
+    brief: 't',
+    repo: null,
+    checkCmd: null,
+    model: null,
+    after: [],
+    triggerId: null,
+    issue: null,
+  })
+  ledger.link(id, ['https://example.com/pr/1'])
+  ledger.link(id, ['https://example.com/pr/1', 'https://example.com/pr/2'])
+  expect(ledger.links(id).sort()).toEqual(['https://example.com/pr/1', 'https://example.com/pr/2'])
+  expect(() => ledger.link(id + 1, ['https://example.com/pr/3'])).toThrow('not found')
 })
 
 test('a task keeps its issue, and its retrospective and source items carry one', () => {

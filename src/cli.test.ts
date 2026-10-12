@@ -56,6 +56,37 @@ test('watch prints each decision once as it opens, and ends once no worker is ru
   expect(out.split('opened while watching')).toHaveLength(2)
 }, 15_000)
 
+test('ls hides tasks gc collected unless --all, and lists links under their task', async () => {
+  const home = tmp.make('nod-ls-')
+  const ledger = new Ledger(home)
+  const add = (brief: string): number =>
+    ledger.add({
+      brief,
+      repo: null,
+      checkCmd: null,
+      model: null,
+      after: [],
+      triggerId: null,
+      issue: null,
+    })
+  const done = add('done')
+  ledger.collected(done)
+  const shipped = add('shipped')
+  ledger.link(shipped, ['https://example.com/pr/7'])
+  const ls = async (...args: string[]): Promise<string[]> => {
+    const p = Bun.spawn(['bun', cli, 'ls', ...args], { env: { ...process.env, NOD_HOME: home } })
+    expect(await p.exited).toBe(0)
+    const out = await new Response(p.stdout).text()
+    return out
+      .trimEnd()
+      .split('\n')
+      .map((l) => l.replace(/\s+queued\s+0 turns\s+/, ' ').trim())
+  }
+
+  expect(await ls()).toEqual(['#2 shipped', 'link https://example.com/pr/7'])
+  expect(await ls('--all')).toEqual(['#1 done', '#2 shipped', 'link https://example.com/pr/7'])
+})
+
 test('ls lists tasks without an issue first, then each issue with its tasks under it', async () => {
   const home = tmp.make('nod-ls-')
   const ledger = new Ledger(home)

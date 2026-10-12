@@ -7,7 +7,12 @@ import { sessionName, spawn } from './worker'
 
 const FINISHED: ReadonlySet<TaskStatus> = new Set(['succeeded', 'cancelled', 'error'])
 
-export type GcReport = { removed: number[]; skipped: { id: number; reason: string }[] }
+// `clean`: tasks that had nothing left to remove, because gc or something else already removed it.
+export type GcReport = {
+  removed: number[]
+  clean: number[]
+  skipped: { id: number; reason: string }[]
+}
 
 // Which tasks to collect: those finished before a cutoff, or the ones the human named.
 export type GcPick = { before: Date } | { ids: number[] }
@@ -15,21 +20,28 @@ export type GcPick = { before: Date } | { ids: number[] }
 // Removes what the picked finished tasks left behind: the worker's tmux session, the workspace or
 // worktree, and Claude Code's session folder for it. Ledger rows and `nod/<id>` branches stay, so
 // stats and commits survive. A plain workspace's files are the task's output, hence the age cutoff
-// unless the human names the task.
+// unless the human names the task. Every task gc gets through is marked collected, so ls stops
+// listing it: gc is how the human says they have dealt with the task's result.
 export async function collect(ledger: Ledger, home: string, pick: GcPick): Promise<GcReport> {
-  const report: GcReport = { removed: [], skipped: [] }
+  const report: GcReport = { removed: [], clean: [], skipped: [] }
   const workRoot = `${join(home, 'work')}/`
   const picked = (task: Task): boolean =>
     'ids' in pick
       ? pick.ids.includes(task.id)
-      : task.finishedAt !== null && Date.parse(task.finishedAt) <= pick.before.getTime()
+      : task.collectedAt === null &&
+        task.finishedAt !== null &&
+        Date.parse(task.finishedAt) <= pick.before.getTime()
   for (const task of ledger.list()) {
     if (!picked(task)) continue
     if (!FINISHED.has(task.status)) {
       report.skipped.push({ id: task.id, reason: `still ${task.status}` })
       continue
     }
-    if (task.workspace === null || !existsSync(task.workspace)) continue
+    if (task.workspace === null || !existsSync(task.workspace)) {
+      if (task.collectedAt === null) ledger.collected(task.id)
+      report.clean.push(task.id)
+      continue
+    }
     if (!task.workspace.startsWith(workRoot)) {
       report.skipped.push({ id: task.id, reason: `workspace outside ${workRoot}` })
       continue
@@ -58,6 +70,7 @@ export async function collect(ledger: Ledger, home: string, pick: GcPick): Promi
     }
 
     if (existsSync(sessions)) rmSync(sessions, { recursive: true })
+    ledger.collected(task.id)
     report.removed.push(task.id)
   }
   return report
