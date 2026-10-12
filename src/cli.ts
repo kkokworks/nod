@@ -36,7 +36,8 @@ const USAGE = `usage:
   nod peek <task>                  print what the worker's terminal shows right now
   nod watch                        print decisions as they open, until no worker is running
   nod link <task> <url...>         record where the task's result went (a pull request, a posted
-                                   review), so ls and show list it next to the task
+                                   review), so ls and show list it next to the task. Until then
+                                   they list the remote branches that hold the task's branch
   nod ls [--all]                   tasks not yet collected by gc (--all: every task); those with an
                                    issue are listed under it
   nod show <task>                  history, links, then the worker's last full report
@@ -309,6 +310,7 @@ function show(id: number): void {
   if (task.triggerId !== null) console.log(`  added by trigger #${task.triggerId}`)
   if (task.retroOf !== null) console.log(`  retrospective of #${task.retroOf}`)
   for (const url of ledger.links(id)) console.log(`  link: ${url}`)
+  for (const ref of unlinkedPushes(task)) console.log(`  pushed: ${ref}`)
   if (task.collectedAt !== null) console.log(`  collected: ${task.collectedAt}`)
   const after = ledger.after(id)
   if (after.length > 0) {
@@ -371,6 +373,31 @@ function printTask(t: Task, prefix = ''): void {
     `${prefix}#${String(t.id).padEnd(4)} ${status.padEnd(14)} ${String(attempts.length).padStart(2)} turns  ${oneLine(note, 80)}`,
   )
   for (const url of ledger.links(t.id)) console.log(`${prefix}      link ${url}`)
+  for (const ref of unlinkedPushes(t)) console.log(`${prefix}      pushed ${ref}`)
+}
+
+// The remote branches holding a succeeded task's branch, while it has no link: its result was
+// pushed, maybe under another name, and is waiting to be linked. Only as fresh as the repo's last
+// fetch; nod does not fetch.
+function unlinkedPushes(t: Task): string[] {
+  const { repo } = t
+  if (repo === null || t.status !== 'succeeded' || ledger.links(t.id).length > 0) return []
+  const branch = `refs/heads/nod/${t.id}`
+  const git = (...args: string[]) => Bun.spawnSync(['git', '-C', repo, ...args])
+  // The repo or the branch is gone: nothing left to look in.
+  if (git('rev-parse', '--verify', '-q', branch).exitCode !== 0) return []
+  const refs = git(
+    'for-each-ref',
+    '--contains',
+    branch,
+    '--format=%(refname:lstrip=2)',
+    'refs/remotes',
+  )
+  if (refs.exitCode !== 0) throw new Error(`git for-each-ref in ${repo}: ${refs.stderr}`)
+  return refs.stdout
+    .toString()
+    .split('\n')
+    .filter((ref) => ref !== '' && !ref.endsWith('/HEAD'))
 }
 
 function printAttempt(a: Attempt): void {

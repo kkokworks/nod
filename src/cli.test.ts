@@ -87,6 +87,54 @@ test('ls hides tasks gc collected unless --all, and lists links under their task
   expect(await ls('--all')).toEqual(['#1 done', '#2 shipped', 'link https://example.com/pr/7'])
 })
 
+test('ls shows where an unlinked task was pushed, under any name, until it is linked', async () => {
+  const home = tmp.make('nod-pushed-')
+  const repo = tmp.make('nod-pushed-repo-')
+  const git = (...args: string[]): void => {
+    const r = Bun.spawnSync([
+      'git',
+      '-C',
+      repo,
+      '-c',
+      'user.email=t@t',
+      '-c',
+      'user.name=t',
+      ...args,
+    ])
+    if (r.exitCode !== 0) throw new Error(r.stderr.toString())
+  }
+  git('init', '-q')
+  git('commit', '-q', '--allow-empty', '-m', 'init')
+  const ledger = new Ledger(home)
+  const task = ledger.add({
+    brief: 'work',
+    repo,
+    checkCmd: null,
+    model: null,
+    after: [],
+    triggerId: null,
+    issue: null,
+  })
+  ledger.setRunning(task, repo)
+  ledger.succeed(task)
+  git('branch', `nod/${task}`)
+  git('update-ref', 'refs/remotes/origin/feat/work', `nod/${task}`)
+  git('symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/feat/work')
+  const ls = async (): Promise<string[]> => {
+    const p = Bun.spawn(['bun', cli, 'ls'], { env: { ...process.env, NOD_HOME: home } })
+    expect(await p.exited).toBe(0)
+    return (await new Response(p.stdout).text())
+      .trimEnd()
+      .split('\n')
+      .slice(1)
+      .map((l) => l.trim())
+  }
+
+  expect(await ls()).toEqual(['pushed origin/feat/work'])
+  ledger.link(task, ['https://example.com/pr/1'])
+  expect(await ls()).toEqual(['link https://example.com/pr/1'])
+})
+
 test('ls lists tasks without an issue first, then each issue with its tasks under it', async () => {
   const home = tmp.make('nod-ls-')
   const ledger = new Ledger(home)
