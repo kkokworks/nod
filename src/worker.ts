@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import { z } from 'zod'
 import type { AttemptKind, DecisionReason, Ledger, Task } from './ledger'
 import { notify, taskRef } from './notify'
@@ -63,21 +63,27 @@ export const NotificationEvent = z.object({
 
 type Report = { status: 'done' | 'question' | 'failed'; text: string }
 
-export const workspaceOf = (home: string, taskId: number): string =>
-  join(home, 'work', String(taskId))
+// A repo task's worktree is named after its repo and branch, so a folder says what it holds.
+// ponytail: two repos with the same folder name and branch collide and `worktree add` fails; add
+// the parent folder to the path if that happens.
+export const workspaceOf = (home: string, task: Task): string =>
+  task.repo === null
+    ? join(home, 'work', String(task.id))
+    : join(home, 'work', basename(task.repo), branchOf(task))
+
+export function branchOf(task: Task): string {
+  if (task.branch === null) throw new Error(`task ${task.id} has no branch`)
+  return task.branch
+}
 
 export const sessionName = (taskId: number): string => `task-${taskId}`
 
 export async function startTask(ledger: Ledger, home: string, taskId: number): Promise<void> {
   const task = ledger.get(taskId)
-  const cwd = workspaceOf(home, taskId)
-  try {
-    await ensureTrusted(home)
-    await prepareWorkspace(ledger, task, cwd)
-  } catch (error) {
+  const cwd = await prepareWorkspace(ledger, home, task).catch((error: unknown) => {
     ledger.error(taskId, message(error))
     throw error
-  }
+  })
   const prompt = firstMessage(ledger, task)
   ledger.setRunning(taskId, cwd)
   const sessionId = crypto.randomUUID()
@@ -567,10 +573,12 @@ async function awaitStart(
   rmSync(started)
 }
 
-async function prepareWorkspace(ledger: Ledger, task: Task, cwd: string): Promise<void> {
+async function prepareWorkspace(ledger: Ledger, home: string, task: Task): Promise<string> {
+  await ensureTrusted(home)
+  const cwd = workspaceOf(home, task)
   if (task.repo === null) {
     mkdirSync(cwd, { recursive: true })
-    return
+    return cwd
   }
   // Starting from the earlier task's branch keeps tasks on the same files in sequence, not in
   // conflict.
@@ -584,14 +592,15 @@ async function prepareWorkspace(ledger: Ledger, task: Task, cwd: string): Promis
       'worktree',
       'add',
       '-b',
-      `nod/${task.id}`,
+      branchOf(task),
       cwd,
-      ...(base === null ? [] : [`nod/${base.id}`]),
+      ...(base === null ? [] : [branchOf(base)]),
     ],
     undefined,
   )
   if (code !== 0) throw new Error(`git worktree add failed: ${output.trim()}`)
   await initSubmodules(task.repo, cwd)
+  return cwd
 }
 
 // A new worktree has empty submodules, and the worker's sandbox cannot fetch them, so each one is

@@ -15,6 +15,7 @@ test('watch prints each decision once as it opens, and ends once no worker is ru
     const taskId = ledger.add({
       brief: 'some task',
       repo: null,
+      branch: null,
       checkCmd: null,
       model: null,
       after: [],
@@ -36,6 +37,7 @@ test('watch prints each decision once as it opens, and ends once no worker is ru
   const worker = ledger.add({
     brief: 'still working',
     repo: null,
+    branch: null,
     checkCmd: null,
     model: null,
     after: [],
@@ -63,6 +65,7 @@ test('ls hides tasks gc collected unless --all, and lists links under their task
     ledger.add({
       brief,
       repo: null,
+      branch: null,
       checkCmd: null,
       model: null,
       after: [],
@@ -109,6 +112,7 @@ test('ls shows where an unlinked task was pushed, under any name, until it is li
   const task = ledger.add({
     brief: 'work',
     repo,
+    branch: 'local/work',
     checkCmd: null,
     model: null,
     after: [],
@@ -117,8 +121,8 @@ test('ls shows where an unlinked task was pushed, under any name, until it is li
   })
   ledger.setRunning(task, repo)
   ledger.succeed(task)
-  git('branch', `nod/${task}`)
-  git('update-ref', 'refs/remotes/origin/feat/work', `nod/${task}`)
+  git('branch', 'local/work')
+  git('update-ref', 'refs/remotes/origin/feat/work', 'local/work')
   git('symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/feat/work')
   const ls = async (): Promise<string[]> => {
     const p = Bun.spawn(['bun', cli, 'ls'], { env: { ...process.env, NOD_HOME: home } })
@@ -142,6 +146,7 @@ test('ls lists tasks without an issue first, then each issue with its tasks unde
     ledger.add({
       brief,
       repo: null,
+      branch: null,
       checkCmd: null,
       model: null,
       after: [],
@@ -164,4 +169,23 @@ test('ls lists tasks without an issue first, then each issue with its tasks unde
     'PROJ-2',
     '  #3 second',
   ])
+})
+
+test('add refuses repo work without a valid branch, before adding anything', async () => {
+  const home = tmp.make('nod-branch-')
+  const repo = tmp.make('nod-branch-repo-')
+  Bun.spawnSync(['git', 'init', '-q', repo])
+  const add = async (...args: string[]): Promise<string> => {
+    const p = Bun.spawn(['bun', cli, 'add', 'work', ...args], {
+      env: { ...process.env, NOD_HOME: home },
+      stderr: 'pipe',
+    })
+    expect(await p.exited).not.toBe(0)
+    return new Response(p.stderr).text()
+  }
+
+  expect(await add('--repo', repo)).toContain('--repo needs --branch')
+  expect(await add('--repo', repo, '--branch', '../escape')).toContain('not a valid branch name')
+  expect(await add('--branch', 'feat/x')).toContain('--branch needs --repo')
+  expect(new Ledger(home).list()).toEqual([])
 })

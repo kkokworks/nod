@@ -47,6 +47,7 @@ export async function addTrigger(
     cron: string
     brief: string
     repo: string | null
+    branch: string | null
     checkCmd: string | null
     model: string | null
     source: string | null
@@ -87,10 +88,7 @@ export async function tick(ledger: Ledger, home: string, now: Date): Promise<num
 }
 
 async function addTasks(ledger: Ledger, home: string, t: Trigger): Promise<number[]> {
-  if (t.source === null) {
-    const task = { repo: t.repo, checkCmd: t.checkCmd, model: t.model, after: [], issue: null }
-    return [ledger.add({ ...task, brief: t.brief, triggerId: t.id })]
-  }
+  if (t.source === null) return [ledger.addTriggerTask(t, null, t.brief)]
   // ponytail: every new item starts a worker; add a cap or an approval step if a source can list
   // many new items at once.
   const items = await readSource(t.source, t.repo ?? home)

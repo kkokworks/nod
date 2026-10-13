@@ -1,6 +1,6 @@
 import { afterAll, beforeEach, expect, test } from 'bun:test'
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
-import { join, resolve } from 'node:path'
+import { basename, join, resolve } from 'node:path'
 import { tempDirs } from '../test/tmp'
 import { collect } from './gc'
 import { Ledger, type TaskStatus } from './ledger'
@@ -93,6 +93,7 @@ async function add(brief: string, check: string | null = null): Promise<number> 
   const id = ledger.add({
     brief,
     repo: null,
+    branch: null,
     checkCmd: check,
     model: null,
     after: [],
@@ -207,7 +208,7 @@ test('tell continues the same session, and reopens it from the transcript once i
     [session, true],
   ])
   expect(entries('turn').map((t) => t.message)).toEqual(['first', 'second', 'third'])
-  expect(existsSync(workspaceOf(home, id))).toBe(true)
+  expect(existsSync(workspaceOf(home, ledger.get(id)))).toBe(true)
 })
 
 test('a stop from a session nod did not start changes nothing', async () => {
@@ -234,6 +235,7 @@ test('a task that comes after another starts once that one succeeds, and hears i
   const next = ledger.add({
     brief: 'then this',
     repo: null,
+    branch: null,
     checkCmd: null,
     model: null,
     after: [first],
@@ -274,6 +276,7 @@ test('in a repo, done needs the work committed, and the next task starts from th
   const first = ledger.add({
     brief: 'make ok',
     repo,
+    branch: 'feat/ok',
     checkCmd: 'test -f ok.txt',
     model: null,
     after: [],
@@ -295,6 +298,7 @@ test('in a repo, done needs the work committed, and the next task starts from th
   const next = ledger.add({
     brief: 'build on it',
     repo,
+    branch: 'feat/more',
     checkCmd: null,
     model: null,
     after: [first],
@@ -303,7 +307,10 @@ test('in a repo, done needs the work committed, and the next task starts from th
   })
   expect(await startReady(ledger, home)).toEqual([next])
   await reaches(next, 'succeeded')
-  expect(existsSync(join(workspaceOf(home, next), 'ok.txt'))).toBe(true)
+  // The worktree is named after the repo folder and the branch.
+  const worktree = join(home, 'work', basename(repo), 'feat', 'more')
+  expect(ledger.get(next).workspace).toBe(worktree)
+  expect(existsSync(join(worktree, 'ok.txt'))).toBe(true)
   const message = entries('turn').find((t) => t.message?.startsWith('build on it'))?.message
   expect(message).toContain(`starts from task #${first}'s branch`)
 })
@@ -319,6 +326,7 @@ test('a repo task gets its submodules filled from the repo checkout, and gc stil
   const id = ledger.add({
     brief: 'use the lib',
     repo,
+    branch: 'feat/lib',
     checkCmd: 'test -f lib/a.txt',
     model: null,
     after: [],
@@ -331,7 +339,7 @@ test('a repo task gets its submodules filled from the repo checkout, and gc stil
 
   const report = await collect(ledger, home, { before: new Date(Date.now() + 60_000) })
   expect(report.removed).toContain(id)
-  expect(existsSync(workspaceOf(home, id))).toBe(false)
+  expect(existsSync(workspaceOf(home, ledger.get(id)))).toBe(false)
 })
 
 function newRepo(): string {
@@ -347,6 +355,7 @@ test('a repo Claude Code does not trust yet becomes a decision: yes trusts and s
     ledger.add({
       brief: 'work here',
       repo,
+      branch: 'feat/here',
       checkCmd: null,
       model: null,
       after: [],
@@ -382,7 +391,7 @@ test('due triggers add tasks, a source only for lines it has not printed before,
   chmodSync(join(home, 'notify'), 0o755)
   const items = join(home, 'items.txt')
   writeFileSync(items, 'a\told item\n')
-  const base = { cron: '* * * * *', repo: null, checkCmd: null, model: null }
+  const base = { cron: '* * * * *', repo: null, branch: null, checkCmd: null, model: null }
   const source = `cat ${JSON.stringify(items)}`
   await addTrigger(ledger, home, { ...base, brief: 'triage', source })
   await addTrigger(ledger, home, { ...base, brief: 'ask-first', source: null })
@@ -457,6 +466,7 @@ test('a retrospective that finds no general rule just succeeds', async () => {
   const of = ledger.add({
     brief: 'x',
     repo: null,
+    branch: null,
     checkCmd: null,
     model: null,
     after: [],

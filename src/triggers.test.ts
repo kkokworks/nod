@@ -30,7 +30,14 @@ test('adding a trigger with a source records what it lists now, and a failing so
   const ledger = new Ledger(home)
   const items = join(home, 'items.txt')
   writeFileSync(items, 'a\tfirst\nb\tsecond\n')
-  const base = { cron: '*/5 * * * *', brief: 'look', repo: null, checkCmd: null, model: null }
+  const base = {
+    cron: '*/5 * * * *',
+    brief: 'look',
+    repo: null,
+    branch: null,
+    checkCmd: null,
+    model: null,
+  }
   const added = await addTrigger(ledger, home, { ...base, source: `cat ${JSON.stringify(items)}` })
   expect(added.seen).toBe(2)
   expect(ledger.addItemTask(ledger.trigger(added.id), 'a', 'a', 'look')).toBeNull()

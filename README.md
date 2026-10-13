@@ -22,8 +22,8 @@ Claude 세션에서 `/nod` 를 부르거나 "이 일들 nod 에 맡겨줘" 라�
 터미널에서 직접 쓸 수도 있습니다.
 
 ```sh
-nod add '로그인 버그 고치기' --repo ~/code/app --check 'bun test'   # 워커가 바로 시작
-nod add '로그인 화면 문구 정리' --repo ~/code/app --after 1        # 작업 1이 끝나면 그 브랜치에서 이어서
+nod add '로그인 버그 고치기' --repo ~/code/app --branch fix/login --check 'bun test'   # 워커가 바로 시작
+nod add '로그인 화면 문구 정리' --repo ~/code/app --branch fix/login-copy --after 1    # 작업 1이 끝나면 그 브랜치에서 이어서
 nod add '결제 오류 원인 조사' --issue PROJ-12                      # 이슈에 딸린 작업
 nod                  # 결정할 것
 nod 3 '그렇게 해'     # 결정 3에 답하기 (같은 세션에 들어감)
@@ -31,8 +31,10 @@ nod tell 1 '테스트도 추가해 줘'   # 작업 1의 세션에 후속 지시
 nod attach 1         # 작업 1의 화면 열기
 nod ls               # 작업 상태 (이슈가 있는 작업은 이슈별로 묶어서)
 nod link 1 https://example.com/org/app/pulls/7   # 작업 1의 결과가 간 곳(PR 등)
-nod gc 1             # 작업 1을 다 처리함: 세션·worktree 를 지우고 ls 에서 뺌 (ls --all 엔 남음)
+nod gc 1             # 작업 1을 다 처리함: 세션·worktree 와 머지된 브랜치를 지우고 ls 에서 뺌 (ls --all 엔 남음)
 ```
+
+레포 작업의 worktree 는 `~/.nod/work/<레포 폴더 이름>/<브랜치>` 에 생깁니다(위 예는 `~/.nod/work/app/fix/login`). 폴더와 브랜치 이름만 봐도 무슨 일인지 알 수 있습니다.
 
 작업이 `succeeded` 가 돼도 결과를 push·PR 로 내보내는 일은 따로 남습니다. 내보낸 뒤 `nod link` 로 주소를 남기면, `nod ls` 에서 링크가 없는 작업이 곧 아직 내보내지 않은 결과입니다. 머지까지 끝나면 `nod gc` 로 정리합니다.
 

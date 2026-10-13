@@ -35,6 +35,9 @@ export type Task = {
   id: number
   brief: string
   repo: string | null
+  // The branch a repo task works on, named at `nod add`; a trigger's task gets
+  // `<trigger branch>/<task id>`. Null without a repo.
+  branch: string | null
   checkCmd: string | null
   model: string | null
   triggerId: number | null
@@ -59,6 +62,8 @@ export type Trigger = {
   cron: string
   brief: string
   repo: string | null
+  // With a repo: the prefix of its tasks' branches.
+  branch: string | null
   checkCmd: string | null
   model: string | null
   source: string | null
@@ -199,6 +204,13 @@ const MIGRATIONS = [
   );
   alter table tasks add column collected_at text;
   `,
+  // v9: the branch a repo task works on, and a trigger's prefix for its tasks' branches. Repo
+  // tasks before this worked on `nod/<id>`.
+  `
+  alter table tasks add column branch text;
+  update tasks set branch = 'nod/' || id where repo is not null;
+  alter table triggers add column branch text;
+  `,
 ]
 
 // The tables as the migrations leave them, in camelCase; CamelCasePlugin maps names to snake_case.
@@ -230,6 +242,7 @@ const TRIGGER = [
   'cron',
   'brief',
   'repo',
+  'branch',
   'checkCmd',
   'model',
   'source',
@@ -284,6 +297,7 @@ export class Ledger {
   add(t: {
     brief: string
     repo: string | null
+    branch: string | null
     checkCmd: string | null
     model: string | null
     after: number[]
@@ -305,6 +319,7 @@ export class Ledger {
           .values({
             brief: t.brief,
             repo: t.repo,
+            branch: t.branch,
             checkCmd: t.checkCmd,
             model: t.model,
             triggerId: t.triggerId,
@@ -408,6 +423,7 @@ export class Ledger {
     cron: string
     brief: string
     repo: string | null
+    branch: string | null
     checkCmd: string | null
     model: string | null
     source: string | null
@@ -421,6 +437,7 @@ export class Ledger {
             cron: t.cron,
             brief: t.brief,
             repo: t.repo,
+            branch: t.branch,
             checkCmd: t.checkCmd,
             model: t.model,
             source: t.source,
@@ -491,15 +508,7 @@ export class Ledger {
           .returning('key'),
       )
       if (!fresh) return null
-      const taskId = this.add({
-        brief,
-        repo: trigger.repo,
-        checkCmd: trigger.checkCmd,
-        model: trigger.model,
-        after: [],
-        triggerId: trigger.id,
-        issue,
-      })
+      const taskId = this.addTriggerTask(trigger, issue, brief)
       this.run(
         q
           .updateTable('triggerItems')
@@ -511,12 +520,38 @@ export class Ledger {
     })()
   }
 
+  // A trigger's task. No human names its branch, so it is the trigger's prefix and the task id.
+  addTriggerTask(trigger: Trigger, issue: string | null, brief: string): number {
+    return this.db.transaction(() => {
+      const id = this.add({
+        brief,
+        repo: trigger.repo,
+        branch: null,
+        checkCmd: trigger.checkCmd,
+        model: trigger.model,
+        after: [],
+        triggerId: trigger.id,
+        issue,
+      })
+      if (trigger.branch !== null) {
+        this.run(
+          q
+            .updateTable('tasks')
+            .set({ branch: `${trigger.branch}/${id}` })
+            .where('id', '=', id),
+        )
+      }
+      return id
+    })()
+  }
+
   // A task that looks back on `of`, in an empty folder with the same model.
   addRetro(of: Task, brief: string): number {
     return this.db.transaction(() => {
       const id = this.add({
         brief,
         repo: null,
+        branch: null,
         checkCmd: null,
         model: of.model,
         after: [],

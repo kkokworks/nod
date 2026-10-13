@@ -12,6 +12,7 @@ test('reopening a ledger keeps its data and does not re-run migrations', () => {
   const id = new Ledger(home).add({
     brief: 'keep me',
     repo: null,
+    branch: null,
     checkCmd: null,
     model: null,
     after: [],
@@ -20,7 +21,7 @@ test('reopening a ledger keeps its data and does not re-run migrations', () => {
   })
   const reopened = new Ledger(home)
   expect(reopened.get(id).brief).toBe('keep me')
-  expect(reopened.db.query('pragma user_version').get()).toEqual({ user_version: 8 })
+  expect(reopened.db.query('pragma user_version').get()).toEqual({ user_version: 9 })
 })
 
 test('links are kept once each, and only for a task that exists', () => {
@@ -28,6 +29,7 @@ test('links are kept once each, and only for a task that exists', () => {
   const id = ledger.add({
     brief: 't',
     repo: null,
+    branch: null,
     checkCmd: null,
     model: null,
     after: [],
@@ -45,6 +47,7 @@ test('a task keeps its issue, and its retrospective and source items carry one',
   const id = ledger.add({
     brief: 't',
     repo: null,
+    branch: null,
     checkCmd: null,
     model: null,
     after: [],
@@ -58,6 +61,7 @@ test('a task keeps its issue, and its retrospective and source items carry one',
     cron: '* * * * *',
     brief: 'look',
     repo: null,
+    branch: null,
     checkCmd: null,
     model: null,
     source: 'true',
@@ -72,6 +76,7 @@ test('a decision can be answered once, and answering puts the task back to runni
   const taskId = ledger.add({
     brief: 't',
     repo: null,
+    branch: null,
     checkCmd: null,
     model: null,
     after: [],
@@ -100,6 +105,7 @@ test('median decision wait uses answered decisions only', () => {
   const taskId = ledger.add({
     brief: 't',
     repo: null,
+    branch: null,
     checkCmd: null,
     model: null,
     after: [],
@@ -130,6 +136,7 @@ const task = (ledger: Ledger, t: { repo?: string; after?: number[] } = {}): numb
   ledger.add({
     brief: 't',
     repo: t.repo ?? null,
+    branch: t.repo === undefined ? null : 'feat/t',
     checkCmd: null,
     model: null,
     after: t.after ?? [],
@@ -193,6 +200,7 @@ test('a trigger run is claimed once, a source item adds a task once, and removal
     cron: '* * * * *',
     brief: 'b',
     repo: null,
+    branch: null,
     checkCmd: null,
     model: null,
     source: 'x',
@@ -211,4 +219,20 @@ test('a trigger run is claimed once, a source item adds a task once, and removal
   ledger.removeTrigger(id)
   expect(ledger.triggers()).toEqual([])
   expect(() => ledger.removeTrigger(id)).toThrow(`trigger ${id} not found`)
+})
+
+test("a trigger's task in a repo works on the trigger's branch prefix and its own id", () => {
+  const ledger = new Ledger(freshHome())
+  const triggerId = ledger.addTrigger({
+    cron: '* * * * *',
+    brief: 'sweep',
+    repo: '/repo',
+    branch: 'chore/sweep',
+    checkCmd: null,
+    model: null,
+    source: null,
+    seen: [],
+  })
+  const id = ledger.addTriggerTask(ledger.trigger(triggerId), null, 'sweep')
+  expect(ledger.get(id).branch).toBe(`chore/sweep/${id}`)
 })

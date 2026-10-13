@@ -2,12 +2,13 @@
 import { existsSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { parseArgs } from 'node:util'
-import { collect, type GcPick } from './gc'
+import { collect, type GcPick, remotesHolding } from './gc'
 import { type Attempt, type Decision, Ledger, nodHome, type Task, type Trigger } from './ledger'
 import { Terminals } from './tmux'
 import { addTrigger, nextRun, syncSchedule, tick } from './triggers'
 import {
   answer,
+  branchOf,
   drop,
   NotificationEvent,
   onNotification,
@@ -24,12 +25,14 @@ const USAGE = `usage:
   nod                              open decisions
   nod <decision> <answer...>       answer a decision; the worker gets it in its own session
   nod drop <decision>              end the task instead of answering
-  nod add <brief> [--repo <path>] [--check <command>] [--model <model>] [--after <task,...>]
-          [--issue <key>]
+  nod add <brief> [--repo <path> --branch <name>] [--check <command>] [--model <model>]
+          [--after <task,...>] [--issue <key>]
                                    start a worker on the task now, or once the tasks it comes
-                                   after have succeeded; in the same repo it starts from the
-                                   earlier task's branch. --issue names the issue it works on,
-                                   so ls, decisions and notify events show it
+                                   after have succeeded. In a repo it works on a new branch
+                                   <name> in the worktree <home>/work/<repo folder>/<name>,
+                                   started from the earlier task's branch in the same repo.
+                                   --issue names the issue it works on, so ls, decisions and
+                                   notify events show it
   nod tell <task> <message...>     send a follow-up into the task's session
   nod resume <task>                reopen a task whose session ended, from its transcript
   nod attach <task>                open the worker's terminal (tmux)
@@ -45,15 +48,17 @@ const USAGE = `usage:
   nod gc [<task...> | --older-than <days>]
                                    close sessions and delete workspaces, worktrees and session
                                    folders of the named finished tasks, or of tasks finished that
-                                   long ago (default 7); ledger rows and branches stay, and ls
-                                   stops listing the tasks. Session folders go too, so a collected
-                                   task cannot be resumed
-  nod trigger add <cron> <brief...> [--source <command>] [--repo <path>] [--check <command>]
-                  [--model <model>]
+                                   long ago (default 7), and their branches once a remote branch
+                                   holds the commits or the remote's default branch has the
+                                   changes; ledger rows stay, and ls stops listing the tasks.
+                                   Session folders go too, so a collected task cannot be resumed
+  nod trigger add <cron> <brief...> [--source <command>] [--repo <path> --branch <prefix>]
+                  [--check <command>] [--model <model>]
                                    add a task on a schedule (5-field cron, local time); with
                                    --source, one task per line the command prints that it has
                                    not printed before (text after a tab; before it, the key,
-                                   which is also the task's issue)
+                                   which is also the task's issue). In a repo each task works on
+                                   the branch <prefix>/<task>
   nod trigger ls | rm <trigger>
   nod tick                         run the triggers that are due; the OS scheduler calls this
                                    every minute while any trigger exists
@@ -146,6 +151,7 @@ async function add(args: string[]): Promise<void> {
     args,
     options: {
       repo: { type: 'string' },
+      branch: { type: 'string' },
       check: { type: 'string' },
       model: { type: 'string' },
       after: { type: 'string' },
@@ -156,9 +162,11 @@ async function add(args: string[]): Promise<void> {
   const brief = words(positionals)
   const after = (values.after ?? '').split(',').filter(Boolean).map(Number)
   if (!after.every(Number.isInteger)) throw new Error(`--after takes task numbers: ${values.after}`)
+  const repo = repoPath(values.repo)
   const id = ledger.add({
     brief,
-    repo: repoPath(values.repo),
+    repo,
+    branch: branchName(repo, values.branch),
     checkCmd: values.check ?? null,
     model: values.model ?? null,
     after,
@@ -178,6 +186,7 @@ async function trigger([sub, ...args]: string[]): Promise<void> {
       options: {
         source: { type: 'string' },
         repo: { type: 'string' },
+        branch: { type: 'string' },
         check: { type: 'string' },
         model: { type: 'string' },
       },
@@ -185,10 +194,12 @@ async function trigger([sub, ...args]: string[]): Promise<void> {
     })
     const [cron, ...brief] = positionals
     if (cron === undefined) throw new Error(USAGE)
+    const repo = repoPath(values.repo)
     const { id, seen } = await addTrigger(ledger, home, {
       cron,
       brief: words(brief),
-      repo: repoPath(values.repo),
+      repo,
+      branch: branchName(repo, values.branch),
       checkCmd: values.check ?? null,
       model: values.model ?? null,
       source: values.source ?? null,
@@ -223,6 +234,20 @@ function repoPath(path: string | undefined): string | null {
   const repo = resolve(path)
   if (!existsSync(join(repo, '.git'))) throw new Error(`not a git repo: ${repo}`)
   return repo
+}
+
+// Work in a repo goes on a branch the human names, so the branch and its worktree folder say what
+// the work is. A valid name has no `..`, which also keeps the worktree inside nod's work folder.
+function branchName(repo: string | null, name: string | undefined): string | null {
+  if (repo === null) {
+    if (name !== undefined) throw new Error('--branch needs --repo')
+    return null
+  }
+  if (name === undefined) throw new Error('--repo needs --branch <name>, such as feat/login-form')
+  if (Bun.spawnSync(['git', 'check-ref-format', '--branch', name]).exitCode !== 0) {
+    throw new Error(`not a valid branch name: ${name}`)
+  }
+  return name
 }
 
 async function hook(event: string | undefined): Promise<void> {
@@ -304,7 +329,7 @@ function show(id: number): void {
   printTask(task)
   if (task.issue !== null) console.log(`  issue: ${task.issue}`)
   console.log(`  brief: ${task.brief}`)
-  if (task.repo) console.log(`  repo: ${task.repo} (branch nod/${task.id})`)
+  if (task.repo) console.log(`  repo: ${task.repo} (branch ${branchOf(task)})`)
   if (task.workspace) console.log(`  workspace: ${task.workspace}`)
   if (task.checkCmd) console.log(`  check: ${task.checkCmd}`)
   if (task.triggerId !== null) console.log(`  added by trigger #${task.triggerId}`)
@@ -382,22 +407,12 @@ function printTask(t: Task, prefix = ''): void {
 function unlinkedPushes(t: Task): string[] {
   const { repo } = t
   if (repo === null || t.status !== 'succeeded' || ledger.links(t.id).length > 0) return []
-  const branch = `refs/heads/nod/${t.id}`
-  const git = (...args: string[]) => Bun.spawnSync(['git', '-C', repo, ...args])
+  const branch = `refs/heads/${branchOf(t)}`
   // The repo or the branch is gone: nothing left to look in.
-  if (git('rev-parse', '--verify', '-q', branch).exitCode !== 0) return []
-  const refs = git(
-    'for-each-ref',
-    '--contains',
-    branch,
-    '--format=%(refname:lstrip=2)',
-    'refs/remotes',
-  )
-  if (refs.exitCode !== 0) throw new Error(`git for-each-ref in ${repo}: ${refs.stderr}`)
-  return refs.stdout
-    .toString()
-    .split('\n')
-    .filter((ref) => ref !== '' && !ref.endsWith('/HEAD'))
+  if (Bun.spawnSync(['git', '-C', repo, 'rev-parse', '--verify', '-q', branch]).exitCode !== 0) {
+    return []
+  }
+  return remotesHolding(repo, branch)
 }
 
 function printAttempt(a: Attempt): void {
