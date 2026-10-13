@@ -22,7 +22,7 @@ import {
 } from './worker'
 
 const USAGE = `usage:
-  nod                              open decisions
+  nod [--issue <key,...>]          open decisions (--issue: only those of tasks on these issues)
   nod <decision> <answer...>       answer a decision; the worker gets it in its own session
   nod drop <decision>              end the task instead of answering
   nod add <brief> [--repo <path> --branch <name>] [--check <command>] [--model <model>]
@@ -37,7 +37,9 @@ const USAGE = `usage:
   nod resume <task>                reopen a task whose session ended, from its transcript
   nod attach <task>                open the worker's terminal (tmux)
   nod peek <task>                  print what the worker's terminal shows right now
-  nod watch                        print decisions as they open, until no worker is running
+  nod watch [--issue <key,...>]    print decisions as they open, until no worker is running;
+                                   --issue: only decisions and workers of tasks on these issues,
+                                   so several root sessions can each watch their own issues
   nod link <task> <url...>         record where the task's result went (a pull request, a posted
                                    review), so ls and show list it next to the task. Until then
                                    they list the remote branches that hold the task's branch
@@ -76,8 +78,11 @@ const WATCH_GRACE_SECS = 5
 
 switch (command) {
   case undefined:
-    printDecisions(ledger.openDecisions())
+  case '--issue': {
+    const keys = issueKeys(Bun.argv.slice(2))
+    printDecisions(ledger.openDecisions().filter((d) => onIssues(keys, ledger.get(d.taskId))))
     break
+  }
   case 'add':
     await add(rest)
     break
@@ -96,7 +101,7 @@ switch (command) {
     peek(Number(rest[0]))
     break
   case 'watch':
-    await watch()
+    await watch(issueKeys(rest))
     break
   case 'link': {
     const id = Number(rest[0])
@@ -288,7 +293,23 @@ function peek(taskId: number): void {
 }
 
 // Lets a Claude session relay each decision as soon as it opens.
-async function watch(): Promise<void> {
+// null means every issue, and tasks without one.
+function issueKeys(args: string[]): Set<string> | null {
+  const { values } = parseArgs({ args, options: { issue: { type: 'string' } } })
+  if (values.issue === undefined) return null
+  const keys = values.issue
+    .split(',')
+    .map((k) => k.trim())
+    .filter((k) => k !== '')
+  if (keys.length === 0) throw new Error('--issue needs at least one key')
+  return new Set(keys)
+}
+
+function onIssues(keys: Set<string> | null, task: Task): boolean {
+  return keys === null || (task.issue !== null && keys.has(task.issue))
+}
+
+async function watch(keys: Set<string> | null): Promise<void> {
   const seen = new Set(ledger.openDecisions().map((d) => d.id))
   let idleSecs = 0
   while (idleSecs < WATCH_GRACE_SECS) {
@@ -296,9 +317,10 @@ async function watch(): Promise<void> {
     for (const d of ledger.openDecisions()) {
       if (seen.has(d.id)) continue
       seen.add(d.id)
-      printDecision(d)
+      if (onIssues(keys, ledger.get(d.taskId))) printDecision(d)
     }
-    idleSecs = ledger.stats().tasks.running > 0 ? 0 : idleSecs + 1
+    const running = ledger.list().some((t) => t.status === 'running' && onIssues(keys, t))
+    idleSecs = running ? 0 : idleSecs + 1
   }
 }
 

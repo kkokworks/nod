@@ -26,6 +26,7 @@ nod add '로그인 버그 고치기' --repo ~/code/app --branch fix/login --chec
 nod add '로그인 화면 문구 정리' --repo ~/code/app --branch fix/login-copy --after 1    # 작업 1이 끝나면 그 브랜치에서 이어서
 nod add '결제 오류 원인 조사' --issue PROJ-12                      # 이슈에 딸린 작업
 nod                  # 결정할 것
+nod watch --issue PROJ-12,PROJ-13   # 이 이슈들의 결정만 열리는 대로 (루트 세션을 여럿 둘 때)
 nod 3 '그렇게 해'     # 결정 3에 답하기 (같은 세션에 들어감)
 nod tell 1 '테스트도 추가해 줘'   # 작업 1의 세션에 후속 지시
 nod attach 1         # 작업 1의 화면 열기

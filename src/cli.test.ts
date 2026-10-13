@@ -58,6 +58,57 @@ test('watch prints each decision once as it opens, and ends once no worker is ru
   expect(out.split('opened while watching')).toHaveLength(2)
 }, 15_000)
 
+test('watch and the decision list with --issue keep to those issues, so roots split the work', async () => {
+  const home = tmp.make('nod-watch-issue-')
+  const ledger = new Ledger(home)
+  const env = { ...process.env, NOD_HOME: home }
+  const running = (issue: string | null): number => {
+    const taskId = ledger.add({
+      brief: 'some task',
+      repo: null,
+      branch: null,
+      checkCmd: null,
+      model: null,
+      after: [],
+      triggerId: null,
+      issue,
+    })
+    ledger.setRunning(taskId, home)
+    return taskId
+  }
+  const ask = (issue: string | null, question: string): void => {
+    const taskId = running(issue)
+    const attemptId = ledger.startAttempt({
+      taskId,
+      kind: 'start',
+      decisionId: null,
+      sessionId: 's',
+      prompt: 'some task',
+    })
+    ledger.ask(taskId, attemptId, 'question', question)
+  }
+  const mine = running('A-1')
+  running('B-1') // another root's worker, still running when ours are done
+  const watch = Bun.spawn(['bun', cli, 'watch', '--issue', 'A-1,A-2'], { env })
+
+  await Bun.sleep(1500)
+  ask('A-2', 'mine')
+  ask('B-1', 'theirs')
+  ask(null, 'no issue')
+  await Bun.sleep(1500)
+  ledger.succeed(mine)
+
+  expect(await watch.exited).toBe(0)
+  const out = await new Response(watch.stdout).text()
+  expect(out).toContain('mine')
+  expect(out).not.toContain('theirs')
+  expect(out).not.toContain('no issue')
+
+  const list = Bun.spawnSync(['bun', cli, '--issue', 'B-1'], { env }).stdout.toString()
+  expect(list).toContain('theirs')
+  expect(list).not.toContain('mine')
+}, 15_000)
+
 test('ls hides tasks gc collected unless --all, and lists links under their task', async () => {
   const home = tmp.make('nod-ls-')
   const ledger = new Ledger(home)
