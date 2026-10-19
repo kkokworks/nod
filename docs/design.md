@@ -172,6 +172,7 @@ nod add --after <작업> ─▶ 대기(queued) ─▶ 앞 작업이 모두 성�
 | 워커가 지금 무엇을 하는지 nod 로 볼 수 없음 | 루트 세션이 tmux 를 직접 캡처함 | `nod peek <작업>` |
 | 끝난 작업의 답이 한 줄 요약으로만 남음 | 워커의 (a)(b)(c) 답·답장 초안을 Claude 대화 기록 파일에서 꺼내 읽음 | 장부 v6 `attempts.report` 에 마지막 메시지 전체를 남기고 `nod show` 맨 아래에 보여 줌 |
 | 작업과 결정을 이슈별로 볼 수 없음 (10-08) | 한 이슈를 작업 10개로 나눠 맡김. 알림을 할 일 앱으로 받는 쪽은 지시문에서 이슈 번호를 정규식으로 뽑아 묶음 | 장부 v7 `tasks.issue`. `nod add --issue`, source 항목의 키가 이슈가 되고 회고는 원래 작업의 이슈를 물려받음. `nod ls` 는 이슈별로 묶고, 결정 목록과 알림 이벤트(`task.issue`)에 이슈를 붙임 |
+| 지시문이 길면 워커가 뜨지 않음 (10-19) | 회고 작업이 `tmux new-session failed: command too long` 으로 error. tmux 3.6a 는 명령 전체(설정 JSON·시스템 프롬프트·지시)가 15,000바이트면 받고 17,000바이트면 거부 | 명령을 `<홈>/work/.launch-<세션>` 스크립트에 쓰고 tmux 에는 `sh <스크립트>` 만 넘김. 스크립트는 sh 가 연 뒤 스스로 지움. 남은 한도는 OS 의 인자 길이(macOS 1MB). 실제 Claude(haiku)로 17KB 지시문 작업이 성공 |
 | 루트 세션을 여럿 두면 모두가 모든 결정을 받음 (10-13) | 업무 묶음(프로젝트)마다 루트 세션을 두고 각자 이슈 몇 개씩 맡기려 함. `nod watch` 는 모든 결정을 보여 주고, 다른 루트의 워커가 돌면 끝나지 않음 | `nod watch --issue <키,…>`·`nod --issue <키,…>`: 그 이슈들의 결정만 보이고, 그 이슈들의 워커가 멈추면 끝남. 회고는 원래 작업의 이슈를 물려받아 함께 걸림. 묶음(프로젝트)은 nod 가 모르고 루트 세션이 키 목록으로 넘김 |
 
 고치지 않고 적어 둔 것: 워커 샌드박스는 `.claude/settings.json` 쓰기를 막습니다. 그 파일을 바꾸는 main 커밋 위로 `git rebase` 하자 `unable to unlink old '.claude/settings.json': Operation not permitted` 로 실패했고, 작업 트리 일부가 바뀐 채 남아 워커가 `git checkout -- .` 로 되돌렸습니다. 이런 git 작업(rebase·merge·checkout)은 루트 세션이 직접 합니다.

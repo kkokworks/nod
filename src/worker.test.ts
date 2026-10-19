@@ -118,6 +118,14 @@ test('a failing check goes back into the same turn until it passes', async () =>
   expect(ledger.stats()).toMatchObject({ retries: 1, succeededWithoutDecision: 1 })
 })
 
+test('a brief longer than tmux takes in one command reaches the worker whole', async () => {
+  const brief = `make it's \`$HOME\` "quoted"\n${'x'.repeat(20_000)}`
+  const id = await add(brief)
+  await reaches(id, 'succeeded')
+  expect(entries('turn')[0]?.message).toContain(brief)
+  expect(readdirSync(join(home, 'work')).filter((f) => f.startsWith('.launch-'))).toEqual([])
+})
+
 test('a question becomes a decision, and the answer goes into the same live session', async () => {
   const id = await add('ask-first, then write ok.txt', 'test -f ok.txt')
   const decision = await until(() => ledger.decisions(id)[0])

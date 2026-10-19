@@ -5,7 +5,7 @@ import type { AttemptKind, DecisionReason, Ledger, Task } from './ledger'
 import { notify, taskRef } from './notify'
 import { type Changes, reviewBrief } from './review'
 import { addRule, hadTrouble, isNoRule, readRules, retroBrief, rulesPath } from './rules'
-import { Terminals } from './tmux'
+import { quote, Terminals } from './tmux'
 
 // Each worker is an interactive Claude Code session in tmux. It reports when it stops through
 // Claude Code's Stop hook, and answers and follow-ups go into the same live session, so the worker
@@ -777,10 +777,6 @@ export async function spawn(
     proc.exited,
   ])
   return { code, stdout, output: stdout + stderr }
-}
-
-function quote(s: string): string {
-  return `'${s.replaceAll("'", `'\\''`)}'`
 }
 
 function oneLine(s: string): string {

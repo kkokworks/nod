@@ -1,3 +1,6 @@
+import { mkdirSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
+
 const EXIT_TIMEOUT_MS = 10_000
 
 // Names what nod keeps per home outside it: the tmux socket and the OS scheduler job.
@@ -6,15 +9,24 @@ export const homeId = (home: string): string => Bun.hash(home).toString(36)
 // Workers run in tmux so they outlive nod's own processes and a person can attach to watch or step
 // in. Each nod home gets its own tmux server (socket), and each task its own tmux session.
 export class Terminals {
-  private constructor(private readonly socket: string) {}
+  private constructor(
+    private readonly socket: string,
+    private readonly dir: string,
+  ) {}
 
   static of(home: string): Terminals {
-    return new Terminals(`nod-${homeId(home)}`)
+    return new Terminals(`nod-${homeId(home)}`, join(home, 'work'))
   }
 
   // tmux starts commands with its server's environment, so pass what the worker needs in `env`.
+  // tmux refuses a command over about 16KB (measured on 3.6a), less than a long brief or a
+  // retrospective's history, so `argv` goes in a script that removes itself once sh has it open.
+  // ponytail: the OS limit on arguments (1MB on macOS) still applies.
   start(name: string, cwd: string, argv: string[], env: Record<string, string>): void {
     const vars = Object.entries(env).flatMap(([key, value]) => ['-e', `${key}=${value}`])
+    mkdirSync(this.dir, { recursive: true })
+    const script = join(this.dir, `.launch-${name}`)
+    writeFileSync(script, `rm -f -- "$0"\nexec ${argv.map(quote).join(' ')}\n`)
     this.tmux([
       'new-session',
       '-d',
@@ -28,7 +40,8 @@ export class Terminals {
       cwd,
       ...vars,
       '--',
-      ...argv,
+      'sh',
+      script,
     ])
   }
 
@@ -90,6 +103,11 @@ export class Terminals {
       env: process.env,
     })
   }
+}
+
+// For sh: inside single quotes everything is literal.
+export function quote(s: string): string {
+  return `'${s.replaceAll("'", `'\\''`)}'`
 }
 
 function isRunning(pid: number): boolean {
