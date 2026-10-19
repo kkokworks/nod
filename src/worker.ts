@@ -3,6 +3,7 @@ import { basename, join } from 'node:path'
 import { z } from 'zod'
 import type { AttemptKind, DecisionReason, Ledger, Task } from './ledger'
 import { notify, taskRef } from './notify'
+import { type Changes, reviewBrief } from './review'
 import { addRule, hadTrouble, isNoRule, readRules, retroBrief, rulesPath } from './rules'
 import { Terminals } from './tmux'
 
@@ -41,7 +42,9 @@ const SANDBOX = {
 const CHECK_RETRIES = 2
 const OUTPUT_LIMIT = 4000
 const QUESTION_LIMIT = 2000
-const STOP_HOOK_TIMEOUT_SECS = 900
+// The check and the review both run inside the Stop hook, so the hook outlasts them.
+const REVIEW_TIMEOUT_MS = 600_000
+const STOP_HOOK_TIMEOUT_SECS = 1800
 const TRUST_TIMEOUT_MS = 20_000
 const TRUST_POLL_MS = 500
 const TRUST_DIALOG = 'Yes, I trust this folder'
@@ -316,7 +319,7 @@ async function settle(
     return null
   }
   ledger.endAttempt(attemptId, { outcome: 'succeeded', summary, report: text })
-  const check = await verify(task)
+  const check = await verify(ledger, task, text)
   if (check !== null) ledger.recordCheck(attemptId, check.passed, check.output)
   if (check === null || check.passed) {
     if (task.retroOf !== null && !isNoRule(summary)) {
@@ -638,10 +641,14 @@ async function initSubmodules(repo: string, worktree: string): Promise<void> {
 }
 
 // What nod checks itself before a "done" counts: the task's check command, then, in a repo, that
-// the work is committed, since later tasks start from the branch and gc keeps only commits.
-// Null when there is nothing to check.
-async function verify(task: Task): Promise<{ passed: boolean; output: string } | null> {
-  if (task.checkCmd === null && task.repo === null) return null
+// the work is committed, since later tasks start from the branch and gc keeps only commits, then
+// an independent review. Null for a retrospective, whose rule the human decides on instead.
+async function verify(
+  ledger: Ledger,
+  task: Task,
+  report: string,
+): Promise<{ passed: boolean; output: string } | null> {
+  if (task.retroOf !== null) return null
   if (task.workspace === null) throw new Error(`task ${task.id} has no workspace`)
   // ponytail: the check runs unsandboxed because a human wrote it; sandbox it once the planner
   // starts generating checks.
@@ -659,7 +666,83 @@ async function verify(task: Task): Promise<{ passed: boolean; output: string } |
       output: `These changes are not committed:\n${uncommitted}\nCommit them on this branch.`,
     }
   }
-  return { passed: true, output: check?.output ?? '' }
+  const verdict = await review(ledger, task, task.workspace, report)
+  if (!verdict.passed) {
+    return {
+      passed: false,
+      output: `An independent review of your work failed:\n${verdict.output}`,
+    }
+  }
+  return { passed: true, output: `${check?.output ?? ''}\nReview: ${verdict.output}`.trim() }
+}
+
+// A reviewer that has none of the worker's context reads the work against what the human asked, so
+// a worker cannot pass by weakening its tests or claiming more than it did. It runs headless: it
+// only gives a verdict, which reaches the worker like a failed check, so it has no context to keep.
+// It fails loudly rather than passing work it could not judge.
+async function review(
+  ledger: Ledger,
+  task: Task,
+  cwd: string,
+  report: string,
+): Promise<{ passed: boolean; output: string }> {
+  const changes = task.repo === null ? null : await changesOf(cwd, branchOf(task))
+  const head = task.repo === null ? null : await headOf(cwd)
+  const { code, stdout, output } = await spawn(
+    [
+      'claude',
+      '-p',
+      '--settings',
+      JSON.stringify({ sandbox: SANDBOX }),
+      ...(task.model === null ? [] : ['--model', task.model]),
+      '--disallowedTools',
+      'Edit',
+      'Write',
+      'NotebookEdit',
+    ],
+    cwd,
+    { stdin: reviewBrief(ledger, task, report, changes), timeoutMs: REVIEW_TIMEOUT_MS },
+  )
+  if (code !== 0) throw new Error(`the review exited with ${code}: ${output.slice(-OUTPUT_LIMIT)}`)
+  // ponytail: a repo's reviewer is told not to touch the worktree and checked afterwards; give it a
+  // worktree of its own if it needs to run things.
+  if (head !== null && ((await headOf(cwd)) !== head || (await uncommittedChanges(cwd)))) {
+    throw new Error(`the reviewer of task ${task.id} changed its worktree`)
+  }
+  const verdict = parseReport(stdout)
+  if (verdict === null || verdict.status === 'question') {
+    throw new Error(`the review gave no verdict: ${stdout.slice(-OUTPUT_LIMIT)}`)
+  }
+  if (verdict.status === 'done') return { passed: true, output: verdict.text }
+  return { passed: false, output: stdout.trim().slice(-OUTPUT_LIMIT) }
+}
+
+// What the branch changed since it was created. The start is its oldest reflog entry, since
+// `worktree add -b` records where it started and later commits only add entries. No color and no
+// external diff tool, whatever the human's git config says, so the reviewer reads a plain diff.
+async function changesOf(worktree: string, branch: string): Promise<Changes> {
+  const git = async (...args: string[]): Promise<string> => {
+    const { code, stdout, output } = await spawn(['git', ...args], worktree)
+    if (code !== 0) throw new Error(`git ${args.join(' ')} failed: ${output.trim()}`)
+    return stdout
+  }
+  const start = (await git('reflog', 'show', '--format=%H', `refs/heads/${branch}`))
+    .trim()
+    .split('\n')
+    .at(-1)
+  if (!start) throw new Error(`${branch} has no reflog to find where it started`)
+  const range = `${start}..HEAD`
+  return {
+    start,
+    stat: await git('diff', '--no-color', '--stat', range),
+    diff: await git('diff', '--no-color', '--no-ext-diff', range),
+  }
+}
+
+async function headOf(worktree: string): Promise<string> {
+  const { code, stdout, output } = await spawn(['git', 'rev-parse', 'HEAD'], worktree)
+  if (code !== 0) throw new Error(`git rev-parse failed: ${output.trim()}`)
+  return stdout.trim()
 }
 
 async function runCheck(cmd: string, cwd: string): Promise<{ passed: boolean; output: string }> {
@@ -673,12 +756,21 @@ async function uncommittedChanges(worktree: string): Promise<string> {
   return stdout.trim().slice(-OUTPUT_LIMIT)
 }
 
-// `output` is stdout followed by stderr; their interleaving is lost.
+// `output` is stdout followed by stderr; their interleaving is lost. A process still running after
+// `timeoutMs` is killed and exits nonzero.
 export async function spawn(
   cmd: string[],
   cwd: string | undefined,
+  opts: { stdin?: string; timeoutMs?: number } = {},
 ): Promise<{ code: number; stdout: string; output: string }> {
-  const proc = Bun.spawn(cmd, { cwd, env: process.env, stdout: 'pipe', stderr: 'pipe' })
+  const proc = Bun.spawn(cmd, {
+    cwd,
+    env: process.env,
+    stdin: opts.stdin === undefined ? 'ignore' : new Blob([opts.stdin]),
+    stdout: 'pipe',
+    stderr: 'pipe',
+    timeout: opts.timeoutMs,
+  })
   const [stdout, stderr, code] = await Promise.all([
     new Response(proc.stdout).text(),
     new Response(proc.stderr).text(),

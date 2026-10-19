@@ -4,6 +4,7 @@ import { basename, join, resolve } from 'node:path'
 import { tempDirs } from '../test/tmp'
 import { collect } from './gc'
 import { Ledger, type TaskStatus } from './ledger'
+import { DIFF_LIMIT, reviewBrief } from './review'
 import { Terminals } from './tmux'
 import { addTrigger, tick } from './triggers'
 import {
@@ -145,6 +146,29 @@ test('a check that keeps failing becomes a decision after the retry budget', asy
   expect(ledger.attempts(id).map((a) => a.kind)).toEqual(['start', 'retry', 'retry'])
 })
 
+test('an independent review that finds a problem sends it back into the same turn', async () => {
+  const id = await add('review-strict: write the file')
+  await reaches(id, 'succeeded')
+  expect(ledger.attempts(id).map((a) => [a.kind, a.checkResult])).toEqual([
+    ['start', 'failed'],
+    ['retry', 'passed'],
+  ])
+  expect(ledger.attempts(id)[1]?.prompt).toStartWith(
+    'An independent review of your work failed:\nok.txt is missing.',
+  )
+  // The reviewer gets the brief and the worker's report, not the worker's conversation.
+  const first = entries('review')[0]?.message
+  expect(first).toContain('> review-strict: write the file')
+  expect(first).toContain('There is no acceptance check.')
+  expect(first).toContain('> NOD: done | did it')
+})
+
+test('a review that gives no verdict errors the task instead of passing it', async () => {
+  const id = await add('review-mute')
+  await until(() => status(id) === 'error')
+  expect(ledger.get(id).error).toContain('the review gave no verdict')
+})
+
 test('a worker that gives up, or stops without a report, becomes a decision', async () => {
   const gaveUp = await add('give-up')
   const silent = await add('silent')
@@ -209,6 +233,8 @@ test('tell continues the same session, and reopens it from the transcript once i
   ])
   expect(entries('turn').map((t) => t.message)).toEqual(['first', 'second', 'third'])
   expect(existsSync(workspaceOf(home, ledger.get(id)))).toBe(true)
+  // The review judges against what the human said since the brief, too.
+  expect(entries('review').at(-1)?.message).toContain('- second\n- third')
 })
 
 test('a stop from a session nod did not start changes nothing', async () => {
@@ -313,6 +339,39 @@ test('in a repo, done needs the work committed, and the next task starts from th
   expect(existsSync(join(worktree, 'ok.txt'))).toBe(true)
   const message = entries('turn').find((t) => t.message?.startsWith('build on it'))?.message
   expect(message).toContain(`starts from task #${first}'s branch`)
+  // A review gets the files changed and the whole diff in its brief.
+  const review = (brief: string): string | undefined =>
+    entries('review').find((r) => r.message?.includes(`> ${brief}`))?.message
+  expect(review('make ok')).toContain('>  ok.txt | 1 +')
+  expect(review('make ok')).toContain('The whole diff:')
+  expect(review('make ok')).toContain('> +ok')
+  // A task's changes start where the earlier task's branch ended, so here there are none.
+  const base = Bun.spawnSync(['git', 'rev-parse', 'feat/ok'], { cwd: repo }).stdout.toString()
+  expect(review('build on it')).toContain(`since ${base.trim()}. There are none.`)
+})
+
+test('a diff too long for the review brief is cut, and the reviewer is told where', () => {
+  const id = ledger.add({
+    brief: 'big change',
+    repo: '/repo',
+    branch: 'feat/big',
+    checkCmd: null,
+    model: null,
+    after: [],
+    triggerId: null,
+    issue: null,
+  })
+  const diff = `+${'x'.repeat(DIFF_LIMIT)}`
+  const brief = reviewBrief(ledger, ledger.get(id), 'NOD: done | ok', {
+    start: 'abc123',
+    stat: ' big.txt | 1 +\n',
+    diff,
+  })
+  expect(brief).toContain(
+    `The diff, cut at ${DIFF_LIMIT} characters; read the rest with \`git diff abc123..HEAD\`:`,
+  )
+  expect(brief).toContain(`> ${diff.slice(0, DIFF_LIMIT)}\n`)
+  expect(brief).not.toContain(diff)
 })
 
 test('a repo task gets its submodules filled from the repo checkout, and gc still removes it', async () => {

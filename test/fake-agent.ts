@@ -3,7 +3,7 @@
 // Code, and a hook that blocks the stop starts a continuation. Between turns it reads what is typed
 // into its terminal. With $FAKE_AGENT_UNTRUSTED set, a new session first shows the trust dialog.
 // Every launch and turn is logged to $FAKE_AGENT_LOG.
-import { appendFileSync, writeFileSync } from 'node:fs'
+import { appendFileSync, existsSync, writeFileSync } from 'node:fs'
 
 type Hooks = Record<string, { hooks: { command: string }[] }[]>
 
@@ -34,6 +34,22 @@ const hooks: Hooks = JSON.parse(flag('--settings') ?? '{}').hooks ?? {}
 const logPath = process.env.FAKE_AGENT_LOG
 if (!logPath) throw new Error('FAKE_AGENT_LOG is not set')
 const log = (entry: object): void => appendFileSync(logPath, `${JSON.stringify(entry)}\n`)
+
+// Like `claude -p`, which nod runs as the reviewer: the prompt comes on stdin and the reply is
+// printed once. A brief with `review-strict` fails until ok.txt exists; `review-mute` gives no
+// verdict.
+if (args.includes('-p')) {
+  const prompt = await Bun.stdin.text()
+  log({ event: 'review', sessionId, message: prompt })
+  let reply = 'NOD: done | looks right'
+  if (prompt.includes('review-strict') && !existsSync('ok.txt')) {
+    reply = 'ok.txt is missing.\nNOD: failed | ok.txt is missing'
+  } else if (prompt.includes('review-mute')) {
+    reply = 'Looks fine.'
+  }
+  console.log(reply)
+  process.exit(0)
+}
 
 // Raw mode, so Escape arrives on its own and Enter ends a message.
 const inputs: string[] = []

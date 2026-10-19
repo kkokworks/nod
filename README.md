@@ -60,6 +60,8 @@ bun -e 'const e = await Bun.stdin.json(); const t = e.decision ? `결정 #${e.de
 Bun.spawnSync(["osascript", "-e", "on run a", "-e", "display notification (item 2 of a) with title (item 1 of a)", "-e", "end run", "nod", `${t}: ${e.task?.brief ?? e.error}`])'
 ```
 
+워커가 끝났다고 보고하면 nod 가 검증 명령을 돌리고, 레포 작업이면 커밋했는지 확인한 뒤, 워커의 대화를 모르는 리뷰어에게 결과를 한 번 더 보게 합니다. 리뷰어는 지시와 그 뒤 사람이 한 말을 기준으로, 요청한 일을 했는지, 테스트나 검증 명령을 약하게 고쳐 통과시키지 않았는지, 보고가 결과와 맞는지를 봅니다. 셋 중 하나라도 걸리면 그 내용이 같은 세션으로 돌아가 워커가 계속 고칩니다.
+
 검증에 되돌려졌거나 실패한 작업은 끝난 뒤 회고 워커가 돌아보고, 앞으로의 워커가 받을 규칙 한 줄을 결정으로 제안합니다. 받아들인 규칙은 `~/.nod/rules.md` 에 쌓이고 모든 워커에게 전해집니다. 이 파일은 직접 고쳐도 됩니다.
 
 설계와 실측 기록은 [docs/design.md](docs/design.md) 에 있습니다.
