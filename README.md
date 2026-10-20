@@ -13,6 +13,8 @@ git clone https://github.com/kkokworks/nod && cd nod
 bun install
 bun link                                       # nod 명령 등록
 ln -s "$PWD/skills/nod" ~/.claude/skills/nod   # Claude 세션에서 /nod
+ln -s "$PWD/skills/wide-research" ~/.claude/skills/wide-research   # 선택: 항목 여러 개 비교 조사
+ln -s "$PWD/agents/wide-item.md" ~/.claude/agents/wide-item.md     # wide-research 가 쓰는 에이전트
 ```
 
 ## 쓰기

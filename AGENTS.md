@@ -15,6 +15,7 @@ Claude Code 는 `.claude/rules/` 를 자동으로 읽습니다. 다른 에이전
 | 스킬 | 쓰는 때 |
 |---|---|
 | [nod](skills/nod/SKILL.md) | Claude 세션 안에서 여러 일을 nod 로 병렬로 맡기고, 사람에게는 결정만 받아 전할 때. `~/.claude/skills/nod` 에 링크해 `/nod` 로 씁니다 |
+| [wide-research](skills/wide-research/SKILL.md) | 항목 여러 개를 같은 칸으로 조사해 비교표 한 장으로 모을 때. 항목마다 [wide-item](agents/wide-item.md) 서브 에이전트를 띄웁니다. nod 워커는 쓰지 않습니다 |
 
 ## 문서
 

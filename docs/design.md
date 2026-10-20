@@ -35,6 +35,7 @@ nod 는 여러 에이전트를 동시에 돌려 일을 처리하고, 사람에�
 | `src/gc.ts` | 오래전에 끝난 작업의 세션을 닫고, 작업 폴더·worktree·Claude 세션 폴더를 지웁니다. |
 | `src/cli.ts` | `nod`, `nod <결정> <답>`, `nod drop`, `nod add`, `nod tell`, `nod resume`, `nod attach`, `nod watch`, `nod ls`, `nod show`, `nod stats`, `nod gc`, `nod trigger add·ls·rm`, `nod tick`, `nod hook` |
 | `skills/nod/SKILL.md` | Claude 세션을 앞단으로 만드는 스킬입니다. 요청을 작업으로 나눠 넣고, `nod watch` 를 Monitor 로 걸어 결정을 바로 전합니다. 결정은 대신 내리지 않습니다. |
+| `skills/wide-research/`, `agents/wide-item.md` | 항목 여러 개 × 같은 칸 비교 조사. 세션 안 서브 에이전트로 돌고 nod 장부·워커는 쓰지 않습니다. 항목마다 맥락을 새로 써야 뒤 항목의 조사가 얕아지지 않고, 결과가 세션으로 바로 돌아와 표로 합치기 쉬워서입니다. `merge.ts` 가 결과 줄을 검사해 표·CSV 로 합칩니다. |
 
 ## 장부로 답하는 질문
 
