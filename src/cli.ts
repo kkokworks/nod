@@ -6,6 +6,7 @@ import { collect, type GcPick, remotesHolding } from './gc'
 import { type Attempt, type Decision, Ledger, nodHome, type Task, type Trigger } from './ledger'
 import { Terminals } from './tmux'
 import { addTrigger, nextRun, syncSchedule, tick } from './triggers'
+import { taskNote, taskStatus } from './view'
 import {
   answer,
   branchOf,
@@ -407,17 +408,10 @@ function printTasks(tasks: Task[]): void {
 }
 
 function printTask(t: Task, prefix = ''): void {
-  const attempts = ledger.attempts(t.id)
-  const last = attempts.at(-1)
-  const waiting = t.status === 'queued' ? ledger.after(t.id) : []
-  const waitsFor =
-    waiting.length > 0 ? `waits for ${waiting.map((a) => `#${a.id}`).join(', ')}: ${t.brief}` : null
-  const note = t.error ?? waitsFor ?? last?.summary ?? t.brief
-  // A running task without a session was cut off (exit, restart); `nod resume` reopens it.
-  const status =
-    t.status === 'running' && !terminals.alive(sessionName(t.id)) ? 'session ended' : t.status
+  const turns = ledger.attempts(t.id).length
+  const status = taskStatus(t, terminals)
   console.log(
-    `${prefix}#${String(t.id).padEnd(4)} ${status.padEnd(14)} ${String(attempts.length).padStart(2)} turns  ${oneLine(note, 80)}`,
+    `${prefix}#${String(t.id).padEnd(4)} ${status.padEnd(14)} ${String(turns).padStart(2)} turns  ${oneLine(taskNote(ledger, t), 80)}`,
   )
   for (const url of ledger.links(t.id)) console.log(`${prefix}      link ${url}`)
   for (const ref of unlinkedPushes(t)) console.log(`${prefix}      pushed ${ref}`)

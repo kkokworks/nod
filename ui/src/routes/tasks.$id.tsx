@@ -1,0 +1,269 @@
+import { createFileRoute, Link, useRouter } from '@tanstack/react-router'
+import { createServerFn } from '@tanstack/react-start'
+import { useState } from 'react'
+import type { Decision } from '../../../src/ledger'
+import type { Message } from '../nod.server'
+import { detail, send } from '../nod.server'
+import { DecisionCard, duration, localTime, Markdown, Status, statusClass, Url } from '../parts'
+
+const getDetail = createServerFn({ method: 'GET' })
+  .validator((id: number) => {
+    if (!Number.isInteger(id)) throw new Error('task id must be an integer')
+    return id
+  })
+  .handler(({ data }) => detail(data))
+
+const sendMessage = createServerFn({ method: 'POST' })
+  .validator((m: Message): Message => {
+    if (!Number.isInteger(m.taskId)) throw new Error('task id must be an integer')
+    if (m.decisionId !== null && !Number.isInteger(m.decisionId)) {
+      throw new Error('decision id must be an integer or null')
+    }
+    if (typeof m.text !== 'string' || m.text.trim() === '') throw new Error('empty message')
+    return { taskId: m.taskId, decisionId: m.decisionId, text: m.text.trim() }
+  })
+  .handler(({ data }) => send(data))
+
+export const Route = createFileRoute('/tasks/$id')({
+  loader: ({ params }) => getDetail({ data: Number(params.id) }),
+  component: TaskPage,
+})
+
+// About what fits in the title's three lines; a longer first line also gets "Full brief".
+const TITLE_CHARS = 120
+
+const KIND_ICON = { start: '▶', retry: '↻', answer: '↩', resume: '⏵', followup: '✎' } as const
+
+function TaskPage() {
+  const { task, status, links, after, attempts, decisions, report, screen } = Route.useLoaderData()
+  // The brief's first line is the title; the whole brief folds away, as it can run to pages.
+  const nl = task.brief.indexOf('\n')
+  const title = nl === -1 ? task.brief : task.brief.slice(0, nl)
+  return (
+    <div className="task-layout">
+      <div className="page">
+        <div className="task-meta">
+          <Status status={status} />
+          <span className="muted">
+            #{task.id} · {localTime(task.createdAt)}
+            {task.finishedAt !== null && ` · took ${duration(task.createdAt, task.finishedAt)}`}
+          </span>
+        </div>
+        <h1 className="title task-title">
+          <Markdown text={title} inline />
+        </h1>
+        {(nl !== -1 || title.length > TITLE_CHARS) && (
+          <details className="brief">
+            <summary>Full brief</summary>
+            <Markdown text={task.brief} />
+          </details>
+        )}
+
+        <div className="tags">
+          {task.issue !== null && <span className="tag">{task.issue}</span>}
+          {task.repo !== null && (
+            <span className="tag">
+              <code>{task.repo.split('/').at(-1)}</code> · <code>{task.branch}</code>
+            </span>
+          )}
+          {task.checkCmd !== null && (
+            <span className="tag">
+              check <code>{task.checkCmd}</code>
+            </span>
+          )}
+          {task.triggerId !== null && <span className="tag">trigger #{task.triggerId}</span>}
+          {task.retroOf !== null && (
+            <span className="tag">
+              retro of{' '}
+              <Link to="/tasks/$id" params={{ id: String(task.retroOf) }}>
+                #{task.retroOf}
+              </Link>
+            </span>
+          )}
+          {after.map((a) => (
+            <span key={a.id} className="tag">
+              after{' '}
+              <Link to="/tasks/$id" params={{ id: String(a.id) }}>
+                #{a.id}
+              </Link>{' '}
+              {a.status}
+            </span>
+          ))}
+          {task.collectedAt !== null && <span className="tag">collected</span>}
+        </div>
+
+        {task.error !== null && <div className="banner">{task.error}</div>}
+
+        <h2 className="section">Turns ({attempts.length})</h2>
+        <ol className="timeline">
+          {attempts.map((a) => (
+            <li key={a.id}>
+              <div className="step">
+                <span className={`step-icon ${statusClass(a.outcome ?? 'running')}`}>
+                  {KIND_ICON[a.kind]}
+                </span>
+                <div className="step-body">
+                  <div className="step-head">
+                    <strong>{a.kind}</strong>
+                    <Status status={a.outcome ?? 'running'} />
+                    {a.checkResult !== null && (
+                      <span
+                        className={`chip ${a.checkResult === 'passed' ? 'succeeded' : 'failed'}`}
+                      >
+                        check {a.checkResult}
+                      </span>
+                    )}
+                    <span className="muted">
+                      {a.finishedAt === null ? 'running' : duration(a.startedAt, a.finishedAt)}
+                    </span>
+                  </div>
+                  {(a.error ?? a.summary) !== null && (
+                    <div className="prose">{a.error ?? a.summary}</div>
+                  )}
+                  {a.checkResult === 'failed' && a.checkOutput !== null && (
+                    <details>
+                      <summary className="muted">check output</summary>
+                      <pre>{a.checkOutput}</pre>
+                    </details>
+                  )}
+                </div>
+              </div>
+              {decisions
+                .filter((d) => d.attemptId === a.id)
+                .map((d) => (
+                  <DecisionCard key={d.id} d={d} />
+                ))}
+            </li>
+          ))}
+        </ol>
+
+        {(report !== null || links.length > 0) && (
+          <>
+            <h2 className="section">Result</h2>
+            <div className="card">
+              {links.map((url) => (
+                <div key={url} className="link">
+                  <Url url={url} />
+                </div>
+              ))}
+              {report !== null && <Markdown text={report} />}
+            </div>
+          </>
+        )}
+      </div>
+
+      <aside className="computer">
+        <div className="window">
+          <div className="window-bar">
+            <span className="lights">
+              <i />
+              <i />
+              <i />
+            </span>
+            <span className="window-title">task-{task.id}</span>
+            {screen !== null && <span className="live">live</span>}
+          </div>
+          {screen === null ? (
+            <div className="window-empty">
+              No live session
+              {task.collectedAt === null && (
+                <div>
+                  <code>nod resume {task.id}</code> reopens it
+                </div>
+              )}
+            </div>
+          ) : (
+            <pre className="screen">{screen}</pre>
+          )}
+        </div>
+        {task.collectedAt === null && attempts.length > 0 && (
+          <Composer taskId={task.id} open={decisions.find((d) => d.answer === null)} />
+        )}
+        {screen !== null && (
+          <p className="muted small">
+            or in a terminal: <code>nod attach {task.id}</code>
+          </p>
+        )}
+      </aside>
+    </div>
+  )
+}
+
+// These decisions take yes or no; for trust and rule anything but yes ends the task, so they get
+// buttons instead of a text box.
+const YES_OR_NO = new Set(['permission', 'trust', 'rule'])
+
+function Composer({ taskId, open }: { taskId: number; open: Decision | undefined }) {
+  const router = useRouter()
+  const [text, setText] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const submit = async (reply: string) => {
+    setBusy(true)
+    setError(null)
+    try {
+      await sendMessage({ data: { taskId, decisionId: open?.id ?? null, text: reply } })
+      setText('')
+      await router.invalidate()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <form
+      className="composer"
+      onSubmit={(e) => {
+        e.preventDefault()
+        if (text.trim() !== '') void submit(text)
+      }}
+    >
+      {open !== undefined && (
+        <div className="composer-label">
+          Answering decision #{open.id} · {open.reason.replace('_', ' ')}
+        </div>
+      )}
+      {open !== undefined && YES_OR_NO.has(open.reason) ? (
+        <div className="composer-actions">
+          <button type="button" disabled={busy} onClick={() => void submit('yes')}>
+            Yes
+          </button>
+          <button
+            type="button"
+            className="secondary"
+            disabled={busy}
+            onClick={() => void submit('no')}
+          >
+            {open.reason === 'permission' ? 'No' : 'No — end the task'}
+          </button>
+        </div>
+      ) : (
+        <>
+          <textarea
+            value={text}
+            rows={3}
+            placeholder={open === undefined ? 'Message the worker…' : 'Your answer…'}
+            onChange={(e) => setText(e.target.value)}
+            onKeyDown={(e) => {
+              // ⌘/Ctrl+Enter sends; plain Enter stays a newline, and is safe mid-IME composition.
+              if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && !e.nativeEvent.isComposing) {
+                e.preventDefault()
+                if (text.trim() !== '') void submit(text)
+              }
+            }}
+          />
+          <div className="composer-actions">
+            <span className="muted small">⌘↵ to send</span>
+            <button type="submit" disabled={busy || text.trim() === ''}>
+              {open === undefined ? 'Send' : 'Answer'}
+            </button>
+          </div>
+        </>
+      )}
+      {error !== null && <div className="banner">{error}</div>}
+    </form>
+  )
+}

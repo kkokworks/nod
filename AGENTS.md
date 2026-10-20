@@ -25,6 +25,6 @@ Claude Code 는 `.claude/rules/` 를 자동으로 읽습니다. 다른 에이전
 
 ## 검증
 
-커밋 전에 `bun test`, `bun run typecheck`, `bun run lint` 가 모두 통과해야 합니다.
+커밋 전에 `bun test`, `bun run typecheck`, `bun run lint` 가 모두 통과해야 합니다. `ui/` 를 고쳤으면 `ui/` 에서 `bun run typecheck` 도 통과해야 합니다.
 
 > 규칙·스킬을 더하면 이 표에도 한 줄을 더합니다.

@@ -50,7 +50,9 @@ const TRUST_POLL_MS = 500
 const TRUST_DIALOG = 'Yes, I trust this folder'
 const SCREEN_TIMEOUT_MS = 5000
 const SCREEN_POLL_MS = 100
-const CLI = join(import.meta.dir, 'cli.ts')
+// The standard `dirname`, not Bun's `dir`: the UI server loads this module through Vite, which
+// gives only the standard names.
+const CLI = join(import.meta.dirname, 'cli.ts')
 
 // What Claude Code's hooks pass on stdin (measured on 2.1.290); only the fields nod reads.
 export const StopEvent = z.object({
