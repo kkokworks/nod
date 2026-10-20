@@ -1,7 +1,15 @@
 import type { Database } from 'bun:sqlite'
 import type { Compilable, Generated } from 'kysely'
 import { z } from 'zod'
-import { queryBuilder, runQuery } from './ledger'
+import {
+  type Decision,
+  type Ledger,
+  type NewTask,
+  queryBuilder,
+  runQuery,
+  type Task,
+  type TaskStatus,
+} from './ledger'
 
 // The person's own todos, kept the GTD way: captured into the inbox, clarified into a next action,
 // something waited on, someday, or reference, and grouped into projects. A todo is not a task: it
@@ -22,6 +30,8 @@ export type ProjectStatus = (typeof PROJECT_STATUSES)[number]
 // Todos that still ask something of the person.
 export const OPEN: TodoStatus[] = ['inbox', 'next', 'waiting']
 const CLOSED_PROJECT: ProjectStatus[] = ['done', 'dropped']
+// A delegated todo's tasks that may still go on: one in error can be resumed.
+export const UNFINISHED: TaskStatus[] = ['queued', 'running', 'needs_decision', 'error']
 
 export type Todo = {
   id: number
@@ -32,7 +42,8 @@ export type Todo = {
   // One GTD context, such as `@computer`: where, or with what, the action can be done. A todo
   // without one can be done anywhere.
   context: string | null
-  // Who the todo waits on while it is `waiting`.
+  // Who the todo waits on while it is `waiting`. Empty while it waits on the tasks it was
+  // delegated to.
   waitingOn: string | null
   // Where it was captured: `cli`, or the channel a scan read it from. With a key, that channel's
   // id for it, so the same item is captured only once.
@@ -59,6 +70,10 @@ export type TodoEdit = Partial<
 >
 export type ProjectEdit = Partial<Pick<Project, 'title' | 'outcome' | 'status'>>
 export type TodoLink = { url: string; title: string | null }
+// A task doing a todo, with its last one-line report and where its result went.
+export type TodoTask = { task: Task; summary: string | null; links: string[] }
+// An open decision, which is a next action for the person, with the todo its task does.
+export type TodoDecision = { decision: Decision; task: Task; todo: Todo | null }
 // One change to a todo or a project: who made it, and each field's value before and after.
 export type Change = { actor: string; change: Record<string, [unknown, unknown]>; at: string }
 export type TodoFilter = {
@@ -96,8 +111,14 @@ export function parseRef(ref: string, prefix: 't' | 'p'): number {
 // GTD contexts start with `@`; `phone` and `@phone` are the same context.
 const asContext = (c: string): string => (c.startsWith('@') ? c : `@${c}`)
 
+// Reads the tasks and decisions through the ledger and writes only the todo tables, so nothing in
+// the ledger depends on todos.
 export class Todos {
-  constructor(private readonly db: Database) {}
+  private readonly db: Database
+
+  constructor(private readonly ledger: Ledger) {
+    this.db = ledger.db
+  }
 
   // Puts a new todo in the inbox. When the source has already given this key, returns that todo.
   capture(
@@ -250,6 +271,58 @@ export class Todos {
     ).map(parsed)
   }
 
+  // Hands the todo to a new task. It then waits on nod, with no one in `waitingOn`, until
+  // followTasks moves it on.
+  delegate(id: number, task: NewTask, actor: string): number {
+    return this.db.transaction(() => {
+      const todo = this.get(id)
+      if (todo.status === 'done' || todo.status === 'dropped') {
+        throw new Error(`t${id} is ${todo.status}; reopen it before delegating it`)
+      }
+      const taskId = this.ledger.addTodoTask(task, id)
+      this.set(id, { status: 'waiting', waitingOn: null }, actor)
+      return taskId
+    })()
+  }
+
+  // Moves each todo waiting on nod along once none of its tasks can go on: done when the last one
+  // succeeded, back to next when it was cancelled, so the person takes it back. Every such todo is
+  // looked at, so those of tasks a cancel cascaded to move too.
+  followTasks(actor: string): void {
+    const waiting = this.run(
+      q
+        .selectFrom('todos')
+        .selectAll()
+        .where('status', '=', 'waiting')
+        .where('waitingOn', 'is', null),
+    )
+    for (const todo of waiting) {
+      const tasks = this.ledger.tasksOf(todo.id)
+      const last = tasks.at(-1)
+      if (last === undefined || tasks.some((t) => UNFINISHED.includes(t.status))) continue
+      // It finished before the todo began waiting: the person has set it waiting since, on no task.
+      if (last.finishedAt === null || last.finishedAt < todo.statusAt) continue
+      this.set(todo.id, { status: last.status === 'succeeded' ? 'done' : 'next' }, actor)
+    }
+  }
+
+  // The tasks doing the todo, oldest first.
+  tasks(id: number): TodoTask[] {
+    return this.ledger.tasksOf(id).map((task) => ({
+      task,
+      summary: this.ledger.lastAttempt(task.id)?.summary ?? null,
+      links: this.ledger.links(task.id),
+    }))
+  }
+
+  // Open decisions, oldest first.
+  decisions(): TodoDecision[] {
+    return this.ledger.openDecisions().map((decision) => {
+      const task = this.ledger.get(decision.taskId)
+      return { decision, task, todo: task.todoId === null ? null : this.get(task.todoId) }
+    })
+  }
+
   // ── projects ──
 
   addProject(p: { title: string; outcome: string | null }, actor: string): Project {
@@ -287,6 +360,7 @@ export class Todos {
   }
 
   // With how many next actions and waiting todos each has, so projects with no next action show.
+  // An open decision on a task doing one of its todos counts as a next action: answering it is.
   projects(statuses: ProjectStatus[]): (Project & { next: number; waiting: number })[] {
     const open = this.run(
       q
@@ -295,8 +369,9 @@ export class Todos {
         .where('projectId', 'is not', null)
         .where('status', 'in', ['next', 'waiting']),
     )
+    const decided = this.decisions().map((d) => ({ projectId: d.todo?.projectId, status: 'next' }))
     const counted = (id: number, status: TodoStatus) =>
-      open.filter((t) => t.projectId === id && t.status === status).length
+      [...open, ...decided].filter((t) => t.projectId === id && t.status === status).length
     return this.run(
       q.selectFrom('projects').selectAll().where('status', 'in', statuses).orderBy('id'),
     ).map((p) => ({ ...p, next: counted(p.id, 'next'), waiting: counted(p.id, 'waiting') }))

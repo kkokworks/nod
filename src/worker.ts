@@ -6,6 +6,7 @@ import { notify, taskRef } from './notify'
 import { type Changes, reviewBrief } from './review'
 import { addRule, hadTrouble, isNoRule, readRules, retroBrief, rulesPath } from './rules'
 import { quote, Terminals } from './tmux'
+import { Todos } from './todos'
 
 // Each worker is an interactive Claude Code session in tmux. It reports when it stops through
 // Claude Code's Stop hook, and answers and follow-ups go into the same live session, so the worker
@@ -53,6 +54,9 @@ const SCREEN_POLL_MS = 100
 // The standard `dirname`, not Bun's `dir`: the UI server loads this module through Vite, which
 // gives only the standard names.
 const CLI = join(import.meta.dirname, 'cli.ts')
+// Who moves a delegated todo along with its task: nod itself. Not the environment's actor, which in
+// a worker's hook is that worker.
+const SELF = 'nod'
 
 // What Claude Code's hooks pass on stdin (measured on 2.1.290); only the fields nod reads.
 export const StopEvent = z.object({
@@ -211,6 +215,8 @@ async function waitForScreen(terminals: Terminals, name: string, text: string): 
 
 export async function drop(ledger: Ledger, home: string, decisionId: number): Promise<void> {
   ledger.drop(decisionId)
+  // The person takes back a todo whose task they ended.
+  new Todos(ledger).followTasks(SELF)
   const task = ledger.get(ledger.decision(decisionId).taskId)
   await Terminals.of(home).close(sessionName(task.id))
   await notify(home, { event: 'cancelled', task: taskRef(task) })
@@ -255,6 +261,7 @@ export async function onStop(
     ledger.error(taskId, message(error))
     return null
   })
+  new Todos(ledger).followTasks(SELF)
   // A task that just succeeded may let others start.
   await startReady(ledger, home)
   return out

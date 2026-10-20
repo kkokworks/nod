@@ -1,6 +1,7 @@
 import { afterAll, expect, test } from 'bun:test'
 import { resolve } from 'node:path'
 import { tempDirs } from '../test/tmp'
+import { Ledger } from './ledger'
 import { actorFromEnv } from './todo-cli'
 
 const tmp = tempDirs()
@@ -31,7 +32,8 @@ function nod(home: string) {
 }
 
 const runner = () => {
-  const run = nod(tmp.make('nod-todo-cli-'))
+  const home = tmp.make('nod-todo-cli-')
+  const run = nod(home)
   const ok = async (...args: string[]) => {
     const r = await run(...args)
     expect(r.err).toBe('')
@@ -43,7 +45,7 @@ const runner = () => {
     expect(r.code).not.toBe(0)
     return r.err
   }
-  return { ok, fails }
+  return { ok, fails, home }
 }
 
 test('capture, clarify into a project, finish, and read back who changed what', async () => {
@@ -146,4 +148,49 @@ test('the actor is NOD_ACTOR if set, else a worker, a Claude session, or a perso
   )
   expect(actorFromEnv({ CLAUDECODE: '1' })).toBe('claude')
   expect(actorFromEnv({})).toBe('human')
+})
+
+test('a todo delegated with nod add waits on its task, whose decision is listed first', async () => {
+  const { ok, home } = runner()
+  await ok('in', 'Write the release notes', '--notes', 'For v2')
+  await ok('project', 'add', 'Release')
+  await ok('todo', 'set', 't1', '--project', 'p1')
+  // The delegated task comes after one that never starts here, so no worker runs.
+  const ledger = new Ledger(home)
+  const first = ledger.add({
+    brief: 'first',
+    repo: null,
+    branch: null,
+    checkCmd: null,
+    model: null,
+    after: [],
+    triggerId: null,
+    issue: null,
+  })
+  expect(await ok('add', '--todo', 't1', '--after', String(first))).toEqual(['2'])
+  expect(await ok('todo', 'waiting')).toEqual([
+    't1    waiting   Write the release notes  · p1 Release · waiting on task #2 (queued) · since <time>',
+  ])
+  const shown = await ok('show', '2')
+  expect(shown).toContain('  brief: Write the release notes')
+  expect(shown).toContain('  todo: t1')
+
+  const attempt = ledger.startAttempt({
+    taskId: 2,
+    kind: 'start',
+    decisionId: null,
+    sessionId: 's',
+    prompt: 'p',
+  })
+  ledger.ask(2, attempt, 'question', 'Which version?')
+  expect(await ok('todo')).toEqual([
+    '#1    decide    Write the release notes  · question · task #2 · p1 Release · since <time>',
+    't1    waiting   Write the release notes  · p1 Release · waiting on task #2 (needs_decision) · since <time>',
+  ])
+  expect(await ok('todo', 'next', '--context', 'phone')).toHaveLength(1)
+  expect(await ok('todo', 'inbox')).toEqual([''])
+  expect(await ok('project')).toEqual(['p1    active   Release  1 next  1 waiting'])
+  expect((await ok('todo', 't1')).filter((l) => l.startsWith('  task'))).toEqual([
+    '  task #2 needs_decision',
+  ])
 })

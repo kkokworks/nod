@@ -1,12 +1,16 @@
 import { afterAll, expect, test } from 'bun:test'
 import { tempDirs } from '../test/tmp'
-import { Ledger } from './ledger'
+import { Ledger, type NewTask } from './ledger'
 import { OPEN, parseRef, type TodoFilter, Todos } from './todos'
 
 const tmp = tempDirs()
 afterAll(tmp.removeAll)
 
-const fresh = (): Todos => new Todos(new Ledger(tmp.make('nod-todos-')).db)
+const books = () => {
+  const ledger = new Ledger(tmp.make('nod-todos-'))
+  return { ledger, todos: new Todos(ledger) }
+}
+const fresh = (): Todos => books().todos
 const captured = (todos: Todos, title: string, source = 'cli', sourceKey: string | null = null) =>
   todos.capture({ title, notes: null, source, sourceKey, url: null }, 'human').todo
 const project = (todos: Todos, title: string) => todos.addProject({ title, outcome: null }, 'human')
@@ -17,6 +21,27 @@ const open: TodoFilter = {
   hideSomedayProjects: true,
 }
 const ids = (ts: { id: number }[]) => ts.map((t) => t.id)
+const task: NewTask = {
+  brief: 'do it',
+  repo: null,
+  branch: null,
+  checkCmd: null,
+  model: null,
+  after: [],
+  triggerId: null,
+  issue: null,
+}
+// Opens a question on the task, as a worker that stops to ask does.
+const ask = (ledger: Ledger, taskId: number, question: string): number => {
+  const attempt = ledger.startAttempt({
+    taskId,
+    kind: 'start',
+    decisionId: null,
+    sessionId: 's',
+    prompt: 'p',
+  })
+  return ledger.ask(taskId, attempt, 'question', question)
+}
 
 test('a capture lands in the inbox once per source key, and records who captured it', () => {
   const todos = fresh()
@@ -216,4 +241,65 @@ test('refs need their prefix: a bare number could be a decision or a task', () =
   expect(parseRef('t12', 't')).toBe(12)
   expect(() => parseRef('12', 't')).toThrow('not a todo: 12 (write t<n>)')
   expect(() => parseRef('p12', 't')).toThrow('not a todo: p12')
+})
+
+test('a delegated todo waits on its tasks, and follows the last once none can go on', () => {
+  const { ledger, todos } = books()
+  const t = captured(todos, 'Write the release notes')
+  const first = todos.delegate(t.id, task, 'human')
+  expect(todos.get(t.id)).toMatchObject({ status: 'waiting', waitingOn: null })
+  expect(ledger.get(first).todoId).toBe(t.id)
+  const second = todos.delegate(t.id, { ...task, after: [first] }, 'human')
+  ledger.succeed(first)
+  todos.followTasks('nod')
+  expect(todos.get(t.id).status).toBe('waiting')
+  // A task in error can still be resumed.
+  ledger.error(second, 'session ended')
+  todos.followTasks('nod')
+  expect(todos.get(t.id).status).toBe('waiting')
+  ledger.succeed(second)
+  todos.followTasks('nod')
+  expect(todos.changes(t.id).map((c) => [c.actor, c.change])).toEqual([
+    [
+      'human',
+      { title: [null, 'Write the release notes'], status: [null, 'inbox'], source: [null, 'cli'] },
+    ],
+    ['human', { status: ['inbox', 'waiting'] }],
+    ['nod', { status: ['waiting', 'done'] }],
+  ])
+  expect(todos.tasks(t.id).map((x) => x.task.id)).toEqual([first, second])
+  expect(() => todos.delegate(t.id, task, 'human')).toThrow(`t${t.id} is done; reopen it`)
+})
+
+test('a todo whose task was dropped comes back; one waiting on a person or on no task stays', () => {
+  const { ledger, todos } = books()
+  const t = captured(todos, 'Fix the build')
+  ledger.drop(ask(ledger, todos.delegate(t.id, task, 'human'), 'Which branch?'))
+  todos.followTasks('nod')
+  expect(todos.get(t.id).status).toBe('next')
+  Bun.sleepSync(2)
+  // Set waiting again by the person after its task ended: it waits on nothing nod runs.
+  todos.set(t.id, { status: 'waiting' }, 'human')
+  const kim = captured(todos, 'Ask about the invoice')
+  todos.set(kim.id, { status: 'waiting', waitingOn: 'Kim' }, 'human')
+  todos.followTasks('nod')
+  expect([todos.get(t.id).status, todos.get(kim.id).status]).toEqual(['waiting', 'waiting'])
+})
+
+test("an open decision is a next action, of the project its task's todo is in", () => {
+  const { ledger, todos } = books()
+  const p = project(todos, 'Release')
+  const t = captured(todos, 'Write the release notes')
+  todos.set(t.id, { projectId: p.id }, 'human')
+  const id = todos.delegate(t.id, task, 'human')
+  const counts = () => todos.projects(['active']).map((x) => [x.next, x.waiting])
+  expect(counts()).toEqual([[0, 1]])
+  const d = ask(ledger, id, 'Which version?')
+  expect(counts()).toEqual([[1, 1]])
+  const plain = ledger.add(task)
+  const other = ask(ledger, plain, 'Go on?')
+  expect(todos.decisions().map((x) => [x.decision.id, x.todo?.id ?? null])).toEqual([
+    [d, t.id],
+    [other, null],
+  ])
 })

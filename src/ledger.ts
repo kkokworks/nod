@@ -46,6 +46,8 @@ export type Task = {
   issue: string | null
   // Set on a retrospective: the task whose trouble it looks back on.
   retroOf: number | null
+  // The person's todo the task does, when it was delegated from one (todos.ts).
+  todoId: number | null
   workspace: string | null
   // Set by gc: the human has dealt with what the task produced, so ls stops listing it.
   collectedAt: string | null
@@ -57,6 +59,18 @@ export type Task = {
 
 // Adds tasks on a schedule. With a source command, each line it prints that the trigger has not
 // seen before becomes a task.
+// What `nod add` gives a new task.
+export type NewTask = {
+  brief: string
+  repo: string | null
+  branch: string | null
+  checkCmd: string | null
+  model: string | null
+  after: number[]
+  triggerId: number | null
+  issue: string | null
+}
+
 export type Trigger = {
   id: number
   cron: string
@@ -263,6 +277,9 @@ const MIGRATIONS = [
   );
   create index project_changes_project on project_changes(project_id);
   `,
+  // v11: the todo a task was delegated from. On the task, since one todo may be delegated again or
+  // to a chain of tasks.
+  'alter table tasks add column todo_id integer references todos(id);',
 ]
 
 // The tables as the migrations leave them, in camelCase; CamelCasePlugin maps names to snake_case.
@@ -357,16 +374,7 @@ export class Ledger {
 
   // `after`: tasks that must succeed before this one starts. In one repo they must form a chain,
   // because a task's worktree starts from the branch of the task it comes after.
-  add(t: {
-    brief: string
-    repo: string | null
-    branch: string | null
-    checkCmd: string | null
-    model: string | null
-    after: number[]
-    triggerId: number | null
-    issue: string | null
-  }): number {
+  add(t: NewTask): number {
     return this.db.transaction(() => {
       const after = t.after.map((id) => this.get(id))
       const sameRepo = after.filter((a) => t.repo !== null && a.repo === t.repo)
@@ -624,6 +632,20 @@ export class Ledger {
       this.run(q.updateTable('tasks').set({ retroOf: of.id }).where('id', '=', id))
       return id
     })()
+  }
+
+  // A task that does one of the person's todos (todos.ts delegate).
+  addTodoTask(t: NewTask, todoId: number): number {
+    return this.db.transaction(() => {
+      const id = this.add(t)
+      this.run(q.updateTable('tasks').set({ todoId }).where('id', '=', id))
+      return id
+    })()
+  }
+
+  // The tasks doing a todo, oldest first.
+  tasksOf(todoId: number): Task[] {
+    return this.run(q.selectFrom('tasks').selectAll().where('todoId', '=', todoId).orderBy('id'))
   }
 
   // The retrospective of a task, if one was started.

@@ -6,6 +6,7 @@ import { collect } from './gc'
 import { Ledger, type TaskStatus } from './ledger'
 import { DIFF_LIMIT, reviewBrief } from './review'
 import { Terminals } from './tmux'
+import { Todos } from './todos'
 import { addTrigger, tick } from './triggers'
 import {
   answer,
@@ -561,4 +562,50 @@ test('a retrospective that finds no general rule just succeeds', async () => {
 test('a worker learns its task through NOD_TASK, so the todos it changes name it', () => {
   expect(workerEnv('/h', 5)).toMatchObject({ NOD_HOME: '/h', NOD_TASK: '5' })
   expect(workerEnv('/h', null)).not.toHaveProperty('NOD_TASK')
+})
+
+test("a delegated todo waits through its task's decision, is done when it succeeds, and comes back when dropped", async () => {
+  const todos = new Todos(ledger)
+  const delegated = (title: string, brief: string, after: number[] = []) => {
+    const todo = todos.capture(
+      { title, notes: null, source: 'cli', sourceKey: null, url: null },
+      'human',
+    ).todo.id
+    const task = todos.delegate(
+      todo,
+      {
+        brief,
+        repo: null,
+        branch: null,
+        checkCmd: null,
+        model: null,
+        after,
+        triggerId: null,
+        issue: null,
+      },
+      'human',
+    )
+    return { todo, task }
+  }
+  const asked = delegated('Ask first', 'ask-first, then write ok.txt')
+  await startTask(ledger, home, asked.task)
+  const question = await until(() => ledger.decisions(asked.task)[0])
+  expect(todos.get(asked.todo).status).toBe('waiting')
+  expect(todos.decisions().map((d) => d.todo?.id)).toEqual([asked.todo])
+  await answer(ledger, home, question.id, 'yes')
+  await until(() => todos.get(asked.todo).status === 'done')
+  expect(todos.changes(asked.todo).at(-1)).toMatchObject({
+    actor: 'nod',
+    change: { status: ['waiting', 'done'] },
+  })
+  expect(todos.tasks(asked.todo).map((x) => x.summary)).toEqual(['did it'])
+
+  // Dropping a task gives its todo back, and the todo of the task that waited on it too.
+  const gaveUp = delegated('Give up', 'give-up')
+  const after = delegated('Then this', 'after it', [gaveUp.task])
+  await startTask(ledger, home, gaveUp.task)
+  const failed = await until(() => ledger.decisions(gaveUp.task)[0])
+  await drop(ledger, home, failed.id)
+  expect(status(after.task)).toBe('cancelled')
+  expect([todos.get(gaveUp.todo).status, todos.get(after.todo).status]).toEqual(['next', 'next'])
 })

@@ -21,7 +21,7 @@ test('reopening a ledger keeps its data and does not re-run migrations', () => {
   })
   const reopened = new Ledger(home)
   expect(reopened.get(id).brief).toBe('keep me')
-  expect(reopened.db.query('pragma user_version').get()).toEqual({ user_version: 10 })
+  expect(reopened.db.query('pragma user_version').get()).toEqual({ user_version: 11 })
 })
 
 test('links are kept once each, and only for a task that exists', () => {

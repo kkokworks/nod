@@ -5,8 +5,8 @@ import { parseArgs } from 'node:util'
 import { collect, type GcPick, remotesHolding } from './gc'
 import { type Attempt, type Decision, Ledger, nodHome, type Task, type Trigger } from './ledger'
 import { Terminals } from './tmux'
-import { capture, projectCommand, TODO_USAGE, todoCommand } from './todo-cli'
-import { Todos } from './todos'
+import { actorFromEnv, capture, projectCommand, TODO_USAGE, todoCommand } from './todo-cli'
+import { parseRef, Todos } from './todos'
 import { addTrigger, nextRun, syncSchedule, tick } from './triggers'
 import { indent, oneLine, taskNote, taskStatus } from './view'
 import {
@@ -29,13 +29,16 @@ const USAGE = `usage:
   nod <decision> <answer...>       answer a decision; the worker gets it in its own session
   nod drop <decision>              end the task instead of answering
   nod add <brief> [--repo <path> --branch <name>] [--check <command>] [--model <model>]
-          [--after <task,...>] [--issue <key>]
+          [--after <task,...>] [--issue <key>] [--todo <todo>]
                                    start a worker on the task now, or once the tasks it comes
                                    after have succeeded. In a repo it works on a new branch
                                    <name> in the worktree <home>/work/<repo folder>/<name>,
                                    started from the earlier task's branch in the same repo.
                                    --issue names the issue it works on, so ls, decisions and
-                                   notify events show it
+                                   notify events show it. --todo delegates that todo to the
+                                   task: it waits on the task, is done once it succeeds, and is
+                                   a next action again if it is dropped; the brief may then be
+                                   left out for the todo's title and notes
   nod tell <task> <message...>     send a follow-up into the task's session
   nod resume <task>                reopen a task whose session ended, from its transcript
   nod attach <task>                open the worker's terminal (tmux)
@@ -145,13 +148,13 @@ switch (command) {
     await hook(rest[0])
     break
   case 'in':
-    capture(new Todos(ledger.db), rest)
+    capture(new Todos(ledger), rest)
     break
   case 'todo':
-    todoCommand(new Todos(ledger.db), rest)
+    todoCommand(new Todos(ledger), rest)
     break
   case 'project':
-    projectCommand(new Todos(ledger.db), rest)
+    projectCommand(new Todos(ledger), rest)
     break
   default: {
     const id = Number(command)
@@ -174,14 +177,21 @@ async function add(args: string[]): Promise<void> {
       model: { type: 'string' },
       after: { type: 'string' },
       issue: { type: 'string' },
+      todo: { type: 'string' },
     },
     allowPositionals: true,
   })
-  const brief = words(positionals)
+  const todos = new Todos(ledger)
+  const todo = values.todo === undefined ? null : todos.get(parseRef(values.todo, 't'))
+  // A clarified todo already says what to do.
+  const brief =
+    todo !== null && positionals.length === 0
+      ? [todo.title, todo.notes].filter((x) => x !== null).join('\n\n')
+      : words(positionals)
   const after = (values.after ?? '').split(',').filter(Boolean).map(Number)
   if (!after.every(Number.isInteger)) throw new Error(`--after takes task numbers: ${values.after}`)
   const repo = repoPath(values.repo)
-  const id = ledger.add({
+  const task = {
     brief,
     repo,
     branch: branchName(repo, values.branch),
@@ -190,7 +200,8 @@ async function add(args: string[]): Promise<void> {
     after,
     triggerId: null,
     issue: values.issue ?? null,
-  })
+  }
+  const id = todo === null ? ledger.add(task) : todos.delegate(todo.id, task, actorFromEnv())
   // A task that comes after others starts here only if they have all succeeded already.
   if (after.length === 0) await startTask(ledger, home, id)
   else await startReady(ledger, home)
@@ -369,6 +380,7 @@ function show(id: number): void {
   if (task.checkCmd) console.log(`  check: ${task.checkCmd}`)
   if (task.triggerId !== null) console.log(`  added by trigger #${task.triggerId}`)
   if (task.retroOf !== null) console.log(`  retrospective of #${task.retroOf}`)
+  if (task.todoId !== null) console.log(`  todo: t${task.todoId}`)
   for (const url of ledger.links(id)) console.log(`  link: ${url}`)
   for (const ref of unlinkedPushes(task)) console.log(`  pushed: ${ref}`)
   if (task.collectedAt !== null) console.log(`  collected: ${task.collectedAt}`)

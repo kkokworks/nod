@@ -7,7 +7,9 @@ import {
   parseRef,
   TODO_STATUSES,
   type Todo,
+  type TodoDecision,
   type Todos,
+  UNFINISHED,
 } from './todos'
 import { indent, oneLine } from './view'
 
@@ -16,25 +18,29 @@ export const TODO_USAGE = `  nod in <what...> [--notes <text>] [--source <channe
                                    once; capturing it again prints the todo it became
   nod todo [inbox|next|waiting|someday|reference] [--context <@x>] [--project <p>] [--all]
                                    todos (default: inbox, next and waiting; --all: every status,
-                                   finished ones too). --context also lists todos with no
-                                   context, which can be done anywhere. Todos of someday
-                                   projects show only with --project or --all
-  nod todo <todo>                  one todo: notes, links, and who changed what
+                                   finished ones too). Open decisions come first, as next
+                                   actions: answer with nod <decision> <answer>. --context also
+                                   lists todos with no context, which can be done anywhere.
+                                   Todos of someday projects show only with --project or --all
+  nod todo <todo>                  one todo: notes, links, the tasks it was delegated to (nod add
+                                   --todo) with what they reported, and who changed what
   nod todo set <todo> [--status <s>] [--title <text>] [--notes <text>] [--project <p>]
                       [--context <@x>] [--waiting-on <who>] [--link <url>]...
                                    clarify and organize it; an empty value clears a field.
                                    Leaving waiting forgets whom it waited on
   nod todo done|drop <todo...>
   nod project add <title...> [--outcome <what done looks like>]
-  nod project [ls] [--all]         active projects with their next and waiting counts; one with
-                                   no next action says so (--all: every status)
+  nod project [ls] [--all]         active projects with their next and waiting counts, open
+                                   decisions among the next; one with no next action says so
+                                   (--all: every status)
   nod project <project>            one project: its open todos and who changed what
   nod project set <project> [--title <text>] [--outcome <text>] [--status <s>]
   nod project done <project>       only once none of its todos is open
                                    Todos are t<n>; projects are p<n> or their exact title. Each
                                    change records who made it: $NOD_ACTOR if set, else
                                    worker:<task> in a nod worker, claude:<session> in a Claude
-                                   session, human otherwise`
+                                   session, human otherwise; nod when a delegated todo follows
+                                   its task`
 
 // The lists `nod todo <list>` names. Finished todos are listed with --all, since `nod todo done`
 // finishes todos.
@@ -112,10 +118,18 @@ function listTodos(todos: Todos, args: string[]): void {
   if (values.all && list !== undefined) {
     throw new Error(`--all lists every status; leave out ${list}`)
   }
+  const statuses = values.all ? [...TODO_STATUSES] : list !== undefined ? [list] : OPEN
+  const projectId = values.project === undefined ? null : todos.findProject(values.project).id
+  // A decision holds up a worker, so it comes before the other next actions.
+  if (statuses.includes('next')) {
+    for (const d of todos.decisions()) {
+      if (projectId === null || d.todo?.projectId === projectId) console.log(decisionLine(todos, d))
+    }
+  }
   const shown = todos.list({
-    statuses: values.all ? [...TODO_STATUSES] : list !== undefined ? [list] : OPEN,
+    statuses,
     context: values.context ?? null,
-    projectId: values.project === undefined ? null : todos.findProject(values.project).id,
+    projectId,
     hideSomedayProjects: !values.all && values.project === undefined,
   })
   for (const t of shown) console.log(line(todos, t))
@@ -176,6 +190,11 @@ function showTodo(todos: Todos, id: number): void {
   console.log(`  from ${t.source}${t.sourceKey === null ? '' : ` ${t.sourceKey}`}`)
   for (const l of todos.links(id)) {
     console.log(`  link ${l.url}${l.title === null ? '' : ` (${l.title})`}`)
+  }
+  for (const { task, summary, links } of todos.tasks(id)) {
+    const said = summary === null ? '' : `: ${oneLine(summary, 80)}`
+    console.log(`  task #${task.id} ${task.status}${said}`)
+    for (const url of links) console.log(`    link ${url}`)
   }
   if (t.notes !== null) console.log(`  notes\n${indent(t.notes, 4)}`)
   printChanges(todos.changes(id))
@@ -259,16 +278,39 @@ function line(todos: Todos, t: Todo): string {
   return `t${String(t.id).padEnd(4)} ${t.status.padEnd(9)} ${oneLine(t.title, 80)}${after}`
 }
 
+// `#12 decide`, the decision `nod 12 <answer>` answers. It has no context: it can be answered
+// anywhere.
+function decisionLine(todos: Todos, { decision, task, todo }: TodoDecision): string {
+  const project = todo === null || todo.projectId === null ? null : todos.project(todo.projectId)
+  const rest = [
+    decision.reason,
+    `task #${task.id}`,
+    project === null ? null : `p${project.id} ${project.title}`,
+    `since ${localTime(decision.createdAt)}`,
+  ].filter((x) => x !== null)
+  const title = oneLine(todo?.title ?? task.brief, 80)
+  return `#${String(decision.id).padEnd(4)} ${'decide'.padEnd(9)} ${title}  · ${rest.join(' · ')}`
+}
+
 function tags(todos: Todos, t: Todo): string[] {
   const project = t.projectId === null ? null : todos.project(t.projectId)
   const finished = t.status === 'done' || t.status === 'dropped'
+  const on = t.status === 'waiting' ? waitingOn(todos, t) : null
   return [
     t.context,
     project === null ? null : `p${project.id} ${project.title}`,
-    t.status === 'waiting' && t.waitingOn !== null ? `waiting on ${t.waitingOn}` : null,
+    on === null ? null : `waiting on ${on}`,
     t.status === 'inbox' || t.status === 'waiting' ? `since ${localTime(t.statusAt)}` : null,
     finished ? `on ${localTime(t.statusAt)}` : null,
   ].filter((x) => x !== null)
+}
+
+// A person, or the tasks the todo was delegated to that can still go on.
+function waitingOn(todos: Todos, t: Todo): string | null {
+  if (t.waitingOn !== null) return t.waitingOn
+  const tasks = todos.tasks(t.id).filter(({ task }) => UNFINISHED.includes(task.status))
+  if (tasks.length === 0) return null
+  return tasks.map(({ task }) => `task #${task.id} (${task.status})`).join(', ')
 }
 
 const projectLine = (p: Project): string => {
