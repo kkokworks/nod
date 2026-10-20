@@ -16,3 +16,14 @@ export function taskNote(ledger: Ledger, t: Task): string {
     waiting.length > 0 ? `waits for ${waiting.map((a) => `#${a.id}`).join(', ')}: ${t.brief}` : null
   return t.error ?? waitsFor ?? ledger.lastAttempt(t.id)?.summary ?? t.brief
 }
+
+export function oneLine(s: string, max: number): string {
+  return s.replaceAll('\n', ' ').slice(0, max)
+}
+
+export function indent(s: string, n = 2): string {
+  return s
+    .split('\n')
+    .map((line) => ' '.repeat(n) + line)
+    .join('\n')
+}

@@ -464,7 +464,7 @@ function launch(
     ...(model === null ? [] : ['--model', model]),
     prompt,
   ]
-  Terminals.of(home).start(sessionName(taskId), cwd, argv, workerEnv(home))
+  Terminals.of(home).start(sessionName(taskId), cwd, argv, workerEnv(home, taskId))
 }
 
 // The built-in rules, then the ones the human approved from retrospectives.
@@ -496,8 +496,10 @@ function workerSettings(started: string | null): string {
 const startedMarker = (home: string, taskId: number): string =>
   join(home, 'work', `.started-${taskId}`)
 
-function workerEnv(home: string): Record<string, string> {
+// NOD_TASK names the task, so a todo the worker changes records `worker:<task>` (todos.ts).
+export function workerEnv(home: string, taskId: number | null): Record<string, string> {
   const env: Record<string, string> = { NOD_HOME: home, PATH: process.env.PATH ?? '' }
+  if (taskId !== null) env.NOD_TASK = String(taskId)
   if (process.env.CLAUDE_CONFIG_DIR) env.CLAUDE_CONFIG_DIR = process.env.CLAUDE_CONFIG_DIR
   return env
 }
@@ -518,7 +520,7 @@ async function ensureTrusted(home: string): Promise<void> {
     hooks: { SessionStart: [{ hooks: [{ type: 'command', command: `touch ${quote(started)}` }] }] },
   })
   const terminals = Terminals.of(home)
-  terminals.start('trust', work, ['claude', '--settings', settings], workerEnv(home))
+  terminals.start('trust', work, ['claude', '--settings', settings], workerEnv(home, null))
   try {
     await acceptTrust(terminals, 'trust', started)
   } finally {

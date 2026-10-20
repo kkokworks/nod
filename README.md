@@ -66,6 +66,24 @@ Bun.spawnSync(["osascript", "-e", "on run a", "-e", "display notification (item 
 
 검증에 되돌려졌거나 실패한 작업은 끝난 뒤 회고 워커가 돌아보고, 앞으로의 워커가 받을 규칙 한 줄을 결정으로 제안합니다. 받아들인 규칙은 `~/.nod/rules.md` 에 쌓이고 모든 워커에게 전해집니다. 이 파일은 직접 고쳐도 됩니다.
 
+사람이 할 일을 GTD 방식으로 적어 두는 장부도 있습니다. 떠오른 일은 `nod in` 으로 받은 일함에 넣고, 나중에 상태·프로젝트·상황을 정합니다.
+
+```sh
+nod in '치과에 예약 전화하기'              # 받은 일함에 넣기
+nod project add 건강 --outcome '치료 끝내기'
+nod todo set t1 --status next --project 건강 --context @전화   # 다음 행동으로 정리
+nod in '견적서 회신 받기'
+nod todo set t2 --status waiting --waiting-on 민수           # 기다리는 일
+nod todo                 # 받은 일함·다음 행동·대기
+nod todo next --context @전화
+nod project              # 진행 중인 프로젝트와 다음 행동 수 (없으면 알려 줌)
+nod project p1           # 한 프로젝트: 열린 할 일과 바뀐 이력
+nod todo t1              # 한 개 보기: 메모·링크·누가 무엇을 바꿨는지
+nod todo done t1
+```
+
+할 일은 `t<번호>`, 프로젝트는 `p<번호>` 로 씁니다. 작업·결정의 번호와 섞이지 않게 맨 숫자는 받지 않습니다. 상황이 없는 할 일은 어디서나 할 수 있는 일로 보고 상황으로 거를 때도 보여 줍니다. 언젠가로 미룬 프로젝트의 할 일은 `--project` 나 `--all` 을 줄 때만 보입니다. 바뀐 내용은 누가 바꿨는지와 함께 남습니다. 터미널의 사람은 `human`, Claude 세션은 `claude:<세션>`, nod 워커는 `worker:<작업>` 이고, `NOD_ACTOR` 를 주면 그 값을 씁니다.
+
 브라우저로 보려면 `ui/` 의 화면 서버를 띄웁니다.
 
 ```sh

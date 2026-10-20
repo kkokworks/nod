@@ -16,6 +16,7 @@ import {
   startReady,
   startTask,
   tell,
+  workerEnv,
   workspaceOf,
 } from './worker'
 
@@ -555,4 +556,9 @@ test('a retrospective that finds no general rule just succeeds', async () => {
   })
   expect(status(retro)).toBe('succeeded')
   expect(ledger.decisions(retro)).toEqual([])
+})
+
+test('a worker learns its task through NOD_TASK, so the todos it changes name it', () => {
+  expect(workerEnv('/h', 5)).toMatchObject({ NOD_HOME: '/h', NOD_TASK: '5' })
+  expect(workerEnv('/h', null)).not.toHaveProperty('NOD_TASK')
 })

@@ -1,0 +1,219 @@
+import { afterAll, expect, test } from 'bun:test'
+import { tempDirs } from '../test/tmp'
+import { Ledger } from './ledger'
+import { OPEN, parseRef, type TodoFilter, Todos } from './todos'
+
+const tmp = tempDirs()
+afterAll(tmp.removeAll)
+
+const fresh = (): Todos => new Todos(new Ledger(tmp.make('nod-todos-')).db)
+const captured = (todos: Todos, title: string, source = 'cli', sourceKey: string | null = null) =>
+  todos.capture({ title, notes: null, source, sourceKey, url: null }, 'human').todo
+const project = (todos: Todos, title: string) => todos.addProject({ title, outcome: null }, 'human')
+const open: TodoFilter = {
+  statuses: OPEN,
+  context: null,
+  projectId: null,
+  hideSomedayProjects: true,
+}
+const ids = (ts: { id: number }[]) => ts.map((t) => t.id)
+
+test('a capture lands in the inbox once per source key, and records who captured it', () => {
+  const todos = fresh()
+  const first = todos.capture(
+    { title: 'Reply to the review', notes: null, source: 'chat', sourceKey: 'k1', url: null },
+    'claude:abc',
+  )
+  expect(first.created).toBe(true)
+  expect(first.todo.status).toBe('inbox')
+  const again = todos.capture(
+    { title: 'Reply (renamed)', notes: null, source: 'chat', sourceKey: 'k1', url: null },
+    'claude:abc',
+  )
+  expect(again).toEqual({ todo: first.todo, created: false })
+  // The same key from another channel is another item.
+  expect(captured(todos, 'Other', 'mail', 'k1').id).not.toBe(first.todo.id)
+  expect(todos.changes(first.todo.id)).toEqual([
+    {
+      actor: 'claude:abc',
+      change: {
+        title: [null, 'Reply to the review'],
+        status: [null, 'inbox'],
+        source: [null, 'chat'],
+        sourceKey: [null, 'k1'],
+      },
+      at: first.todo.createdAt,
+    },
+  ])
+})
+
+test('a capture needs a title and a source, and a key or link that is not empty', () => {
+  const todos = fresh()
+  const base = { title: 'x', notes: null, source: 'cli', sourceKey: null, url: null }
+  expect(() => todos.capture({ ...base, title: ' ' }, 'human')).toThrow('empty title')
+  expect(() => todos.capture({ ...base, source: '' }, 'human')).toThrow('empty source')
+  expect(() => todos.capture({ ...base, sourceKey: '' }, 'human')).toThrow('empty key')
+  expect(() => todos.capture({ ...base, url: '' }, 'human')).toThrow('empty link')
+  expect(todos.list({ ...open, statuses: ['inbox'] })).toEqual([])
+})
+
+test('clarifying records each field before and after; status time moves only with the status', () => {
+  const todos = fresh()
+  const t = captured(todos, 'Call the dentist')
+  const p = project(todos, 'Health')
+  // A context is written with @, given with or without it.
+  const next = todos.set(t.id, { status: 'next', projectId: p.id, context: 'phone' }, 'human')
+  expect(next.context).toBe('@phone')
+  const statusChanged = todos.changes(t.id)[1]?.at
+  expect(next.statusAt).toBe(String(statusChanged))
+  Bun.sleepSync(2)
+  const renamed = todos.set(t.id, { title: 'Call the dentist to book', context: null }, 'worker:3')
+  expect(renamed.statusAt).toBe(next.statusAt)
+  expect(todos.changes(t.id)[2]?.at).not.toBe(statusChanged)
+  // Setting what is already there is no change.
+  todos.set(t.id, { status: 'next', notes: undefined }, 'human')
+  expect(todos.changes(t.id).map((c) => [c.actor, c.change])).toEqual([
+    [
+      'human',
+      { title: [null, 'Call the dentist'], status: [null, 'inbox'], source: [null, 'cli'] },
+    ],
+    ['human', { status: ['inbox', 'next'], projectId: [null, p.id], context: [null, '@phone'] }],
+    [
+      'worker:3',
+      { title: ['Call the dentist', 'Call the dentist to book'], context: ['@phone', null] },
+    ],
+  ])
+})
+
+test('leaving waiting forgets whom it waited on, unless the edit names someone', () => {
+  const todos = fresh()
+  const t = captured(todos, 'Ask about the invoice')
+  todos.set(t.id, { status: 'waiting', waitingOn: 'Kim' }, 'human')
+  expect(todos.set(t.id, { status: 'waiting', waitingOn: 'Lee' }, 'human').waitingOn).toBe('Lee')
+  expect(todos.set(t.id, { status: 'next' }, 'human').waitingOn).toBeNull()
+  expect(todos.changes(t.id).at(-1)?.change).toEqual({
+    status: ['waiting', 'next'],
+    waitingOn: ['Lee', null],
+  })
+})
+
+test('an edit that fails changes nothing, links included', () => {
+  const todos = fresh()
+  const t = captured(todos, 'x')
+  expect(() => todos.set(t.id, { projectId: 99 }, 'human', ['https://example.com/1'])).toThrow(
+    'no project p99',
+  )
+  expect(() => todos.set(t.id, { title: ' ' }, 'human')).toThrow('empty title')
+  expect(() => todos.set(t.id, {}, 'human', [''])).toThrow('empty link')
+  expect(todos.get(t.id)).toEqual(t)
+  expect(todos.links(t.id)).toEqual([])
+  expect(todos.changes(t.id)).toHaveLength(1)
+})
+
+test('finishing several todos is all or nothing', () => {
+  const todos = fresh()
+  const a = captured(todos, 'a')
+  expect(() => todos.finish([a.id, 99], 'done', 'human')).toThrow('no todo t99')
+  expect(todos.get(a.id).status).toBe('inbox')
+  expect(todos.finish([a.id], 'done', 'human').map((t) => t.status)).toEqual(['done'])
+})
+
+test('links are kept once each and recorded as changes', () => {
+  const todos = fresh()
+  const t = todos.capture(
+    { title: 't', notes: null, source: 'cli', sourceKey: null, url: 'https://example.com/a' },
+    'human',
+  ).todo
+  todos.set(t.id, {}, 'human', ['https://example.com/a', 'https://example.com/b'])
+  expect(todos.links(t.id)).toEqual([
+    { url: 'https://example.com/a', title: null },
+    { url: 'https://example.com/b', title: null },
+  ])
+  expect(todos.changes(t.id).filter((c) => 'link' in c.change)).toHaveLength(2)
+})
+
+test('lists go in GTD order and filter by status, context and project', () => {
+  const todos = fresh()
+  const p = project(todos, 'P')
+  const waiting = captured(todos, 'w')
+  todos.set(waiting.id, { status: 'waiting', waitingOn: 'Kim', projectId: p.id }, 'human')
+  const inbox = captured(todos, 'i')
+  const phone = captured(todos, 'n')
+  todos.set(phone.id, { status: 'next', context: '@phone', projectId: p.id }, 'human')
+  const anywhere = captured(todos, 'a')
+  todos.set(anywhere.id, { status: 'next' }, 'human')
+  const desk = captured(todos, 'd')
+  todos.set(desk.id, { status: 'next', context: '@desk' }, 'human')
+
+  expect(ids(todos.list(open))).toEqual([inbox.id, phone.id, anywhere.id, desk.id, waiting.id])
+  // A todo with no context can be done anywhere, so it is listed in every context.
+  expect(ids(todos.list({ ...open, statuses: ['next'], context: 'phone' }))).toEqual([
+    phone.id,
+    anywhere.id,
+  ])
+  expect(ids(todos.list({ ...open, projectId: p.id }))).toEqual([phone.id, waiting.id])
+})
+
+test('putting a project off hides its todos until it is named or everything is listed', () => {
+  const todos = fresh()
+  const p = project(todos, 'Later')
+  const t = captured(todos, 'Plan the trip')
+  todos.set(t.id, { status: 'next', projectId: p.id }, 'human')
+  todos.setProject(p.id, { status: 'someday' }, 'human')
+  expect(todos.list(open)).toEqual([])
+  expect(ids(todos.list({ ...open, hideSomedayProjects: false }))).toEqual([t.id])
+  expect(ids(todos.list({ ...open, projectId: p.id, hideSomedayProjects: false }))).toEqual([t.id])
+})
+
+test('a closed project holds no open todo, whichever side changes', () => {
+  const todos = fresh()
+  const p = project(todos, 'Move office')
+  const t = captured(todos, 'Book movers')
+  todos.set(t.id, { status: 'next', projectId: p.id }, 'human')
+  expect(todos.projects(['active']).map((x) => [x.id, x.next, x.waiting])).toEqual([[p.id, 1, 0]])
+  expect(() => todos.setProject(p.id, { status: 'done' }, 'human')).toThrow(
+    `p${p.id} still has open todos t${t.id}`,
+  )
+  todos.finish([t.id], 'done', 'human')
+  expect(todos.setProject(p.id, { status: 'done' }, 'human').status).toBe('done')
+  expect(todos.projects(['active'])).toEqual([])
+  // Reopening a todo of the closed project, or moving an open one into it, is refused.
+  expect(() => todos.set(t.id, { status: 'next' }, 'human')).toThrow(`p${p.id} is done`)
+  const other = captured(todos, 'Other')
+  expect(() => todos.set(other.id, { projectId: p.id }, 'human')).toThrow(`p${p.id} is done`)
+  // A finished todo may still be filed under it.
+  todos.finish([other.id], 'done', 'human')
+  expect(todos.set(other.id, { projectId: p.id }, 'human').projectId).toBe(p.id)
+})
+
+test('project changes record who made them, and titles never look like refs', () => {
+  const todos = fresh()
+  const p = todos.addProject({ title: 'Health', outcome: 'Teeth fixed' }, 'claude:abc')
+  todos.setProject(p.id, { outcome: null, status: 'someday' }, 'human')
+  expect(todos.projectChanges(p.id).map((c) => [c.actor, c.change])).toEqual([
+    [
+      'claude:abc',
+      { title: [null, 'Health'], outcome: [null, 'Teeth fixed'], status: [null, 'active'] },
+    ],
+    ['human', { outcome: ['Teeth fixed', null], status: ['active', 'someday'] }],
+  ])
+  expect(() => project(todos, 'p7')).toThrow('a project title cannot look like p<n>: p7')
+  expect(() => project(todos, '2026')).toThrow('a project title cannot look like p<n>: 2026')
+})
+
+test('a project is found by p<n> or by its exact title, and only one', () => {
+  const todos = fresh()
+  const a = project(todos, 'Same')
+  expect(todos.findProject(`p${a.id}`)).toEqual(a)
+  expect(todos.findProject('Same')).toEqual(a)
+  expect(() => todos.findProject(String(a.id))).toThrow(`not a project: ${a.id} (write p<n>)`)
+  const b = project(todos, 'Same')
+  expect(() => todos.findProject('Same')).toThrow(`p${a.id}, p${b.id} are all titled "Same"`)
+  expect(() => todos.findProject('Nope')).toThrow('no project titled "Nope"')
+})
+
+test('refs need their prefix: a bare number could be a decision or a task', () => {
+  expect(parseRef('t12', 't')).toBe(12)
+  expect(() => parseRef('12', 't')).toThrow('not a todo: 12 (write t<n>)')
+  expect(() => parseRef('p12', 't')).toThrow('not a todo: p12')
+})

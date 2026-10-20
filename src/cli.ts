@@ -5,8 +5,10 @@ import { parseArgs } from 'node:util'
 import { collect, type GcPick, remotesHolding } from './gc'
 import { type Attempt, type Decision, Ledger, nodHome, type Task, type Trigger } from './ledger'
 import { Terminals } from './tmux'
+import { capture, projectCommand, TODO_USAGE, todoCommand } from './todo-cli'
+import { Todos } from './todos'
 import { addTrigger, nextRun, syncSchedule, tick } from './triggers'
-import { taskNote, taskStatus } from './view'
+import { indent, oneLine, taskNote, taskStatus } from './view'
 import {
   answer,
   branchOf,
@@ -66,6 +68,7 @@ const USAGE = `usage:
   nod tick                         run the triggers that are due; the OS scheduler calls this
                                    every minute while any trigger exists
   nod hook stop|notification       called by Claude Code hooks in worker sessions
+${TODO_USAGE}
 
 When <home>/notify exists, nod runs it with a JSON event on stdin whenever a decision opens, a
 task succeeds or fails to start, or a trigger fails. <home> is $NOD_HOME, or ~/.nod.`
@@ -140,6 +143,15 @@ switch (command) {
   }
   case 'hook':
     await hook(rest[0])
+    break
+  case 'in':
+    capture(new Todos(ledger.db), rest)
+    break
+  case 'todo':
+    todoCommand(new Todos(ledger.db), rest)
+    break
+  case 'project':
+    projectCommand(new Todos(ledger.db), rest)
     break
   default: {
     const id = Number(command)
@@ -450,15 +462,4 @@ function words(args: string[]): string {
 
 function secsBetween(from: string, to: string): number {
   return Math.round((Date.parse(to) - Date.parse(from)) / 1000)
-}
-
-function oneLine(s: string, max: number): string {
-  return s.replaceAll('\n', ' ').slice(0, max)
-}
-
-function indent(s: string, n = 2): string {
-  return s
-    .split('\n')
-    .map((line) => ' '.repeat(n) + line)
-    .join('\n')
 }

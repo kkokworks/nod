@@ -211,9 +211,62 @@ const MIGRATIONS = [
   update tasks set branch = 'nod/' || id where repo is not null;
   alter table triggers add column branch text;
   `,
+  // v10: the person's own todos and projects, kept GTD-style (todos.ts). A todo is not a task: it
+  // is something to do, by the person or, once delegated, by a task. Statuses are checked in
+  // todos.ts, as tasks' are in code: a CHECK constraint in SQLite changes only by rebuilding the
+  // table, which the foreign keys pointing at it make hard inside a migration.
+  `
+  create table projects (
+    id integer primary key,
+    title text not null,
+    outcome text,
+    status text not null default 'active',
+    created_at text not null,
+    status_at text not null
+  );
+  create table todos (
+    id integer primary key,
+    title text not null,
+    notes text,
+    status text not null default 'inbox',
+    project_id integer references projects(id),
+    context text,
+    waiting_on text,
+    source text not null,
+    source_key text,
+    created_at text not null,
+    status_at text not null
+  );
+  create unique index todos_source_key on todos(source, source_key) where source_key is not null;
+  create index todos_status on todos(status);
+  create table todo_links (
+    todo_id integer not null references todos(id),
+    url text not null,
+    title text,
+    created_at text not null,
+    primary key (todo_id, url)
+  );
+  create table todo_changes (
+    id integer primary key,
+    todo_id integer not null references todos(id),
+    actor text not null,
+    change text not null,
+    at text not null
+  );
+  create index todo_changes_todo on todo_changes(todo_id);
+  create table project_changes (
+    id integer primary key,
+    project_id integer not null references projects(id),
+    actor text not null,
+    change text not null,
+    at text not null
+  );
+  create index project_changes_project on project_changes(project_id);
+  `,
 ]
 
 // The tables as the migrations leave them, in camelCase; CamelCasePlugin maps names to snake_case.
+// The todo tables (v10) are typed in todos.ts.
 type Tables = {
   tasks: Omit<Task, 'id' | 'status'> & { id: Generated<number>; status: Generated<TaskStatus> }
   taskDeps: { taskId: number; afterId: number }
@@ -224,17 +277,19 @@ type Tables = {
   decisions: Omit<Decision, 'id'> & { id: Generated<number> }
 }
 
-// Kysely only builds and type-checks the queries; bun:sqlite runs them, so the ledger stays
-// synchronous and its transactions stay bun:sqlite ones.
-const q = new Kysely<Tables>({
-  dialect: {
-    createAdapter: () => new SqliteAdapter(),
-    createDriver: () => new DummyDriver(),
-    createIntrospector: (db) => new SqliteIntrospector(db),
-    createQueryCompiler: () => new SqliteQueryCompiler(),
-  },
-  plugins: [new CamelCasePlugin()],
-})
+// Kysely only builds and type-checks the queries; bun:sqlite runs them (runQuery), so the ledger
+// stays synchronous and its transactions stay bun:sqlite ones.
+export const queryBuilder = <T>(): Kysely<T> =>
+  new Kysely<T>({
+    dialect: {
+      createAdapter: () => new SqliteAdapter(),
+      createDriver: () => new DummyDriver(),
+      createIntrospector: (db) => new SqliteIntrospector(db),
+      createQueryCompiler: () => new SqliteQueryCompiler(),
+    },
+    plugins: [new CamelCasePlugin()],
+  })
+const q = queryBuilder<Tables>()
 
 // Trigger and Attempt leave out a column their table has.
 const TRIGGER = [
@@ -279,14 +334,22 @@ export class Ledger {
   constructor(home: string = nodHome()) {
     mkdirSync(home, { recursive: true })
     this.db = new Database(join(home, 'nod.db'), { create: true, strict: true })
-    this.db.exec('pragma journal_mode = wal; pragma busy_timeout = 5000; pragma foreign_keys = on;')
-    const version = this.db.query<{ user_version: number }, []>('pragma user_version').get()
+    // busy_timeout first: switching to WAL takes a lock, and without the timeout a ledger opened
+    // by several processes at once fails with `database is locked` (1 in 30 measured).
+    this.db.exec('pragma busy_timeout = 5000; pragma journal_mode = wal; pragma foreign_keys = on;')
+    const version = (): number =>
+      this.db.query<{ user_version: number }, []>('pragma user_version').get()?.user_version ?? 0
     for (const [i, sql] of MIGRATIONS.entries()) {
-      if (i < (version?.user_version ?? 0)) continue
-      this.db.transaction(() => {
-        this.db.exec(sql)
-        this.db.exec(`pragma user_version = ${i + 1}`)
-      })()
+      if (i < version()) continue
+      // Immediate, and the version read again inside: another process opening the ledger may have
+      // run this migration while this one waited for the lock.
+      this.db
+        .transaction(() => {
+          if (i < version()) return
+          this.db.exec(sql)
+          this.db.exec(`pragma user_version = ${i + 1}`)
+        })
+        .immediate()
     }
   }
 
@@ -775,20 +838,25 @@ export class Ledger {
     return row.id
   }
 
-  // Runs a query and returns its rows, whether or not it reads any.
   private run<O>(query: Compilable<O>): O[] {
-    const { sql, parameters } = query.compile()
-    const rows = this.db
-      .query<Record<string, unknown>, SQLQueryBindings[]>(sql)
-      // Kysely compiles only the values the query was typed with: strings, numbers and nulls.
-      .all(...(parameters as SQLQueryBindings[]))
-    // CamelCasePlugin renames result columns only when Kysely runs the query, so do it here.
-    return rows.map(camelKeys) as O[]
+    return runQuery(this.db, query)
   }
 
   private first<O>(query: Compilable<O>): O | null {
     return this.run(query)[0] ?? null
   }
+}
+
+// Runs a query and returns its rows, whether or not it reads any. Shared with the todo tables
+// (todos.ts), which keep their own query builder.
+export function runQuery<O>(db: Database, query: Compilable<O>): O[] {
+  const { sql, parameters } = query.compile()
+  const rows = db
+    .query<Record<string, unknown>, SQLQueryBindings[]>(sql)
+    // Kysely compiles only the values the query was typed with: strings, numbers and nulls.
+    .all(...(parameters as SQLQueryBindings[]))
+  // CamelCasePlugin renames result columns only when Kysely runs the query, so do it here.
+  return rows.map(camelKeys) as O[]
 }
 
 const camelKeys = (row: Record<string, unknown>): Record<string, unknown> =>
