@@ -132,19 +132,36 @@ test('a watch is only for a waiting todo, and passing it makes the todo next aga
   expect(ids(todos.watched())).toEqual([t.id])
 
   // Its watch changed while the command ran: that result is not for this watch.
-  expect(todos.watchPassed(t.id, 'test -f other', 'nod')).toBe(false)
-  expect(todos.watchPassed(t.id, 'test -f pushed', 'nod')).toBe(true)
+  expect(todos.endWatch(t.id, 'test -f other', 'passed', 'nod')).toBe(false)
+  expect(todos.endWatch(t.id, 'test -f pushed', 'passed', 'nod')).toBe(true)
   const back = todos.get(t.id)
   expect([back.status, back.waitingOn, back.watch]).toEqual(['next', null, null])
   expect(back.notes).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2} watch passed: test -f pushed$/)
   expect(todos.changes(t.id).at(-1)?.actor).toBe('nod')
-  expect(todos.watchPassed(t.id, 'test -f pushed', 'nod')).toBe(false)
+  expect(todos.endWatch(t.id, 'test -f pushed', 'passed', 'nod')).toBe(false)
   expect(todos.watched()).toEqual([])
 
   // Leaving waiting any other way forgets the watch too.
   const u = captured(todos, 'Hear back on the quote')
   todos.set(u.id, { status: 'waiting', watch: 'false' }, 'human')
   expect(todos.set(u.id, { status: 'done' }, 'human').watch).toBeNull()
+})
+
+test('a todo waiting on its task has no watch: handing it over drops one, and none is given', () => {
+  const { ledger, todos } = books()
+  const t = captured(todos, 'Ship the fix')
+  todos.set(t.id, { status: 'waiting', watch: 'test -f shipped' }, 'human')
+  const first = todos.delegate(t.id, task, 'human')
+  expect(todos.get(t.id)).toMatchObject({ status: 'waiting', watch: null })
+  expect(() => todos.check(t.id, { watch: 'test -f shipped' })).toThrow(
+    `t${t.id} waits on its task`,
+  )
+  // Once the task has ended, the todo is the person's again and can be watched.
+  ledger.succeed(first)
+  todos.followTasks('nod')
+  expect(todos.set(t.id, { status: 'waiting', watch: 'test -f shipped' }, 'human').watch).toBe(
+    'test -f shipped',
+  )
 })
 
 test('an edit that fails changes nothing, links included', () => {

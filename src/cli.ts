@@ -77,8 +77,9 @@ const USAGE = `usage:
                                    which is also the task's issue). In a repo each task works on
                                    the branch <prefix>/<task>
   nod trigger ls | rm <trigger>
-  nod tick                         run the triggers that are due; the OS scheduler calls this
-                                   every minute while any trigger exists
+  nod tick                         run the triggers that are due and the watches; the OS
+                                   scheduler calls this every minute while any trigger or watch
+                                   exists, and runs the watches every fifth minute
   nod hook stop|notification       called by Claude Code hooks in worker sessions
 
 A <task> is a task's number, or t<n> for the latest task doing todo t<n>.
@@ -152,7 +153,8 @@ switch (command) {
     await trigger(rest)
     break
   case 'tick': {
-    const { added, passed } = await tick(ledger, home, new Date())
+    // Run by hand, it checks the watches now too, not only on their every fifth minute.
+    const { added, passed } = await tick(ledger, home, new Date(), true)
     if (added.length > 0) console.log(`added task(s) ${added.join(', ')}`)
     if (passed.length > 0) console.log(`watch passed: ${passed.map((id) => `t${id}`).join(', ')}`)
     if (added.length === 0 && passed.length === 0) console.log('nothing due')

@@ -470,8 +470,8 @@ test('due triggers add tasks, a source only for lines it has not printed before,
   const now = new Date(Date.now() + 120_000)
   const {
     added: [fromSource, scheduled],
-  } = await tick(ledger, home, now)
-  expect((await tick(ledger, home, now)).added).toEqual([]) // both ran this minute already
+  } = await tick(ledger, home, now, false)
+  expect((await tick(ledger, home, now, false)).added).toEqual([]) // both ran this minute already
   if (fromSource === undefined || scheduled === undefined) throw new Error('triggers added no task')
   expect(ledger.get(fromSource).brief).toContain('> new item')
   expect(ledger.get(scheduled).triggerId).not.toBeNull()

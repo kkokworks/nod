@@ -1,7 +1,16 @@
 import type { Database } from 'bun:sqlite'
 import type { Compilable, Generated } from 'kysely'
 import { z } from 'zod'
-import { type Dates, dayOf, localDay, nextDates, parseWhen, REPEATS, type Repeat } from './days'
+import {
+  type Dates,
+  dayOf,
+  localDay,
+  localTime,
+  nextDates,
+  parseWhen,
+  REPEATS,
+  type Repeat,
+} from './days'
 import {
   type Decision,
   type Ledger,
@@ -267,6 +276,11 @@ export class Todos {
     })()
   }
 
+  // Refuses the edit as `set` would, changing nothing, so slow work for it can wait until it holds.
+  check(id: number, edit: TodoEdit): void {
+    this.settle(this.get(id), edit)
+  }
+
   // Marks every todo done or dropped, or none of them when one does not exist.
   finish(ids: number[], status: 'done' | 'dropped', actor: string): Todo[] {
     return this.db.transaction(() => ids.map((id) => this.set(id, { status }, actor)))()
@@ -348,8 +362,8 @@ export class Todos {
     ).map(parsed)
   }
 
-  // Hands the todo to a new task. It then waits on nod, with no one in `waitingOn`, until
-  // followTasks moves it on.
+  // Hands the todo to a new task. It then waits on nod, with no one in `waitingOn` and no watch,
+  // until followTasks moves it on.
   delegate(id: number, task: NewTask, actor: string): number {
     return this.db.transaction(() => {
       const todo = this.get(id)
@@ -357,7 +371,7 @@ export class Todos {
         throw new Error(`t${id} is ${todo.status}; reopen it before delegating it`)
       }
       const taskId = this.ledger.addTodoTask(task, id)
-      this.set(id, { status: 'waiting', waitingOn: null }, actor)
+      this.set(id, { status: 'waiting', waitingOn: null, watch: null }, actor)
       return taskId
     })()
   }
@@ -409,25 +423,20 @@ export class Todos {
   }
 
   // The waiting todos with a watch, which the tick runs.
-  watched(): Todo[] {
+  watched(): (Todo & { watch: string })[] {
     return this.run(
-      q
-        .selectFrom('todos')
-        .selectAll()
-        .where('status', '=', 'waiting')
-        .where('watch', 'is not', null)
-        .orderBy('id'),
-    )
+      q.selectFrom('todos').selectAll().where('status', '=', 'waiting').orderBy('id'),
+    ).filter((t): t is Todo & { watch: string } => t.watch !== null)
   }
 
-  // Makes a watched todo a next action again once its watch has passed, with a line in its notes
-  // saying when. A todo that left waiting or got another watch while the command ran is left as it
-  // is; false says so.
-  watchPassed(id: number, watch: string, actor: string): boolean {
+  // Makes a watched todo a next action again once its watch has ended, with a line in its notes
+  // saying when and how: `passed`, or `cannot run (<why>)`. A todo that left waiting or got another
+  // watch while the command ran is left as it is; false says so.
+  endWatch(id: number, watch: string, outcome: string, actor: string): boolean {
     return this.db.transaction(() => {
       const t = this.get(id)
       if (t.status !== 'waiting' || t.watch !== watch) return false
-      const line = `${new Date().toLocaleString('sv-SE').slice(0, 16)} watch passed: ${watch}`
+      const line = `${localTime(new Date())} watch ${outcome}: ${watch}`
       const notes = [t.notes, line].filter((x) => x !== null).join('\n')
       this.set(id, { status: 'next', notes }, actor)
       return true
@@ -644,6 +653,13 @@ export class Todos {
     const status = edit.status ?? before.status
     if (typeof edit.watch === 'string' && status !== 'waiting') {
       throw new Error('a watch is for a waiting todo; give --status waiting with it')
+    }
+    // Its task's end moves it on; a watch passing first would leave the task's end nothing to move.
+    if (
+      typeof edit.watch === 'string' &&
+      this.ledger.tasksOf(before.id).some((t) => UNFINISHED.includes(t.status))
+    ) {
+      throw new Error(`t${before.id} waits on its task, which moves it on when it ends`)
     }
     const projectId = edit.projectId === undefined ? before.projectId : edit.projectId
     if (projectId !== null && OPEN.includes(status)) {

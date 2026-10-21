@@ -22,6 +22,7 @@ export type NotifyEvent =
   | { event: 'error'; task: TaskRef; error: string }
   | { event: 'trigger_failed'; trigger: { id: number; cron: string }; error: string }
   | { event: 'watch_passed'; todo: { id: number; title: string }; watch: string }
+  | { event: 'watch_failed'; todo: { id: number; title: string }; watch: string; error: string }
 
 export const taskRef = (t: Task): TaskRef => ({ id: t.id, brief: t.brief, issue: t.issue })
 

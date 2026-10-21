@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { tempDirs } from '../test/tmp'
 import { Ledger } from './ledger'
 import { Todos } from './todos'
-import { addTrigger, nextRun, parseItems, tick } from './triggers'
+import { addTrigger, nextRun, parseItems, shell, tick } from './triggers'
 
 // Only what runs without workers; the tick's triggers start tasks, so they are tested with the
 // fake agent in worker.test.ts. Its watches start none and are tested here.
@@ -47,7 +47,7 @@ test('adding a trigger with a source records what it lists now, and a failing so
   expect(ledger.triggers().map((t) => t.id)).toEqual([added.id])
 })
 
-test('every fifth minute the tick runs the watches, and one that exits 0 brings its todo back', async () => {
+test('a tick with watches brings back the todo whose watch exits 0, or can no longer run', async () => {
   const home = tmp.make('nod-watches-')
   const todos = new Todos(new Ledger(home))
   const flag = join(home, 'pushed')
@@ -60,12 +60,25 @@ test('every fifth minute the tick runs the watches, and one that exits 0 brings 
   }
   const pushed = waiting('Get the repo pushed', `test -f ${JSON.stringify(flag)}`)
   const never = waiting('Hear back', 'exit 2') // a failing command is not yet, not an error
+  const gone = waiting('See it merged', 'no-such-command-here') // the tick's PATH lacks it
 
   writeFileSync(flag, '')
-  const at = (minute: number) => new Date(2026, 9, 21, 10, minute)
-  expect((await tick(todos.ledger, home, at(6))).passed).toEqual([]) // not a watch minute
+  const now = new Date()
+  expect((await tick(todos.ledger, home, now, false)).passed).toEqual([])
   expect(todos.get(pushed).status).toBe('waiting')
-  expect((await tick(todos.ledger, home, at(10))).passed).toEqual([pushed])
-  expect([todos.get(pushed).status, todos.get(never).status]).toEqual(['next', 'waiting'])
+  expect((await tick(todos.ledger, home, now, true)).passed).toEqual([pushed])
+  expect([pushed, never, gone].map((id) => todos.get(id).status)).toEqual([
+    'next',
+    'waiting',
+    'next',
+  ])
+  expect(todos.get(gone).notes).toMatch(/ watch cannot run \(.*not found\): no-such-command-here$/)
   expect(todos.watched().map((t) => t.id)).toEqual([never])
+})
+
+test('a timed-out command ends with all of its pipeline, not only the shell', async () => {
+  const started = Date.now()
+  const { code } = await shell('sleep 5 | cat', tmp.make('nod-shell-'), 200)
+  expect(code).not.toBe(0)
+  expect(Date.now() - started).toBeLessThan(2000)
 })

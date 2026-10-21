@@ -2,7 +2,7 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { parseArgs } from 'node:util'
 import { type CalendarEvent, calendarBuild, readEvents } from './calendar'
-import { addDays, dayOf, localDay, parseWhen, REPEATS, type Repeat } from './days'
+import { addDays, dayOf, localDay, localTime, parseWhen, REPEATS, type Repeat } from './days'
 import {
   type Change,
   OPEN,
@@ -14,7 +14,7 @@ import {
   type TodoDecision,
   type Todos,
 } from './todos'
-import { runWatch, syncSchedule } from './triggers'
+import { ensureSchedule, tryWatch } from './triggers'
 import { nudgeLine, STALE_DAYS, type Trust } from './trust'
 import { changeText, indent, oneLine } from './view'
 import { message } from './worker'
@@ -41,9 +41,12 @@ export const TODO_USAGE = `  nod in <what...> [--notes <text>] [--source <channe
                                    clarify and organize it; an empty value clears a field.
                                    Leaving waiting forgets whom it waited on and its watch.
                                    --watch gives a waiting todo a command that nod's tick runs
-                                   every 5 minutes; once it exits 0, the todo is a next action
-                                   again, with a note. It runs once when given: one that passes
-                                   already, or that the shell cannot run, is refused. A <day> is
+                                   in <home> every 5 minutes (cd to a repo in it); once it exits
+                                   0, or can no longer run, the todo is a next action again, with
+                                   a note. It runs once when given, and how it ended is shown;
+                                   one that does not parse, passes already, or that the shell
+                                   cannot run, is refused. Keep secrets out of it: it is kept in
+                                   the notes and history. A <day> is
                                    YYYY-MM-DD, today or tomorrow; --due and --on also take a time,
                                    '<day> HH:MM'. --on is a day- or time-specific action, --start
                                    leaves it out of the lists until that day, and --focus picks it
@@ -210,7 +213,7 @@ function trustLines(t: Trust): string[] {
     `overdue  ${t.overdue.length}${listed(t.overdue.map(todo))}`,
     `today    ${t.today.length}${listed(t.today.map(todo))}`,
     `stuck    ${t.stuck.length} active project(s) with no next action${listed(t.stuck.map((p) => `p${p.id} ${p.title}`))}`,
-    `waiting  ${t.stale.length} on a person, unchanged for ${STALE_DAYS}+ days${listed(t.stale.map((x) => `${todo(x.todo)} (${x.todo.waitingOn}, ${x.days} days)`))}`,
+    `waiting  ${t.stale.length} on a person or a watch, unchanged for ${STALE_DAYS}+ days${listed(t.stale.map((x) => `${todo(x.todo)} (${x.todo.waitingOn ?? 'watched'}, ${x.days} days)`))}`,
     `review   weekly: ${review}`,
   ]
 }
@@ -248,42 +251,35 @@ async function setTodo(todos: Todos, home: string, args: string[]): Promise<void
   if (added !== undefined && values.notes !== undefined) {
     throw new Error('--notes replaces the notes and --add-note adds a line to them; give one')
   }
-  // A line added below the notes, so recording why leaves what was there alone.
+  const watch = cleared(values.watch)
+  const edit = {
+    status,
+    title: values.title,
+    context: cleared(values.context),
+    waitingOn: cleared(values['waiting-on']),
+    due: cleared(values.due),
+    scheduled: cleared(values.on),
+    start: cleared(values.start),
+    focus: cleared(values.focus),
+    repeat: repeatOf(values.repeat),
+    watch,
+    projectId:
+      project === undefined ? undefined : project === '' ? null : todos.findProject(project).id,
+  }
+  // A new watch runs once, which can take a while, so only for an edit that holds.
+  if (typeof watch === 'string') todos.check(id, edit)
+  const tried = typeof watch === 'string' ? await tryWatch(watch, home) : null
+  // A line added below the notes, so recording why leaves what was there alone. Read after the
+  // watch ran, so nothing written meanwhile is lost.
   const notes =
     added === undefined
       ? cleared(values.notes)
       : [todos.get(id).notes, added].filter((x) => x !== null).join('\n')
-  const watch = cleared(values.watch)
-  // Run once now, as a trigger's source is: a watch that already passes has nothing to wait for,
-  // and one the shell cannot run (126, 127) would never pass.
-  if (typeof watch === 'string') {
-    const { code, output } = await runWatch(watch, home)
-    if (code === 0) throw new Error('the watch passes already, so there is nothing to wait for')
-    if (code === 126 || code === 127) throw new Error(`the watch cannot run: ${output}`)
-  }
-  const todo = todos.set(
-    id,
-    {
-      status,
-      title: values.title,
-      notes,
-      context: cleared(values.context),
-      waitingOn: cleared(values['waiting-on']),
-      due: cleared(values.due),
-      scheduled: cleared(values.on),
-      start: cleared(values.start),
-      focus: cleared(values.focus),
-      repeat: repeatOf(values.repeat),
-      watch,
-      projectId:
-        project === undefined ? undefined : project === '' ? null : todos.findProject(project).id,
-    },
-    actorFromEnv(),
-    values.link ?? [],
-  )
+  const todo = todos.set(id, { ...edit, notes }, actorFromEnv(), values.link ?? [])
   // Only the tick runs a watch. It takes itself off once nothing is left to watch.
-  if (typeof watch === 'string') await syncSchedule(todos.ledger, home)
+  if (typeof watch === 'string') await ensureSchedule(todos.ledger, home)
   console.log(line(todos, todo))
+  if (tried !== null) console.log(`  ${tried}`)
 }
 
 function finishTodos(todos: Todos, sub: 'done' | 'drop', refs: string[]): void {
@@ -478,7 +474,7 @@ function decisionLine(todos: Todos, { decision, task, todo }: TodoDecision): str
     decision.reason,
     `task #${task.id}`,
     project === null ? null : `p${project.id} ${project.title}`,
-    `since ${localTime(decision.createdAt)}`,
+    `since ${localTime(new Date(decision.createdAt))}`,
   ].filter((x) => x !== null)
   const title = oneLine(todo?.title ?? task.brief, 80)
   return `#${String(decision.id).padEnd(4)} ${'decide'.padEnd(9)} ${title}  · ${rest.join(' · ')}`
@@ -498,8 +494,10 @@ function tags(todos: Todos, t: Todo): string[] {
     t.start === null ? null : `starts ${t.start}`,
     t.repeat === null ? null : `repeats ${t.repeat}`,
     t.focus === null ? null : `focus ${t.focus}`,
-    t.status === 'inbox' || t.status === 'waiting' ? `since ${localTime(t.statusAt)}` : null,
-    finished ? `on ${localTime(t.statusAt)}` : null,
+    t.status === 'inbox' || t.status === 'waiting'
+      ? `since ${localTime(new Date(t.statusAt))}`
+      : null,
+    finished ? `on ${localTime(new Date(t.statusAt))}` : null,
   ].filter((x) => x !== null)
 }
 
@@ -511,8 +509,6 @@ const projectLine = (p: Project): string => {
 function printChanges(changes: Change[]): void {
   console.log('  changes')
   for (const c of changes) {
-    console.log(`    ${localTime(c.at)}  ${c.actor}  ${changeText(c)}`)
+    console.log(`    ${localTime(new Date(c.at))}  ${c.actor}  ${changeText(c)}`)
   }
 }
-
-const localTime = (iso: string): string => new Date(iso).toLocaleString('sv-SE').slice(0, 16)

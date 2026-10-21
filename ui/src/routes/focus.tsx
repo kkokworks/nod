@@ -86,7 +86,7 @@ function Attention({ page }: { page: Page }) {
     t.stale.length === 0
       ? null
       : {
-          text: `Waiting long: ${t.stale.map((s) => `${s.todo.waitingOn} (${s.days}d)`).join(', ')}`,
+          text: `Waiting long: ${t.stale.map((s) => `${s.todo.waitingOn ?? s.todo.title} (${s.days}d)`).join(', ')}`,
           to: '/todos',
         },
     reviewDue(t) ? { text: `Weekly review ${t.sinceReview} days ago`, to: null } : null,

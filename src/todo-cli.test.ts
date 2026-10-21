@@ -1,5 +1,6 @@
 import { afterAll, expect, test } from 'bun:test'
-import { resolve } from 'node:path'
+import { existsSync } from 'node:fs'
+import { join, resolve } from 'node:path'
 import { tempDirs } from '../test/tmp'
 import { Ledger } from './ledger'
 import { actorFromEnv } from './todo-cli'
@@ -101,7 +102,7 @@ test('capture, clarify into a project, finish, and read back who changed what', 
 })
 
 test('a channel key is captured once, and bad input is refused without changing anything', async () => {
-  const { ok, fails } = runner()
+  const { ok, fails, home } = runner()
   expect(await ok('in', 'Review the PR', '--source', 'chat', '--key', 'm1')).toEqual([
     't1    inbox     Review the PR  · since <time>',
   ])
@@ -123,6 +124,13 @@ test('a channel key is captured once, and bad input is refused without changing 
   const watch = (cmd: string) => fails('todo', 'set', 't1', '--status', 'waiting', '--watch', cmd)
   expect(await watch('true')).toContain('the watch passes already')
   expect(await watch('no-such-command-here')).toContain('the watch cannot run')
+  expect(await watch('test -f "x')).toContain('the watch does not parse')
+  // An edit that would be refused is refused before its watch runs.
+  const ran = join(home, 'ran')
+  expect(await fails('todo', 'set', 't1', '--watch', `touch ${JSON.stringify(ran)}`)).toContain(
+    'a watch is for a waiting todo',
+  )
+  expect(existsSync(ran)).toBe(false)
   expect(await ok('todo', '--all')).toEqual(['t1    inbox     Review the PR  · since <time>'])
 })
 
