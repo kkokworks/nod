@@ -28,6 +28,7 @@ export type TaskRow = {
   title: string
   note: string
   issue: string | null
+  todoId: number | null
   projectId: number | null
   links: string[]
 }
@@ -35,7 +36,7 @@ export type TaskRow = {
 // Where a task sits in the person's lists: the todo it does and that todo's project.
 export type Place = { todo: Todo | null; project: Project | null }
 
-export type OpenDecision = Decision & { brief: string; issue: string | null }
+export type OpenDecision = Decision & { brief: string; issue: string | null; todoId: number | null }
 
 export type Overview = {
   decisions: OpenDecision[]
@@ -71,7 +72,7 @@ export function overview(): Overview {
   return {
     decisions: ledger.openDecisions().map((d) => {
       const t = ledger.get(d.taskId)
-      return { ...d, brief: t.brief, issue: t.issue }
+      return { ...d, brief: t.brief, issue: t.issue, todoId: t.todoId }
     }),
     groups: [...Map.groupBy(rows, (t) => t.projectId)]
       .map(([id, ts]) => ({
@@ -171,6 +172,7 @@ function row(todos: Todos, t: Task): TaskRow {
     title: todo?.title ?? t.brief.replace(/\n[\s\S]*/, ''),
     note: taskNote(ledger, t),
     issue: t.issue,
+    todoId: todo?.id ?? null,
     projectId: project?.id ?? null,
     links: ledger.links(t.id),
   }

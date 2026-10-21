@@ -299,6 +299,19 @@ test('a task handed over without a todo gets one of its own, in the project give
   expect(ledger.list().length).toBe(before)
 })
 
+test('a task can be named by its todo: the latest task doing it', () => {
+  const { ledger, todos } = books()
+  const t = captured(todos, 'Fix the build')
+  const first = todos.delegate(t.id, task, 'human')
+  expect(todos.taskRef(`t${t.id}`)).toBe(first)
+  const second = todos.delegate(t.id, { ...task, after: [first] }, 'human')
+  expect(todos.taskRef(`t${t.id}`)).toBe(second)
+  expect(todos.taskRef(String(first))).toBe(first)
+  const idle = captured(todos, 'Read the spec')
+  expect(() => todos.taskRef(`t${idle.id}`)).toThrow(`t${idle.id} has no task`)
+  expect(ledger.get(second).todoId).toBe(t.id)
+})
+
 test('a todo whose task was dropped comes back; one waiting on a person or on no task stays', () => {
   const { ledger, todos } = books()
   const t = captured(todos, 'Fix the build')

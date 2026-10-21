@@ -80,6 +80,8 @@ const USAGE = `usage:
   nod tick                         run the triggers that are due; the OS scheduler calls this
                                    every minute while any trigger exists
   nod hook stop|notification       called by Claude Code hooks in worker sessions
+
+A <task> is a task's number, or t<n> for the latest task doing todo t<n>.
 ${TODO_USAGE}
 
 When <home>/notify exists, nod runs it with a JSON event on stdin whenever a decision opens, a
@@ -89,6 +91,7 @@ const [command, ...rest] = Bun.argv.slice(2)
 const home = nodHome()
 const ledger = new Ledger(home)
 const terminals = Terminals.of(home)
+const taskRef = (ref: string | undefined): number => new Todos(ledger).taskRef(ref ?? '')
 // Also covers a decision that opens just as the last worker stops.
 const WATCH_GRACE_SECS = 5
 
@@ -103,24 +106,24 @@ switch (command) {
     await add(rest)
     break
   case 'tell':
-    tell(ledger, home, Number(rest[0]), words(rest.slice(1)))
+    tell(ledger, home, taskRef(rest[0]), words(rest.slice(1)))
     console.log('sent')
     break
   case 'resume':
-    resume(ledger, home, Number(rest[0]))
+    resume(ledger, home, taskRef(rest[0]))
     console.log('reopened')
     break
   case 'attach':
-    attach(Number(rest[0]))
+    attach(taskRef(rest[0]))
     break
   case 'peek':
-    peek(Number(rest[0]))
+    peek(taskRef(rest[0]))
     break
   case 'watch':
     await watch(issueKeys(rest))
     break
   case 'link': {
-    const id = Number(rest[0])
+    const id = taskRef(rest[0])
     const urls = rest.slice(1)
     if (!Number.isInteger(id) || urls.length === 0) throw new Error(USAGE)
     ledger.link(id, urls)
@@ -133,7 +136,7 @@ switch (command) {
     break
   }
   case 'show':
-    show(Number(rest[0]))
+    show(taskRef(rest[0]))
     break
   case 'drop':
     await drop(ledger, home, Number(rest[0]))
@@ -205,7 +208,7 @@ async function add(args: string[]): Promise<void> {
     todo !== null && positionals.length === 0
       ? [todo.title, todo.notes].filter((x) => x !== null).join('\n\n')
       : words(positionals)
-  const after = (values.after ?? '').split(',').filter(Boolean).map(Number)
+  const after = (values.after ?? '').split(',').filter(Boolean).map(taskRef)
   if (!after.every(Number.isInteger)) throw new Error(`--after takes task numbers: ${values.after}`)
   const repo = repoPath(values.repo)
   const task = {
@@ -383,7 +386,7 @@ async function gc(args: string[]): Promise<void> {
 }
 
 function gcPick(tasks: string[], olderThan: string): GcPick {
-  if (tasks.length > 0) return { ids: tasks.map((t) => ledger.get(Number(t)).id) }
+  if (tasks.length > 0) return { ids: tasks.map((t) => ledger.get(taskRef(t)).id) }
   const days = Number(olderThan)
   if (!(days >= 0)) throw new Error(`--older-than must be a number of days: ${olderThan}`)
   return { before: new Date(Date.now() - days * 86_400_000) }
@@ -454,7 +457,7 @@ function printTask(t: Task, prefix = ''): void {
   const turns = ledger.attempts(t.id).length
   const status = taskStatus(t, terminals)
   console.log(
-    `${prefix}#${String(t.id).padEnd(4)} ${status.padEnd(14)} ${String(turns).padStart(2)} turns  ${oneLine(taskNote(ledger, t), 80)}`,
+    `${prefix}#${String(t.id).padEnd(4)} ${(t.todoId === null ? '' : `t${t.todoId}`).padEnd(5)} ${status.padEnd(14)} ${String(turns).padStart(2)} turns  ${oneLine(taskNote(ledger, t), 80)}`,
   )
   for (const url of ledger.links(t.id)) console.log(`${prefix}      link ${url}`)
   for (const ref of unlinkedPushes(t)) console.log(`${prefix}      pushed ${ref}`)

@@ -1,7 +1,7 @@
 import { createFileRoute, getRouteApi, Link } from '@tanstack/react-router'
 import { type ReactNode, useEffect, useState } from 'react'
 import type { TaskRow } from '../nod.server'
-import { DecisionCard, localTime, Status } from '../parts'
+import { DecisionCard, localTime, Status, TaskId } from '../parts'
 import { Section } from '../todo-parts'
 
 const root = getRouteApi('__root__')
@@ -30,7 +30,7 @@ function Home() {
               d={d}
               head={
                 <Link to="/tasks/$id" params={{ id: String(d.taskId) }} className="decision-task">
-                  <span className="side-id">#{d.taskId}</span>
+                  <TaskId id={d.taskId} todoId={d.todoId} />
                   {d.issue !== null && <span className="tag">{d.issue}</span>}
                   <span className="clamp">{d.brief.split('\n')[0]}</span>
                   <span className="go">Answer →</span>
@@ -171,7 +171,7 @@ function useFolded(key: string): [boolean, (folded: boolean) => void] {
 function TaskLine({ t }: { t: TaskRow }) {
   return (
     <Link to="/tasks/$id" params={{ id: String(t.id) }} className="task-line">
-      <span className="side-id">#{t.id}</span>
+      <TaskId id={t.id} todoId={t.todoId} />
       <div className="task-line-main">
         <div className="clamp">{t.title}</div>
         <div className="task-line-sub">

@@ -29,6 +29,18 @@ export function Url({ url }: { url: string }) {
   )
 }
 
+// A task's number after its todo's, when it does one: the person names their work by the todo.
+export function TaskId({ id, todoId }: { id: number; todoId: number | null }) {
+  return todoId === null ? (
+    <span className="side-id">#{id}</span>
+  ) : (
+    <span className="side-id">
+      t{todoId}
+      <small className="task-no">#{id}</small>
+    </span>
+  )
+}
+
 // A CSS class per status: 'session ended' → 'session_ended'.
 export const statusClass = (status: string): string => status.replaceAll(' ', '_')
 

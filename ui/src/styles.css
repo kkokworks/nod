@@ -1714,3 +1714,20 @@ a.task-line:hover {
 .fold > summary.section:hover {
   color: var(--fg);
 }
+
+/* A task's own number, small beside its todo's. */
+.side-id .task-no {
+  margin-left: 0.25rem;
+  font-size: 0.85em;
+  opacity: 0.7;
+}
+
+/* On the home page's lines the task's number sits under its todo's, so the titles line up. */
+.task-line .side-id {
+  min-width: 2.6rem;
+}
+
+.task-line .side-id .task-no {
+  display: block;
+  margin-left: 0;
+}

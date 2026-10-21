@@ -10,7 +10,7 @@ import { createServerFn } from '@tanstack/react-start'
 import { type ReactNode, useEffect } from 'react'
 import type { TaskRow } from '../nod.server'
 import { overview } from '../nod.server'
-import { statusClass } from '../parts'
+import { statusClass, TaskId } from '../parts'
 import css from '../styles.css?url'
 import { UndoBar } from '../todo-parts'
 
@@ -162,7 +162,7 @@ function Sidebar() {
             >
               <span className="dot needs_decision" />
               <span className="side-text">
-                <span className="side-id">#{d.taskId}</span> {d.reason.replace('_', ' ')}:{' '}
+                <TaskId id={d.taskId} todoId={d.todoId} /> {d.reason.replace('_', ' ')}:{' '}
                 {d.question}
               </span>
             </Link>
@@ -203,7 +203,7 @@ function TaskItem({ t }: { t: TaskRow }) {
     >
       <span className={`dot ${statusClass(t.status)}`} title={t.status} />
       <span className="side-text">
-        <span className="side-id">#{t.id}</span> {t.title}
+        <TaskId id={t.id} todoId={t.todoId} /> {t.title}
       </span>
     </Link>
   )

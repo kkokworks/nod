@@ -372,6 +372,17 @@ export class Todos {
     })()
   }
 
+  // A task by its number, or by the todo it does (`t12`): that todo's latest task, so the person
+  // can name their work by the todo alone.
+  taskRef(ref: string): number {
+    if (!ref.startsWith('t')) return Number(ref)
+    const id = parseRef(ref, 't')
+    const last = this.ledger.tasksOf(id).at(-1)
+    if (last === undefined)
+      throw new Error(`t${id} has no task; hand it over with nod add --todo t${id}`)
+    return last.id
+  }
+
   // Moves each todo waiting on nod along once none of its tasks can go on: done when the last one
   // succeeded, back to next when it was cancelled, so the person takes it back. Every such todo is
   // looked at, so those of tasks a cancel cascaded to move too.
