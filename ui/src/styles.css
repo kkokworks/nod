@@ -904,6 +904,7 @@ details summary {
 }
 
 .todo-actions button,
+.todo-actions select,
 .filters button,
 .filters a {
   padding: 0.15rem 0.6rem;
@@ -922,7 +923,8 @@ details summary {
   background: var(--hover);
 }
 
-.todo-actions button:disabled {
+.todo-actions button:disabled,
+.todo-actions select:disabled {
   opacity: 0.4;
   cursor: default;
 }

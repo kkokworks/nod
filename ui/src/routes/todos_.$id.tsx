@@ -3,7 +3,7 @@ import { useState } from 'react'
 import type { RawEdit } from '../input'
 import { localTime, Url } from '../parts'
 import { changeTodo, getTodo } from '../todo-fns'
-import { todoTags, useChange } from '../todo-parts'
+import { STATUSES, todoTags, useChange } from '../todo-parts'
 import type { TodoPage } from '../todos.server'
 
 export const Route = createFileRoute('/todos_/$id')({
@@ -11,8 +11,7 @@ export const Route = createFileRoute('/todos_/$id')({
   component: TodoDetail,
 })
 
-// The ledger's lists (todos.ts, days.ts), which the browser cannot import: they reach the database.
-const STATUSES = ['inbox', 'next', 'waiting', 'someday', 'reference', 'done', 'dropped']
+// The ledger's repeats (days.ts), which the browser cannot import: it reaches the database.
 const REPEATS = ['', 'daily', 'weekly', 'monthly']
 
 function TodoDetail() {

@@ -5,6 +5,9 @@ import { localTime } from './parts'
 import { changeTodo } from './todo-fns'
 import type { TodoItem } from './todos.server'
 
+// The ledger's statuses (todos.ts), which the browser cannot import: it reaches the database.
+export const STATUSES = ['inbox', 'next', 'waiting', 'someday', 'reference', 'done', 'dropped']
+
 // Runs a change on the server, then reloads the page's data. The error stays beside what failed.
 export function useChange() {
   const router = useRouter()
@@ -42,7 +45,7 @@ export function todoTags(t: TodoItem, today: string): string[] {
   ].filter((x) => x !== null)
 }
 
-// A todo on one line: its title opens it, the buttons change it in place.
+// A todo on one line: its title opens it, the status menu and the buttons change it in place.
 export function TodoRow({ t, today, actions }: { t: TodoItem; today: string; actions: Edits }) {
   const { busy, error, run } = useChange()
   return (
@@ -52,6 +55,20 @@ export function TodoRow({ t, today, actions }: { t: TodoItem; today: string; act
           {t.title}
         </Link>
         <span className="todo-actions">
+          <select
+            aria-label="status"
+            value={t.status}
+            disabled={busy}
+            onChange={(e) =>
+              void run(() => changeTodo({ data: { id: t.id, edit: { status: e.target.value } } }))
+            }
+          >
+            {STATUSES.map((s) => (
+              <option key={s} value={s}>
+                {s}
+              </option>
+            ))}
+          </select>
           {actions.map(([label, edit]) => (
             <button
               key={label}
