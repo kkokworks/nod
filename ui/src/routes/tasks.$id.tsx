@@ -39,8 +39,12 @@ function TaskPage() {
   // The brief's first line is the title; the whole brief folds away, as it can run to pages.
   const nl = task.brief.indexOf('\n')
   const title = nl === -1 ? task.brief : task.brief.slice(0, nl)
+  const canSend = task.collectedAt === null && attempts.length > 0
+  // A session that is gone has nothing to show, so the page keeps its width for the turns and the
+  // result; the box to message the worker stays while the task can be resumed.
+  const aside = screen !== null || canSend
   return (
-    <div className="task-layout">
+    <div className={aside ? 'task-layout' : 'task-layout solo'}>
       <div className="page">
         <div className="task-meta">
           <Status status={status} />
@@ -94,7 +98,9 @@ function TaskPage() {
 
         {task.error !== null && <div className="banner">{task.error}</div>}
 
-        <h2 className="section">Turns ({attempts.length})</h2>
+        <h2 className="section">
+          Turns<span className="count">{attempts.length}</span>
+        </h2>
         <ol className="timeline">
           {attempts.map((a) => (
             <li key={a.id}>
@@ -105,15 +111,13 @@ function TaskPage() {
                 <div className="step-body">
                   <div className="step-head">
                     <strong>{a.kind}</strong>
-                    <Status status={a.outcome ?? 'running'} />
-                    {a.checkResult !== null && (
-                      <span
-                        className={`chip ${a.checkResult === 'passed' ? 'succeeded' : 'failed'}`}
-                      >
-                        check {a.checkResult}
-                      </span>
+                    {/* The icon carries a turn that went well; only the rest get a word. */}
+                    {a.outcome !== 'succeeded' && <Status status={a.outcome ?? 'running'} />}
+                    {a.checkResult === 'failed' && (
+                      <span className="chip failed">check failed</span>
                     )}
-                    <span className="muted">
+                    {a.checkResult === 'passed' && <span className="muted small">✓ check</span>}
+                    <span className="muted step-time">
                       {a.finishedAt === null ? 'running' : duration(a.startedAt, a.finishedAt)}
                     </span>
                   </div>
@@ -152,39 +156,40 @@ function TaskPage() {
         )}
       </div>
 
-      <aside className="computer">
-        <div className="window">
-          <div className="window-bar">
-            <span className="lights">
-              <i />
-              <i />
-              <i />
-            </span>
-            <span className="window-title">task-{task.id}</span>
-            {screen !== null && <span className="live">live</span>}
-          </div>
+      {aside && (
+        <aside className="computer">
           {screen === null ? (
-            <div className="window-empty">
-              No live session
+            <div className="idle-note">
+              <span className="dot" /> No live session
               {task.collectedAt === null && (
-                <div>
+                <>
+                  {' · '}
                   <code>nod resume {task.id}</code> reopens it
-                </div>
+                </>
               )}
             </div>
           ) : (
-            <pre className="screen">{screen}</pre>
+            <div className="window">
+              <div className="window-bar">
+                <span className="lights">
+                  <i />
+                  <i />
+                  <i />
+                </span>
+                <span className="window-title">task-{task.id}</span>
+                <span className="live">live</span>
+              </div>
+              <pre className="screen">{screen}</pre>
+            </div>
           )}
-        </div>
-        {task.collectedAt === null && attempts.length > 0 && (
-          <Composer taskId={task.id} open={decisions.find((d) => d.answer === null)} />
-        )}
-        {screen !== null && (
-          <p className="muted small">
-            or in a terminal: <code>nod attach {task.id}</code>
-          </p>
-        )}
-      </aside>
+          {canSend && <Composer taskId={task.id} open={decisions.find((d) => d.answer === null)} />}
+          {screen !== null && (
+            <p className="muted small">
+              or in a terminal: <code>nod attach {task.id}</code>
+            </p>
+          )}
+        </aside>
+      )}
     </div>
   )
 }

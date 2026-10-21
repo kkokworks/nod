@@ -143,6 +143,16 @@ pre {
   max-width: none;
 }
 
+.task-layout.solo {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.task-layout.solo .page {
+  width: 100%;
+  max-width: 820px;
+  margin: 0 auto;
+}
+
 @media (max-width: 1100px) {
   .task-layout {
     grid-template-columns: 1fr;
@@ -283,10 +293,17 @@ details > summary.side-label {
   --tone: var(--ok);
 }
 
-.needs_decision,
-.running,
-.queued {
+/* Waiting on the person is amber, at work is blue, waiting its turn is slate. */
+.needs_decision {
   --tone: var(--warn);
+}
+
+.running {
+  --tone: var(--s-next);
+}
+
+.queued {
+  --tone: var(--s-inbox);
 }
 
 .error,
@@ -449,8 +466,11 @@ details > summary.side-label {
 }
 
 .link a {
-  text-decoration: underline;
-  text-underline-offset: 3px;
+  color: var(--s-next);
+}
+
+.link a::after {
+  content: " ↗";
 }
 
 /* ── stats ── */
@@ -489,17 +509,45 @@ details > summary.side-label {
 
 /* ── decisions ── */
 
+/* One card per decision; an open one has the amber bar of what needs the person. */
 .decision {
-  border-radius: 10px;
-  padding: 0.8rem 0.95rem;
   margin: 0.6rem 0 0;
-  background: color-mix(in srgb, var(--warn) 9%, var(--card));
-  border: 1px solid color-mix(in srgb, var(--warn) 30%, transparent);
+  padding: 0.85rem 1rem;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--warn);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
 }
 
 .decision.answered {
   background: var(--side);
-  border-color: var(--line);
+  border-left-color: var(--line);
+  box-shadow: none;
+}
+
+.decision-task {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+  margin: -0.1rem 0 0.6rem;
+  padding-bottom: 0.6rem;
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.decision-task:hover {
+  text-decoration: none;
+  color: var(--fg);
+}
+
+.decision-task .go {
+  flex: none;
+  margin-left: auto;
+  color: var(--brand);
+  font-weight: 600;
 }
 
 .decision-head {
@@ -511,8 +559,11 @@ details > summary.side-label {
 }
 
 .decision-reason {
-  font-weight: 600;
+  padding: 0.05rem 0.5rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--warn) 14%, transparent);
   color: var(--warn);
+  font-weight: 600;
   text-transform: capitalize;
 }
 
@@ -568,10 +619,14 @@ details > summary.side-label {
   width: 1.65rem;
   height: 1.65rem;
   border-radius: 50%;
-  background: var(--card);
-  border: 1px solid var(--line);
+  background: color-mix(in srgb, var(--tone, var(--idle)) 14%, var(--card));
   color: var(--tone, var(--muted));
   font-size: 11px;
+}
+
+.step-time {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
 }
 
 .step-body {
@@ -675,6 +730,20 @@ details summary {
   white-space: pre;
   overflow: auto;
   max-height: calc(100dvh - 9rem);
+}
+
+.idle-note {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.75rem 1rem;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  color: var(--muted);
+  font-size: 13px;
 }
 
 .window-empty {
@@ -844,12 +913,16 @@ details summary {
   font-size: 13px;
 }
 
+/* A cell keeps its words whole and the table scrolls, rather than breaking a word per line. */
 .md th,
 .md td {
+  min-width: 4.5rem;
   padding: 0.3rem 0.6rem;
   border: 1px solid var(--line);
   text-align: left;
   vertical-align: top;
+  overflow-wrap: normal;
+  word-break: keep-all;
 }
 
 .md th {
@@ -1442,4 +1515,43 @@ details summary {
 
 .side-lists[open] > summary.side-label::before {
   transform: translateY(-2px) rotate(45deg);
+}
+
+/* ── nod tasks on the home page, as todo rows ── */
+
+.task-line {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.7rem 1rem;
+  color: var(--fg);
+  transition: background 0.12s;
+}
+
+a.task-line:hover {
+  background: var(--row-hover);
+  text-decoration: none;
+}
+
+.task-line-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.task-line .todo-tags {
+  margin-top: 0.25rem;
+  font-size: 12px;
+}
+
+.task-line .side-id {
+  flex: none;
+  min-width: 2rem;
+  font-variant-numeric: tabular-nums;
+}
+
+/* A task's place (issue, repo, branch) as the todo rows show a project. */
+:is(.tags, .task-line, .decision-task) .tag {
+  border: 0;
+  background: var(--chip);
+  color: var(--fg);
 }

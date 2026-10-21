@@ -41,9 +41,11 @@ export function Status({ status }: { status: string }) {
   )
 }
 
-export function DecisionCard({ d }: { d: Decision }) {
+// A decision on one card; `head` puts its task above it, where the card stands alone.
+export function DecisionCard({ d, head }: { d: Decision; head?: ReactNode }) {
   return (
     <div className={`decision ${d.answer === null ? 'open' : 'answered'}`}>
+      {head}
       <div className="decision-head">
         <span className="decision-reason">{d.reason.replace('_', ' ')}</span>
         <span className="muted">decision #{d.id}</span>
