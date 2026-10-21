@@ -280,6 +280,14 @@ const MIGRATIONS = [
   // v11: the todo a task was delegated from. On the task, since one todo may be delegated again or
   // to a chain of tasks.
   'alter table tasks add column todo_id integer references todos(id);',
+  // v12: a todo's dates, kept as local days and times (days.ts), and how it repeats.
+  `
+  alter table todos add column due text;
+  alter table todos add column scheduled text;
+  alter table todos add column start text;
+  alter table todos add column repeat text;
+  alter table todos add column focus text;
+  `,
 ]
 
 // The tables as the migrations leave them, in camelCase; CamelCasePlugin maps names to snake_case.

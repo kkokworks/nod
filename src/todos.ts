@@ -1,6 +1,7 @@
 import type { Database } from 'bun:sqlite'
 import type { Compilable, Generated } from 'kysely'
 import { z } from 'zod'
+import { type Dates, dayOf, localDay, nextDates, parseWhen, REPEATS, type Repeat } from './days'
 import {
   type Decision,
   type Ledger,
@@ -32,6 +33,8 @@ export const OPEN: TodoStatus[] = ['inbox', 'next', 'waiting']
 const CLOSED_PROJECT: ProjectStatus[] = ['done', 'dropped']
 // A delegated todo's tasks that may still go on: one in error can be resumed.
 export const UNFINISHED: TaskStatus[] = ['queued', 'running', 'needs_decision', 'error']
+// Where the next one of a repeating todo comes from; its key is the todo it follows.
+const REPEATED = 'repeat'
 
 export type Todo = {
   id: number
@@ -45,6 +48,18 @@ export type Todo = {
   // Who the todo waits on while it is `waiting`. Empty while it waits on the tasks it was
   // delegated to.
   waitingOn: string | null
+  // Dates are local days, `YYYY-MM-DD`, with ` HH:MM` where a time is allowed (days.ts).
+  // The day, or the time, it must be done by.
+  due: string | null
+  // A day- or time-specific action: the day, or the time, to do it. With the calendar's events,
+  // these are what a day holds for certain.
+  scheduled: string | null
+  // The lists leave it out before this day.
+  start: string | null
+  // Done makes the next one, dated whole periods on (nextDates).
+  repeat: Repeat | null
+  // The day it was picked to focus on.
+  focus: string | null
   // Where it was captured: `cli`, or the channel a scan read it from. With a key, that channel's
   // id for it, so the same item is captured only once.
   source: string
@@ -66,7 +81,20 @@ export type Project = {
 
 // What clarifying and organizing a todo may change.
 export type TodoEdit = Partial<
-  Pick<Todo, 'title' | 'notes' | 'status' | 'projectId' | 'context' | 'waitingOn'>
+  Pick<
+    Todo,
+    | 'title'
+    | 'notes'
+    | 'status'
+    | 'projectId'
+    | 'context'
+    | 'waitingOn'
+    | 'due'
+    | 'scheduled'
+    | 'start'
+    | 'repeat'
+    | 'focus'
+  >
 >
 export type ProjectEdit = Partial<Pick<Project, 'title' | 'outcome' | 'status'>>
 export type TodoLink = { url: string; title: string | null }
@@ -83,7 +111,11 @@ export type TodoFilter = {
   projectId: number | null
   // Leaves out the todos of someday projects: putting a project off puts off its actions.
   hideSomedayProjects: boolean
+  // Leaves out the todos that start after this day; null shows them.
+  day: string | null
 }
+// What a day holds besides its events, each todo once, in the first group it is in.
+export type DayTodos = { overdue: Todo[]; scheduled: Todo[]; due: Todo[]; focus: Todo[] }
 
 type ChangeRow = { id: Generated<number>; actor: string; change: string; at: string }
 type Tables = {
@@ -188,6 +220,7 @@ export class Todos {
             ? []
             : [eb.or([eb('context', '=', asContext(context)), eb('context', 'is', null)])]),
           ...(projectId === null ? [] : [eb('projectId', '=', projectId)]),
+          ...(f.day === null ? [] : [eb.or([eb('start', 'is', null), eb('start', '<=', f.day)])]),
           ...(f.hideSomedayProjects
             ? [
                 eb.or([
@@ -224,6 +257,7 @@ export class Todos {
             .where('id', '=', id),
         )
         this.recordTodo(id, actor, change, at)
+        if ('status' in change && after.status === 'done') this.repeatNext(id, actor)
       }
       for (const url of links) this.link(id, url, null, actor)
       return this.get(id)
@@ -323,6 +357,44 @@ export class Todos {
     })
   }
 
+  // The day's open todos: overdue (due or scheduled before the day), then those scheduled for it,
+  // due on it, and picked for its focus.
+  day(day: string): DayTodos {
+    const open = this.run(
+      q.selectFrom('todos').selectAll().where('status', 'in', OPEN).orderBy('id'),
+    )
+    const shown = new Set<number>()
+    const group = (when: (t: Todo) => string | null, on: (when: string) => boolean): Todo[] => {
+      const picked = open
+        .flatMap((t) => {
+          const w = when(t)
+          return w !== null && on(w) && !shown.has(t.id) ? [{ t, w }] : []
+        })
+        .sort((a, b) => a.w.localeCompare(b.w))
+        .map(({ t }) => t)
+      for (const t of picked) shown.add(t.id)
+      return picked
+    }
+    return {
+      overdue: group(
+        (t) => [t.due, t.scheduled].filter((w) => w !== null).sort()[0] ?? null,
+        (w) => dayOf(w) < day,
+      ),
+      scheduled: group(
+        (t) => t.scheduled,
+        (w) => dayOf(w) === day,
+      ),
+      due: group(
+        (t) => t.due,
+        (w) => dayOf(w) === day,
+      ),
+      focus: group(
+        (t) => t.focus,
+        (w) => w === day,
+      ),
+    }
+  }
+
   // ── projects ──
 
   addProject(p: { title: string; outcome: string | null }, actor: string): Project {
@@ -390,6 +462,7 @@ export class Todos {
           context: null,
           projectId: id,
           hideSomedayProjects: false,
+          day: null,
         })
         if (open.length > 0) {
           const ids = open.map((t) => `t${t.id}`).join(', ')
@@ -436,12 +509,68 @@ export class Todos {
         throw new Error(`p${p.id} is ${p.status}; an open todo cannot be in it`)
       }
     }
+    if (edit.repeat !== undefined && edit.repeat !== null) oneOf('repeat', edit.repeat, REPEATS)
+    const today = localDay(new Date())
+    const when = (v: string | null | undefined, time: boolean) =>
+      typeof v === 'string' ? parseWhen(v, today, time) : v
+    const dates = {
+      due: when(edit.due, true),
+      scheduled: when(edit.scheduled, true),
+      start: when(edit.start, false),
+      focus: when(edit.focus, false),
+    }
+    const kept = (k: keyof Dates) => (dates[k] === undefined ? before[k] : dates[k])
+    const repeat = edit.repeat === undefined ? before.repeat : edit.repeat
+    if (
+      repeat !== null &&
+      kept('due') === null &&
+      kept('scheduled') === null &&
+      kept('start') === null
+    ) {
+      throw new Error('a repeating todo needs a due, on or start day to date its next one from')
+    }
     const leftWaiting = before.status === 'waiting' && status !== 'waiting'
     return {
       ...edit,
+      ...dates,
       ...(typeof edit.context === 'string' ? { context: asContext(edit.context) } : {}),
       ...(leftWaiting && edit.waitingOn === undefined ? { waitingOn: null } : {}),
     }
+  }
+
+  // The next one of a repeating todo just done; made once, however often this one is reopened and
+  // done again.
+  private repeatNext(id: number, actor: string): void {
+    const done = this.get(id)
+    if (done.repeat === null) return
+    const sourceKey = `t${id}`
+    const made = this.first(
+      q
+        .selectFrom('todos')
+        .select('id')
+        .where('source', '=', REPEATED)
+        .where('sourceKey', '=', sourceKey),
+    )
+    if (made) return
+    const fields = {
+      title: done.title,
+      notes: done.notes,
+      status: 'next' as const,
+      projectId: done.projectId,
+      context: done.context,
+      ...nextDates(done, done.repeat, localDay(new Date())),
+      repeat: done.repeat,
+      source: REPEATED,
+      sourceKey,
+    }
+    const at = now()
+    const next = this.insert(
+      q
+        .insertInto('todos')
+        .values({ ...fields, waitingOn: null, focus: null, createdAt: at, statusAt: at })
+        .returning('id'),
+    )
+    this.recordTodo(next, actor, diff({}, fields), at)
   }
 
   private recordTodo(id: number, actor: string, change: Change['change'], at: string): void {

@@ -5,7 +5,14 @@ import { parseArgs } from 'node:util'
 import { collect, type GcPick, remotesHolding } from './gc'
 import { type Attempt, type Decision, Ledger, nodHome, type Task, type Trigger } from './ledger'
 import { Terminals } from './tmux'
-import { actorFromEnv, capture, projectCommand, TODO_USAGE, todoCommand } from './todo-cli'
+import {
+  actorFromEnv,
+  capture,
+  projectCommand,
+  TODO_USAGE,
+  todayCommand,
+  todoCommand,
+} from './todo-cli'
 import { parseRef, Todos } from './todos'
 import { addTrigger, nextRun, syncSchedule, tick } from './triggers'
 import { indent, oneLine, taskNote, taskStatus } from './view'
@@ -155,6 +162,9 @@ switch (command) {
     break
   case 'project':
     projectCommand(new Todos(ledger), rest)
+    break
+  case 'today':
+    await todayCommand(new Todos(ledger), home, rest)
     break
   default: {
     const id = Number(command)

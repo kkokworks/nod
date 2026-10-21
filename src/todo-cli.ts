@@ -1,4 +1,6 @@
 import { parseArgs } from 'node:util'
+import { type CalendarEvent, calendarBuild, dayEvents } from './calendar'
+import { localDay, parseWhen, REPEATS, type Repeat } from './days'
 import {
   type Change,
   OPEN,
@@ -12,6 +14,7 @@ import {
   UNFINISHED,
 } from './todos'
 import { indent, oneLine } from './view'
+import { message } from './worker'
 
 export const TODO_USAGE = `  nod in <what...> [--notes <text>] [--source <channel> --key <id>] [--link <url>]
                                    capture a todo into the inbox. A channel's key is captured
@@ -21,13 +24,23 @@ export const TODO_USAGE = `  nod in <what...> [--notes <text>] [--source <channe
                                    finished ones too). Open decisions come first, as next
                                    actions: answer with nod <decision> <answer>. --context also
                                    lists todos with no context, which can be done anywhere.
-                                   Todos of someday projects show only with --project or --all
+                                   Todos of someday projects show only with --project or --all,
+                                   and todos that start later only with --all
   nod todo <todo>                  one todo: notes, links, the tasks it was delegated to (nod add
                                    --todo) with what they reported, and who changed what
   nod todo set <todo> [--status <s>] [--title <text>] [--notes <text>] [--project <p>]
                       [--context <@x>] [--waiting-on <who>] [--link <url>]...
+                      [--due <day>] [--on <day>] [--start <day>] [--focus <day>]
+                      [--repeat daily|weekly|monthly]
                                    clarify and organize it; an empty value clears a field.
-                                   Leaving waiting forgets whom it waited on
+                                   Leaving waiting forgets whom it waited on. A <day> is
+                                   YYYY-MM-DD, today or tomorrow; --due and --on also take a time,
+                                   '<day> HH:MM'. --on is a day- or time-specific action, --start
+                                   leaves it out of the lists until that day, and --focus picks it
+                                   for that day. Done makes a repeating todo's next one, its dates
+                                   whole periods on from the schedule
+  nod today [<day>]                the day's events, read from macOS Calendar, then its open
+                                   todos: overdue, scheduled, due, and picked for its focus
   nod todo done|drop <todo...>
   nod project add <title...> [--outcome <what done looks like>]
   nod project [ls] [--all]         active projects with their next and waiting counts, open
@@ -131,6 +144,7 @@ function listTodos(todos: Todos, args: string[]): void {
     context: values.context ?? null,
     projectId,
     hideSomedayProjects: !values.all && values.project === undefined,
+    day: values.all ? null : localDay(new Date()),
   })
   for (const t of shown) console.log(line(todos, t))
 }
@@ -147,6 +161,11 @@ function setTodo(todos: Todos, args: string[]): void {
       context: { type: 'string' },
       'waiting-on': { type: 'string' },
       link: { type: 'string', multiple: true },
+      due: { type: 'string' },
+      on: { type: 'string' },
+      start: { type: 'string' },
+      focus: { type: 'string' },
+      repeat: { type: 'string' },
     },
   })
   const [ref, ...extra] = positionals
@@ -164,6 +183,11 @@ function setTodo(todos: Todos, args: string[]): void {
       notes: cleared(values.notes),
       context: cleared(values.context),
       waitingOn: cleared(values['waiting-on']),
+      due: cleared(values.due),
+      scheduled: cleared(values.on),
+      start: cleared(values.start),
+      focus: cleared(values.focus),
+      repeat: repeatOf(values.repeat),
       projectId:
         project === undefined ? undefined : project === '' ? null : todos.findProject(project).id,
     },
@@ -264,9 +288,67 @@ function setProject(todos: Todos, args: string[]): void {
 
 function showProject(todos: Todos, p: Project): void {
   console.log(projectLine(p))
-  const open = { statuses: OPEN, context: null, projectId: p.id, hideSomedayProjects: false }
+  const open = {
+    statuses: OPEN,
+    context: null,
+    projectId: p.id,
+    hideSomedayProjects: false,
+    day: null,
+  }
   for (const t of todos.list(open)) console.log(`  ${line(todos, t)}`)
   printChanges(todos.projectChanges(p.id))
+}
+
+// `nod today [<day>]`: what the day holds for certain, then what was picked for it.
+export async function todayCommand(todos: Todos, home: string, args: string[]): Promise<void> {
+  const [which, ...extra] = args
+  if (extra.length > 0) throw new Error(TODO_USAGE)
+  const today = localDay(new Date())
+  const day = which === undefined ? today : parseWhen(which, today, false)
+  const weekday = new Date(`${day}T12:00`).toLocaleDateString('en-US', { weekday: 'short' })
+  console.log(`${day} ${weekday}`)
+  await printEvents(home, day)
+  const groups = Object.entries(todos.day(day)).filter(([, ts]) => ts.length > 0)
+  if (groups.length === 0) console.log('todos: none for the day')
+  for (const [name, ts] of groups) {
+    console.log(name)
+    for (const t of ts) console.log(`  ${line(todos, t)}`)
+  }
+}
+
+// A calendar that could not be read says so, since no events would read as a free day.
+async function printEvents(home: string, day: string): Promise<void> {
+  const read = await dayEvents(home, day).then(
+    (events) => ({ events }),
+    (error: unknown) => ({ error: message(error) }),
+  )
+  if ('error' in read) {
+    console.log(
+      `events: could not read the calendar, so none are shown: ${oneLine(read.error, 200)}`,
+    )
+  } else if (read.events === null) {
+    console.log(`events: no calendar; on macOS, build one with sh ${calendarBuild}`)
+  } else if (read.events.length === 0) {
+    console.log('events: none')
+  } else {
+    console.log('events')
+    for (const e of read.events) console.log(`  ${eventLine(e)}`)
+  }
+}
+
+function eventLine(e: CalendarEvent): string {
+  const when = e.allDay ? 'all day' : `${e.start.slice(11, 16)}-${e.end.slice(11, 16)}`
+  const rest = [e.calendar, e.location ?? null, e.myStatus === 'pending' ? 'not answered' : null]
+  return `${when.padEnd(11)} ${oneLine(e.title, 60)}  · ${rest.filter((x) => x !== null).join(' · ')}`
+}
+
+// `--repeat ''` stops it repeating.
+function repeatOf(v: string | undefined): Repeat | null | undefined {
+  if (v === undefined) return undefined
+  if (v === '') return null
+  const repeat = REPEATS.find((r) => r === v)
+  if (repeat === undefined) throw new Error(`--repeat is one of ${REPEATS.join(', ')}`)
+  return repeat
 }
 
 // An option given as an empty string clears the field; one not given leaves it alone.
@@ -300,6 +382,11 @@ function tags(todos: Todos, t: Todo): string[] {
     t.context,
     project === null ? null : `p${project.id} ${project.title}`,
     on === null ? null : `waiting on ${on}`,
+    t.scheduled === null ? null : `scheduled ${t.scheduled}`,
+    t.due === null ? null : `due ${t.due}`,
+    t.start === null ? null : `starts ${t.start}`,
+    t.repeat === null ? null : `repeats ${t.repeat}`,
+    t.focus === null ? null : `focus ${t.focus}`,
     t.status === 'inbox' || t.status === 'waiting' ? `since ${localTime(t.statusAt)}` : null,
     finished ? `on ${localTime(t.statusAt)}` : null,
   ].filter((x) => x !== null)

@@ -194,3 +194,39 @@ test('a todo delegated with nod add waits on its task, whose decision is listed 
     '  task #2 needs_decision',
   ])
 })
+
+test('nod today shows the day without a calendar here, and later todos stay out of the lists', async () => {
+  const { ok, fails } = runner()
+  await ok('in', 'Pay the invoice')
+  await ok('todo', 'set', 't1', '--status', 'next', '--due', '2020-01-01')
+  await ok('in', 'Call the bank')
+  await ok('todo', 'set', 't2', '--status', 'next', '--on', 'today 15:00')
+  await ok('in', 'Write the notes')
+  await ok('todo', 'set', 't3', '--focus', 'today')
+  await ok('in', 'File the return')
+  await ok('todo', 'set', 't4', '--status', 'next', '--start', '2099-01-01', '--repeat', 'monthly')
+  const today = new Date().toLocaleDateString('sv-SE')
+  const [date, events, ...rest] = await ok('today')
+  expect(date).toStartWith(today)
+  expect(events).toStartWith('events: no calendar; on macOS, build one with sh ')
+  expect(rest).toEqual([
+    'overdue',
+    '  t1    next      Pay the invoice  · due 2020-01-01',
+    'scheduled',
+    '  t2    next      Call the bank  · scheduled <time>',
+    'focus',
+    `  t3    inbox     Write the notes  · focus ${today} · since <time>`,
+  ])
+  expect(await ok('todo', 'next')).toEqual([
+    't1    next      Pay the invoice  · due 2020-01-01',
+    't2    next      Call the bank  · scheduled <time>',
+  ])
+  expect((await ok('todo', '--all')).at(-1)).toBe(
+    't4    next      File the return  · starts 2099-01-01 · repeats monthly',
+  )
+  expect(await fails('todo', 'set', 't1', '--start', 'today 10:00')).toContain('a day only')
+  expect(await fails('todo', 'set', 't1', '--repeat', 'yearly')).toContain(
+    '--repeat is one of daily, weekly, monthly',
+  )
+  expect(await fails('today', 'someday')).toContain('not a day: someday')
+})

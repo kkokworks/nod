@@ -82,7 +82,15 @@ nod todo t1              # 한 개 보기: 메모·링크·누가 무엇을 바�
 nod todo done t1
 nod add --todo t3        # 할 일을 nod 작업에 맡기기 (지시를 빼면 제목·메모가 지시)
 nod todo waiting         # 사람이나 작업을 기다리는 할 일
+nod todo set t4 --due 2026-11-03 --on 'tomorrow 15:00'   # 마감과 예정(그날·그 시각에 할 일)
+nod todo set t5 --start 2026-12-01                       # 그날까지 목록에서 숨기기
+nod todo set t6 --due 'today 17:00' --repeat weekly      # 끝내면 다음 주 것이 생김
+nod todo set t7 --focus today                            # 오늘 집중
+nod today                # 오늘: 캘린더 일정, 지난 것, 예정, 마감, 집중
+nod today tomorrow       # 내일 준비
 ```
+
+`nod today` 의 일정은 macOS 캘린더 앱에서 읽기만 합니다. 처음 한 번 `sh calendar/build.sh` 로 읽기 앱을 `~/.nod` 에 빌드하고, 터미널에서 `nod today` 를 돌려 캘린더 권한을 허용합니다. 구글·iCloud 캘린더도 캘린더 앱에 계정을 붙이면 함께 읽힙니다.
 
 맡긴 할 일은 작업을 기다리는 대기가 됩니다. 작업이 성공하면 끝나고, `nod drop` 으로 작업을 끝내면 다음 행동으로 돌아옵니다. 작업의 결과 한 줄과 링크는 `nod todo <할 일>` 에 나옵니다. 열린 결정은 `nod todo` 의 맨 위에 다음 행동으로 나오고, `nod <결정> <답>` 으로 답합니다.
 

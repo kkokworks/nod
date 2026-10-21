@@ -1,7 +1,7 @@
 import { afterAll, expect, test } from 'bun:test'
 import { tempDirs } from '../test/tmp'
 import { Ledger, type NewTask } from './ledger'
-import { OPEN, parseRef, type TodoFilter, Todos } from './todos'
+import { OPEN, parseRef, type TodoEdit, type TodoFilter, Todos } from './todos'
 
 const tmp = tempDirs()
 afterAll(tmp.removeAll)
@@ -19,6 +19,7 @@ const open: TodoFilter = {
   context: null,
   projectId: null,
   hideSomedayProjects: true,
+  day: null,
 }
 const ids = (ts: { id: number }[]) => ts.map((t) => t.id)
 const task: NewTask = {
@@ -302,4 +303,78 @@ test("an open decision is a next action, of the project its task's todo is in", 
     [d, t.id],
     [other, null],
   ])
+})
+
+const only = <T>(xs: T[]): T => {
+  const [x, ...rest] = xs
+  if (x === undefined || rest.length > 0) throw new Error(`expected one, got ${xs.length}`)
+  return x
+}
+
+test('a todo that starts later stays out of the lists until its day', () => {
+  const todos = fresh()
+  const later = captured(todos, 'File the return')
+  todos.set(later.id, { status: 'next', start: '2099-01-01' }, 'human')
+  const now = captured(todos, 'Book the room')
+  todos.set(now.id, { status: 'next', start: 'today' }, 'human')
+  const today = new Date().toLocaleDateString('sv-SE')
+  expect(todos.get(now.id).start).toBe(today)
+  expect(ids(todos.list({ ...open, day: today }))).toEqual([now.id])
+  expect(ids(todos.list(open))).toEqual([later.id, now.id])
+})
+
+test('done makes the next one of a repeating todo, once; dropped ends it', () => {
+  const todos = fresh()
+  const p = project(todos, 'Habits')
+  const t = captured(todos, 'Weekly review')
+  const edit: TodoEdit = { status: 'next', projectId: p.id, context: 'desk', focus: 'today' }
+  todos.set(t.id, { ...edit, due: '2026-10-16 17:00', repeat: 'weekly' }, 'claude:abc')
+  todos.finish([t.id], 'done', 'claude:abc')
+  const next = only(todos.list({ ...open, statuses: ['next'] }))
+  expect(next).toMatchObject({
+    title: 'Weekly review',
+    projectId: p.id,
+    context: '@desk',
+    repeat: 'weekly',
+    focus: null,
+    source: 'repeat',
+    sourceKey: `t${t.id}`,
+  })
+  // A Friday at 17:00, after today.
+  const due = String(next.due)
+  expect([new Date(`${due.slice(0, 10)}T12:00`).getDay(), due.slice(10)]).toEqual([5, ' 17:00'])
+  expect(due > new Date().toLocaleDateString('sv-SE')).toBe(true)
+  expect(todos.changes(next.id).map((c) => c.actor)).toEqual(['claude:abc'])
+  // Reopened and done again, it makes no second one.
+  todos.set(t.id, { status: 'next' }, 'human')
+  todos.finish([t.id], 'done', 'human')
+  expect(ids(todos.list({ ...open, statuses: ['next'] }))).toEqual([next.id])
+  todos.finish([next.id], 'dropped', 'human')
+  expect(todos.list({ ...open, statuses: ['next'] })).toEqual([])
+  const undated = captured(todos, 'Stretch')
+  expect(() => todos.set(undated.id, { repeat: 'daily' }, 'human')).toThrow(
+    'a repeating todo needs a due, on or start day',
+  )
+})
+
+test('a day holds what is overdue, scheduled, due and focused, each open todo once', () => {
+  const todos = fresh()
+  const at = (title: string, edit: TodoEdit) =>
+    todos.set(captured(todos, title).id, { status: 'next', ...edit }, 'human').id
+  const late = at('Late', { due: '2026-10-19' })
+  const missed = at('Missed', { scheduled: '2026-10-18 10:00' })
+  const call = at('Call', { scheduled: '2026-10-20 15:00', due: '2026-10-20' })
+  const early = at('Early', { scheduled: '2026-10-20 09:00' })
+  const due = at('Due', { due: '2026-10-20 17:00', focus: '2026-10-20' })
+  const picked = at('Picked', { focus: '2026-10-20' })
+  at('Picked yesterday', { focus: '2026-10-19' })
+  at('Later', { due: '2026-10-21' })
+  todos.finish([at('Done', { due: '2026-10-19' })], 'done', 'human')
+  const day = Object.entries(todos.day('2026-10-20')).map(([group, ts]) => [group, ids(ts)])
+  expect(Object.fromEntries(day)).toEqual({
+    overdue: [missed, late],
+    scheduled: [early, call],
+    due: [due],
+    focus: [picked],
+  })
 })
