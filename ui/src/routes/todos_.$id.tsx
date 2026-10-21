@@ -3,7 +3,15 @@ import { useState } from 'react'
 import type { RawEdit } from '../input'
 import { localTime, Url } from '../parts'
 import { changeTodo, getTodo } from '../todo-fns'
-import { MoreMenu, STATUSES, TodoFacts, todoTags, useChange, useTodoActions } from '../todo-parts'
+import {
+  MoreMenu,
+  STATUSES,
+  StatusSelect,
+  TodoFacts,
+  todoTags,
+  useChange,
+  useTodoActions,
+} from '../todo-parts'
 import type { TodoPage } from '../todos.server'
 
 export const Route = createFileRoute('/todos_/$id')({
@@ -21,14 +29,11 @@ function TodoDetail() {
   const page = Route.useLoaderData()
   const { edit } = Route.useSearch()
   const { todo } = page
-  const { busy, error, items } = useTodoActions(todo, page.today, false)
+  const { busy, error, items, move } = useTodoActions(todo, page.today, false)
   return (
     <div className="page">
       <div className="task-meta">
-        <span className={`chip ${todo.status}`}>
-          <span className="dot" />
-          {todo.status}
-        </span>
+        <StatusSelect status={todo.status} disabled={busy} onChange={move} />
         <span className="muted">
           t{todo.id} · from {todo.source}
           {todo.sourceKey !== null && ` ${todo.sourceKey}`} · {localTime(todo.createdAt)}

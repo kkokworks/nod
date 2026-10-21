@@ -12,6 +12,7 @@ import {
 import {
   addProject,
   capture,
+  donePage,
   editProject,
   editTodo,
   focusPage,
@@ -21,6 +22,8 @@ import {
 } from './todos.server'
 
 export const getLists = createServerFn({ method: 'GET' }).handler(() => lists())
+
+export const getDone = createServerFn({ method: 'GET' }).handler(() => donePage())
 
 export const getTodo = createServerFn({ method: 'GET' })
   .validator((id: number) => int(id, 'todo id'))

@@ -89,12 +89,15 @@ export function todoTags(t: TodoItem, today: string): Tag[] {
     t.status === 'inbox' || t.status === 'waiting'
       ? { text: `since ${relDay(localDay(new Date(t.statusAt)), today)}`, kind: 'plain' }
       : null,
+    t.status === 'done' || t.status === 'dropped'
+      ? { text: `${t.status} ${relDay(localDay(new Date(t.statusAt)), today)}`, kind: 'plain' }
+      : null,
   ]
   return tags.filter((x) => x !== null)
 }
 
-// A move that took a todo off its list, offered back for a while: the circle and the status menu
-// are one click, and the row is gone once the change lands.
+// A move that took a todo off its list, offered back for a while: a menu item is one click,
+// and the row is gone once the change lands.
 type Undo = { text: string; back: () => Promise<unknown> }
 
 const UndoContext = createContext<(undo: Undo) => void>(() => {})
@@ -136,14 +139,11 @@ function Toast({ undo, close }: { undo: Undo; close: () => void }) {
 const movedTo = (status: string): string =>
   status === 'done' ? 'Done' : status === 'dropped' ? 'Dropped' : `Moved to ${status}`
 
-// The lists a todo can be moved to from its menu; done is the circle, dropped its own item.
-const MOVES = ['inbox', 'next', 'waiting', 'someday', 'reference']
-
 type MenuItem = { label: string; onSelect: () => void; danger?: boolean }
 
-// What a todo's "…" menu does, as in Mindwtr: edit it, pick it for today or let it go, move it to
-// another list, or drop it. A next action that has started can be picked unless the focus is
-// `full`; one already picked can always be let go. A move is offered back for a while.
+// What a todo's row does besides its status menu: the "…" menu edits it and picks it for today or
+// lets it go. A next action that has started can be picked unless the focus is `full`; one
+// already picked can always be let go. A move, from the status menu, is offered back for a while.
 export function useTodoActions(t: TodoItem, today: string, full: boolean) {
   const { busy, error, run } = useChange()
   const offer = useContext(UndoContext)
@@ -173,15 +173,120 @@ export function useTodoActions(t: TodoItem, today: string, full: boolean) {
       : pickable
         ? [{ label: 'Focus today', onSelect: () => focus(today) }]
         : []),
-    ...MOVES.filter((s) => s !== t.status).map((s) => ({
-      label: `Move to ${s}`,
-      onSelect: () => move(s),
-    })),
-    ...(t.status === 'dropped'
-      ? []
-      : [{ label: 'Drop', onSelect: () => move('dropped'), danger: true }]),
   ]
   return { busy, error, items, focused, pickable, focus, move }
+}
+
+// Each status's glyph, drawn as the sidebar draws its lists: a tray for the inbox, an arrow for the
+// next actions, pause for waiting, a clock for someday, a book for reference, a check for done and
+// a slash for dropped.
+const STATUS_ICONS: Record<string, ReactNode> = {
+  inbox: (
+    <path d="M2.5 9h3l1 1.75h3l1-1.75h3M4.1 3.5h7.8l1.6 5.5v3a1.25 1.25 0 0 1-1.25 1.25h-8.5A1.25 1.25 0 0 1 2.5 12V9z" />
+  ),
+  next: (
+    <>
+      <circle cx="8" cy="8" r="6.25" />
+      <path d="M5.25 8h5.25M8.25 5.5 10.75 8l-2.5 2.5" />
+    </>
+  ),
+  waiting: (
+    <>
+      <circle cx="8" cy="8" r="6.25" />
+      <path d="M6.6 5.75v4.5M9.4 5.75v4.5" />
+    </>
+  ),
+  someday: (
+    <>
+      <circle cx="8" cy="8" r="6.25" />
+      <path d="M8 4.75V8l2.25 1.5" />
+    </>
+  ),
+  reference: (
+    <path d="M8 4.5C6.9 3.6 5.2 3.25 2.75 3.25v9c2.45 0 4.15.35 5.25 1.25 1.1-.9 2.8-1.25 5.25-1.25v-9c-2.45 0-4.15.35-5.25 1.25zM8 4.5v9" />
+  ),
+  done: (
+    <>
+      <circle cx="8" cy="8" r="6.25" />
+      <path d="M5.4 8.2l1.8 1.8 3.4-3.6" />
+    </>
+  ),
+  dropped: (
+    <>
+      <circle cx="8" cy="8" r="6.25" />
+      <path d="M5.6 10.4l4.8-4.8" />
+    </>
+  ),
+}
+
+function StatusIcon({ status }: { status: string }) {
+  return (
+    <svg
+      className="status-icon"
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.5}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      {STATUS_ICONS[status]}
+    </svg>
+  )
+}
+
+// The status menu, as Mindwtr has at the end of each row: every list, done and dropped too, each
+// in its colour and glyph. A popover, as the "…" menu is, since a native select's list cannot be
+// styled. In a list of its own status the badge stays plain, as it says nothing new there.
+export function StatusSelect({
+  status,
+  quiet = false,
+  disabled,
+  onChange,
+}: {
+  status: string
+  quiet?: boolean
+  disabled: boolean
+  onChange: (status: string) => void
+}) {
+  const id = useId()
+  const menu = useRef<HTMLDivElement>(null)
+  return (
+    <>
+      <button
+        type="button"
+        className={`status-pill ${status}${quiet ? ' quiet' : ''}`}
+        popoverTarget={id}
+        aria-haspopup="listbox"
+        aria-label={`Status: ${status}`}
+        title="Status"
+        disabled={disabled}
+      >
+        <StatusIcon status={status} />
+        {status}
+      </button>
+      <div id={id} ref={menu} popover="auto" className="status-menu" role="listbox">
+        {STATUSES.map((s) => (
+          <button
+            key={s}
+            type="button"
+            role="option"
+            aria-selected={s === status}
+            className={`status-option ${s}`}
+            onClick={() => {
+              menu.current?.hidePopover()
+              if (s !== status) onChange(s)
+            }}
+          >
+            <StatusIcon status={s} />
+            {s}
+            {s === status && <span className="tick">✓</span>}
+          </button>
+        ))}
+      </div>
+    </>
+  )
 }
 
 // The "…" button and its menu. A popover, so a click outside or Escape closes it; it sits under
@@ -199,7 +304,7 @@ export function MoreMenu({ items, disabled }: { items: MenuItem[]; disabled: boo
         title="More"
         disabled={disabled}
       >
-        …
+        ⋯
       </button>
       <div id={id} ref={menu} popover="auto" className="more-menu" role="menu">
         {items.map((item) => (
@@ -254,9 +359,9 @@ export function TodoFacts({ t }: { t: TodoItem }) {
   )
 }
 
-// A todo on one line, as in Mindwtr: the circle finishes it, the title unfolds its notes and
-// details, the star picks it for the day's focus, and the rest is in the "…" menu. Its status
-// shows when it is not the list's `usual` one.
+// A todo on one line, as in Mindwtr: the title unfolds its notes and details, the status menu moves
+// it to another list or finishes it, the star picks it for the day's focus, and the "…" menu has
+// the rest. There is no one-click circle, so a stray click finishes nothing.
 export function TodoRow({
   t,
   today,
@@ -272,14 +377,6 @@ export function TodoRow({
   const [open, setOpen] = useState(false)
   return (
     <div className={`todo-item${focused ? ' focused' : ''}${open ? ' open' : ''}`}>
-      <button
-        type="button"
-        className="check"
-        aria-label="Done"
-        title="Done"
-        disabled={busy}
-        onClick={() => move('done')}
-      />
       <div className="todo-main">
         <button
           type="button"
@@ -296,7 +393,6 @@ export function TodoRow({
               {tag.text}
             </span>
           ))}
-          {t.status !== usual && <span className={`status-pill ${t.status}`}>{t.status}</span>}
         </div>
         {open && (
           <>
@@ -308,7 +404,8 @@ export function TodoRow({
         )}
         {error !== null && <div className="banner">{error}</div>}
       </div>
-      {(focused || pickable) && (
+      <StatusSelect status={t.status} quiet={t.status === usual} disabled={busy} onChange={move} />
+      {focused || pickable ? (
         <button
           type="button"
           className={focused ? 'star on' : 'star'}
@@ -319,6 +416,9 @@ export function TodoRow({
         >
           {focused ? '★' : '☆'}
         </button>
+      ) : (
+        // The star's place stays, so the status menus of a list line up.
+        <span className="star" />
       )}
       <MoreMenu items={items} disabled={busy} />
     </div>

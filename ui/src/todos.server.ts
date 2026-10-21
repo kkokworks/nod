@@ -56,6 +56,8 @@ export type Lists = {
   projects: Project[]
 }
 
+export type DonePage = { today: string; done: TodoItem[]; dropped: TodoItem[] }
+
 export type TodoPage = {
   today: string
   todo: TodoItem
@@ -127,6 +129,27 @@ export function lists(): Lists {
     contexts: [...new Set(next.flatMap((t) => (t.context === null ? [] : [t.context])))].sort(),
     projects: todos.projects(['active', 'someday']),
   }
+}
+
+// ponytail: the latest hundred of each; a search of older ones when the list is outgrown.
+const DONE_SHOWN = 100
+
+// What was finished or dropped, the latest first, so a todo closed by mistake can be found and
+// moved back.
+export function donePage(): DonePage {
+  const of = (status: TodoStatus): TodoItem[] =>
+    todos
+      .list({
+        statuses: [status],
+        context: null,
+        projectId: null,
+        hideSomedayProjects: false,
+        day: null,
+      })
+      .sort((a, b) => b.statusAt.localeCompare(a.statusAt))
+      .slice(0, DONE_SHOWN)
+      .map(item)
+  return { today: localDay(new Date()), done: of('done'), dropped: of('dropped') }
 }
 
 export function todoPage(id: number): TodoPage {

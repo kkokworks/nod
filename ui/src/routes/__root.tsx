@@ -89,6 +89,12 @@ const ICONS = {
       <path d="M6.6 5.75v4.5M9.4 5.75v4.5" />
     </>
   ),
+  done: (
+    <>
+      <circle cx="8" cy="8" r="6.25" />
+      <path d="M5.4 8.2l1.8 1.8 3.4-3.6" />
+    </>
+  ),
 }
 
 function NavIcon({ name }: { name: keyof typeof ICONS }) {
@@ -139,6 +145,10 @@ function Sidebar() {
           <Link to="/waiting" className="side-item" activeProps={{ className: 'active' }}>
             <NavIcon name="waiting" />
             Waiting For
+          </Link>
+          <Link to="/done" className="side-item" activeProps={{ className: 'active' }}>
+            <NavIcon name="done" />
+            Done
           </Link>
         </details>
       </nav>

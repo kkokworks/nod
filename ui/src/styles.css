@@ -19,13 +19,19 @@
   --chip: #f0ede7;
   --row-hover: #fbfaf8;
   --star: #d49b0b;
-  --s-inbox: #5f6f86;
-  --s-next: #2f6fdb;
+  /* A todo's status, in Mindwtr's hues: new is blue, ready to do green, waiting amber, later
+     purple, kept for reference teal, finished receding grey, let go a muted rose. */
+  --s-inbox: #2563d9;
+  --s-next: #23824a;
   --s-waiting: #b7791f;
   --s-someday: #7c5cc4;
-  --s-reference: #8a857c;
-  --s-done: #2f8a4c;
-  --s-dropped: #a8a49b;
+  --s-reference: #13799e;
+  --s-done: #626976;
+  --s-dropped: #b35c63;
+  /* A task at work, waiting its turn, and a link out. */
+  --t-running: #2f6fdb;
+  --t-queued: #5f6f86;
+  --link: #2f6fdb;
   --shadow: 0 1px 2px rgb(0 0 0 / 4%), 0 4px 16px rgb(0 0 0 / 4%);
 }
 
@@ -48,13 +54,16 @@
     --chip: #2c2b29;
     --row-hover: #262624;
     --star: #f0b429;
-    --s-inbox: #94a3b8;
-    --s-next: #7aa7f7;
+    --s-inbox: #6ea2f7;
+    --s-next: #4fc27a;
     --s-waiting: #e2a33b;
-    --s-someday: #a78bfa;
-    --s-reference: #a8a49b;
-    --s-done: #5fbf7c;
-    --s-dropped: #6f6c66;
+    --s-someday: #b49afa;
+    --s-reference: #5bb6dc;
+    --s-done: #9399a3;
+    --s-dropped: #d9898f;
+    --t-running: #7aa7f7;
+    --t-queued: #94a3b8;
+    --link: #7aa7f7;
     --shadow: none;
   }
 }
@@ -299,11 +308,11 @@ details > summary.side-label {
 }
 
 .running {
-  --tone: var(--s-next);
+  --tone: var(--t-running);
 }
 
 .queued {
-  --tone: var(--s-inbox);
+  --tone: var(--t-queued);
 }
 
 .error,
@@ -466,7 +475,7 @@ details > summary.side-label {
 }
 
 .link a {
-  color: var(--s-next);
+  color: var(--link);
 }
 
 .link a::after {
@@ -1194,45 +1203,6 @@ details summary {
   border-top: 1px solid var(--line);
 }
 
-.check {
-  flex: none;
-  display: grid;
-  place-items: center;
-  width: 18px;
-  height: 18px;
-  margin-top: 0.15rem;
-  padding: 0;
-  border: 1.5px solid var(--idle);
-  border-radius: 50%;
-  background: none;
-  color: var(--ok);
-  font-size: 11px;
-  line-height: 1;
-  cursor: pointer;
-  transition:
-    border-color 0.12s,
-    background 0.12s;
-}
-
-.check::after {
-  content: "✓";
-  opacity: 0;
-}
-
-.check:hover {
-  border-color: var(--ok);
-  background: color-mix(in srgb, var(--ok) 12%, transparent);
-}
-
-.check:hover::after {
-  opacity: 1;
-}
-
-.check:disabled {
-  opacity: 0.4;
-  cursor: default;
-}
-
 .todo-main {
   flex: 1;
   min-width: 0;
@@ -1279,15 +1249,109 @@ details summary {
   font-weight: 500;
 }
 
-/* A todo's status, where it is not the list's own. Moving it is in the "…" menu. */
+/* A todo's status badge at the end of its row, as in Mindwtr: the status's glyph in its colour and
+   its name on a faint tint, a chevron saying it opens. In a list of its own status it says nothing
+   new, so it stays plain, glyph and name only, until the pointer comes. */
 .status-pill {
   --s: var(--s-reference);
-  padding: 0.02rem 0.5rem;
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--s) 14%, transparent);
-  color: var(--s);
-  font-size: 11.5px;
+  flex: none;
+  align-self: center;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  height: 1.6rem;
+  padding: 0 0.5rem 0 0.45rem;
+  border: 1px solid color-mix(in srgb, var(--s) 26%, transparent);
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--s) 9%, var(--card));
+  color: var(--fg);
+  font: inherit;
+  font-size: 12px;
   font-weight: 500;
+  line-height: 1;
+  text-transform: capitalize;
+  cursor: pointer;
+  transition:
+    background 0.12s,
+    border-color 0.12s,
+    color 0.12s;
+}
+
+.status-pill::after {
+  content: "";
+  width: 4.5px;
+  height: 4.5px;
+  margin: 0 0.05rem 0 0.1rem;
+  border-right: 1.4px solid currentcolor;
+  border-bottom: 1.4px solid currentcolor;
+  opacity: 0.45;
+  transform: translateY(-1.5px) rotate(45deg);
+  transition: opacity 0.12s;
+}
+
+.status-pill:hover,
+.status-pill:focus-visible,
+.status-pill:has(+ :popover-open) {
+  border-color: color-mix(in srgb, var(--s) 45%, transparent);
+  background: color-mix(in srgb, var(--s) 16%, var(--card));
+  outline: none;
+}
+
+.status-pill.quiet:not(:hover, :focus-visible, :has(+ :popover-open)) {
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted);
+}
+
+.status-pill.quiet:not(:hover, :focus-visible, :has(+ :popover-open))::after {
+  opacity: 0;
+}
+
+.status-pill:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* Each status's glyph, in its colour, on its badge and its line in the menu. */
+.status-icon {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  color: var(--s);
+}
+
+.status-option {
+  --s: var(--s-reference);
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  width: 100%;
+  padding: 0.42rem 0.6rem;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--fg);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  text-transform: capitalize;
+  cursor: pointer;
+}
+
+.status-option:hover,
+.status-option:focus-visible {
+  background: color-mix(in srgb, var(--s) 12%, transparent);
+  outline: none;
+}
+
+.status-option[aria-selected="true"] {
+  font-weight: 600;
+}
+
+.status-option .tick {
+  margin-left: auto;
+  color: var(--s);
+  font-size: 12px;
 }
 
 /* The title unfolds the todo where it is, as in Mindwtr. */
@@ -1336,8 +1400,7 @@ details summary {
   font-size: 12.5px;
 }
 
-/* The "…" button waits for the pointer, as the row's other actions do; it stays while its menu is
-   open, and on touch screens. */
+/* The "…" button, always there beside the status menu. */
 .more {
   flex: none;
   align-self: center;
@@ -1349,7 +1412,8 @@ details summary {
   background: none;
   color: var(--muted);
   font: inherit;
-  font-size: 16px;
+  font-size: 18px;
+  font-weight: 700;
   line-height: 1;
   cursor: pointer;
 }
@@ -1359,25 +1423,9 @@ details summary {
   color: var(--fg);
 }
 
-.todo-item > .more {
-  opacity: 0;
-  transition: opacity 0.12s;
-}
-
-.todo-item:is(:hover, :focus-within) > .more,
-.todo-item > .more:has(+ :popover-open) {
-  opacity: 1;
-}
-
-@media (hover: none) {
-  .todo-item > .more {
-    opacity: 1;
-  }
-}
-
 /* Under the button that opens it, its right edge on the button's; above it when there is no room
    below. */
-.more-menu {
+:is(.more-menu, .status-menu) {
   inset: auto;
   min-width: 11rem;
   margin: 0.25rem 0;
@@ -1416,44 +1464,28 @@ details summary {
   margin-left: auto;
 }
 
-.status-pill.inbox,
-.chip.inbox {
+:is(.status-pill, .status-option).inbox {
   --s: var(--s-inbox);
 }
 
-.status-pill.next,
-.chip.next {
+:is(.status-pill, .status-option).next {
   --s: var(--s-next);
 }
 
-.status-pill.waiting,
-.chip.waiting {
+:is(.status-pill, .status-option).waiting {
   --s: var(--s-waiting);
 }
 
-.status-pill.someday,
-.chip.someday {
+:is(.status-pill, .status-option).someday {
   --s: var(--s-someday);
 }
 
-.status-pill.done,
-.chip.done {
+:is(.status-pill, .status-option).done {
   --s: var(--s-done);
 }
 
-.status-pill.dropped,
-.chip.dropped {
+:is(.status-pill, .status-option).dropped {
   --s: var(--s-dropped);
-}
-
-/* A todo's status chip (its page) in the colours of the row's status menu. */
-.chip:is(.inbox, .next, .waiting, .someday, .reference, .done, .dropped) {
-  background: color-mix(in srgb, var(--s, var(--s-reference)) 14%, transparent);
-  color: var(--s, var(--s-reference));
-}
-
-.chip:is(.inbox, .next, .waiting, .someday, .reference, .done, .dropped) .dot {
-  background: currentcolor;
 }
 
 /* Picking is what the Focus page is for, so the star is always there. */
@@ -1681,7 +1713,7 @@ a.task-line:hover {
 }
 
 /* An unfolded todo keeps its actions on its title's line. */
-.todo-item.open > :is(.star, .more) {
+.todo-item.open > :is(.status-pill, .star, .more) {
   align-self: flex-start;
 }
 
