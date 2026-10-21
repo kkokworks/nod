@@ -48,12 +48,13 @@ export const TODO_USAGE = `  nod in <what...> [--notes <text>] [--source <channe
   nod today [<day>] [--days <n>]   the day's events, read from macOS Calendar, then its open
                                    todos: overdue, scheduled, due, and picked for its focus.
                                    --days goes on for n days, showing those that hold something
-  nod todo check [--nudge]         whether the lists can be trusted: the inbox and its oldest
+  nod todo check [--nudge|--json]  whether the lists can be trusted: the inbox and its oldest
                                    todo, overdue, today, projects with no next action, people
                                    waited on with nothing recorded for ${STALE_DAYS} days, days since
                                    the last weekly review (the last done todo from --source
                                    review). --nudge prints it once a day as a Claude Code
-                                   SessionStart message, and nothing when all is well
+                                   SessionStart message, and nothing when all is well; --json
+                                   prints it all as JSON
   nod todo done|drop <todo...>
   nod project add <title...> [--outcome <what done looks like>]
   nod project [ls] [--all]         active projects with their next and waiting counts, open
@@ -174,8 +175,15 @@ function listTodos(todos: Todos, args: string[]): void {
 // `nod todo check`: whether the lists can be trusted. With --nudge, a line for Claude Code's
 // SessionStart hook: once a day, never in a nod worker, and nothing when all is well.
 function checkTodos(todos: Todos, home: string, args: string[]): void {
-  const { values } = parseArgs({ args, options: { nudge: { type: 'boolean' } } })
+  const { values } = parseArgs({
+    args,
+    options: { nudge: { type: 'boolean' }, json: { type: 'boolean' } },
+  })
   const today = localDay(new Date())
+  if (values.json) {
+    console.log(JSON.stringify(todos.trust(today)))
+    return
+  }
   if (!values.nudge) {
     for (const l of trustLines(todos.trust(today))) console.log(l)
     return

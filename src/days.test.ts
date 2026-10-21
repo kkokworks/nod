@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test'
-import { nextDates, parseWhen } from './days'
+import { nextDates, nextWorkday, parseWhen } from './days'
 
 test('a day is YYYY-MM-DD, today or tomorrow, with a time only where one is allowed', () => {
   expect(parseWhen('today', '2026-10-31', false)).toBe('2026-10-31')
@@ -32,4 +32,10 @@ test('a repeating todo moves on whole periods from its schedule, past today', ()
     '2026-10-21',
   )
   expect(() => nextDates(none, 'daily', '2026-10-20')).toThrow('needs a date')
+})
+
+test('the next workday after a Friday or a weekend day is Monday', () => {
+  // 2026-10-23 is a Friday.
+  const after = ['2026-10-22', '2026-10-23', '2026-10-24', '2026-10-25'].map(nextWorkday)
+  expect(after).toEqual(['2026-10-23', '2026-10-26', '2026-10-26', '2026-10-26'])
 })

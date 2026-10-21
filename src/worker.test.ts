@@ -12,6 +12,7 @@ import {
   answer,
   drop,
   onStop,
+  parseCaptures,
   parseReport,
   sessionName,
   startReady,
@@ -608,4 +609,55 @@ test("a delegated todo waits through its task's decision, is done when it succee
   await drop(ledger, home, failed.id)
   expect(status(after.task)).toBe('cancelled')
   expect([todos.get(gaveUp.todo).status, todos.get(after.todo).status]).toEqual(['next', 'next'])
+})
+
+test('nod captures the todos a worker reports once its done is accepted, and sends a bad line back', async () => {
+  const todos = new Todos(ledger)
+  const inbox = () =>
+    todos
+      .list({
+        statuses: ['inbox'],
+        context: null,
+        projectId: null,
+        hideSomedayProjects: false,
+        day: null,
+      })
+      .map((t) => [t.title, t.source, t.sourceKey])
+  const id = await add('capture-bad: the day')
+  await reaches(id, 'succeeded')
+  // Nothing from the report with the bad line; only what the worker reported again.
+  expect(inbox()).toEqual([['Ask Kim again', 'chat', 'm1']])
+  expect(ledger.attempts(id).map((a) => [a.kind, a.checkResult])).toEqual([
+    ['start', 'failed'],
+    ['retry', 'passed'],
+  ])
+  expect(ledger.attempts(id)[1]?.prompt).toStartWith('A `NOD: in` line nod cannot read:')
+  const [first] = todos.list({
+    statuses: ['inbox'],
+    context: null,
+    projectId: null,
+    hideSomedayProjects: false,
+    day: null,
+  })
+  expect(first === undefined ? null : todos.changes(first.id)[0]?.actor).toBe(`worker:${id}`)
+  // Reported again by the next run, the keyed one goes in once.
+  const next = await add('capture: the next day')
+  await reaches(next, 'succeeded')
+  expect(inbox()).toEqual([
+    ['Ask Kim again', 'chat', 'm1'],
+    ['Book the room', 'worker', null],
+  ])
+})
+
+test('a report may ask for at most 50 captures, each with JSON nod can read', () => {
+  const line = (n: number) => `NOD: in {"title": "t${n}"}`
+  const many = Array.from({ length: 51 }, (_, n) => line(n)).join('\n')
+  expect(parseCaptures(many)).toEqual({ error: '51 `NOD: in` lines; report at most 50' })
+  expect(parseCaptures('NOD: in {"key": "k", "title": "x"}\nNOD: done | ok')).toMatchObject({
+    error: expect.stringContaining('a key needs its source'),
+  })
+  expect(parseCaptures('NOD: in title only')).toMatchObject({
+    error: expect.stringContaining('NOD: in title only'),
+  })
+  expect(parseCaptures('**NOD: done | nothing to capture**')).toEqual({ captures: [] })
 })

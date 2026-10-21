@@ -64,3 +64,9 @@ export const daysBetween = (from: string, to: string): number =>
   Math.round((Date.parse(`${to}T00:00Z`) - Date.parse(`${from}T00:00Z`)) / 86_400_000)
 
 const utcDay = (d: Date): string => d.toISOString().slice(0, 10)
+
+// Friday and the weekend lead to Monday.
+export function nextWorkday(day: string): string {
+  const weekday = new Date(`${day}T00:00Z`).getUTCDay()
+  return addDays(day, weekday === 5 ? 3 : weekday === 6 ? 2 : 1)
+}

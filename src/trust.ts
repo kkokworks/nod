@@ -21,8 +21,8 @@ export type Trust = {
   today: Todo[]
   // Active projects with no next action; an open decision on one of their tasks counts as one.
   stuck: Project[]
-  // Waiting on a person, with no change to the todo for STALE_DAYS or more.
-  stale: { todo: Todo; days: number }[]
+  // Waiting on a person, with no change to the todo since `since`, STALE_DAYS or more ago.
+  stale: { todo: Todo; since: string; days: number }[]
   // Days since the last weekly review; null before the first.
   sinceReview: number | null
 }
@@ -50,7 +50,7 @@ export function trust(s: TrustInput, today: string): Trust {
       .map((todo) => {
         const last = s.lastChange.get(todo.id)
         if (last === undefined) throw new Error(`t${todo.id} has no recorded change`)
-        return { todo, days: daysSince(last) }
+        return { todo, since: localDay(new Date(last)), days: daysSince(last) }
       })
       .filter((x) => x.days >= STALE_DAYS),
     sinceReview: s.lastReview === null ? null : daysSince(s.lastReview),

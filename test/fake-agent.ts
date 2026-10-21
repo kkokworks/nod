@@ -121,6 +121,13 @@ async function turn(message: string, continuing: boolean): Promise<void> {
     reply = 'Stopped without a report.'
   } else if (head.includes('ask-first')) {
     reply = 'Should I go ahead?\n**NOD: question | May I proceed?**'
+  } else if (head.includes('capture')) {
+    reply = [
+      'NOD: in {"title": "Ask Kim again", "source": "chat", "key": "m1"}',
+      '`NOD: in {"title": "Book the room", "link": "https://example.com/r"}`',
+      ...(head.includes('capture-bad') ? ['NOD: in {"title": " "}'] : []),
+      'NOD: done | captured',
+    ].join('\n')
   }
   // A worker that fixes things once told what is wrong, or once a human says yes.
   if (head.includes('failed:') || head.includes('Human decision: yes')) {
@@ -137,6 +144,10 @@ async function turn(message: string, continuing: boolean): Promise<void> {
   }
   // Like Claude Code, a continuation after a blocked stop usually has no report line.
   if (continuing) reply = 'Fixed it.'
+  // Told a `NOD: in` line was wrong, it reports again with only the good one.
+  if (head.includes('NOD: in')) {
+    reply = 'NOD: in {"title": "Ask Kim again", "source": "chat", "key": "m1"}\nNOD: done | fixed'
+  }
   const out = await runHooks('Stop', {
     session_id: sessionId,
     last_assistant_message: reply,

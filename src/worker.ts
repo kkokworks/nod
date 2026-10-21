@@ -24,7 +24,10 @@ Whenever you stop, end your final message with exactly one line in one of these 
 NOD: done | <one-line summary>      (finished, and you checked the result yourself)
 NOD: question | <your question>     (you need a human decision, a permission, or access you lack)
 NOD: failed | <reason>              (you cannot do the task)
-A human answers questions later in this same conversation.`
+A human answers questions later in this same conversation.
+To put something in the person's to-do inbox, add one line per item above that last line:
+NOD: in {"title": "<what to do>", "notes": "<optional>", "link": "<optional URL>", "source": "<optional channel>", "key": "<that channel's id for it>"}
+nod puts them in once it accepts your done. With a source and key, an item goes in only once.`
 
 const RESUME_PROMPT =
   'Your session was interrupted. Check the current state of this directory and continue the task.'
@@ -43,6 +46,8 @@ const SANDBOX = {
 const CHECK_RETRIES = 2
 const OUTPUT_LIMIT = 4000
 const QUESTION_LIMIT = 2000
+// More than this in one report is more than a person can clarify, or a worker gone wrong.
+const MAX_CAPTURES = 50
 // The check and the review both run inside the Stop hook, so the hook outlasts them.
 const REVIEW_TIMEOUT_MS = 600_000
 const STOP_HOOK_TIMEOUT_SECS = 1800
@@ -57,6 +62,19 @@ const CLI = join(import.meta.dirname, 'cli.ts')
 // Who moves a delegated todo along with its task: nod itself. Not the environment's actor, which in
 // a worker's hook is that worker.
 const SELF = 'nod'
+
+// A todo a worker asks nod to capture. Its sandbox keeps it out of the ledger, so nod captures for
+// it, into the inbox only, where the person clarifies it.
+const Capture = z
+  .object({
+    title: z.string().trim().min(1),
+    notes: z.string().trim().min(1).optional(),
+    link: z.string().trim().min(1).optional(),
+    source: z.string().trim().min(1).optional(),
+    key: z.string().trim().min(1).optional(),
+  })
+  .refine((c) => c.key === undefined || c.source !== undefined, 'a key needs its source')
+type Capture = z.infer<typeof Capture>
 
 // What Claude Code's hooks pass on stdin (measured on 2.1.290); only the fields nod reads.
 export const StopEvent = z.object({
@@ -328,7 +346,12 @@ async function settle(
     return null
   }
   ledger.endAttempt(attemptId, { outcome: 'succeeded', summary, report: text })
-  const check = await verify(ledger, task, text)
+  // Lines nod cannot read go back like a failed check, before the slower checks run.
+  const captured = parseCaptures(text)
+  const check =
+    'error' in captured
+      ? { passed: false, output: captured.error }
+      : await verify(ledger, task, text)
   if (check !== null) ledger.recordCheck(attemptId, check.passed, check.output)
   if (check === null || check.passed) {
     if (task.retroOf !== null && !isNoRule(summary)) {
@@ -342,7 +365,11 @@ async function settle(
       )
       return null
     }
-    ledger.succeed(task.id)
+    const captures = 'error' in captured ? [] : captured.captures
+    ledger.db.transaction(() => {
+      captureFor(ledger, task, captures)
+      ledger.succeed(task.id)
+    })()
     await notify(home, { event: 'succeeded', task: taskRef(task), summary })
     await startRetro(ledger, home, task)
     return null
@@ -382,6 +409,51 @@ export function parseReport(text: string): Report | null {
     }
   }
   return null
+}
+
+// The `NOD: in {…}` lines of a report, or what is wrong with them, to send back to the worker.
+export function parseCaptures(text: string): { captures: Capture[] } | { error: string } {
+  const lines = text
+    .split('\n')
+    .map((l) => l.trim().replace(/^`+|`+$/g, ''))
+    .filter((l) => /^NOD:\s*in\b/i.test(l))
+  if (lines.length > MAX_CAPTURES) {
+    return { error: `${lines.length} \`NOD: in\` lines; report at most ${MAX_CAPTURES}` }
+  }
+  const captures: Capture[] = []
+  for (const line of lines) {
+    const parsed = Capture.safeParse(jsonOrNull(line.replace(/^NOD:\s*in\s*/i, '')))
+    if (!parsed.success) {
+      return {
+        error: `A \`NOD: in\` line nod cannot read: ${line}\n${z.prettifyError(parsed.error)}\nWrite it as NOD: in {"title": "…"} with JSON, or leave it out.`,
+      }
+    }
+    captures.push(parsed.data)
+  }
+  return { captures }
+}
+
+function jsonOrNull(text: string): unknown {
+  try {
+    return JSON.parse(text)
+  } catch {
+    return null
+  }
+}
+
+// Recorded as the worker's: what goes in is its judgment, nod only writes it down.
+function captureFor(ledger: Ledger, task: Task, captures: Capture[]): void {
+  const todos = new Todos(ledger)
+  for (const c of captures) {
+    const todo = {
+      title: c.title,
+      notes: c.notes ?? null,
+      source: c.source ?? 'worker',
+      sourceKey: c.key ?? null,
+      url: c.link ?? null,
+    }
+    todos.capture(todo, `worker:${task.id}`)
+  }
 }
 
 // The attempt a hook event belongs to. A person who typed straight into the worker's terminal

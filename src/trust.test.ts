@@ -63,7 +63,7 @@ test('the numbers that say whether the lists can be trusted', () => {
     overdue: [late],
     today: [call],
     stuck: [{ id: 2 }],
-    stale: [{ todo: kim, days: 8 }],
+    stale: [{ todo: kim, since: '2026-10-20', days: 8 }],
     sinceReview: 12,
   })
   expect(nudgeLine(t, '2026-10-28')).toBe(
