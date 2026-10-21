@@ -1,5 +1,5 @@
 import { createFileRoute, getRouteApi, Link } from '@tanstack/react-router'
-import type { ReactNode } from 'react'
+import { type ReactNode, useEffect, useState } from 'react'
 import type { TaskRow } from '../nod.server'
 import { DecisionCard, localTime, Status } from '../parts'
 import { Section } from '../todo-parts'
@@ -47,15 +47,16 @@ function Home() {
         </Section>
       ) : (
         groups.map((g) => (
-          <Section
+          <ProjectGroup
             key={g.project?.id ?? 0}
+            fold={`project:${g.project?.id ?? 'none'}`}
             title={g.project?.title ?? 'No project'}
             count={g.tasks.length}
           >
             {g.tasks.map((t) => (
               <TaskLine key={t.id} t={t} />
             ))}
-          </Section>
+          </ProjectGroup>
         ))
       )}
 
@@ -110,6 +111,60 @@ function Home() {
       </Section>
     </div>
   )
+}
+
+// A project's tasks under its title, which folds them away. What is folded is kept in this
+// browser, so a project stays folded across pages and visits.
+function ProjectGroup({
+  fold,
+  title,
+  count,
+  children,
+}: {
+  fold: string
+  title: string
+  count: number
+  children: ReactNode
+}) {
+  const [folded, setFolded] = useFolded(fold)
+  return (
+    <details className="fold" open={!folded} onToggle={(e) => setFolded(!e.currentTarget.open)}>
+      <summary className="section">
+        {title}
+        <span className="count">{count}</span>
+      </summary>
+      <div className="list">{children}</div>
+    </details>
+  )
+}
+
+const FOLDED = 'nod.folded'
+
+// ponytail: storage can be missing or refused (a private window), and folding is only a
+// convenience, so it then lasts until the page is left.
+function readFolded(): string[] {
+  try {
+    const v: unknown = JSON.parse(localStorage.getItem(FOLDED) ?? '[]')
+    return Array.isArray(v) ? v.filter((x) => typeof x === 'string') : []
+  } catch {
+    return []
+  }
+}
+
+// Open on the server's first render, then as this browser left it.
+function useFolded(key: string): [boolean, (folded: boolean) => void] {
+  const [folded, setFolded] = useState(false)
+  useEffect(() => setFolded(readFolded().includes(key)), [key])
+  const set = (v: boolean) => {
+    setFolded(v)
+    const rest = readFolded().filter((k) => k !== key)
+    try {
+      localStorage.setItem(FOLDED, JSON.stringify(v ? [...rest, key] : rest))
+    } catch {
+      // ponytail: see readFolded
+    }
+  }
+  return [folded, set]
 }
 
 // A task: what it is, then how it went last, with its status spelled out.

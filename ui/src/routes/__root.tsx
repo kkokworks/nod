@@ -171,12 +171,12 @@ function Sidebar() {
       )}
 
       {groups.map((g) => (
-        <div key={g.project?.id ?? 0} className="side-group">
-          <div className="side-label">{g.project?.title ?? 'No project'}</div>
+        <details key={g.project?.id ?? 0} className="side-group" open>
+          <summary className="side-label">{g.project?.title ?? 'No project'}</summary>
           {g.tasks.map((t) => (
             <TaskItem key={t.id} t={t} />
           ))}
-        </div>
+        </details>
       ))}
 
       {collected.length > 0 && (
