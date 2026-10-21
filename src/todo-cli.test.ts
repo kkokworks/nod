@@ -251,7 +251,7 @@ test('nod todo --json, check and its once-a-day nudge, and today over several da
   expect(check.slice(0, 2)).toEqual(['inbox    0', 'overdue  1: t1 Pay the invoice'])
   expect(check.at(-1)).toBe('review   weekly: none done yet')
   const nudge = JSON.parse((await ok('todo', 'check', '--nudge')).join(''))
-  expect(nudge.systemMessage).toBe('nod · overdue 1 → /gtd:overview')
+  expect(nudge.systemMessage).toBe('nod · overdue 1 → /gtd:today')
   expect(await ok('todo', 'check', '--nudge')).toEqual([''])
   // Not in a nod worker, which no person reads.
   await Bun.write(`${home}/.nudged`, '')

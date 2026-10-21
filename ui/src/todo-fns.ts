@@ -15,6 +15,7 @@ import {
   dayPage,
   editProject,
   editTodo,
+  focusPage,
   lists,
   projectsPage,
   todoPage,
@@ -29,6 +30,8 @@ export const getTodo = createServerFn({ method: 'GET' })
 export const getDay = createServerFn({ method: 'GET' })
   .validator((day: string) => text(day, 'day'))
   .handler(({ data }) => dayPage(data))
+
+export const getFocus = createServerFn({ method: 'GET' }).handler(() => focusPage())
 
 export const getProjects = createServerFn({ method: 'GET' }).handler(() => projectsPage())
 

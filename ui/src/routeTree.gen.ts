@@ -10,6 +10,7 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as FocusRouteImport } from './routes/focus'
 import { Route as ProjectsRouteImport } from './routes/projects'
 import { Route as TodayRouteImport } from './routes/today'
 import { Route as TodosRouteImport } from './routes/todos'
@@ -19,6 +20,11 @@ import { Route as TodosIdRouteImport } from './routes/todos_.$id'
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const FocusRoute = FocusRouteImport.update({
+  id: '/focus',
+  path: '/focus',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ProjectsRoute = ProjectsRouteImport.update({
@@ -49,6 +55,7 @@ const TodosIdRoute = TodosIdRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/focus': typeof FocusRoute
   '/projects': typeof ProjectsRoute
   '/today': typeof TodayRoute
   '/todos': typeof TodosRoute
@@ -57,6 +64,7 @@ export interface FileRoutesByFullPath {
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/focus': typeof FocusRoute
   '/projects': typeof ProjectsRoute
   '/today': typeof TodayRoute
   '/todos': typeof TodosRoute
@@ -66,6 +74,7 @@ export interface FileRoutesByTo {
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/focus': typeof FocusRoute
   '/projects': typeof ProjectsRoute
   '/today': typeof TodayRoute
   '/todos': typeof TodosRoute
@@ -75,12 +84,26 @@ export interface FileRoutesById {
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
-    '/' | '/projects' | '/today' | '/todos' | '/tasks/$id' | '/todos/$id'
+    | '/'
+    | '/focus'
+    | '/projects'
+    | '/today'
+    | '/todos'
+    | '/tasks/$id'
+    | '/todos/$id'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/projects' | '/today' | '/todos' | '/tasks/$id' | '/todos/$id'
+  to:
+    | '/'
+    | '/focus'
+    | '/projects'
+    | '/today'
+    | '/todos'
+    | '/tasks/$id'
+    | '/todos/$id'
   id:
     | '__root__'
     | '/'
+    | '/focus'
     | '/projects'
     | '/today'
     | '/todos'
@@ -90,6 +113,7 @@ export interface FileRouteTypes {
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  FocusRoute: typeof FocusRoute
   ProjectsRoute: typeof ProjectsRoute
   TodayRoute: typeof TodayRoute
   TodosRoute: typeof TodosRoute
@@ -104,6 +128,13 @@ declare module '@tanstack/react-router' {
       path: '/'
       fullPath: '/'
       preLoaderRoute: typeof IndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/focus': {
+      id: '/focus'
+      path: '/focus'
+      fullPath: '/focus'
+      preLoaderRoute: typeof FocusRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/projects': {
@@ -146,6 +177,7 @@ declare module '@tanstack/react-router' {
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  FocusRoute: FocusRoute,
   ProjectsRoute: ProjectsRoute,
   TodayRoute: TodayRoute,
   TodosRoute: TodosRoute,

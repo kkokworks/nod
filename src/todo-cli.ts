@@ -192,7 +192,7 @@ function checkTodos(todos: Todos, home: string, args: string[]): void {
   if (existsSync(stamp) && readFileSync(stamp, 'utf8') === today) return
   writeFileSync(stamp, today)
   const nudge = nudgeLine(todos.trust(today), today)
-  if (nudge !== null) console.log(JSON.stringify({ systemMessage: `${nudge} → /gtd:overview` }))
+  if (nudge !== null) console.log(JSON.stringify({ systemMessage: `${nudge} → /gtd:today` }))
 }
 
 function trustLines(t: Trust): string[] {

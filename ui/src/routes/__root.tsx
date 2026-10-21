@@ -71,6 +71,9 @@ function Sidebar() {
         nod
       </Link>
       <nav className="side-nav">
+        <Link to="/focus" className="side-item" activeProps={{ className: 'active' }}>
+          Focus
+        </Link>
         <Link
           to="/today"
           search={{ day: 'today' }}

@@ -25,6 +25,8 @@ import { home, ledger } from './nod.server'
 const ACTOR = 'human:ui'
 // Reading the calendar launches an app, and the pages reload every few seconds.
 const CALENDAR_TTL_MS = 5 * 60_000
+// Today's focus holds this many, as in Mindwtr by default: picking few is the point.
+const FOCUS_LIMIT = 3
 
 const todos = new Todos(ledger)
 
@@ -75,6 +77,19 @@ export type DayPage = {
   events: EventsRead
   groups: { [K in keyof DayTodos]: TodoItem[] }
   trust: Trust
+}
+
+// Mindwtr's Focus screen.
+export type FocusPage = {
+  today: string
+  limit: number
+  focus: TodoItem[]
+  // Overdue, scheduled for today or due today, and not in the focus.
+  day: TodoItem[]
+  // The other next actions, those focused on an earlier day first: to pick again or let go.
+  next: TodoItem[]
+  // Next actions that start after today, the soonest first.
+  upcoming: TodoItem[]
 }
 
 export type ProjectsPage = {
@@ -158,6 +173,37 @@ export async function dayPage(when: string): Promise<DayPage> {
       focus: groups.focus.map(item),
     },
     trust: todos.trust(today),
+  }
+}
+
+export function focusPage(): FocusPage {
+  const today = localDay(new Date())
+  const d = todos.day(today)
+  // The day's groups do not overlap, and a focused todo that is also due today sits under due.
+  const ofDay = [...d.overdue, ...d.scheduled, ...d.due, ...d.focus]
+  const shown = new Set(ofDay.map((t) => t.id))
+  const next = (day: string | null): Todo[] =>
+    todos.list({
+      statuses: ['next'],
+      context: null,
+      projectId: null,
+      hideSomedayProjects: true,
+      day,
+    })
+  const earlier = (t: Todo): number => (t.focus !== null && t.focus < today ? 0 : 1)
+  return {
+    today,
+    limit: FOCUS_LIMIT,
+    focus: ofDay.filter((t) => t.focus === today).map(item),
+    day: ofDay.filter((t) => t.focus !== today).map(item),
+    next: next(today)
+      .filter((t) => !shown.has(t.id))
+      .sort((a, b) => earlier(a) - earlier(b))
+      .map(item),
+    upcoming: next(null)
+      .filter((t) => t.start !== null && t.start > today)
+      .sort((a, b) => (a.start ?? '').localeCompare(b.start ?? ''))
+      .map(item),
   }
 }
 
