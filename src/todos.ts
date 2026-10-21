@@ -11,6 +11,7 @@ import {
   type Task,
   type TaskStatus,
 } from './ledger'
+import { REVIEW_SOURCE, type Trust, trust } from './trust'
 
 // The person's own todos, kept the GTD way: captured into the inbox, clarified into a next action,
 // something waited on, someday, or reference, and grouped into projects. A todo is not a task: it
@@ -33,8 +34,6 @@ export const OPEN: TodoStatus[] = ['inbox', 'next', 'waiting']
 const CLOSED_PROJECT: ProjectStatus[] = ['done', 'dropped']
 // A delegated todo's tasks that may still go on: one in error can be resumed.
 export const UNFINISHED: TaskStatus[] = ['queued', 'running', 'needs_decision', 'error']
-// Where the next one of a repeating todo comes from; its key is the todo it follows.
-const REPEATED = 'repeat'
 
 export type Todo = {
   id: number
@@ -395,6 +394,31 @@ export class Todos {
     }
   }
 
+  // What says whether the lists can be trusted, as of a day (trust.ts).
+  trust(day: string): Trust {
+    const changed = this.run(
+      q
+        .selectFrom('todoChanges')
+        .select(['todoId', q.fn.max('at').as('at')])
+        .groupBy('todoId'),
+    )
+    const reviewed = this.first(
+      q
+        .selectFrom('todos')
+        .select(q.fn.max('statusAt').as('at'))
+        .where('source', '=', REVIEW_SOURCE)
+        .where('status', '=', 'done'),
+    )
+    const input = {
+      open: this.run(q.selectFrom('todos').selectAll().where('status', 'in', OPEN).orderBy('id')),
+      projects: this.projects(['active']),
+      lastChange: new Map(changed.map((c) => [c.todoId, c.at])),
+      lastReview: reviewed?.at ?? null,
+      day: this.day(day),
+    }
+    return trust(input, day)
+  }
+
   // ── projects ──
 
   addProject(p: { title: string; outcome: string | null }, actor: string): Project {
@@ -539,7 +563,8 @@ export class Todos {
   }
 
   // The next one of a repeating todo just done; made once, however often this one is reopened and
-  // done again.
+  // done again. It keeps the source, so a series is known by its channel (the weekly review's is
+  // `review`), and its key is the todo it follows.
   private repeatNext(id: number, actor: string): void {
     const done = this.get(id)
     if (done.repeat === null) return
@@ -548,7 +573,7 @@ export class Todos {
       q
         .selectFrom('todos')
         .select('id')
-        .where('source', '=', REPEATED)
+        .where('source', '=', done.source)
         .where('sourceKey', '=', sourceKey),
     )
     if (made) return
@@ -560,7 +585,7 @@ export class Todos {
       context: done.context,
       ...nextDates(done, done.repeat, localDay(new Date())),
       repeat: done.repeat,
-      source: REPEATED,
+      source: done.source,
       sourceKey,
     }
     const at = now()

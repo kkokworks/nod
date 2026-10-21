@@ -158,7 +158,7 @@ switch (command) {
     capture(new Todos(ledger), rest)
     break
   case 'todo':
-    todoCommand(new Todos(ledger), rest)
+    todoCommand(new Todos(ledger), home, rest)
     break
   case 'project':
     projectCommand(new Todos(ledger), rest)

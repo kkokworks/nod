@@ -337,7 +337,7 @@ test('done makes the next one of a repeating todo, once; dropped ends it', () =>
     context: '@desk',
     repeat: 'weekly',
     focus: null,
-    source: 'repeat',
+    source: 'cli',
     sourceKey: `t${t.id}`,
   })
   // A Friday at 17:00, after today.
@@ -377,4 +377,26 @@ test('a day holds what is overdue, scheduled, due and focused, each open todo on
     due: [due],
     focus: [picked],
   })
+})
+
+test('the weekly review is the last done todo of the review series, and a waited-on person goes stale', () => {
+  const { ledger, todos } = books()
+  const today = new Date().toLocaleDateString('sv-SE')
+  expect(todos.trust(today).sinceReview).toBeNull()
+  const review = todos.capture(
+    { title: 'Weekly review', notes: null, source: 'review', sourceKey: 'weekly', url: null },
+    'human',
+  ).todo
+  todos.set(review.id, { status: 'next', due: 'today 17:00', repeat: 'weekly' }, 'human')
+  todos.finish([review.id], 'done', 'human')
+  // The next one keeps the channel, so it is still the review.
+  expect(todos.list({ ...open, statuses: ['next'] }).map((t) => t.source)).toEqual(['review'])
+  expect(todos.trust(today).sinceReview).toBe(0)
+  const kim = captured(todos, 'Ask Kim for the report')
+  todos.set(kim.id, { status: 'waiting', waitingOn: 'Kim' }, 'human')
+  expect(todos.trust(today).stale).toEqual([])
+  ledger.db.run("update todo_changes set at = '2026-01-01T00:00:00.000Z' where todo_id = ?", [
+    kim.id,
+  ])
+  expect(todos.trust(today).stale.map((x) => x.todo.id)).toEqual([kim.id])
 })

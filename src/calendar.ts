@@ -30,8 +30,12 @@ export const calendarBuild = join(import.meta.dirname, '..', 'calendar', 'build.
 // The Calendar permission belongs to the app, so build.sh puts it in nod's home, once.
 export const calendarApp = (home: string): string => join(home, 'CalendarEvents.app')
 
-// The day's events, or null when there is no calendar app.
-export async function dayEvents(home: string, day: string): Promise<CalendarEvent[] | null> {
+// The events of `days` days from `from`, or null when there is no calendar app.
+export async function readEvents(
+  home: string,
+  from: string,
+  days: number,
+): Promise<CalendarEvent[] | null> {
   const app = calendarApp(home)
   if (!existsSync(app)) return null
   // `open` starts it as an app, so macOS asks for the permission on the app; its output comes back
@@ -44,7 +48,21 @@ export async function dayEvents(home: string, day: string): Promise<CalendarEven
     writeFileSync(err, '')
     const started = Date.now()
     const opened = await spawn(
-      ['open', '-W', '-n', '-g', '--stdout', out, '--stderr', err, '-a', app, '--args', day, '1'],
+      [
+        'open',
+        '-W',
+        '-n',
+        '-g',
+        '--stdout',
+        out,
+        '--stderr',
+        err,
+        '-a',
+        app,
+        '--args',
+        from,
+        String(days),
+      ],
       undefined,
       { timeoutMs: TIMEOUT_MS },
     )

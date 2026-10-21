@@ -54,10 +54,13 @@ function step(day: string, repeat: Repeat, periods: number): string {
 }
 
 // In UTC, where every day is 24 hours long.
-function addDays(day: string, n: number): string {
+export function addDays(day: string, n: number): string {
   const [y, m, d] = day.split('-').map(Number)
   if (y === undefined || m === undefined || d === undefined) throw new Error(`not a day: ${day}`)
   return utcDay(new Date(Date.UTC(y, m - 1, d + n)))
 }
+
+export const daysBetween = (from: string, to: string): number =>
+  Math.round((Date.parse(`${to}T00:00Z`) - Date.parse(`${from}T00:00Z`)) / 86_400_000)
 
 const utcDay = (d: Date): string => d.toISOString().slice(0, 10)

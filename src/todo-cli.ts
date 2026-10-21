@@ -1,6 +1,8 @@
+import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { parseArgs } from 'node:util'
-import { type CalendarEvent, calendarBuild, dayEvents } from './calendar'
-import { localDay, parseWhen, REPEATS, type Repeat } from './days'
+import { type CalendarEvent, calendarBuild, readEvents } from './calendar'
+import { addDays, dayOf, localDay, parseWhen, REPEATS, type Repeat } from './days'
 import {
   type Change,
   OPEN,
@@ -13,6 +15,7 @@ import {
   type Todos,
   UNFINISHED,
 } from './todos'
+import { nudgeLine, STALE_DAYS, type Trust } from './trust'
 import { indent, oneLine } from './view'
 import { message } from './worker'
 
@@ -20,15 +23,18 @@ export const TODO_USAGE = `  nod in <what...> [--notes <text>] [--source <channe
                                    capture a todo into the inbox. A channel's key is captured
                                    once; capturing it again prints the todo it became
   nod todo [inbox|next|waiting|someday|reference] [--context <@x>] [--project <p>] [--all]
+           [--json]
                                    todos (default: inbox, next and waiting; --all: every status,
                                    finished ones too). Open decisions come first, as next
                                    actions: answer with nod <decision> <answer>. --context also
                                    lists todos with no context, which can be done anywhere.
                                    Todos of someday projects show only with --project or --all,
-                                   and todos that start later only with --all
+                                   and todos that start later only with --all. --json prints
+                                   each todo as a JSON line, with its links, and no decisions
   nod todo <todo>                  one todo: notes, links, the tasks it was delegated to (nod add
                                    --todo) with what they reported, and who changed what
-  nod todo set <todo> [--status <s>] [--title <text>] [--notes <text>] [--project <p>]
+  nod todo set <todo> [--status <s>] [--title <text>] [--notes <text> | --add-note <line>]
+                      [--project <p>]
                       [--context <@x>] [--waiting-on <who>] [--link <url>]...
                       [--due <day>] [--on <day>] [--start <day>] [--focus <day>]
                       [--repeat daily|weekly|monthly]
@@ -39,8 +45,15 @@ export const TODO_USAGE = `  nod in <what...> [--notes <text>] [--source <channe
                                    leaves it out of the lists until that day, and --focus picks it
                                    for that day. Done makes a repeating todo's next one, its dates
                                    whole periods on from the schedule
-  nod today [<day>]                the day's events, read from macOS Calendar, then its open
-                                   todos: overdue, scheduled, due, and picked for its focus
+  nod today [<day>] [--days <n>]   the day's events, read from macOS Calendar, then its open
+                                   todos: overdue, scheduled, due, and picked for its focus.
+                                   --days goes on for n days, showing those that hold something
+  nod todo check [--nudge]         whether the lists can be trusted: the inbox and its oldest
+                                   todo, overdue, today, projects with no next action, people
+                                   waited on with nothing recorded for ${STALE_DAYS} days, days since
+                                   the last weekly review (the last done todo from --source
+                                   review). --nudge prints it once a day as a Claude Code
+                                   SessionStart message, and nothing when all is well
   nod todo done|drop <todo...>
   nod project add <title...> [--outcome <what done looks like>]
   nod project [ls] [--all]         active projects with their next and waiting counts, open
@@ -58,6 +71,8 @@ export const TODO_USAGE = `  nod in <what...> [--notes <text>] [--source <channe
 // The lists `nod todo <list>` names. Finished todos are listed with --all, since `nod todo done`
 // finishes todos.
 const LISTS = ['inbox', 'next', 'waiting', 'someday', 'reference'] as const
+// `nod today --days`: a weekly review looks two weeks ahead.
+const MAX_DAYS = 31
 
 // Who is changing a todo or a project. An explicit NOD_ACTOR wins (the web UI, a script); else a
 // nod worker, a Claude session (by its session, so a change can be traced to it), or a person at
@@ -102,9 +117,11 @@ export function capture(todos: Todos, args: string[]): void {
   console.log(created ? line(todos, todo) : `${line(todos, todo)}  (already captured)`)
 }
 
-export function todoCommand(todos: Todos, args: string[]): void {
+export function todoCommand(todos: Todos, home: string, args: string[]): void {
   const [sub, ...rest] = args
-  if (sub === 'set') {
+  if (sub === 'check') {
+    checkTodos(todos, home, rest)
+  } else if (sub === 'set') {
     setTodo(todos, rest)
   } else if (sub === 'done' || sub === 'drop') {
     finishTodos(todos, sub, rest)
@@ -123,6 +140,7 @@ function listTodos(todos: Todos, args: string[]): void {
       context: { type: 'string' },
       project: { type: 'string' },
       all: { type: 'boolean' },
+      json: { type: 'boolean' },
     },
   })
   const [which, ...extra] = positionals
@@ -133,8 +151,9 @@ function listTodos(todos: Todos, args: string[]): void {
   }
   const statuses = values.all ? [...TODO_STATUSES] : list !== undefined ? [list] : OPEN
   const projectId = values.project === undefined ? null : todos.findProject(values.project).id
-  // A decision holds up a worker, so it comes before the other next actions.
-  if (statuses.includes('next')) {
+  // A decision holds up a worker, so it comes before the other next actions. JSON lists only
+  // todos, each with all its fields and links, for a Claude session to read.
+  if (statuses.includes('next') && !values.json) {
     for (const d of todos.decisions()) {
       if (projectId === null || d.todo?.projectId === projectId) console.log(decisionLine(todos, d))
     }
@@ -146,7 +165,42 @@ function listTodos(todos: Todos, args: string[]): void {
     hideSomedayProjects: !values.all && values.project === undefined,
     day: values.all ? null : localDay(new Date()),
   })
-  for (const t of shown) console.log(line(todos, t))
+  for (const t of shown) {
+    const links = values.json ? todos.links(t.id).map((l) => l.url) : []
+    console.log(values.json ? JSON.stringify({ ...t, links }) : line(todos, t))
+  }
+}
+
+// `nod todo check`: whether the lists can be trusted. With --nudge, a line for Claude Code's
+// SessionStart hook: once a day, never in a nod worker, and nothing when all is well.
+function checkTodos(todos: Todos, home: string, args: string[]): void {
+  const { values } = parseArgs({ args, options: { nudge: { type: 'boolean' } } })
+  const today = localDay(new Date())
+  if (!values.nudge) {
+    for (const l of trustLines(todos.trust(today))) console.log(l)
+    return
+  }
+  if (process.env.NOD_TASK !== undefined) return
+  const stamp = join(home, '.nudged')
+  if (existsSync(stamp) && readFileSync(stamp, 'utf8') === today) return
+  writeFileSync(stamp, today)
+  const nudge = nudgeLine(todos.trust(today), today)
+  if (nudge !== null) console.log(JSON.stringify({ systemMessage: `${nudge} → /nod` }))
+}
+
+function trustLines(t: Trust): string[] {
+  const listed = (refs: string[]) => (refs.length === 0 ? '' : `: ${refs.join(', ')}`)
+  const todo = (x: Todo) => `t${x.id} ${oneLine(x.title, 40)}`
+  const review =
+    t.sinceReview === null ? 'none done yet' : `the last was ${t.sinceReview} day(s) ago`
+  return [
+    `inbox    ${t.inbox}${t.oldestInbox === null ? '' : `, the oldest captured ${t.oldestInbox}`}`,
+    `overdue  ${t.overdue.length}${listed(t.overdue.map(todo))}`,
+    `today    ${t.today.length}${listed(t.today.map(todo))}`,
+    `stuck    ${t.stuck.length} active project(s) with no next action${listed(t.stuck.map((p) => `p${p.id} ${p.title}`))}`,
+    `waiting  ${t.stale.length} on a person, unchanged for ${STALE_DAYS}+ days${listed(t.stale.map((x) => `${todo(x.todo)} (${x.todo.waitingOn}, ${x.days} days)`))}`,
+    `review   weekly: ${review}`,
+  ]
 }
 
 function setTodo(todos: Todos, args: string[]): void {
@@ -157,6 +211,7 @@ function setTodo(todos: Todos, args: string[]): void {
       status: { type: 'string' },
       title: { type: 'string' },
       notes: { type: 'string' },
+      'add-note': { type: 'string' },
       project: { type: 'string' },
       context: { type: 'string' },
       'waiting-on': { type: 'string' },
@@ -175,12 +230,22 @@ function setTodo(todos: Todos, args: string[]): void {
     throw new Error(`a todo status is one of ${TODO_STATUSES.join(', ')}`)
   }
   const { project } = values
+  const id = parseRef(ref, 't')
+  const added = values['add-note']
+  if (added !== undefined && values.notes !== undefined) {
+    throw new Error('--notes replaces the notes and --add-note adds a line to them; give one')
+  }
+  // A line added below the notes, so recording why leaves what was there alone.
+  const notes =
+    added === undefined
+      ? cleared(values.notes)
+      : [todos.get(id).notes, added].filter((x) => x !== null).join('\n')
   const todo = todos.set(
-    parseRef(ref, 't'),
+    id,
     {
       status,
       title: values.title,
-      notes: cleared(values.notes),
+      notes,
       context: cleared(values.context),
       waitingOn: cleared(values['waiting-on']),
       due: cleared(values.due),
@@ -299,40 +364,60 @@ function showProject(todos: Todos, p: Project): void {
   printChanges(todos.projectChanges(p.id))
 }
 
-// `nod today [<day>]`: what the day holds for certain, then what was picked for it.
+// `nod today [<day>] [--days <n>]`: what each day holds for certain, then what was picked for it.
+// Days after the first show only when they hold something.
 export async function todayCommand(todos: Todos, home: string, args: string[]): Promise<void> {
-  const [which, ...extra] = args
+  const { values, positionals } = parseArgs({
+    args,
+    allowPositionals: true,
+    options: { days: { type: 'string' } },
+  })
+  const [which, ...extra] = positionals
   if (extra.length > 0) throw new Error(TODO_USAGE)
-  const today = localDay(new Date())
-  const day = which === undefined ? today : parseWhen(which, today, false)
-  const weekday = new Date(`${day}T12:00`).toLocaleDateString('en-US', { weekday: 'short' })
-  console.log(`${day} ${weekday}`)
-  await printEvents(home, day)
-  const groups = Object.entries(todos.day(day)).filter(([, ts]) => ts.length > 0)
-  if (groups.length === 0) console.log('todos: none for the day')
-  for (const [name, ts] of groups) {
-    console.log(name)
-    for (const t of ts) console.log(`  ${line(todos, t)}`)
+  const count = values.days === undefined ? 1 : Number(values.days)
+  if (!Number.isInteger(count) || count < 1 || count > MAX_DAYS) {
+    throw new Error(`--days takes a number from 1 to ${MAX_DAYS}`)
   }
-}
-
-// A calendar that could not be read says so, since no events would read as a free day.
-async function printEvents(home: string, day: string): Promise<void> {
-  const read = await dayEvents(home, day).then(
+  const today = localDay(new Date())
+  const first = which === undefined ? today : parseWhen(which, today, false)
+  const read = await readEvents(home, first, count).then(
     (events) => ({ events }),
     (error: unknown) => ({ error: message(error) }),
   )
-  if ('error' in read) {
-    console.log(
-      `events: could not read the calendar, so none are shown: ${oneLine(read.error, 200)}`,
+  // A calendar that could not be read says so, since no events would read as a free day.
+  const unread =
+    'error' in read
+      ? `events: could not read the calendar, so none are shown: ${oneLine(read.error, 200)}`
+      : read.events === null
+        ? `events: no calendar; on macOS, build one with sh ${calendarBuild}`
+        : null
+  const calendar = 'error' in read || read.events === null ? [] : read.events
+  for (let i = 0; i < count; i += 1) {
+    const day = addDays(first, i)
+    // An event that began before the first day is still going on it.
+    const events = calendar.filter(
+      (e) => dayOf(e.start) === day || (i === 0 && dayOf(e.start) < day),
     )
-  } else if (read.events === null) {
-    console.log(`events: no calendar; on macOS, build one with sh ${calendarBuild}`)
-  } else if (read.events.length === 0) {
-    console.log('events: none')
-  } else {
-    console.log('events')
-    for (const e of read.events) console.log(`  ${eventLine(e)}`)
+    // Overdue is as of the first day; on later days those todos are already listed.
+    const groups = Object.entries(todos.day(day)).filter(
+      ([group, ts]) => ts.length > 0 && (i === 0 || group !== 'overdue'),
+    )
+    if (i > 0 && events.length === 0 && groups.length === 0) continue
+    const weekday = new Date(`${day}T12:00`).toLocaleDateString('en-US', { weekday: 'short' })
+    console.log(`${day} ${weekday}`)
+    if (i === 0 && unread !== null) {
+      console.log(unread)
+    } else if (events.length > 0) {
+      console.log('events')
+      for (const e of events) console.log(`  ${eventLine(e)}`)
+    } else if (count === 1) {
+      console.log('events: none')
+    }
+    if (groups.length === 0 && count === 1) console.log('todos: none for the day')
+    for (const [name, ts] of groups) {
+      console.log(name)
+      for (const t of ts) console.log(`  ${line(todos, t)}`)
+    }
   }
 }
 

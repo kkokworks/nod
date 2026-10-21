@@ -230,3 +230,48 @@ test('nod today shows the day without a calendar here, and later todos stay out 
   )
   expect(await fails('today', 'someday')).toContain('not a day: someday')
 })
+
+test('nod todo --json, check and its once-a-day nudge, and today over several days', async () => {
+  const { ok, home } = runner()
+  await ok('in', 'Pay the invoice', '--link', 'https://example.com/i/1')
+  await ok('todo', 'set', 't1', '--status', 'next', '--due', '2020-01-01')
+  await ok('in', 'Call the bank')
+  await ok('todo', 'set', 't2', '--status', 'next', '--on', 'tomorrow 15:00')
+  const [first, ...rest] = (await ok('todo', '--json')).map((l) => JSON.parse(l))
+  expect(rest).toHaveLength(1)
+  expect(first).toMatchObject({ id: 1, due: '2020-01-01', links: ['https://example.com/i/1'] })
+
+  await ok('todo', 'set', 't2', '--add-note', 'From the bank letter')
+  await ok('todo', 'set', 't2', '--add-note', 'Ask about the fee')
+  expect((await ok('todo', 't2')).slice(-7, -5)).toEqual([
+    '    From the bank letter',
+    '    Ask about the fee',
+  ])
+  const check = await ok('todo', 'check')
+  expect(check.slice(0, 2)).toEqual(['inbox    0', 'overdue  1: t1 Pay the invoice'])
+  expect(check.at(-1)).toBe('review   weekly: none done yet')
+  const nudge = JSON.parse((await ok('todo', 'check', '--nudge')).join(''))
+  expect(nudge.systemMessage).toBe('nod · overdue 1 → /nod')
+  expect(await ok('todo', 'check', '--nudge')).toEqual([''])
+  // Not in a nod worker, which no person reads.
+  await Bun.write(`${home}/.nudged`, '')
+  const worker = Bun.spawn(
+    ['bun', resolve(import.meta.dir, 'cli.ts'), 'todo', 'check', '--nudge'],
+    {
+      env: { ...process.env, NOD_HOME: home, NOD_TASK: '1' },
+      stdout: 'pipe',
+    },
+  )
+  expect(await new Response(worker.stdout).text()).toBe('')
+
+  const tomorrow = await ok('today', '--days', '3')
+  expect(tomorrow[1]).toStartWith('events: no calendar')
+  expect(tomorrow.filter((l) => !l.startsWith('events'))).toEqual([
+    expect.stringMatching(/^\d{4}-\d{2}-\d{2} \w{3}$/),
+    'overdue',
+    '  t1    next      Pay the invoice  · due 2020-01-01',
+    expect.stringMatching(/^\d{4}-\d{2}-\d{2} \w{3}$/),
+    'scheduled',
+    '  t2    next      Call the bank  · scheduled <time>',
+  ])
+})

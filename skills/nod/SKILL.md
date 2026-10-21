@@ -20,6 +20,17 @@ description: 여러 일을 nod 로 Claude Code 세션들에게 병렬로 맡기�
 | 결정 알림 전하기, 사용자의 답 넘기기 | [decisions.md](decisions.md) |
 | 결과 내보내기(push·PR·게시)와 링크, 리뷰 반영, 정리(gc) | [results.md](results.md) |
 | 정해진 때나 새 항목마다 할 일(트리거), 자리를 비울 때 알림 | [triggers.md](triggers.md) |
+| 할 일 받아 적기, 할 일 첫 화면, 명료화·놓는 곳의 기준 | [todos.md](todos.md) |
+| 업무 도구 훑기, 끝난 일 정리 | [scan.md](scan.md) |
+| 받은 일함 비우기 | [clarify.md](clarify.md) |
+| 오늘 집중 고르기 | [focus.md](focus.md) |
+| 내일 준비 | [tomorrow.md](tomorrow.md) |
+| 주간 리뷰 | [review.md](review.md) |
+| 프로젝트(업무 묶음) 하나를 맡아 nod 로 굴리기 | [project.md](project.md) |
+| 업무 도구 켜기·끄기·더하기 | [sources/README.md](sources/README.md) |
+| 할 일 장부 처음 설정(개인 설정, 캘린더, 하루 첫 세션 알림) | [setup.md](setup.md) |
+
+할 일 장부는 아직 지금 쓰는 GTD 앱(Mindwtr)에서 옮기기 전입니다. 옮기는 날까지는 할 일의 원본이 gtd 스킬이고, 위 표의 할 일 절차(todos.md 부터 setup.md 까지)는 사용자가 nod 장부로 하자고 할 때만 씁니다.
 
 ## 늘 지키는 것
 
