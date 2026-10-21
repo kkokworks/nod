@@ -1,5 +1,6 @@
 import type { Ledger, Task } from './ledger'
 import type { Terminals } from './tmux'
+import type { Change } from './todos'
 import { sessionName } from './worker'
 
 // How ls and the UI name a task's state. A running task without a session was cut off (exit,
@@ -15,6 +16,26 @@ export function taskNote(ledger: Ledger, t: Task): string {
   const waitsFor =
     waiting.length > 0 ? `waits for ${waiting.map((a) => `#${a.id}`).join(', ')}: ${t.brief}` : null
   return t.error ?? waitsFor ?? ledger.lastAttempt(t.id)?.summary ?? t.brief
+}
+
+// One change to a todo or a project, field by field: `status inbox → next, project — → p1`.
+export function changeText(c: Change): string {
+  return Object.entries(c.change)
+    .map(
+      ([field, [from, to]]) =>
+        `${FIELD[field] ?? field} ${shown(field, from)} → ${shown(field, to)}`,
+    )
+    .join(', ')
+}
+
+const FIELD: Record<string, string> = {
+  projectId: 'project',
+  waitingOn: 'waiting on',
+  sourceKey: 'key',
+}
+const shown = (field: string, v: unknown): string => {
+  if (v === null) return '—'
+  return field === 'projectId' ? `p${String(v)}` : oneLine(String(v), 40)
 }
 
 export function oneLine(s: string, max: number): string {

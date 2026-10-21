@@ -10,11 +10,30 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as ProjectsRouteImport } from './routes/projects'
+import { Route as TodayRouteImport } from './routes/today'
+import { Route as TodosRouteImport } from './routes/todos'
 import { Route as TasksIdRouteImport } from './routes/tasks.$id'
+import { Route as TodosIdRouteImport } from './routes/todos_.$id'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ProjectsRoute = ProjectsRouteImport.update({
+  id: '/projects',
+  path: '/projects',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const TodayRoute = TodayRouteImport.update({
+  id: '/today',
+  path: '/today',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const TodosRoute = TodosRouteImport.update({
+  id: '/todos',
+  path: '/todos',
   getParentRoute: () => rootRouteImport,
 } as any)
 const TasksIdRoute = TasksIdRouteImport.update({
@@ -22,31 +41,60 @@ const TasksIdRoute = TasksIdRouteImport.update({
   path: '/tasks/$id',
   getParentRoute: () => rootRouteImport,
 } as any)
+const TodosIdRoute = TodosIdRouteImport.update({
+  id: '/todos_/$id',
+  path: '/todos/$id',
+  getParentRoute: () => rootRouteImport,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/projects': typeof ProjectsRoute
+  '/today': typeof TodayRoute
+  '/todos': typeof TodosRoute
   '/tasks/$id': typeof TasksIdRoute
+  '/todos/$id': typeof TodosIdRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/projects': typeof ProjectsRoute
+  '/today': typeof TodayRoute
+  '/todos': typeof TodosRoute
   '/tasks/$id': typeof TasksIdRoute
+  '/todos/$id': typeof TodosIdRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/projects': typeof ProjectsRoute
+  '/today': typeof TodayRoute
+  '/todos': typeof TodosRoute
   '/tasks/$id': typeof TasksIdRoute
+  '/todos_/$id': typeof TodosIdRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/tasks/$id'
+  fullPaths:
+    '/' | '/projects' | '/today' | '/todos' | '/tasks/$id' | '/todos/$id'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/tasks/$id'
-  id: '__root__' | '/' | '/tasks/$id'
+  to: '/' | '/projects' | '/today' | '/todos' | '/tasks/$id' | '/todos/$id'
+  id:
+    | '__root__'
+    | '/'
+    | '/projects'
+    | '/today'
+    | '/todos'
+    | '/tasks/$id'
+    | '/todos_/$id'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  ProjectsRoute: typeof ProjectsRoute
+  TodayRoute: typeof TodayRoute
+  TodosRoute: typeof TodosRoute
   TasksIdRoute: typeof TasksIdRoute
+  TodosIdRoute: typeof TodosIdRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -58,6 +106,27 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/projects': {
+      id: '/projects'
+      path: '/projects'
+      fullPath: '/projects'
+      preLoaderRoute: typeof ProjectsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/today': {
+      id: '/today'
+      path: '/today'
+      fullPath: '/today'
+      preLoaderRoute: typeof TodayRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/todos': {
+      id: '/todos'
+      path: '/todos'
+      fullPath: '/todos'
+      preLoaderRoute: typeof TodosRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/tasks/$id': {
       id: '/tasks/$id'
       path: '/tasks/$id'
@@ -65,12 +134,23 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof TasksIdRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/todos_/$id': {
+      id: '/todos_/$id'
+      path: '/todos/$id'
+      fullPath: '/todos/$id'
+      preLoaderRoute: typeof TodosIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  ProjectsRoute: ProjectsRoute,
+  TodayRoute: TodayRoute,
+  TodosRoute: TodosRoute,
   TasksIdRoute: TasksIdRoute,
+  TodosIdRoute: TodosIdRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

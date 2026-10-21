@@ -63,13 +63,30 @@ function Root() {
 }
 
 function Sidebar() {
-  const { decisions, groups, collected } = Route.useLoaderData()
+  const { decisions, groups, collected, inbox } = Route.useLoaderData()
   const active = groups.reduce((n, g) => n + g.tasks.length, 0)
   return (
     <aside className="sidebar">
       <Link to="/" className="brand">
         nod
       </Link>
+      <nav className="side-nav">
+        <Link
+          to="/today"
+          search={{ day: 'today' }}
+          className="side-item"
+          activeProps={{ className: 'active' }}
+        >
+          Today
+        </Link>
+        <Link to="/todos" className="side-item" activeProps={{ className: 'active' }}>
+          Todos
+          {inbox > 0 && <span className="side-count">{inbox}</span>}
+        </Link>
+        <Link to="/projects" className="side-item" activeProps={{ className: 'active' }}>
+          Projects
+        </Link>
+      </nav>
       <div className="side-summary">
         <span>{active} tasks</span>
         <span className={decisions.length > 0 ? 'attention' : ''}>

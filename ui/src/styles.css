@@ -850,3 +850,166 @@ details summary {
   border: 1px solid var(--line);
   border-radius: var(--radius);
 }
+
+/* ── todos ── */
+
+.side-nav {
+  display: flex;
+  flex-direction: column;
+  margin-bottom: 1rem;
+}
+
+.side-count {
+  margin-left: auto;
+  color: var(--warn);
+  font-weight: 600;
+}
+
+.warn-text {
+  color: var(--warn);
+}
+
+.todo-row {
+  padding: 0.55rem 0.2rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.todo-line {
+  display: flex;
+  gap: 0.75rem;
+  align-items: baseline;
+  min-width: 0;
+}
+
+.todo-title {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--fg);
+}
+
+.todo-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 0.75rem;
+  margin-top: 0.2rem;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+.todo-actions {
+  display: flex;
+  gap: 0.3rem;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+.todo-actions button,
+.filters button,
+.filters a {
+  padding: 0.15rem 0.6rem;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--card);
+  color: var(--fg);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.todo-actions button:hover,
+.filters button:hover,
+.filters a:hover {
+  background: var(--hover);
+}
+
+.todo-actions button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin: 0 0 0.75rem;
+}
+
+.filters .on {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--bg);
+}
+
+.event-time {
+  min-width: 6.5rem;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.fold-label {
+  cursor: pointer;
+}
+
+.change {
+  margin: 0.3rem 0;
+  font-size: 13px;
+}
+
+.capture {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+  margin-bottom: 1rem;
+}
+
+.capture input,
+.todo-form input,
+.todo-form select,
+.todo-form textarea {
+  flex: 1;
+  min-width: 0;
+  padding: 0.4rem 0.5rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--fg);
+  font: inherit;
+}
+
+.capture .banner {
+  flex-basis: 100%;
+}
+
+.todo-form {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(14rem, 1fr));
+  gap: 0.75rem;
+}
+
+.todo-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+.todo-form .wide {
+  grid-column: 1 / -1;
+}
+
+.pair {
+  display: flex;
+  gap: 0.4rem;
+}
+
+.pair button {
+  padding: 0.4rem 0.95rem;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: none;
+  color: var(--fg);
+  font: inherit;
+  cursor: pointer;
+}

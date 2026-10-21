@@ -13,10 +13,9 @@ import {
   type Todo,
   type TodoDecision,
   type Todos,
-  UNFINISHED,
 } from './todos'
 import { nudgeLine, STALE_DAYS, type Trust } from './trust'
-import { indent, oneLine } from './view'
+import { changeText, indent, oneLine } from './view'
 import { message } from './worker'
 
 export const TODO_USAGE = `  nod in <what...> [--notes <text>] [--source <channel> --key <id>] [--link <url>]
@@ -470,7 +469,7 @@ function decisionLine(todos: Todos, { decision, task, todo }: TodoDecision): str
 function tags(todos: Todos, t: Todo): string[] {
   const project = t.projectId === null ? null : todos.project(t.projectId)
   const finished = t.status === 'done' || t.status === 'dropped'
-  const on = t.status === 'waiting' ? waitingOn(todos, t) : null
+  const on = t.status === 'waiting' ? todos.waitingFor(t) : null
   return [
     t.context,
     project === null ? null : `p${project.id} ${project.title}`,
@@ -485,14 +484,6 @@ function tags(todos: Todos, t: Todo): string[] {
   ].filter((x) => x !== null)
 }
 
-// A person, or the tasks the todo was delegated to that can still go on.
-function waitingOn(todos: Todos, t: Todo): string | null {
-  if (t.waitingOn !== null) return t.waitingOn
-  const tasks = todos.tasks(t.id).filter(({ task }) => UNFINISHED.includes(task.status))
-  if (tasks.length === 0) return null
-  return tasks.map(({ task }) => `task #${task.id} (${task.status})`).join(', ')
-}
-
 const projectLine = (p: Project): string => {
   const outcome = p.outcome === null ? '' : ` — ${oneLine(p.outcome, 60)}`
   return `p${String(p.id).padEnd(4)} ${p.status.padEnd(8)} ${p.title}${outcome}`
@@ -501,21 +492,8 @@ const projectLine = (p: Project): string => {
 function printChanges(changes: Change[]): void {
   console.log('  changes')
   for (const c of changes) {
-    const fields = Object.entries(c.change).map(
-      ([field, [from, to]]) =>
-        `${FIELD[field] ?? field} ${shown(field, from)} → ${shown(field, to)}`,
-    )
-    console.log(`    ${localTime(c.at)}  ${c.actor}  ${fields.join(', ')}`)
+    console.log(`    ${localTime(c.at)}  ${c.actor}  ${changeText(c)}`)
   }
 }
 
-const FIELD: Record<string, string> = {
-  projectId: 'project',
-  waitingOn: 'waiting on',
-  sourceKey: 'key',
-}
-const shown = (field: string, v: unknown): string => {
-  if (v === null) return '—'
-  return field === 'projectId' ? `p${String(v)}` : oneLine(String(v), 40)
-}
 const localTime = (iso: string): string => new Date(iso).toLocaleString('sv-SE').slice(0, 16)

@@ -10,12 +10,14 @@ import {
   type Trigger,
 } from '../../src/ledger'
 import { Terminals } from '../../src/tmux'
+import { Todos } from '../../src/todos'
 import { taskNote, taskStatus } from '../../src/view'
 import { answer, sessionName, tell } from '../../src/worker'
 
-const home = nodHome()
-// One connection for the server's life; WAL lets nod write while this reads.
-const ledger = new Ledger(home)
+export const home = nodHome()
+// One connection for the server's life, shared with the todo pages (todos.server.ts); WAL lets nod
+// write while this reads.
+export const ledger = new Ledger(home)
 const terminals = Terminals.of(home)
 
 export type TaskRow = { id: number; status: string; turns: number; note: string; links: string[] }
@@ -30,6 +32,8 @@ export type Overview = {
   collected: TaskRow[]
   triggers: Trigger[]
   stats: Stats
+  // For the sidebar's link to the todos.
+  inbox: number
 }
 
 export type Detail = {
@@ -59,6 +63,13 @@ export function overview(): Overview {
     collected: tasks.filter((t) => t.collectedAt !== null).map(row),
     triggers: ledger.triggers(),
     stats: ledger.stats(),
+    inbox: new Todos(ledger).list({
+      statuses: ['inbox'],
+      context: null,
+      projectId: null,
+      hideSomedayProjects: false,
+      day: null,
+    }).length,
   }
 }
 

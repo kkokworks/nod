@@ -339,6 +339,14 @@ export class Todos {
     }
   }
 
+  // Whom a waiting todo waits on: a person, or the tasks it was delegated to that can still go on.
+  waitingFor(t: Todo): string | null {
+    if (t.waitingOn !== null) return t.waitingOn
+    const tasks = this.tasks(t.id).filter(({ task }) => UNFINISHED.includes(task.status))
+    if (tasks.length === 0) return null
+    return tasks.map(({ task }) => `task #${task.id} (${task.status})`).join(', ')
+  }
+
   // The tasks doing the todo, oldest first.
   tasks(id: number): TodoTask[] {
     return this.ledger.tasksOf(id).map((task) => ({
