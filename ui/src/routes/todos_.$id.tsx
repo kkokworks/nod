@@ -1,12 +1,15 @@
-import { createFileRoute, Link } from '@tanstack/react-router'
+import { createFileRoute, Link, useNavigate } from '@tanstack/react-router'
 import { useState } from 'react'
 import type { RawEdit } from '../input'
 import { localTime, Url } from '../parts'
 import { changeTodo, getTodo } from '../todo-fns'
-import { STATUSES, todoTags, useChange } from '../todo-parts'
+import { MoreMenu, STATUSES, TodoFacts, todoTags, useChange, useTodoActions } from '../todo-parts'
 import type { TodoPage } from '../todos.server'
 
 export const Route = createFileRoute('/todos_/$id')({
+  // The page shows the todo; `?edit=true`, from its "…" menu, shows the form instead.
+  validateSearch: (s: Record<string, unknown>): { edit?: true } =>
+    s.edit === true ? { edit: true } : {},
   loader: ({ params }) => getTodo({ data: Number(params.id) }),
   component: TodoDetail,
 })
@@ -16,7 +19,9 @@ const REPEATS = ['', 'daily', 'weekly', 'monthly']
 
 function TodoDetail() {
   const page = Route.useLoaderData()
+  const { edit } = Route.useSearch()
   const { todo } = page
+  const { busy, error, items } = useTodoActions(todo, page.today, false)
   return (
     <div className="page">
       <div className="task-meta">
@@ -28,6 +33,9 @@ function TodoDetail() {
           t{todo.id} · from {todo.source}
           {todo.sourceKey !== null && ` ${todo.sourceKey}`} · {localTime(todo.createdAt)}
         </span>
+        <span className="todo-page-menu">
+          <MoreMenu items={items.filter((i) => !(edit && i.label === 'Edit'))} disabled={busy} />
+        </span>
       </div>
       <h1 className="title task-title">{todo.title}</h1>
       <div className="tags">
@@ -38,8 +46,13 @@ function TodoDetail() {
         ))}
       </div>
 
-      {/* A recorded change remounts the form, so it shows what the ledger now holds. */}
-      <EditForm key={page.changes.length} page={page} />
+      {error !== null && <div className="banner">{error}</div>}
+      {edit ? (
+        // A recorded change remounts the form, so it shows what the ledger now holds.
+        <EditForm key={page.changes.length} page={page} />
+      ) : (
+        <TodoFacts t={todo} />
+      )}
 
       {page.links.length > 0 && (
         <>
@@ -112,6 +125,8 @@ function EditForm({ page }: { page: TodoPage }) {
   })
   const [note, setNote] = useState('')
   const { busy, error, run } = useChange()
+  const navigate = useNavigate()
+  const done = () => navigate({ to: '/todos/$id', params: { id: String(todo.id) }, search: {} })
   const set = (field: keyof typeof f) => (e: { target: { value: string } }) =>
     setF({ ...f, [field]: e.target.value })
   const save = (edit: RawEdit) => run(() => changeTodo({ data: { id: todo.id, edit } }))
@@ -133,7 +148,9 @@ function EditForm({ page }: { page: TodoPage }) {
       className="composer todo-form"
       onSubmit={(e) => {
         e.preventDefault()
-        void save(all)
+        void save(all).then((ok) => {
+          if (ok) void done()
+        })
       }}
     >
       <label className="wide">
@@ -205,29 +222,8 @@ function EditForm({ page }: { page: TodoPage }) {
         <textarea value={f.notes} rows={4} onChange={set('notes')} />
       </label>
       <div className="composer-actions wide">
-        <button
-          type="button"
-          className="secondary"
-          disabled={busy}
-          onClick={() => void save({ focus: 'today' })}
-        >
-          Focus today
-        </button>
-        <button
-          type="button"
-          className="secondary"
-          disabled={busy}
-          onClick={() => void save({ status: 'dropped' })}
-        >
-          Drop
-        </button>
-        <button
-          type="button"
-          className="secondary"
-          disabled={busy}
-          onClick={() => void save({ status: 'done' })}
-        >
-          Done
+        <button type="button" className="secondary" disabled={busy} onClick={() => void done()}>
+          Cancel
         </button>
         <button type="submit" disabled={busy}>
           Save

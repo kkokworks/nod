@@ -1,6 +1,17 @@
-import { Link, useRouter } from '@tanstack/react-router'
-import { createContext, type ReactNode, useCallback, useContext, useEffect, useState } from 'react'
+import { Link, useNavigate, useRouter } from '@tanstack/react-router'
+import {
+  createContext,
+  Fragment,
+  type ReactNode,
+  useCallback,
+  useContext,
+  useEffect,
+  useId,
+  useRef,
+  useState,
+} from 'react'
 import { dayOf, daysBetween, localDay } from '../../src/days'
+import { localTime, Markdown } from './parts'
 import { changeTodo } from './todo-fns'
 import type { TodoItem } from './todos.server'
 
@@ -125,23 +136,18 @@ function Toast({ undo, close }: { undo: Undo; close: () => void }) {
 const movedTo = (status: string): string =>
   status === 'done' ? 'Done' : status === 'dropped' ? 'Dropped' : `Moved to ${status}`
 
-// A todo on one line, as in Mindwtr: the circle finishes it, the title opens it, the star picks it
-// for the day's focus, and the status menu moves it. A next action that has started can be picked
-// unless the focus is `full`; one already picked can always be let go. The menu shows when the
-// todo's status is not the list's `usual` one, and otherwise waits for the pointer.
-export function TodoRow({
-  t,
-  today,
-  usual,
-  full = false,
-}: {
-  t: TodoItem
-  today: string
-  usual: string
-  full?: boolean
-}) {
+// The lists a todo can be moved to from its menu; done is the circle, dropped its own item.
+const MOVES = ['inbox', 'next', 'waiting', 'someday', 'reference']
+
+type MenuItem = { label: string; onSelect: () => void; danger?: boolean }
+
+// What a todo's "…" menu does, as in Mindwtr: edit it, pick it for today or let it go, move it to
+// another list, or drop it. A next action that has started can be picked unless the focus is
+// `full`; one already picked can always be let go. A move is offered back for a while.
+export function useTodoActions(t: TodoItem, today: string, full: boolean) {
   const { busy, error, run } = useChange()
   const offer = useContext(UndoContext)
+  const navigate = useNavigate()
   const focus = (day: string) =>
     void run(() => changeTodo({ data: { id: t.id, edit: { focus: day } } }))
   const move = (status: string) => {
@@ -156,8 +162,116 @@ export function TodoRow({
   }
   const focused = t.focus === today
   const pickable = t.status === 'next' && (t.start === null || t.start <= today) && !full
+  const items: MenuItem[] = [
+    {
+      label: 'Edit',
+      onSelect: () =>
+        void navigate({ to: '/todos/$id', params: { id: String(t.id) }, search: { edit: true } }),
+    },
+    ...(focused
+      ? [{ label: 'Unfocus', onSelect: () => focus('') }]
+      : pickable
+        ? [{ label: 'Focus today', onSelect: () => focus(today) }]
+        : []),
+    ...MOVES.filter((s) => s !== t.status).map((s) => ({
+      label: `Move to ${s}`,
+      onSelect: () => move(s),
+    })),
+    ...(t.status === 'dropped'
+      ? []
+      : [{ label: 'Drop', onSelect: () => move('dropped'), danger: true }]),
+  ]
+  return { busy, error, items, focused, pickable, focus, move }
+}
+
+// The "…" button and its menu. A popover, so a click outside or Escape closes it; it sits under
+// the button that opens it (CSS anchor positioning).
+export function MoreMenu({ items, disabled }: { items: MenuItem[]; disabled: boolean }) {
+  const id = useId()
+  const menu = useRef<HTMLDivElement>(null)
   return (
-    <div className={focused ? 'todo-item focused' : 'todo-item'}>
+    <>
+      <button
+        type="button"
+        className="more"
+        popoverTarget={id}
+        aria-label="More"
+        title="More"
+        disabled={disabled}
+      >
+        …
+      </button>
+      <div id={id} ref={menu} popover="auto" className="more-menu" role="menu">
+        {items.map((item) => (
+          <button
+            key={item.label}
+            type="button"
+            role="menuitem"
+            className={item.danger ? 'danger' : undefined}
+            onClick={() => {
+              menu.current?.hidePopover()
+              item.onSelect()
+            }}
+          >
+            {item.label}
+          </button>
+        ))}
+      </div>
+    </>
+  )
+}
+
+// What a todo holds beyond its line: its notes, and each date and place in full.
+export function TodoFacts({ t }: { t: TodoItem }) {
+  const facts: [string, string | null][] = [
+    ['Project', t.project],
+    ['Context', t.context],
+    ['Waiting on', t.waitingFor],
+    ['On', t.scheduled],
+    ['Due', t.due],
+    ['Starts', t.start],
+    ['Repeats', t.repeat],
+    ['Focus', t.focus],
+    [
+      'Captured',
+      `${localTime(t.createdAt)} from ${t.source}${t.sourceKey === null ? '' : ` ${t.sourceKey}`}`,
+    ],
+  ]
+  return (
+    <div className="todo-facts">
+      {t.notes === null ? <p className="muted">No notes.</p> : <Markdown text={t.notes} />}
+      <dl>
+        {facts.map(([name, value]) =>
+          value === null ? null : (
+            <Fragment key={name}>
+              <dt>{name}</dt>
+              <dd>{value}</dd>
+            </Fragment>
+          ),
+        )}
+      </dl>
+    </div>
+  )
+}
+
+// A todo on one line, as in Mindwtr: the circle finishes it, the title unfolds its notes and
+// details, the star picks it for the day's focus, and the rest is in the "…" menu. Its status
+// shows when it is not the list's `usual` one.
+export function TodoRow({
+  t,
+  today,
+  usual,
+  full = false,
+}: {
+  t: TodoItem
+  today: string
+  usual: string
+  full?: boolean
+}) {
+  const { busy, error, items, focused, pickable, focus, move } = useTodoActions(t, today, full)
+  const [open, setOpen] = useState(false)
+  return (
+    <div className={`todo-item${focused ? ' focused' : ''}${open ? ' open' : ''}`}>
       <button
         type="button"
         className="check"
@@ -167,9 +281,14 @@ export function TodoRow({
         onClick={() => move('done')}
       />
       <div className="todo-main">
-        <Link to="/todos/$id" params={{ id: String(t.id) }} className="todo-title">
+        <button
+          type="button"
+          className="todo-title"
+          aria-expanded={open}
+          onClick={() => setOpen(!open)}
+        >
           {t.title}
-        </Link>
+        </button>
         <div className="todo-tags">
           <span className="side-id">t{t.id}</span>
           {todoTags(t, today).map((tag) => (
@@ -177,20 +296,16 @@ export function TodoRow({
               {tag.text}
             </span>
           ))}
-          <select
-            aria-label="Status"
-            className={`status-pill ${t.status}${t.status === usual ? ' quiet' : ''}`}
-            value={t.status}
-            disabled={busy}
-            onChange={(e) => move(e.target.value)}
-          >
-            {STATUSES.map((s) => (
-              <option key={s} value={s}>
-                {s}
-              </option>
-            ))}
-          </select>
+          {t.status !== usual && <span className={`status-pill ${t.status}`}>{t.status}</span>}
         </div>
+        {open && (
+          <>
+            <TodoFacts t={t} />
+            <Link to="/todos/$id" params={{ id: String(t.id) }} className="todo-open">
+              Links, tasks and history →
+            </Link>
+          </>
+        )}
         {error !== null && <div className="banner">{error}</div>}
       </div>
       {(focused || pickable) && (
@@ -205,6 +320,7 @@ export function TodoRow({
           {focused ? '★' : '☆'}
         </button>
       )}
+      <MoreMenu items={items} disabled={busy} />
     </div>
   )
 }
