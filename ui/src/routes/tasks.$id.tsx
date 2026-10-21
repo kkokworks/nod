@@ -35,7 +35,8 @@ const TITLE_CHARS = 120
 const KIND_ICON = { start: '▶', retry: '↻', answer: '↩', resume: '⏵', followup: '✎' } as const
 
 function TaskPage() {
-  const { task, status, links, after, attempts, decisions, report, screen } = Route.useLoaderData()
+  const { task, status, links, after, attempts, decisions, report, place, screen } =
+    Route.useLoaderData()
   // The brief's first line is the title; the whole brief folds away, as it can run to pages.
   const nl = task.brief.indexOf('\n')
   const title = nl === -1 ? task.brief : task.brief.slice(0, nl)
@@ -46,6 +47,17 @@ function TaskPage() {
   return (
     <div className={aside ? 'task-layout' : 'task-layout solo'}>
       <div className="page">
+        {/* Where the task sits in the person's lists. */}
+        {(place.project !== null || place.todo !== null) && (
+          <div className="crumbs">
+            {place.project !== null && <Link to="/projects">{place.project.title}</Link>}
+            {place.todo !== null && (
+              <Link to="/todos/$id" params={{ id: String(place.todo.id) }}>
+                t{place.todo.id} {place.todo.title}
+              </Link>
+            )}
+          </div>
+        )}
         <div className="task-meta">
           <Status status={status} />
           <span className="muted">

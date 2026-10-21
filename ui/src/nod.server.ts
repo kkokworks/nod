@@ -10,7 +10,7 @@ import {
   type Trigger,
 } from '../../src/ledger'
 import { Terminals } from '../../src/tmux'
-import { Todos } from '../../src/todos'
+import { type Project, type Todo, Todos } from '../../src/todos'
 import { taskNote, taskStatus } from '../../src/view'
 import { answer, sessionName, tell } from '../../src/worker'
 
@@ -20,14 +20,28 @@ export const home = nodHome()
 export const ledger = new Ledger(home)
 const terminals = Terminals.of(home)
 
-export type TaskRow = { id: number; status: string; turns: number; note: string; links: string[] }
+export type TaskRow = {
+  id: number
+  status: string
+  turns: number
+  // What the task is: its todo's title, else the brief's first line. The note is how it went last.
+  title: string
+  note: string
+  issue: string | null
+  projectId: number | null
+  links: string[]
+}
+
+// Where a task sits in the person's lists: the todo it does and that todo's project.
+export type Place = { todo: Todo | null; project: Project | null }
 
 export type OpenDecision = Decision & { brief: string; issue: string | null }
 
 export type Overview = {
   decisions: OpenDecision[]
-  // Like `nod ls`: tasks without an issue first, then each issue in the order it first appeared.
-  groups: { issue: string | null; tasks: TaskRow[] }[]
+  // Tasks by the project of the todo they do. What needs the person comes first, in a group and
+  // between groups; the tasks in no project come last.
+  groups: { project: Project | null; tasks: TaskRow[] }[]
   // What gc collected, which `nod ls` lists only with --all.
   collected: TaskRow[]
   triggers: Trigger[]
@@ -45,25 +59,35 @@ export type Detail = {
   attempts: Omit<Attempt, 'prompt'>[]
   decisions: Decision[]
   report: string | null
+  place: Place
   // The worker's terminal right now, while its session is alive.
   screen: string | null
 }
 
 export function overview(): Overview {
+  const todos = new Todos(ledger)
   const tasks = ledger.list()
-  const active = tasks.filter((t) => t.collectedAt === null)
+  const rows = tasks.filter((t) => t.collectedAt === null).map((t) => row(todos, t))
   return {
     decisions: ledger.openDecisions().map((d) => {
       const t = ledger.get(d.taskId)
       return { ...d, brief: t.brief, issue: t.issue }
     }),
-    groups: [...Map.groupBy(active, (t) => t.issue)]
-      .sort(([a], [b]) => Number(a !== null) - Number(b !== null))
-      .map(([issue, group]) => ({ issue, tasks: group.map(row) })),
-    collected: tasks.filter((t) => t.collectedAt !== null).map(row),
+    groups: [...Map.groupBy(rows, (t) => t.projectId)]
+      .map(([id, ts]) => ({
+        project: id === null ? null : todos.project(id),
+        tasks: ts.sort((a, b) => rank(a) - rank(b)),
+      }))
+      .sort(
+        (a, b) =>
+          Math.min(...a.tasks.map(rank)) - Math.min(...b.tasks.map(rank)) ||
+          Number(a.project === null) - Number(b.project === null) ||
+          (a.project?.id ?? 0) - (b.project?.id ?? 0),
+      ),
+    collected: tasks.filter((t) => t.collectedAt !== null).map((t) => row(todos, t)),
     triggers: ledger.triggers(),
     stats: ledger.stats(),
-    inbox: new Todos(ledger).list({
+    inbox: todos.list({
       statuses: ['inbox'],
       context: null,
       projectId: null,
@@ -85,6 +109,7 @@ export function detail(id: number): Detail {
     attempts: attempts.map(({ prompt: _, ...a }) => a),
     decisions: ledger.decisions(id),
     report: attempts.filter((a) => a.report).at(-1)?.report ?? null,
+    place: place(new Todos(ledger), task),
     screen: terminals.alive(name) ? terminals.screen(name).trimEnd() : null,
   }
 }
@@ -113,12 +138,40 @@ export async function send(m: Message): Promise<void> {
   await answer(ledger, home, m.decisionId, m.text)
 }
 
-function row(t: Task): TaskRow {
+// Decisions first, then tasks that went wrong, then those at work.
+const RANK: Record<string, number> = {
+  needs_decision: 0,
+  error: 1,
+  failed: 1,
+  'session ended': 1,
+  running: 2,
+  queued: 3,
+  succeeded: 4,
+}
+const rank = (t: TaskRow): number => RANK[t.status] ?? 5
+
+// A retrospective does no todo of its own; it sits in the project of the task it looks back on.
+function place(todos: Todos, t: Task): Place {
+  const todo = t.todoId === null ? null : todos.get(t.todoId)
+  if (todo === null) {
+    return {
+      todo: null,
+      project: t.retroOf === null ? null : place(todos, ledger.get(t.retroOf)).project,
+    }
+  }
+  return { todo, project: todo.projectId === null ? null : todos.project(todo.projectId) }
+}
+
+function row(todos: Todos, t: Task): TaskRow {
+  const { todo, project } = place(todos, t)
   return {
     id: t.id,
     status: taskStatus(t, terminals),
     turns: ledger.attempts(t.id).length,
+    title: todo?.title ?? t.brief.replace(/\n[\s\S]*/, ''),
     note: taskNote(ledger, t),
+    issue: t.issue,
+    projectId: project?.id ?? null,
     links: ledger.links(t.id),
   }
 }

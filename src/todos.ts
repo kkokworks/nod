@@ -358,6 +358,20 @@ export class Todos {
     })()
   }
 
+  // Gives a task the person hands over without a todo one of its own, so every such task waits in
+  // their lists, in the project when one is given. The brief's first line is its title.
+  delegateNew(task: NewTask, projectId: number | null, actor: string): number {
+    return this.db.transaction(() => {
+      const title = task.brief.replace(/\n[\s\S]*/, '')
+      const { todo } = this.capture(
+        { title, notes: null, source: 'nod', sourceKey: null, url: null },
+        actor,
+      )
+      if (projectId !== null) this.set(todo.id, { projectId }, actor)
+      return this.delegate(todo.id, task, actor)
+    })()
+  }
+
   // Moves each todo waiting on nod along once none of its tasks can go on: done when the last one
   // succeeded, back to next when it was cancelled, so the person takes it back. Every such todo is
   // looked at, so those of tasks a cancel cascaded to move too.

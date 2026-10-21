@@ -272,6 +272,33 @@ test('a delegated todo waits on its tasks, and follows the last once none can go
   expect(() => todos.delegate(t.id, task, 'human')).toThrow(`t${t.id} is done; reopen it`)
 })
 
+test('a task handed over without a todo gets one of its own, in the project given', () => {
+  const { ledger, todos } = books()
+  const p = project(todos, 'Launch')
+  const id = todos.delegateNew(
+    { ...task, brief: 'Ship the site\n\nDetails follow.' },
+    p.id,
+    'human',
+  )
+  const todoId = ledger.get(id).todoId
+  if (todoId === null) throw new Error('no todo')
+  expect(todos.get(todoId)).toMatchObject({
+    title: 'Ship the site',
+    status: 'waiting',
+    waitingOn: null,
+    projectId: p.id,
+    source: 'nod',
+  })
+  ledger.succeed(id)
+  todos.followTasks('nod')
+  expect(todos.get(todoId).status).toBe('done')
+  // A closed project takes no new open todo, so nothing is added.
+  todos.setProject(p.id, { status: 'done' }, 'human')
+  const before = ledger.list().length
+  expect(() => todos.delegateNew(task, p.id, 'human')).toThrow(`p${p.id} is done`)
+  expect(ledger.list().length).toBe(before)
+})
+
 test('a todo whose task was dropped comes back; one waiting on a person or on no task stays', () => {
   const { ledger, todos } = books()
   const t = captured(todos, 'Fix the build')

@@ -171,8 +171,8 @@ function Sidebar() {
       )}
 
       {groups.map((g) => (
-        <div key={g.issue ?? ''} className="side-group">
-          <div className="side-label">{g.issue ?? 'Tasks'}</div>
+        <div key={g.project?.id ?? 0} className="side-group">
+          <div className="side-label">{g.project?.title ?? 'No project'}</div>
           {g.tasks.map((t) => (
             <TaskItem key={t.id} t={t} />
           ))}
@@ -203,7 +203,7 @@ function TaskItem({ t }: { t: TaskRow }) {
     >
       <span className={`dot ${statusClass(t.status)}`} title={t.status} />
       <span className="side-text">
-        <span className="side-id">#{t.id}</span> {t.note}
+        <span className="side-id">#{t.id}</span> {t.title}
       </span>
     </Link>
   )

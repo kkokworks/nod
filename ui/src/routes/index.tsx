@@ -8,25 +8,11 @@ const root = getRouteApi('__root__')
 
 export const Route = createFileRoute('/')({ component: Home })
 
-// What needs the person comes first: decisions, then tasks that went wrong, then those at work.
-const RANK: Record<string, number> = {
-  needs_decision: 0,
-  error: 1,
-  failed: 1,
-  'session ended': 1,
-  running: 2,
-  queued: 3,
-  succeeded: 4,
-}
-
-// The decisions waiting for the person, the tasks not yet collected, how hands-off nod has been,
-// and the triggers that add work on a schedule.
+// The decisions waiting for the person, the tasks not yet collected by project, how hands-off nod
+// has been, and the triggers that add work on a schedule.
 function Home() {
   const { decisions, groups, triggers, stats } = root.useLoaderData()
   const finished = stats.tasks.succeeded
-  const tasks = groups
-    .flatMap((g) => g.tasks.map((t) => ({ ...t, issue: g.issue })))
-    .sort((a, b) => (RANK[a.status] ?? 5) - (RANK[b.status] ?? 5))
   return (
     <div className="page">
       <h1 className="title">
@@ -55,13 +41,23 @@ function Home() {
         </Section>
       )}
 
-      <Section title="Tasks" count={tasks.length} bare={tasks.length === 0}>
-        {tasks.length === 0 ? (
+      {groups.length === 0 ? (
+        <Section title="Tasks" count={0} bare>
           <p className="muted">No tasks. Hand work over with nod add.</p>
-        ) : (
-          tasks.map((t) => <TaskLine key={t.id} t={t} />)
-        )}
-      </Section>
+        </Section>
+      ) : (
+        groups.map((g) => (
+          <Section
+            key={g.project?.id ?? 0}
+            title={g.project?.title ?? 'No project'}
+            count={g.tasks.length}
+          >
+            {g.tasks.map((t) => (
+              <TaskLine key={t.id} t={t} />
+            ))}
+          </Section>
+        ))
+      )}
 
       <Section title="Stats" bare>
         <div className="stats">
@@ -116,18 +112,16 @@ function Home() {
   )
 }
 
-// A task on one line, as the sidebar lists it, with its status spelled out.
-function TaskLine({ t }: { t: TaskRow & { issue: string | null } }) {
+// A task: what it is, then how it went last, with its status spelled out.
+function TaskLine({ t }: { t: TaskRow }) {
   return (
     <Link to="/tasks/$id" params={{ id: String(t.id) }} className="task-line">
       <span className="side-id">#{t.id}</span>
       <div className="task-line-main">
-        <div className="clamp">{t.note}</div>
-        <div className="todo-tags">
+        <div className="clamp">{t.title}</div>
+        <div className="task-line-sub">
           {t.issue !== null && <span className="tag">{t.issue}</span>}
-          <span>
-            {t.turns} {t.turns === 1 ? 'turn' : 'turns'}
-          </span>
+          {!t.note.startsWith(t.title) && <span className="clamp">{t.note}</span>}
         </div>
       </div>
       <Status status={t.status} />

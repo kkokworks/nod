@@ -36,7 +36,7 @@ const USAGE = `usage:
   nod <decision> <answer...>       answer a decision; the worker gets it in its own session
   nod drop <decision>              end the task instead of answering
   nod add <brief> [--repo <path> --branch <name>] [--check <command>] [--model <model>]
-          [--after <task,...>] [--issue <key>] [--todo <todo>]
+          [--after <task,...>] [--issue <key>] [--todo <todo> | --project <project>]
                                    start a worker on the task now, or once the tasks it comes
                                    after have succeeded. In a repo it works on a new branch
                                    <name> in the worktree <home>/work/<repo folder>/<name>,
@@ -45,7 +45,9 @@ const USAGE = `usage:
                                    notify events show it. --todo delegates that todo to the
                                    task: it waits on the task, is done once it succeeds, and is
                                    a next action again if it is dropped; the brief may then be
-                                   left out for the todo's title and notes
+                                   left out for the todo's title and notes. Without --todo the
+                                   task gets a todo of its own, titled by the brief's first line,
+                                   in --project when given
   nod tell <task> <message...>     send a follow-up into the task's session
   nod resume <task>                reopen a task whose session ended, from its transcript
   nod attach <task>                open the worker's terminal (tmux)
@@ -188,10 +190,15 @@ async function add(args: string[]): Promise<void> {
       after: { type: 'string' },
       issue: { type: 'string' },
       todo: { type: 'string' },
+      project: { type: 'string' },
     },
     allowPositionals: true,
   })
+  if (values.todo !== undefined && values.project !== undefined) {
+    throw new Error('--project places a new todo; the one given with --todo keeps its own')
+  }
   const todos = new Todos(ledger)
+  const projectId = values.project === undefined ? null : todos.findProject(values.project).id
   const todo = values.todo === undefined ? null : todos.get(parseRef(values.todo, 't'))
   // A clarified todo already says what to do.
   const brief =
@@ -211,7 +218,9 @@ async function add(args: string[]): Promise<void> {
     triggerId: null,
     issue: values.issue ?? null,
   }
-  const id = todo === null ? ledger.add(task) : todos.delegate(todo.id, task, actorFromEnv())
+  const actor = actorFromEnv()
+  const id =
+    todo === null ? todos.delegateNew(task, projectId, actor) : todos.delegate(todo.id, task, actor)
   // A task that comes after others starts here only if they have all succeeded already.
   if (after.length === 0) await startTask(ledger, home, id)
   else await startReady(ledger, home)
