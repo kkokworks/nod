@@ -119,6 +119,10 @@ test('a channel key is captured once, and bad input is refused without changing 
   expect(await fails('todo', 'done')).toContain('finished todos list with --all')
   expect(await fails('todo', 'next', '--all')).toContain('--all lists every status')
   expect(await fails('project', '1')).toContain('not a project: 1 (write p<n>)')
+  // A watch runs once when given; one that would never wait, or never run, is refused.
+  const watch = (cmd: string) => fails('todo', 'set', 't1', '--status', 'waiting', '--watch', cmd)
+  expect(await watch('true')).toContain('the watch passes already')
+  expect(await watch('no-such-command-here')).toContain('the watch cannot run')
   expect(await ok('todo', '--all')).toEqual(['t1    inbox     Review the PR  · since <time>'])
 })
 

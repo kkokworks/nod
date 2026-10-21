@@ -14,6 +14,7 @@ import {
   type TodoDecision,
   type Todos,
 } from './todos'
+import { runWatch, syncSchedule } from './triggers'
 import { nudgeLine, STALE_DAYS, type Trust } from './trust'
 import { changeText, indent, oneLine } from './view'
 import { message } from './worker'
@@ -36,9 +37,13 @@ export const TODO_USAGE = `  nod in <what...> [--notes <text>] [--source <channe
                       [--project <p>]
                       [--context <@x>] [--waiting-on <who>] [--link <url>]...
                       [--due <day>] [--on <day>] [--start <day>] [--focus <day>]
-                      [--repeat daily|weekly|monthly]
+                      [--repeat daily|weekly|monthly] [--watch <command>]
                                    clarify and organize it; an empty value clears a field.
-                                   Leaving waiting forgets whom it waited on. A <day> is
+                                   Leaving waiting forgets whom it waited on and its watch.
+                                   --watch gives a waiting todo a command that nod's tick runs
+                                   every 5 minutes; once it exits 0, the todo is a next action
+                                   again, with a note. It runs once when given: one that passes
+                                   already, or that the shell cannot run, is refused. A <day> is
                                    YYYY-MM-DD, today or tomorrow; --due and --on also take a time,
                                    '<day> HH:MM'. --on is a day- or time-specific action, --start
                                    leaves it out of the lists until that day, and --focus picks it
@@ -117,12 +122,12 @@ export function capture(todos: Todos, args: string[]): void {
   console.log(created ? line(todos, todo) : `${line(todos, todo)}  (already captured)`)
 }
 
-export function todoCommand(todos: Todos, home: string, args: string[]): void {
+export async function todoCommand(todos: Todos, home: string, args: string[]): Promise<void> {
   const [sub, ...rest] = args
   if (sub === 'check') {
     checkTodos(todos, home, rest)
   } else if (sub === 'set') {
-    setTodo(todos, rest)
+    await setTodo(todos, home, rest)
   } else if (sub === 'done' || sub === 'drop') {
     finishTodos(todos, sub, rest)
   } else if (sub !== undefined && /^t?\d+$/.test(sub) && rest.length === 0) {
@@ -210,7 +215,7 @@ function trustLines(t: Trust): string[] {
   ]
 }
 
-function setTodo(todos: Todos, args: string[]): void {
+async function setTodo(todos: Todos, home: string, args: string[]): Promise<void> {
   const { values, positionals } = parseArgs({
     args,
     allowPositionals: true,
@@ -228,6 +233,7 @@ function setTodo(todos: Todos, args: string[]): void {
       start: { type: 'string' },
       focus: { type: 'string' },
       repeat: { type: 'string' },
+      watch: { type: 'string' },
     },
   })
   const [ref, ...extra] = positionals
@@ -247,6 +253,14 @@ function setTodo(todos: Todos, args: string[]): void {
     added === undefined
       ? cleared(values.notes)
       : [todos.get(id).notes, added].filter((x) => x !== null).join('\n')
+  const watch = cleared(values.watch)
+  // Run once now, as a trigger's source is: a watch that already passes has nothing to wait for,
+  // and one the shell cannot run (126, 127) would never pass.
+  if (typeof watch === 'string') {
+    const { code, output } = await runWatch(watch, home)
+    if (code === 0) throw new Error('the watch passes already, so there is nothing to wait for')
+    if (code === 126 || code === 127) throw new Error(`the watch cannot run: ${output}`)
+  }
   const todo = todos.set(
     id,
     {
@@ -260,12 +274,15 @@ function setTodo(todos: Todos, args: string[]): void {
       start: cleared(values.start),
       focus: cleared(values.focus),
       repeat: repeatOf(values.repeat),
+      watch,
       projectId:
         project === undefined ? undefined : project === '' ? null : todos.findProject(project).id,
     },
     actorFromEnv(),
     values.link ?? [],
   )
+  // Only the tick runs a watch. It takes itself off once nothing is left to watch.
+  if (typeof watch === 'string') await syncSchedule(todos.ledger, home)
   console.log(line(todos, todo))
 }
 
@@ -284,6 +301,7 @@ function showTodo(todos: Todos, id: number): void {
   const where = tags(todos, t)
   if (where.length > 0) console.log(`  ${where.join(' · ')}`)
   console.log(`  from ${t.source}${t.sourceKey === null ? '' : ` ${t.sourceKey}`}`)
+  if (t.watch !== null) console.log(`  watch ${t.watch}`)
   for (const l of todos.links(id)) {
     console.log(`  link ${l.url}${l.title === null ? '' : ` (${l.title})`}`)
   }
@@ -474,6 +492,7 @@ function tags(todos: Todos, t: Todo): string[] {
     t.context,
     project === null ? null : `p${project.id} ${project.title}`,
     on === null ? null : `waiting on ${on}`,
+    t.watch === null ? null : 'watched',
     t.scheduled === null ? null : `scheduled ${t.scheduled}`,
     t.due === null ? null : `due ${t.due}`,
     t.start === null ? null : `starts ${t.start}`,

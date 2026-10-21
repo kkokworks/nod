@@ -75,6 +75,7 @@ nod project add 건강 --outcome '치료 끝내기'
 nod todo set t1 --status next --project 건강 --context @전화   # 다음 행동으로 정리
 nod in '견적서 회신 받기'
 nod todo set t2 --status waiting --waiting-on 민수           # 기다리는 일
+nod todo set t2 --watch 'test -f ~/Downloads/견적서.pdf'     # 생기면 다음 행동으로(5분마다 확인)
 nod todo                 # 받은 일함·다음 행동·대기
 nod todo next --context @전화
 nod project              # 진행 중인 프로젝트와 다음 행동 수 (없으면 알려 줌)

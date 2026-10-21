@@ -3,14 +3,18 @@ import { join } from 'node:path'
 import { Ledger, type Trigger } from './ledger'
 import { notify, taskRef } from './notify'
 import { homeId } from './tmux'
-import { message, startTask } from './worker'
+import { Todos } from './todos'
+import { message, SELF, spawn, startTask } from './worker'
 
-// Triggers add tasks on a schedule. While any exists, the OS scheduler (launchd on macOS, crontab
-// on Linux, through Bun.cron) runs tick every minute; nod itself still never stays running.
+// Triggers add tasks on a schedule, and watches tell when what a waiting todo waits on has
+// happened. While either exists, the OS scheduler (launchd on macOS, crontab on Linux, through
+// Bun.cron) runs tick every minute; nod itself still never stays running.
 
-// A hung source must not stall every later tick.
+// A hung source or watch must not stall every later tick.
 const SOURCE_TIMEOUT_MS = 60_000
 const OUTPUT_LIMIT = 2000
+// Watches mostly ask another service; every minute would be more calls than a wait needs.
+const WATCH_EVERY_MINUTES = 5
 
 export type Item = { key: string; issue: string | null; text: string }
 
@@ -59,9 +63,13 @@ export async function addTrigger(
   return { id, seen: items.length }
 }
 
-// Runs the triggers due at `now` and starts the tasks they add. A run missed while the machine
-// slept happens once, on the first tick after.
-export async function tick(ledger: Ledger, home: string, now: Date): Promise<number[]> {
+// Runs the triggers due at `now` and starts the tasks they add, then, every few minutes, the
+// watches. A run missed while the machine slept happens once, on the first tick after.
+export async function tick(
+  ledger: Ledger,
+  home: string,
+  now: Date,
+): Promise<{ added: number[]; passed: number[] }> {
   const added: number[] = []
   for (const t of ledger.triggers()) {
     const next = nextRun(t.cron, new Date(t.lastRunAt ?? t.createdAt))
@@ -84,8 +92,42 @@ export async function tick(ledger: Ledger, home: string, now: Date): Promise<num
       ),
     ),
   )
-  return added
+  const passed =
+    now.getMinutes() % WATCH_EVERY_MINUTES === 0 ? await checkWatches(ledger, home) : []
+  return { added, passed }
 }
+
+// A watch passes when it exits 0. Anything else, a failed request too, means not yet.
+// ponytail: a watch that breaks for good waits silently; the stale-waiting check of `nod todo
+// check` is what surfaces it. Record the last failure if that proves too late.
+export async function runWatch(
+  watch: string,
+  home: string,
+): Promise<{ code: number; output: string }> {
+  const { code, output } = await spawn(['sh', '-c', watch], home, { timeoutMs: SOURCE_TIMEOUT_MS })
+  return { code, output: output.trim().slice(-OUTPUT_LIMIT) }
+}
+
+// One at a time, so two watches on the same service do not call it at once.
+async function checkWatches(ledger: Ledger, home: string): Promise<number[]> {
+  const todos = new Todos(ledger)
+  const passed: number[] = []
+  for (const t of todos.watched()) {
+    if (t.watch === null) continue
+    if ((await runWatch(t.watch, home)).code !== 0) continue
+    if (!todos.watchPassed(t.id, t.watch, SELF)) continue
+    passed.push(t.id)
+    await notify(home, {
+      event: 'watch_passed',
+      todo: { id: t.id, title: t.title },
+      watch: t.watch,
+    })
+  }
+  return passed
+}
+
+const hasSchedule = (ledger: Ledger): boolean =>
+  ledger.triggers().length > 0 || new Todos(ledger).watched().length > 0
 
 async function addTasks(ledger: Ledger, home: string, t: Trigger): Promise<number[]> {
   if (t.source === null) return [ledger.addTriggerTask(t, null, t.brief)]
@@ -118,14 +160,15 @@ async function readSource(source: string, cwd: string): Promise<Item[]> {
   return parseItems(stdout)
 }
 
-// Registers the every-minute tick with the OS scheduler while triggers exist, and removes it when
-// none are left. Registering again replaces the job, so this is safe to repeat.
+// Registers the every-minute tick with the OS scheduler while triggers or watches exist, and
+// removes it when none are left. Registering again replaces the job, so this is safe to repeat.
+// The module goes first: a tick removing itself may be stopped by the removal.
 export async function syncSchedule(ledger: Ledger, home: string): Promise<void> {
   const title = `nod-tick-${homeId(home)}`
   const module = join(home, 'tick.ts')
-  if (ledger.triggers().length === 0) {
-    await Bun.cron.remove(title)
+  if (!hasSchedule(ledger)) {
     rmSync(module, { force: true })
+    await Bun.cron.remove(title)
     return
   }
   writeFileSync(module, tickModule(home))
@@ -137,7 +180,7 @@ export async function syncSchedule(ledger: Ledger, home: string): Promise<void> 
 function tickModule(home: string): string {
   const env: Record<string, string> = { NOD_HOME: home, PATH: process.env.PATH ?? '' }
   if (process.env.CLAUDE_CONFIG_DIR) env.CLAUDE_CONFIG_DIR = process.env.CLAUDE_CONFIG_DIR
-  return `// Written by nod; the OS scheduler runs it every minute while triggers exist.
+  return `// Written by nod; the OS scheduler runs it every minute while triggers or watches exist.
 import { tickHome } from ${JSON.stringify(join(import.meta.dir, 'triggers.ts'))}
 
 export default {
@@ -150,6 +193,13 @@ export default {
 }
 
 export async function tickHome(home: string): Promise<void> {
-  const added = await tick(new Ledger(home), home, new Date())
-  if (added.length > 0) console.log(`${new Date().toISOString()} added task(s) ${added.join(', ')}`)
+  const ledger = new Ledger(home)
+  const { added, passed } = await tick(ledger, home, new Date())
+  const at = new Date().toISOString()
+  if (added.length > 0) console.log(`${at} added task(s) ${added.join(', ')}`)
+  if (passed.length > 0)
+    console.log(`${at} watch passed: ${passed.map((id) => `t${id}`).join(', ')}`)
+  // The last watch passing, or its todo leaving waiting anywhere (the CLI, the web), leaves nothing
+  // to tick for, and only the tick sees all of those.
+  if (!hasSchedule(ledger)) await syncSchedule(ledger, home)
 }

@@ -288,6 +288,8 @@ const MIGRATIONS = [
   alter table todos add column repeat text;
   alter table todos add column focus text;
   `,
+  // v13: a waiting todo's watch, the command that tells when what it waits on has happened.
+  'alter table todos add column watch text;',
 ]
 
 // The tables as the migrations leave them, in camelCase; CamelCasePlugin maps names to snake_case.

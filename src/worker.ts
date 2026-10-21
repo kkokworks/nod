@@ -59,9 +59,9 @@ const SCREEN_POLL_MS = 100
 // The standard `dirname`, not Bun's `dir`: the UI server loads this module through Vite, which
 // gives only the standard names.
 const CLI = join(import.meta.dirname, 'cli.ts')
-// Who moves a delegated todo along with its task: nod itself. Not the environment's actor, which in
-// a worker's hook is that worker.
-const SELF = 'nod'
+// Who moves a delegated todo along with its task, or a watched one once its watch passes: nod
+// itself. Not the environment's actor, which in a worker's hook is that worker.
+export const SELF = 'nod'
 
 // A todo a worker asks nod to capture. Its sandbox keeps it out of the ledger, so nod captures for
 // it, into the inbox only, where the person clarifies it.

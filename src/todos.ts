@@ -59,6 +59,9 @@ export type Todo = {
   repeat: Repeat | null
   // The day it was picked to focus on.
   focus: string | null
+  // While it is `waiting`, a shell command that exits 0 once what it waits on has happened; nod's
+  // tick runs it and then makes the todo a next action again.
+  watch: string | null
   // Where it was captured: `cli`, or the channel a scan read it from. With a key, that channel's
   // id for it, so the same item is captured only once.
   source: string
@@ -93,6 +96,7 @@ export type TodoEdit = Partial<
     | 'start'
     | 'repeat'
     | 'focus'
+    | 'watch'
   >
 >
 export type ProjectEdit = Partial<Pick<Project, 'title' | 'outcome' | 'status'>>
@@ -147,7 +151,7 @@ const asContext = (c: string): string => (c.startsWith('@') ? c : `@${c}`)
 export class Todos {
   private readonly db: Database
 
-  constructor(private readonly ledger: Ledger) {
+  constructor(readonly ledger: Ledger) {
     this.db = ledger.db
   }
 
@@ -404,6 +408,32 @@ export class Todos {
     }
   }
 
+  // The waiting todos with a watch, which the tick runs.
+  watched(): Todo[] {
+    return this.run(
+      q
+        .selectFrom('todos')
+        .selectAll()
+        .where('status', '=', 'waiting')
+        .where('watch', 'is not', null)
+        .orderBy('id'),
+    )
+  }
+
+  // Makes a watched todo a next action again once its watch has passed, with a line in its notes
+  // saying when. A todo that left waiting or got another watch while the command ran is left as it
+  // is; false says so.
+  watchPassed(id: number, watch: string, actor: string): boolean {
+    return this.db.transaction(() => {
+      const t = this.get(id)
+      if (t.status !== 'waiting' || t.watch !== watch) return false
+      const line = `${new Date().toLocaleString('sv-SE').slice(0, 16)} watch passed: ${watch}`
+      const notes = [t.notes, line].filter((x) => x !== null).join('\n')
+      this.set(id, { status: 'next', notes }, actor)
+      return true
+    })()
+  }
+
   // Whom a waiting todo waits on: a person, or the tasks it was delegated to that can still go on.
   waitingFor(t: Todo): string | null {
     if (t.waitingOn !== null) return t.waitingOn
@@ -604,13 +634,17 @@ export class Todos {
   }
 
   // The todo as the edit leaves it, checked: a known status, a title, a project that is not
-  // closed while the todo is open. Leaving `waiting` forgets whom it waited on, unless the edit
-  // names someone.
+  // closed while the todo is open, a watch only while waiting. Leaving `waiting` forgets whom it
+  // waited on, unless the edit names someone, and its watch.
   private settle(before: Todo, edit: TodoEdit): TodoEdit {
     if (edit.status !== undefined) oneOf('todo status', edit.status, TODO_STATUSES)
     if (edit.title !== undefined) filled('title', edit.title)
     if (typeof edit.context === 'string') filled('context', edit.context)
+    if (typeof edit.watch === 'string') filled('watch', edit.watch)
     const status = edit.status ?? before.status
+    if (typeof edit.watch === 'string' && status !== 'waiting') {
+      throw new Error('a watch is for a waiting todo; give --status waiting with it')
+    }
     const projectId = edit.projectId === undefined ? before.projectId : edit.projectId
     if (projectId !== null && OPEN.includes(status)) {
       const p = this.project(projectId)
@@ -644,6 +678,7 @@ export class Todos {
       ...dates,
       ...(typeof edit.context === 'string' ? { context: asContext(edit.context) } : {}),
       ...(leftWaiting && edit.waitingOn === undefined ? { waitingOn: null } : {}),
+      ...(leftWaiting ? { watch: null } : {}),
     }
   }
 

@@ -15,6 +15,7 @@ const todo = (id: number, edit: Partial<Todo>): Todo => ({
   start: null,
   repeat: null,
   focus: null,
+  watch: null,
   source: 'cli',
   sourceKey: null,
   createdAt: '2026-10-20T01:00:00.000Z',

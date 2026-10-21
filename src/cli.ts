@@ -152,8 +152,10 @@ switch (command) {
     await trigger(rest)
     break
   case 'tick': {
-    const added = await tick(ledger, home, new Date())
-    console.log(added.length > 0 ? `added task(s) ${added.join(', ')}` : 'nothing due')
+    const { added, passed } = await tick(ledger, home, new Date())
+    if (added.length > 0) console.log(`added task(s) ${added.join(', ')}`)
+    if (passed.length > 0) console.log(`watch passed: ${passed.map((id) => `t${id}`).join(', ')}`)
+    if (added.length === 0 && passed.length === 0) console.log('nothing due')
     break
   }
   case 'hook':
@@ -163,7 +165,7 @@ switch (command) {
     capture(new Todos(ledger), rest)
     break
   case 'todo':
-    todoCommand(new Todos(ledger), home, rest)
+    await todoCommand(new Todos(ledger), home, rest)
     break
   case 'project':
     projectCommand(new Todos(ledger), rest)

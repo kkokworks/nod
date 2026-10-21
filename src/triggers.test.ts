@@ -3,10 +3,11 @@ import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tempDirs } from '../test/tmp'
 import { Ledger } from './ledger'
-import { addTrigger, nextRun, parseItems } from './triggers'
+import { Todos } from './todos'
+import { addTrigger, nextRun, parseItems, tick } from './triggers'
 
-// Only what runs without workers; tick starts tasks, so it is tested with the fake agent in
-// worker.test.ts.
+// Only what runs without workers; the tick's triggers start tasks, so they are tested with the
+// fake agent in worker.test.ts. Its watches start none and are tested here.
 const tmp = tempDirs()
 afterAll(tmp.removeAll)
 
@@ -44,4 +45,27 @@ test('adding a trigger with a source records what it lists now, and a failing so
 
   await expect(addTrigger(ledger, home, { ...base, source: 'exit 3' })).rejects.toThrow('exited 3')
   expect(ledger.triggers().map((t) => t.id)).toEqual([added.id])
+})
+
+test('every fifth minute the tick runs the watches, and one that exits 0 brings its todo back', async () => {
+  const home = tmp.make('nod-watches-')
+  const todos = new Todos(new Ledger(home))
+  const flag = join(home, 'pushed')
+  const waiting = (title: string, watch: string) => {
+    const { todo } = todos.capture(
+      { title, notes: null, source: 'cli', sourceKey: null, url: null },
+      'human',
+    )
+    return todos.set(todo.id, { status: 'waiting', watch }, 'human').id
+  }
+  const pushed = waiting('Get the repo pushed', `test -f ${JSON.stringify(flag)}`)
+  const never = waiting('Hear back', 'exit 2') // a failing command is not yet, not an error
+
+  writeFileSync(flag, '')
+  const at = (minute: number) => new Date(2026, 9, 21, 10, minute)
+  expect((await tick(todos.ledger, home, at(6))).passed).toEqual([]) // not a watch minute
+  expect(todos.get(pushed).status).toBe('waiting')
+  expect((await tick(todos.ledger, home, at(10))).passed).toEqual([pushed])
+  expect([todos.get(pushed).status, todos.get(never).status]).toEqual(['next', 'waiting'])
+  expect(todos.watched().map((t) => t.id)).toEqual([never])
 })
