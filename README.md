@@ -13,6 +13,7 @@ git clone https://github.com/kkokworks/nod && cd nod
 bun install
 bun link                                       # nod 명령 등록
 ln -s "$PWD/skills/nod" ~/.claude/skills/nod   # Claude 세션에서 /nod
+ln -s "$PWD/skills/gtd" ~/.claude/skills/gtd   # 할 일 장부로 GTD: /gtd:capture, /gtd:review 등
 ln -s "$PWD/skills/wide-research" ~/.claude/skills/wide-research   # 선택: 항목 여러 개 비교 조사
 ln -s "$PWD/agents/wide-item.md" ~/.claude/agents/wide-item.md     # wide-research 가 쓰는 에이전트
 ```
@@ -90,7 +91,7 @@ nod today                # 오늘: 캘린더 일정, 지난 것, 예정, 마감,
 nod today tomorrow       # 내일 준비
 ```
 
-`nod todo check` 는 장부를 믿어도 되는지 보여 줍니다. 받은 일함의 가장 오래된 날, 지난 것, 다음 행동이 없는 프로젝트, 오래 기록이 없는 대기, 마지막 주간 리뷰입니다. `nod todo --json` 은 할 일을 링크와 함께 JSON 한 줄씩 내보냅니다. nod 스킬에는 이 장부로 GTD 를 하는 절차(모으기·받은 일함 비우기·오늘 집중·내일 준비·주간 리뷰)와 업무 도구 연결부(`skills/nod/sources/`)가 들어 있고, 켠 도구와 도구별 값은 `~/.nod/config.json` 에 둡니다.
+`nod todo check` 는 장부를 믿어도 되는지 보여 줍니다. 받은 일함의 가장 오래된 날, 지난 것, 다음 행동이 없는 프로젝트, 오래 기록이 없는 대기, 마지막 주간 리뷰입니다. `nod todo --json` 은 할 일을 링크와 함께 JSON 한 줄씩 내보냅니다. 이 장부로 GTD 를 하는 절차(받아 적기·모으기·받은 일함 비우기·오늘 집중·내일 준비·주간 리뷰)는 gtd 스킬 묶음(`skills/gtd`, `/gtd:capture` 등)에 있고, 업무 도구 연결부는 `skills/gtd/sources/` 입니다. 켠 도구와 도구별 값은 `~/.nod/config.json` 에 둡니다.
 
 `nod today` 의 일정은 macOS 캘린더 앱에서 읽기만 합니다. 처음 한 번 `sh calendar/build.sh` 로 읽기 앱을 `~/.nod` 에 빌드하고, 터미널에서 `nod today` 를 돌려 캘린더 권한을 허용합니다. 구글·iCloud 캘린더도 캘린더 앱에 계정을 붙이면 함께 읽힙니다.
 

@@ -1,6 +1,6 @@
 # 업무 도구
 
-업무 도구 하나가 폴더 하나입니다. `sources/<이름>/SOURCE.md` 와 그 도구에 필요한 스크립트가 들어 있습니다. 절차 파일(scan·clarify·tomorrow·review)은 도구 이름을 모르고, 켠 도구의 SOURCE.md 칸만 부릅니다. 캘린더는 도구가 아니라 nod 에 들어 있습니다(`nod today`).
+업무 도구 하나가 폴더 하나입니다. `sources/<이름>/SOURCE.md` 와 그 도구에 필요한 스크립트가 들어 있습니다. gtd 스킬(scan·tomorrow·review)은 도구 이름을 모르고, 켠 도구의 SOURCE.md 칸만 부릅니다. 캘린더는 도구가 아니라 nod 에 들어 있습니다(`nod today`).
 
 ## 켜기와 끄기
 
@@ -13,11 +13,11 @@
 | 칸 | 내용 | 부르는 곳 |
 |---|---|---|
 | 설치 | Claude 가 실행할 명령, 사용자가 `!` 로 칠 한 줄, 확인 명령, config.json 에 넣을 값 | 켜기 |
-| 모으기 | 무엇이 할 일 후보인가, 원본 ID(`--key`)로 쓸 값, 넣은 뒤 할 일 | scan.md 의 훑기 |
-| 끝남 | 무엇을 보면 그 일이 끝난 것인가 | scan.md 의 끝난 일 정리 |
-| 다가오는 것 | 정해진 기간의 마감과 일정 | tomorrow.md, review.md |
+| 모으기 | 무엇이 할 일 후보인가, 원본 ID(`--key`)로 쓸 값, 넣은 뒤 할 일 | gtd:scan 의 훑기 |
+| 끝남 | 무엇을 보면 그 일이 끝난 것인가 | gtd:scan 의 끝난 일 정리 |
+| 다가오는 것 | 정해진 기간의 마감과 일정 | gtd:tomorrow, gtd:review |
 
-해당하지 않는 칸은 두지 않습니다. 스크립트는 SOURCE.md 옆에 두고 `<스킬 폴더>/sources/<이름>/...` 경로로 부릅니다. 스킬 폴더는 스킬을 불렀을 때 알려 주는 기준 폴더입니다. 스크립트는 config.json 을 [config.ts](config.ts) 로 읽습니다.
+해당하지 않는 칸은 두지 않습니다. 스크립트는 SOURCE.md 옆에 두고 `<gtd 폴더>/sources/<이름>/...` 경로로 부릅니다. gtd 폴더는 [ledger.md](../ledger.md) 가 있는 폴더입니다. 스크립트는 config.json 을 [config.ts](config.ts) 로 읽습니다.
 
 ## 지금 있는 도구
 

@@ -651,6 +651,20 @@ export class Ledger {
     })()
   }
 
+  // Records that an existing task does a todo, as `addTodoTask` does for a new one. For todos
+  // brought from another system that had delegated them to nod.
+  linkTodoTask(taskId: number, todoId: number): void {
+    const linked = this.first(
+      q
+        .updateTable('tasks')
+        .set({ todoId })
+        .where('id', '=', taskId)
+        .where('todoId', 'is', null)
+        .returning('id'),
+    )
+    if (!linked) throw new Error(`task ${taskId} does not exist or already does a todo`)
+  }
+
   // The tasks doing a todo, oldest first.
   tasksOf(todoId: number): Task[] {
     return this.run(q.selectFrom('tasks').selectAll().where('todoId', '=', todoId).orderBy('id'))

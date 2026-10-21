@@ -28,7 +28,7 @@ export type Config = z.infer<typeof Config>
 export async function loadConfig(): Promise<Config> {
   const file = Bun.file(configPath())
   if (!(await file.exists())) {
-    throw new Error(`${configPath()} is missing; skills/nod/setup.md says what goes in it`)
+    throw new Error(`${configPath()} is missing; the gtd:setup skill says what goes in it`)
   }
   return Config.parse(await file.json())
 }

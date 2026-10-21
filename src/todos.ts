@@ -268,6 +268,46 @@ export class Todos {
     return this.db.transaction(() => ids.map((id) => this.set(id, { status }, actor)))()
   }
 
+  // A todo brought from another system with its own times: when it was captured, when its status
+  // last changed, and `at`, when it last moved, which becomes its one recorded change by `actor`.
+  // Its values are checked as an edit's are.
+  importTodo(t: Omit<Todo, 'id'>, links: TodoLink[], actor: string, at: string): number {
+    filled('title', t.title)
+    oneOf('todo status', t.status, TODO_STATUSES)
+    if (t.repeat !== null) oneOf('repeat', t.repeat, REPEATS)
+    for (const [field, when, time] of [
+      ['due', t.due, true],
+      ['scheduled', t.scheduled, true],
+      ['start', t.start, false],
+      ['focus', t.focus, false],
+    ] as const) {
+      if (when !== null && parseWhen(when, when.slice(0, 10), time) !== when) {
+        throw new Error(`${field} is not a day${time ? ' or a time' : ''}: ${when}`)
+      }
+    }
+    return this.db.transaction(() => {
+      if (t.projectId !== null && OPEN.includes(t.status)) {
+        const p = this.project(t.projectId)
+        if (CLOSED_PROJECT.includes(p.status)) {
+          throw new Error(`p${p.id} is ${p.status}; an open todo cannot be in it: ${t.title}`)
+        }
+      }
+      const id = this.insert(q.insertInto('todos').values(t).returning('id'))
+      const { createdAt: _, statusAt: __, ...fields } = t
+      this.recordTodo(id, actor, diff({}, fields), at)
+      for (const l of links) {
+        filled('link', l.url)
+        this.run(
+          q
+            .insertInto('todoLinks')
+            .orIgnore()
+            .values({ todoId: id, url: l.url, title: l.title, createdAt: at }),
+        )
+      }
+      return id
+    })()
+  }
+
   // The same address twice is kept once.
   link(id: number, url: string, title: string | null, actor: string): void {
     filled('link', url)
@@ -441,6 +481,18 @@ export class Todos {
       )
       this.recordProject(id, actor, diff({}, { ...p, status: 'active' }), at)
       return this.project(id)
+    })()
+  }
+
+  // A project brought from another system with its own times, recorded like importTodo.
+  importProject(p: Omit<Project, 'id'>, actor: string, at: string): number {
+    projectTitle(p.title)
+    oneOf('project status', p.status, PROJECT_STATUSES)
+    return this.db.transaction(() => {
+      const id = this.insert(q.insertInto('projects').values(p).returning('id'))
+      const { createdAt: _, statusAt: __, ...fields } = p
+      this.recordProject(id, actor, diff({}, fields), at)
+      return id
     })()
   }
 

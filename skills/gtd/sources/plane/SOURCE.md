@@ -1,6 +1,6 @@
 # Plane
 
-이슈 트래커입니다. 나에게 배정된 열린 이슈마다 장부에 다음 행동이 하나 있고, 그 할 일은 이슈가 속한 프로젝트(업무 묶음)에 둡니다([todos.md](../../todos.md) 의 원칙). Plane API 를 `plane.ts` 로 읽고 씁니다.
+이슈 트래커입니다. 나에게 배정된 열린 이슈마다 장부에 다음 행동이 하나 있고, 그 할 일은 이슈가 속한 프로젝트(업무 묶음)에 둡니다([ledger.md](../../ledger.md) 의 원칙). Plane API 를 `plane.ts` 로 읽고 씁니다.
 
 ## 설치
 
@@ -13,11 +13,11 @@
   "plane": { "url": "<Plane 주소>", "workspace": "<워크스페이스 slug>", "projects": ["<프로젝트 식별자>"] }
   ```
   `projects` 는 훑을 프로젝트의 식별자입니다(이슈 키 `ENG-12` 의 `ENG`).
-- 확인: `bun <스킬 폴더>/sources/plane/plane.ts` 가 오류 없이 출력하면 됩니다.
+- 확인: `bun <gtd 폴더>/sources/plane/plane.ts` 가 오류 없이 출력하면 됩니다.
 
 ## 모으기
 
-`bun <스킬 폴더>/sources/plane/plane.ts` 를 실행합니다. 나에게 배정된 열린 항목이 키·제목·상태·마감·주소로 나옵니다.
+`bun <gtd 폴더>/sources/plane/plane.ts` 를 실행합니다. 나에게 배정된 열린 항목이 키·제목·상태·마감·주소로 나옵니다.
 - 키(`ENG-12`)를 원본 ID 로 씁니다: `nod in '<다음 행동>' --source plane --key <키> --link <주소>`. 이미 있으면 "already captured" 로 알려 줍니다.
 - 없으면 이슈를 읽고 다음 행동 하나와 넣을 프로젝트를 제안합니다. 이슈의 마감은 할 일의 `--due` 로 옮깁니다.
 - 이슈 내용은 옮기지 않고 주소만 답니다.

@@ -1,8 +1,8 @@
-// Prints the line an unattended tomorrow prep's trigger source gives its worker (tomorrow.md): the
+// Prints the line an unattended tomorrow prep's trigger source gives its worker (skills/tomorrow/worker.md): the
 // next workday, a tab, then as JSON what the worker needs. The worker's sandbox keeps it from the
 // ledger and the work tools, so this reads them outside it: that day in nod, the trust numbers, the
 // open todos, and the output of each work tool that is on and has a script.
-// Usage: bun <skill folder>/tomorrow.ts
+// Usage: bun <gtd folder>/tomorrow.ts
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { localDay, nextWorkday } from '../../src/days'
