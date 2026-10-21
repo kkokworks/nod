@@ -15,6 +15,17 @@
   --term-bg: #1d1d1f;
   --term-fg: #e8e6e1;
   --radius: 12px;
+  --brand: #b4532a;
+  --chip: #f0ede7;
+  --row-hover: #fbfaf8;
+  --star: #d49b0b;
+  --s-inbox: #5f6f86;
+  --s-next: #2f6fdb;
+  --s-waiting: #b7791f;
+  --s-someday: #7c5cc4;
+  --s-reference: #8a857c;
+  --s-done: #2f8a4c;
+  --s-dropped: #a8a49b;
   --shadow: 0 1px 2px rgb(0 0 0 / 4%), 0 4px 16px rgb(0 0 0 / 4%);
 }
 
@@ -33,6 +44,17 @@
     --bad: #ef6b63;
     --idle: #6f6c66;
     --term-bg: #0e0e0e;
+    --brand: #e58b5e;
+    --chip: #2c2b29;
+    --row-hover: #262624;
+    --star: #f0b429;
+    --s-inbox: #94a3b8;
+    --s-next: #7aa7f7;
+    --s-waiting: #e2a33b;
+    --s-someday: #a78bfa;
+    --s-reference: #a8a49b;
+    --s-done: #5fbf7c;
+    --s-dropped: #6f6c66;
     --shadow: none;
   }
 }
@@ -333,12 +355,15 @@ details > summary.side-label {
 }
 
 .section {
-  font-size: 13px;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 12px;
   font-weight: 600;
   color: var(--muted);
   text-transform: uppercase;
-  letter-spacing: 0.03em;
-  margin: 2rem 0 0.75rem;
+  letter-spacing: 0.06em;
+  margin: 2.25rem 0 0.6rem;
 }
 
 .prose {
@@ -904,7 +929,6 @@ details summary {
 }
 
 .todo-actions button,
-.todo-actions select,
 .filters button,
 .filters a {
   padding: 0.15rem 0.6rem;
@@ -923,8 +947,7 @@ details summary {
   background: var(--hover);
 }
 
-.todo-actions button:disabled,
-.todo-actions select:disabled {
+.todo-actions button:disabled {
   opacity: 0.4;
   cursor: default;
 }
@@ -1014,4 +1037,409 @@ details summary {
   color: var(--fg);
   font: inherit;
   cursor: pointer;
+}
+
+/* ── lists: a section's rows sit on one card, as in Mindwtr and Things ── */
+
+.count {
+  display: inline-flex;
+  justify-content: center;
+  min-width: 1.5rem;
+  padding: 0.05rem 0.45rem;
+  border-radius: 999px;
+  background: var(--chip);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.fold-label {
+  list-style: none;
+}
+
+.fold-label::-webkit-details-marker {
+  display: none;
+}
+
+.fold-label::before {
+  content: "▸";
+  font-size: 10px;
+}
+
+.fold[open] > .fold-label::before {
+  content: "▾";
+}
+
+.list {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+
+.list > * + * {
+  border-top: 1px solid var(--line);
+}
+
+.list > .muted {
+  margin: 0;
+  padding: 0.85rem 1rem;
+}
+
+.list > .filters {
+  margin: 0;
+  padding: 0.7rem 0.9rem;
+}
+
+.list > .todo-row {
+  padding: 0.7rem 1rem;
+  border-bottom: 0;
+}
+
+.todo-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  padding: 0.7rem 0.9rem 0.7rem 1rem;
+  transition: background 0.12s;
+}
+
+.todo-item:hover {
+  background: var(--row-hover);
+}
+
+.todo-item.focused {
+  box-shadow: inset 3px 0 0 var(--star);
+}
+
+.card > .todo-item {
+  margin: 0 -1.1rem;
+  padding-inline: 1.1rem;
+  border-top: 1px solid var(--line);
+}
+
+.check {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  margin-top: 0.15rem;
+  padding: 0;
+  border: 1.5px solid var(--idle);
+  border-radius: 50%;
+  background: none;
+  color: var(--ok);
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+  transition:
+    border-color 0.12s,
+    background 0.12s;
+}
+
+.check::after {
+  content: "✓";
+  opacity: 0;
+}
+
+.check:hover {
+  border-color: var(--ok);
+  background: color-mix(in srgb, var(--ok) 12%, transparent);
+}
+
+.check:hover::after {
+  opacity: 1;
+}
+
+.check:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.todo-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.todo-main .todo-title {
+  display: block;
+  font-size: 14.5px;
+  line-height: 1.45;
+}
+
+.todo-main .todo-title:hover {
+  text-decoration: none;
+  color: var(--brand);
+}
+
+.todo-main .todo-tags {
+  align-items: center;
+  gap: 0.3rem 0.5rem;
+  margin-top: 0.3rem;
+  font-size: 12px;
+}
+
+.todo-main .side-id {
+  color: var(--idle);
+  font-variant-numeric: tabular-nums;
+}
+
+.todo-main .tag {
+  padding: 0;
+  border: 0;
+  background: none;
+}
+
+.todo-main .tag.place {
+  padding: 0.05rem 0.45rem;
+  border-radius: 6px;
+  background: var(--chip);
+  color: var(--fg);
+}
+
+.tag.due {
+  color: var(--bad);
+  font-weight: 500;
+}
+
+/* The status menu ends the line under the title. In a list of its own status it says nothing new,
+   so it waits for the pointer or the keyboard. */
+.status-pill {
+  --s: var(--s-reference);
+  appearance: none;
+  padding: 0.02rem 1.15rem 0.02rem 0.5rem;
+  border: 0;
+  border-radius: 999px;
+  background-color: color-mix(in srgb, var(--s) 14%, transparent);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='5'%3E%3Cpath d='M1 1l3 3 3-3' fill='none' stroke='%238a867e' stroke-width='1.4' stroke-linecap='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 0.4rem center;
+  color: var(--s);
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: opacity 0.12s;
+}
+
+.status-pill.quiet {
+  opacity: 0;
+}
+
+.todo-item:is(:hover, :focus-within) .status-pill.quiet {
+  opacity: 1;
+}
+
+@media (hover: none) {
+  .status-pill.quiet {
+    opacity: 1;
+  }
+}
+
+.status-pill:hover {
+  background-color: color-mix(in srgb, var(--s) 22%, transparent);
+}
+
+.status-pill:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.status-pill option {
+  background: var(--card);
+  color: var(--fg);
+}
+
+.status-pill.inbox,
+.chip.inbox {
+  --s: var(--s-inbox);
+}
+
+.status-pill.next,
+.chip.next {
+  --s: var(--s-next);
+}
+
+.status-pill.waiting,
+.chip.waiting {
+  --s: var(--s-waiting);
+}
+
+.status-pill.someday,
+.chip.someday {
+  --s: var(--s-someday);
+}
+
+.status-pill.done,
+.chip.done {
+  --s: var(--s-done);
+}
+
+.status-pill.dropped,
+.chip.dropped {
+  --s: var(--s-dropped);
+}
+
+/* A todo's status chip (its page) in the colours of the row's status menu. */
+.chip:is(.inbox, .next, .waiting, .someday, .reference, .done, .dropped) {
+  background: color-mix(in srgb, var(--s, var(--s-reference)) 14%, transparent);
+  color: var(--s, var(--s-reference));
+}
+
+.chip:is(.inbox, .next, .waiting, .someday, .reference, .done, .dropped) .dot {
+  background: currentcolor;
+}
+
+/* Picking is what the Focus page is for, so the star is always there. */
+.todo-item > .star {
+  flex: none;
+  align-self: center;
+  width: 1.6rem;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--idle);
+  font: inherit;
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  transition: color 0.12s;
+}
+
+.todo-item > .star:hover,
+.todo-item > .star.on {
+  color: var(--star);
+}
+
+.todo-item > .star:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* What needs the person before the day starts, each line a way to it. */
+.needs {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  margin: 0 0 1.5rem;
+  padding: 0.75rem 1rem;
+  border: 1px solid color-mix(in srgb, var(--warn) 35%, var(--line));
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--warn) 7%, var(--card));
+}
+
+.needs > * {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+}
+
+.needs > *::before {
+  content: "";
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--warn);
+}
+
+.needs > a:hover {
+  color: var(--brand);
+}
+
+/* Where picks land, shown while there are none. */
+.placeholder {
+  margin: 0;
+  padding: 0.85rem 1rem;
+  border: 1px dashed var(--line);
+  border-radius: var(--radius);
+}
+
+.toast {
+  position: fixed;
+  bottom: 1.5rem;
+  left: 50%;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  max-width: min(36rem, calc(100vw - 2rem));
+  padding: 0.6rem 0.6rem 0.6rem 1rem;
+  border-radius: 10px;
+  background: var(--term-bg);
+  color: var(--term-fg);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 18%);
+  transform: translateX(-50%);
+  font-size: 13px;
+}
+
+.toast-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.toast button {
+  flex: none;
+  padding: 0.25rem 0.75rem;
+  border: 0;
+  border-radius: 6px;
+  background: rgb(255 255 255 / 12%);
+  color: inherit;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.toast button:hover {
+  background: rgb(255 255 255 / 20%);
+}
+
+/* ── sidebar navigation ── */
+
+.side-nav .side-item {
+  align-items: center;
+}
+
+.side-nav svg {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  color: var(--muted);
+}
+
+.side-nav .side-item.active svg {
+  color: var(--brand);
+}
+
+/* The lists fold under their label, the chevron pointing down while open. */
+.side-lists > summary.side-label {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  margin-top: 0.75rem;
+  list-style: none;
+}
+
+.side-lists > summary.side-label::-webkit-details-marker {
+  display: none;
+}
+
+.side-lists > summary.side-label::before {
+  content: "";
+  width: 5px;
+  height: 5px;
+  margin: 0 0.15rem 0 0.1rem;
+  border-right: 1.5px solid currentcolor;
+  border-bottom: 1.5px solid currentcolor;
+  transform: rotate(-45deg);
+  transition: transform 0.12s;
+}
+
+.side-lists[open] > summary.side-label::before {
+  transform: translateY(-2px) rotate(45deg);
 }

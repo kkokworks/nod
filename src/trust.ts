@@ -57,19 +57,24 @@ export function trust(s: TrustInput, today: string): Trust {
   }
 }
 
-// One line for the day's first session, or null when nothing needs the person.
+// The day the oldest inbox todo came in, once one has sat there overnight; else null.
+export const inboxSince = (t: Trust, today: string): string | null =>
+  t.oldestInbox !== null && t.oldestInbox < today ? t.oldestInbox : null
+
+export const reviewDue = (t: Trust): boolean =>
+  t.sinceReview !== null && t.sinceReview > REVIEW_DAYS
+
+// One line for the day's first session, or null when nothing needs the person. The web's Focus
+// page shows the same.
 export function nudgeLine(t: Trust, today: string): string | null {
+  const since = inboxSince(t, today)
   const parts = [
     t.overdue.length > 0 ? `overdue ${t.overdue.length}` : null,
     t.today.length > 0 ? `today ${t.today.length}` : null,
-    t.oldestInbox !== null && t.oldestInbox < today
-      ? `inbox ${t.inbox} since ${t.oldestInbox.slice(5)}`
-      : null,
+    since === null ? null : `inbox ${t.inbox} since ${since.slice(5)}`,
     t.stuck.length > 0 ? `no next action ${t.stuck.length}` : null,
     t.stale.length > 0 ? `waiting long ${t.stale.length}` : null,
-    t.sinceReview !== null && t.sinceReview > REVIEW_DAYS
-      ? `weekly review ${t.sinceReview} days ago`
-      : null,
+    reviewDue(t) ? `weekly review ${t.sinceReview} days ago` : null,
   ].filter((x) => x !== null)
   return parts.length === 0 ? null : `nod · ${parts.join(' · ')}`
 }

@@ -1,9 +1,8 @@
 // The todo pages' data, and the changes a person makes there. Server only, like nod.server.ts, and
 // through the same ledger.
 import { type CalendarEvent, readEvents } from '../../src/calendar'
-import { localDay, parseWhen, REPEATS } from '../../src/days'
+import { localDay, REPEATS } from '../../src/days'
 import {
-  type DayTodos,
   PROJECT_STATUSES,
   type Project,
   TODO_STATUSES,
@@ -25,8 +24,8 @@ import { home, ledger } from './nod.server'
 const ACTOR = 'human:ui'
 // Reading the calendar launches an app, and the pages reload every few seconds.
 const CALENDAR_TTL_MS = 5 * 60_000
-// Today's focus holds this many, as in Mindwtr by default: picking few is the point.
-const FOCUS_LIMIT = 3
+// Today's focus holds this many: few enough that picking means choosing (Mindwtr's default is 3).
+const FOCUS_LIMIT = 6
 
 const todos = new Todos(ledger)
 
@@ -72,17 +71,13 @@ export type EventsRead =
   | { kind: 'none' }
   | { kind: 'error'; error: string }
 
-export type DayPage = {
-  day: string
-  events: EventsRead
-  groups: { [K in keyof DayTodos]: TodoItem[] }
-  trust: Trust
-}
-
-// Mindwtr's Focus screen.
+// Mindwtr's Focus screen, which is also the day's first screen: the calendar and what keeps the
+// lists from being trusted (`nod today`, `nod todo check`) sit above the todos.
 export type FocusPage = {
   today: string
   limit: number
+  events: EventsRead
+  trust: Trust
   focus: TodoItem[]
   // Overdue, scheduled for today or due today, and not in the focus.
   day: TodoItem[]
@@ -159,24 +154,7 @@ function events(day: string): Promise<EventsRead> {
   return read
 }
 
-export async function dayPage(when: string): Promise<DayPage> {
-  const today = localDay(new Date())
-  const day = parseWhen(when, today, false)
-  const groups = todos.day(day)
-  return {
-    day,
-    events: await events(day),
-    groups: {
-      overdue: groups.overdue.map(item),
-      scheduled: groups.scheduled.map(item),
-      due: groups.due.map(item),
-      focus: groups.focus.map(item),
-    },
-    trust: todos.trust(today),
-  }
-}
-
-export function focusPage(): FocusPage {
+export async function focusPage(): Promise<FocusPage> {
   const today = localDay(new Date())
   const d = todos.day(today)
   // The day's groups do not overlap, and a focused todo that is also due today sits under due.
@@ -194,6 +172,8 @@ export function focusPage(): FocusPage {
   return {
     today,
     limit: FOCUS_LIMIT,
+    events: await events(today),
+    trust: todos.trust(today),
     focus: ofDay.filter((t) => t.focus === today).map(item),
     day: ofDay.filter((t) => t.focus !== today).map(item),
     next: next(today)

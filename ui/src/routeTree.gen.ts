@@ -12,8 +12,9 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as FocusRouteImport } from './routes/focus'
 import { Route as ProjectsRouteImport } from './routes/projects'
-import { Route as TodayRouteImport } from './routes/today'
+import { Route as SomedayRouteImport } from './routes/someday'
 import { Route as TodosRouteImport } from './routes/todos'
+import { Route as WaitingRouteImport } from './routes/waiting'
 import { Route as TasksIdRouteImport } from './routes/tasks.$id'
 import { Route as TodosIdRouteImport } from './routes/todos_.$id'
 
@@ -32,14 +33,19 @@ const ProjectsRoute = ProjectsRouteImport.update({
   path: '/projects',
   getParentRoute: () => rootRouteImport,
 } as any)
-const TodayRoute = TodayRouteImport.update({
-  id: '/today',
-  path: '/today',
+const SomedayRoute = SomedayRouteImport.update({
+  id: '/someday',
+  path: '/someday',
   getParentRoute: () => rootRouteImport,
 } as any)
 const TodosRoute = TodosRouteImport.update({
   id: '/todos',
   path: '/todos',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const WaitingRoute = WaitingRouteImport.update({
+  id: '/waiting',
+  path: '/waiting',
   getParentRoute: () => rootRouteImport,
 } as any)
 const TasksIdRoute = TasksIdRouteImport.update({
@@ -57,8 +63,9 @@ export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/focus': typeof FocusRoute
   '/projects': typeof ProjectsRoute
-  '/today': typeof TodayRoute
+  '/someday': typeof SomedayRoute
   '/todos': typeof TodosRoute
+  '/waiting': typeof WaitingRoute
   '/tasks/$id': typeof TasksIdRoute
   '/todos/$id': typeof TodosIdRoute
 }
@@ -66,8 +73,9 @@ export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/focus': typeof FocusRoute
   '/projects': typeof ProjectsRoute
-  '/today': typeof TodayRoute
+  '/someday': typeof SomedayRoute
   '/todos': typeof TodosRoute
+  '/waiting': typeof WaitingRoute
   '/tasks/$id': typeof TasksIdRoute
   '/todos/$id': typeof TodosIdRoute
 }
@@ -76,8 +84,9 @@ export interface FileRoutesById {
   '/': typeof IndexRoute
   '/focus': typeof FocusRoute
   '/projects': typeof ProjectsRoute
-  '/today': typeof TodayRoute
+  '/someday': typeof SomedayRoute
   '/todos': typeof TodosRoute
+  '/waiting': typeof WaitingRoute
   '/tasks/$id': typeof TasksIdRoute
   '/todos_/$id': typeof TodosIdRoute
 }
@@ -87,8 +96,9 @@ export interface FileRouteTypes {
     | '/'
     | '/focus'
     | '/projects'
-    | '/today'
+    | '/someday'
     | '/todos'
+    | '/waiting'
     | '/tasks/$id'
     | '/todos/$id'
   fileRoutesByTo: FileRoutesByTo
@@ -96,8 +106,9 @@ export interface FileRouteTypes {
     | '/'
     | '/focus'
     | '/projects'
-    | '/today'
+    | '/someday'
     | '/todos'
+    | '/waiting'
     | '/tasks/$id'
     | '/todos/$id'
   id:
@@ -105,8 +116,9 @@ export interface FileRouteTypes {
     | '/'
     | '/focus'
     | '/projects'
-    | '/today'
+    | '/someday'
     | '/todos'
+    | '/waiting'
     | '/tasks/$id'
     | '/todos_/$id'
   fileRoutesById: FileRoutesById
@@ -115,8 +127,9 @@ export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   FocusRoute: typeof FocusRoute
   ProjectsRoute: typeof ProjectsRoute
-  TodayRoute: typeof TodayRoute
+  SomedayRoute: typeof SomedayRoute
   TodosRoute: typeof TodosRoute
+  WaitingRoute: typeof WaitingRoute
   TasksIdRoute: typeof TasksIdRoute
   TodosIdRoute: typeof TodosIdRoute
 }
@@ -144,11 +157,11 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ProjectsRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/today': {
-      id: '/today'
-      path: '/today'
-      fullPath: '/today'
-      preLoaderRoute: typeof TodayRouteImport
+    '/someday': {
+      id: '/someday'
+      path: '/someday'
+      fullPath: '/someday'
+      preLoaderRoute: typeof SomedayRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/todos': {
@@ -156,6 +169,13 @@ declare module '@tanstack/react-router' {
       path: '/todos'
       fullPath: '/todos'
       preLoaderRoute: typeof TodosRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/waiting': {
+      id: '/waiting'
+      path: '/waiting'
+      fullPath: '/waiting'
+      preLoaderRoute: typeof WaitingRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/tasks/$id': {
@@ -179,8 +199,9 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   FocusRoute: FocusRoute,
   ProjectsRoute: ProjectsRoute,
-  TodayRoute: TodayRoute,
+  SomedayRoute: SomedayRoute,
   TodosRoute: TodosRoute,
+  WaitingRoute: WaitingRoute,
   TasksIdRoute: TasksIdRoute,
   TodosIdRoute: TodosIdRoute,
 }

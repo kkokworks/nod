@@ -12,9 +12,10 @@ import type { TaskRow } from '../nod.server'
 import { overview } from '../nod.server'
 import { statusClass } from '../parts'
 import css from '../styles.css?url'
+import { UndoBar } from '../todo-parts'
 
 // Workers change the ledger while the page is open, so it reloads its data this often.
-const REFRESH_MS = 3000
+const REFRESH_MS = 5000
 
 const getOverview = createServerFn({ method: 'GET' }).handler(() => overview())
 
@@ -56,9 +57,53 @@ function Root() {
     <div className="app">
       <Sidebar />
       <main className="main">
-        <Outlet />
+        <UndoBar>
+          <Outlet />
+        </UndoBar>
       </main>
     </div>
+  )
+}
+
+// Line icons for the pages, drawn on a 16-unit grid.
+const ICONS = {
+  focus: (
+    <>
+      <circle cx="8" cy="8" r="6.25" />
+      <circle cx="8" cy="8" r="2.75" />
+    </>
+  ),
+  todos: <path d="M2.5 4.5l1.2 1.2L6 3.4M2.5 10.5l1.2 1.2L6 9.4M8.5 4.5h5M8.5 10.5h5" />,
+  projects: (
+    <path d="M2 4.5A1.5 1.5 0 0 1 3.5 3h3L8 4.5h4.5A1.5 1.5 0 0 1 14 6v5.5a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 2 11.5z" />
+  ),
+  someday: (
+    <>
+      <circle cx="8" cy="8" r="6.25" />
+      <path d="M8 4.75V8l2.25 1.5" />
+    </>
+  ),
+  waiting: (
+    <>
+      <circle cx="8" cy="8" r="6.25" />
+      <path d="M6.6 5.75v4.5M9.4 5.75v4.5" />
+    </>
+  ),
+}
+
+function NavIcon({ name }: { name: keyof typeof ICONS }) {
+  return (
+    <svg
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.4}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      {ICONS[name]}
+    </svg>
   )
 }
 
@@ -72,23 +117,30 @@ function Sidebar() {
       </Link>
       <nav className="side-nav">
         <Link to="/focus" className="side-item" activeProps={{ className: 'active' }}>
+          <NavIcon name="focus" />
           Focus
         </Link>
-        <Link
-          to="/today"
-          search={{ day: 'today' }}
-          className="side-item"
-          activeProps={{ className: 'active' }}
-        >
-          Today
-        </Link>
         <Link to="/todos" className="side-item" activeProps={{ className: 'active' }}>
+          <NavIcon name="todos" />
           Todos
           {inbox > 0 && <span className="side-count">{inbox}</span>}
         </Link>
-        <Link to="/projects" className="side-item" activeProps={{ className: 'active' }}>
-          Projects
-        </Link>
+        {/* Mindwtr's lists, folded away when not wanted. */}
+        <details className="side-lists" open>
+          <summary className="side-label">Lists</summary>
+          <Link to="/projects" className="side-item" activeProps={{ className: 'active' }}>
+            <NavIcon name="projects" />
+            Projects
+          </Link>
+          <Link to="/someday" className="side-item" activeProps={{ className: 'active' }}>
+            <NavIcon name="someday" />
+            Someday/Maybe
+          </Link>
+          <Link to="/waiting" className="side-item" activeProps={{ className: 'active' }}>
+            <NavIcon name="waiting" />
+            Waiting For
+          </Link>
+        </details>
       </nav>
       <div className="side-summary">
         <span>{active} tasks</span>

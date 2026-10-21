@@ -1,7 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { useState } from 'react'
 import { changeProject, getProjects, newProject } from '../todo-fns'
-import { done, Section, TodoRow, useChange } from '../todo-parts'
+import { Section, TodoRow, useChange } from '../todo-parts'
 import type { ProjectsPage } from '../todos.server'
 
 export const Route = createFileRoute('/projects')({
@@ -26,7 +26,7 @@ function ProjectsView() {
         <ProjectCard key={p.id} p={p} today={today} />
       ))}
       {someday.length > 0 && (
-        <Section title={`Someday (${someday.length})`}>
+        <Section title="Someday" count={someday.length} bare>
           {someday.map((p) => (
             <ProjectCard key={p.id} p={p} today={today} />
           ))}
@@ -65,7 +65,7 @@ function ProjectCard({ p, today }: { p: ProjectsPage['projects'][number]; today:
       </div>
       {p.outcome !== null && <div className="muted small">{p.outcome}</div>}
       {p.todos.map((t) => (
-        <TodoRow key={t.id} t={t} today={today} actions={[done]} />
+        <TodoRow key={t.id} t={t} today={today} usual="next" />
       ))}
       {error !== null && <div className="banner">{error}</div>}
     </div>

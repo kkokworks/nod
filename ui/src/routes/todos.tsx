@@ -1,7 +1,7 @@
 import { createFileRoute, Link } from '@tanstack/react-router'
 import { useState } from 'react'
 import { captureTodo, getLists } from '../todo-fns'
-import { done, focusToggle, Section, TodoRow, useChange } from '../todo-parts'
+import { Section, TodoRow, useChange } from '../todo-parts'
 import type { TodoItem } from '../todos.server'
 
 export const Route = createFileRoute('/todos')({
@@ -10,7 +10,7 @@ export const Route = createFileRoute('/todos')({
 })
 
 // The lists GTD works from, as `nod todo` shows them: decisions first, then the inbox to clarify,
-// the next actions, and what is waited on.
+// and the next actions. Waiting For and Someday/Maybe have pages of their own.
 function TodosPage() {
   const l = Route.useLoaderData()
   const [context, setContext] = useState<string | null>(null)
@@ -20,12 +20,12 @@ function TodosPage() {
     <div className="page">
       <h1 className="title">Todos</h1>
       <p className="subtitle">
-        {l.inbox.length} in the inbox · {l.next.length} next · {l.waiting.length} waiting
+        {l.inbox.length} in the inbox · {l.next.length} next
       </p>
       <Capture />
 
       {l.decisions.length > 0 && (
-        <Section title={`Decide (${l.decisions.length})`}>
+        <Section title="Decide" count={l.decisions.length}>
           {l.decisions.map((d) => (
             <div key={d.id} className="todo-row">
               <div className="todo-line">
@@ -44,25 +44,14 @@ function TodosPage() {
         </Section>
       )}
 
-      <Section title={`Inbox (${l.inbox.length})`}>
+      <Section title="Inbox" count={l.inbox.length} bare={l.inbox.length === 0}>
         {l.inbox.length === 0 && <p className="muted">Empty.</p>}
         {l.inbox.map((t) => (
-          <TodoRow
-            key={t.id}
-            t={t}
-            today={l.today}
-            actions={[
-              ['Next', { status: 'next' }],
-              ['Someday', { status: 'someday' }],
-              ['Reference', { status: 'reference' }],
-              done,
-              ['Drop', { status: 'dropped' }],
-            ]}
-          />
+          <TodoRow key={t.id} t={t} today={l.today} usual="inbox" />
         ))}
       </Section>
 
-      <Section title={`Next (${l.next.length})`}>
+      <Section title="Next" count={l.next.length}>
         {l.contexts.length > 0 && (
           <div className="filters">
             {[null, ...l.contexts].map((c) => (
@@ -78,33 +67,29 @@ function TodosPage() {
           </div>
         )}
         {next.map((t) => (
-          <TodoRow key={t.id} t={t} today={l.today} actions={[focusToggle(t, l.today), done]} />
+          <TodoRow key={t.id} t={t} today={l.today} usual="next" />
         ))}
       </Section>
 
-      <Section title={`Waiting (${l.waiting.length})`}>
-        {l.waiting.map((t) => (
-          <TodoRow key={t.id} t={t} today={l.today} actions={[done]} />
-        ))}
-      </Section>
-
-      <Fold name="Someday" ts={l.someday} today={l.today} />
       <Fold name="Reference" ts={l.reference} today={l.today} />
     </div>
   )
 }
 
-// Someday and reference are reviewed weekly, not worked from, so they stay folded.
+// Reference is looked up, not worked from, so it stays folded.
 function Fold({ name, ts, today }: { name: string; ts: TodoItem[]; today: string }) {
   if (ts.length === 0) return null
   return (
     <details className="fold">
       <summary className="section fold-label">
-        {name} ({ts.length})
+        {name}
+        <span className="count">{ts.length}</span>
       </summary>
-      {ts.map((t) => (
-        <TodoRow key={t.id} t={t} today={today} actions={[['Next', { status: 'next' }]]} />
-      ))}
+      <div className="list">
+        {ts.map((t) => (
+          <TodoRow key={t.id} t={t} today={today} usual={name.toLowerCase()} />
+        ))}
+      </div>
     </details>
   )
 }

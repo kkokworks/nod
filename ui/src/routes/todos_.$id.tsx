@@ -32,8 +32,8 @@ function TodoDetail() {
       <h1 className="title task-title">{todo.title}</h1>
       <div className="tags">
         {todoTags(todo, page.today).map((tag) => (
-          <span key={tag} className="tag">
-            {tag}
+          <span key={tag.text} className={`tag ${tag.kind}`}>
+            {tag.text}
           </span>
         ))}
       </div>
