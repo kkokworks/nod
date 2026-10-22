@@ -126,12 +126,10 @@ export async function send(m: Message): Promise<void> {
   // (Sec-Fetch-Site, else Origin, must be this page) in front of every server function. A
   // src/start.ts must keep createCsrfMiddleware in its requestMiddleware.
   const task = ledger.get(m.taskId)
-  if (task.collectedAt !== null)
-    throw new Error(`task #${task.id} was collected; its session is gone`)
   const open = ledger.decisions(task.id).find((d) => d.answer === null)
   if (m.decisionId === null) {
     if (open !== undefined) throw new Error(`answer decision #${open.id} first`)
-    tell(ledger, home, task.id, m.text)
+    await tell(ledger, home, task.id, m.text)
     return
   }
   if (open?.id !== m.decisionId)

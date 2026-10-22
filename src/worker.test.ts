@@ -230,11 +230,11 @@ test('dropping a decision cancels the task and closes its session', async () => 
 test('tell continues the same session, and reopens it from the transcript once it has ended', async () => {
   const id = await add('first')
   await reaches(id, 'succeeded')
-  tell(ledger, home, id, 'second')
+  await tell(ledger, home, id, 'second')
   await reaches(id, 'succeeded')
 
   Terminals.of(home).kill(sessionName(id))
-  tell(ledger, home, id, 'third')
+  await tell(ledger, home, id, 'third')
   await reaches(id, 'succeeded')
 
   const session = ledger.attempts(id)[0]?.sessionId

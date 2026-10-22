@@ -51,6 +51,8 @@ export type Task = {
   workspace: string | null
   // Set by gc: the human has dealt with what the task produced, so ls stops listing it.
   collectedAt: string | null
+  // Set by gc on a repo task: the commit its branch pointed at, to rebuild the worktree from.
+  head: string | null
   status: TaskStatus
   error: string | null
   createdAt: string
@@ -301,6 +303,9 @@ const MIGRATIONS = [
     output text not null
   );
   `,
+  // v14: the commit a repo task's branch pointed at when gc removed its worktree, so resume can
+  // rebuild the worktree after gc deleted the branch.
+  'alter table tasks add column head text;',
 ]
 
 // The tables as the migrations leave them, in camelCase; CamelCasePlugin maps names to snake_case.
@@ -488,8 +493,13 @@ export class Ledger {
     this.setStatus(id, 'error', message)
   }
 
-  collected(id: number): void {
-    this.run(q.updateTable('tasks').set({ collectedAt: now() }).where('id', '=', id))
+  collected(id: number, head: string | null): void {
+    this.run(q.updateTable('tasks').set({ collectedAt: now(), head }).where('id', '=', id))
+  }
+
+  // resume brought the task back after gc, so ls lists it again.
+  uncollected(id: number): void {
+    this.run(q.updateTable('tasks').set({ collectedAt: null }).where('id', '=', id))
   }
 
   // Records where the task's result went. The same address twice is kept once.
