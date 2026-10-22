@@ -12,17 +12,17 @@ const GITHUB = /^https:\/\/github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)/
 const GITEA = /^(https?:\/\/[^/]+)\/([^/]+)\/([^/]+)\/pulls\/(\d+)/
 const TIMEOUT_MS = 30_000
 
-type Review = { login: string | null; state: string }
+type Review = { login: string | null; state: string; at: string | null }
 const APPROVED = new Set(['APPROVED'])
 const CHANGES = new Set(['CHANGES_REQUESTED', 'REQUEST_CHANGES'])
 
-// The person's last review that approved or asked for changes; a comment changes neither.
-export function verdict(reviews: Review[], me: string): PullRequest['myVerdict'] {
+// When the person approved, if their last review that approved or asked for changes approved; a
+// comment changes neither. Reviews come oldest first.
+export function approvedAt(reviews: Review[], me: string): string | null {
   const last = reviews
     .filter((r) => r.login === me && (APPROVED.has(r.state) || CHANGES.has(r.state)))
     .at(-1)
-  if (last === undefined) return null
-  return APPROVED.has(last.state) ? 'approved' : 'changes'
+  return last !== undefined && APPROVED.has(last.state) ? last.at : null
 }
 
 // One lookup per sweep: links to the same pull request (several comments on it) ask once.
@@ -48,8 +48,12 @@ export function pullRequests(cwd: string): PrLookup {
     const me = await login('github', async () =>
       (await run(['gh', 'api', 'user', '--jq', '.login'])).trim(),
     )
-    const reviews = pr.reviews.map((r) => ({ login: r.author?.login ?? null, state: r.state }))
-    return { state: GH_STATE[pr.state], myVerdict: verdict(reviews, me) }
+    const reviews = pr.reviews.map((r) => ({
+      login: r.author?.login ?? null,
+      state: r.state,
+      at: r.submittedAt,
+    }))
+    return { state: GH_STATE[pr.state], approvedAt: approvedAt(reviews, me) }
   }
   const gitea = async (base: string, repo: string, n: string): Promise<PullRequest> => {
     const api = `${base}/api/v1`
@@ -64,8 +68,8 @@ export function pullRequests(cwd: string): PrLookup {
     )
     const standing = reviews
       .filter((r) => !r.dismissed)
-      .map((r) => ({ login: r.user?.login ?? null, state: r.state }))
-    return { state: pr.merged ? 'merged' : pr.state, myVerdict: verdict(standing, me) }
+      .map((r) => ({ login: r.user?.login ?? null, state: r.state, at: r.submitted_at }))
+    return { state: pr.merged ? 'merged' : pr.state, approvedAt: approvedAt(standing, me) }
   }
 
   return async (url) => {
@@ -93,7 +97,11 @@ const GH_STATE = { OPEN: 'open', MERGED: 'merged', CLOSED: 'closed' } as const
 const GH_PR = z.object({
   state: z.enum(['OPEN', 'MERGED', 'CLOSED']),
   reviews: z.array(
-    z.object({ author: z.object({ login: z.string() }).nullable(), state: z.string() }),
+    z.object({
+      author: z.object({ login: z.string() }).nullable(),
+      state: z.string(),
+      submittedAt: z.string().nullable(), // null while pending
+    }),
   ),
 })
 const GITEA_PR = z.object({ state: z.enum(['open', 'closed']), merged: z.boolean() })
@@ -101,6 +109,7 @@ const GITEA_REVIEWS = z.array(
   z.object({
     user: z.object({ login: z.string() }).nullable(),
     state: z.string(),
+    submitted_at: z.string(),
     dismissed: z.boolean().optional(),
   }),
 )

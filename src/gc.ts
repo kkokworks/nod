@@ -2,7 +2,7 @@ import { existsSync, readdirSync, rmdirSync, rmSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import type { Ledger, Task, TaskStatus } from './ledger'
 import { Terminals } from './tmux'
-import { sessionName, spawn } from './worker'
+import { message, sessionName, spawn } from './worker'
 
 const FINISHED: ReadonlySet<TaskStatus> = new Set(['succeeded', 'cancelled', 'error'])
 
@@ -33,55 +33,63 @@ export async function collect(ledger: Ledger, home: string, pick: GcPick): Promi
         Date.parse(task.finishedAt) <= pick.before.getTime()
   for (const task of ledger.list()) {
     if (!picked(task)) continue
-    if (!FINISHED.has(task.status)) {
-      report.skipped.push({ id: task.id, reason: `still ${task.status}` })
-      continue
-    }
-    if (task.workspace === null || !existsSync(task.workspace)) {
+    // One task gc cannot get through, a file it may not delete say, must not stop the rest.
+    try {
+      if (!FINISHED.has(task.status)) {
+        report.skipped.push({ id: task.id, reason: `still ${task.status}` })
+        continue
+      }
+      if (task.workspace === null || !existsSync(task.workspace)) {
+        const head = headOf(task)
+        dropBranch(task)
+        if (task.collectedAt === null) ledger.collected(task.id, head)
+        report.clean.push(task.id)
+        continue
+      }
+      if (!task.workspace.startsWith(workRoot)) {
+        report.skipped.push({ id: task.id, reason: `workspace outside ${workRoot}` })
+        continue
+      }
+      await Terminals.of(home).close(sessionName(task.id))
       const head = headOf(task)
-      dropBranch(task)
-      if (task.collectedAt === null) ledger.collected(task.id, head)
-      report.clean.push(task.id)
-      continue
-    }
-    if (!task.workspace.startsWith(workRoot)) {
-      report.skipped.push({ id: task.id, reason: `workspace outside ${workRoot}` })
-      continue
-    }
-    await Terminals.of(home).close(sessionName(task.id))
-    const head = headOf(task)
 
-    if (task.repo !== null) {
-      const status = await spawn(['git', '-C', task.workspace, 'status', '--porcelain'], undefined)
-      if (status.code !== 0 || status.stdout.trim()) {
-        report.skipped.push({ id: task.id, reason: 'uncommitted changes in worktree' })
-        continue
+      if (task.repo !== null) {
+        const status = await spawn(
+          ['git', '-C', task.workspace, 'status', '--porcelain'],
+          undefined,
+        )
+        if (status.code !== 0 || status.stdout.trim()) {
+          report.skipped.push({ id: task.id, reason: 'uncommitted changes in worktree' })
+          continue
+        }
+        // --force only because git refuses any worktree with submodules; the status check above
+        // already made sure nothing uncommitted is lost.
+        const removed = await spawn(
+          ['git', '-C', task.repo, 'worktree', 'remove', '--force', task.workspace],
+          undefined,
+        )
+        if (removed.code !== 0) {
+          report.skipped.push({ id: task.id, reason: removed.output.trim() })
+          continue
+        }
+        dropBranch(task)
+      } else {
+        rmSync(task.workspace, { recursive: true })
       }
-      // --force only because git refuses any worktree with submodules; the status check above
-      // already made sure nothing uncommitted is lost.
-      const removed = await spawn(
-        ['git', '-C', task.repo, 'worktree', 'remove', '--force', task.workspace],
-        undefined,
-      )
-      if (removed.code !== 0) {
-        report.skipped.push({ id: task.id, reason: removed.output.trim() })
-        continue
+      // A worktree sits in folders named after its repo and branch; drop the ones it leaves empty.
+      for (
+        let dir = dirname(task.workspace);
+        dir.startsWith(workRoot) && readdirSync(dir).length === 0;
+        dir = dirname(dir)
+      ) {
+        rmdirSync(dir)
       }
-      dropBranch(task)
-    } else {
-      rmSync(task.workspace, { recursive: true })
-    }
-    // A worktree sits in folders named after its repo and branch; drop the ones it leaves empty.
-    for (
-      let dir = dirname(task.workspace);
-      dir.startsWith(workRoot) && readdirSync(dir).length === 0;
-      dir = dirname(dir)
-    ) {
-      rmdirSync(dir)
-    }
 
-    ledger.collected(task.id, head)
-    report.removed.push(task.id)
+      ledger.collected(task.id, head)
+      report.removed.push(task.id)
+    } catch (error) {
+      report.skipped.push({ id: task.id, reason: message(error) })
+    }
   }
   return report
 }

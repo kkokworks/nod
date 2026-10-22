@@ -1,5 +1,5 @@
 import { afterAll, expect, test } from 'bun:test'
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tempDirs } from '../test/tmp'
 import { collect } from './gc'
@@ -108,6 +108,13 @@ test('gc collects the tasks the human names, however recent, and leaves unfinish
     ledger.setRunning(id, workspaceOf(home, ledger.get(id)))
     return id
   }
+  // A folder gc may not delete from; it must not stop gc from getting through the tasks after it.
+  const locked = task('locked')
+  ledger.succeed(locked)
+  const lockedDir = join(workspaceOf(home, ledger.get(locked)), 'locked')
+  mkdirSync(lockedDir)
+  writeFileSync(join(lockedDir, 'file'), '')
+  chmodSync(lockedDir, 0o555)
   const named = task('named')
   ledger.succeed(named)
   const other = task('other')
@@ -117,13 +124,18 @@ test('gc collects the tasks the human names, however recent, and leaves unfinish
   ledger.succeed(gone)
   rmSync(workspaceOf(home, ledger.get(gone)), { recursive: true })
 
-  const report = await collect(ledger, home, { ids: [named, running, gone] })
+  const report = await collect(ledger, home, { ids: [locked, named, running, gone] })
+  chmodSync(lockedDir, 0o755)
 
   expect(report).toEqual({
     removed: [named],
     clean: [gone],
-    skipped: [{ id: running, reason: 'still running' }],
+    skipped: [
+      { id: locked, reason: expect.stringContaining('EACCES') },
+      { id: running, reason: 'still running' },
+    ],
   })
+  expect(ledger.get(locked).collectedAt).toBeNull()
   expect(ledger.get(gone).collectedAt).not.toBeNull()
   expect(ledger.get(running).collectedAt).toBeNull()
   expect(await collect(ledger, home, { ids: [named] })).toEqual({
@@ -231,6 +243,9 @@ test('resume brings a collected task back: the worktree returns at the same path
   await collect(ledger, home, { ids: [id] })
   expect(ledger.get(id).head).toBe(head)
   expect(git(repo, 'branch', '--list', 'feat/x')).toBe('')
+  // A second gc that finds the branch gone keeps the commit the first one recorded.
+  ledger.collected(id, null)
+  expect(ledger.get(id).head).toBe(head)
   git(repo, 'update-ref', '-d', 'refs/remotes/origin/feat/x')
 
   await restore(ledger, id)
@@ -238,6 +253,17 @@ test('resume brings a collected task back: the worktree returns at the same path
   expect(readFileSync(join(cwd, 'x.txt'), 'utf8')).toBe('x')
   expect(git(repo, 'rev-parse', 'feat/x').trim()).toBe(head)
   expect(ledger.get(id).collectedAt).toBeNull()
+
+  // A worktree folder deleted by hand stays registered with git; it still comes back.
+  const byHand = task('deleted by hand', 'feat/y')
+  const byHandCwd = workspaceOf(home, ledger.get(byHand))
+  writeFileSync(join(byHandCwd, 'y.txt'), 'y')
+  git(byHandCwd, 'add', '.')
+  git(byHandCwd, 'commit', '-q', '-m', 'y')
+  rmSync(byHandCwd, { recursive: true })
+  await collect(ledger, home, { ids: [byHand] })
+  await restore(ledger, byHand)
+  expect(readFileSync(join(byHandCwd, 'y.txt'), 'utf8')).toBe('y')
 
   // A task collected before gc kept transcripts cannot come back, and says so.
   const plain = task('plain', null)

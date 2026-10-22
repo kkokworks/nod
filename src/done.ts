@@ -1,21 +1,25 @@
 import { collect, type GcReport, landed } from './gc'
 import type { Ledger, Task } from './ledger'
-import { message } from './worker'
+import { Terminals } from './tmux'
+import { message, sessionName } from './worker'
 
 // When a finished task is done with, so gc can collect it without the human naming it. gc keeps
 // the session's transcript and resume rebuilds the worktree (restore in worker.ts), so collecting
-// too early costs a rebuild, not the task, and the signals can be generous. One thing always holds
-// a task back: commits on its branch that no remote has, since collecting hides the only copy from
-// ls. An errored task waits for the human too.
+// a repo task too early costs a rebuild, not the task, and the signals can be generous. A plain
+// workspace's files are the task's output, which resume cannot bring back, so only age lets one
+// go. Always held back: commits on the branch that no remote has, since collecting hides the only
+// copy from ls; a queued task that starts from this one's branch; a person attached to the
+// session. An errored task waits for the human too.
 
 const STALE_DAYS = 7
 const DAY = 86_400_000
 
-// A linked pull request: whether it is still open, and the person's last review on it that
-// approved or asked for changes. A link that is not a pull request reads as null.
+// A linked pull request: whether it is still open, and when the person approved it, if their last
+// review that approved or asked for changes approved. A link that is not a pull request reads as
+// null.
 export type PullRequest = {
   state: 'open' | 'merged' | 'closed'
-  myVerdict: 'approved' | 'changes' | null
+  approvedAt: string | null
 }
 export type PrLookup = (url: string) => Promise<PullRequest | null>
 
@@ -25,15 +29,19 @@ export type Unchecked = { id: number; error: string }
 
 export async function doneTasks(
   ledger: Ledger,
+  home: string,
   prs: PrLookup,
   now: Date,
 ): Promise<{ done: Done[]; unchecked: Unchecked[] }> {
   const tasks = ledger.list()
+  const terminals = Terminals.of(home)
   const done: Done[] = []
   const unchecked: Unchecked[] = []
   for (const task of tasks) {
     if (task.collectedAt !== null) continue
     if (task.status !== 'succeeded' && task.status !== 'cancelled') continue
+    // A turn the person types in keeps the status succeeded until it ends.
+    if (terminals.attached(sessionName(task.id))) continue
     try {
       const reason = await signal(ledger, tasks, task, prs, now)
       if (reason !== null) done.push({ id: task.id, reason })
@@ -51,12 +59,13 @@ export async function sweep(
   prs: PrLookup,
   now: Date,
 ): Promise<{ report: GcReport; done: Done[]; unchecked: Unchecked[] }> {
-  const { done, unchecked } = await doneTasks(ledger, prs, now)
+  const { done, unchecked } = await doneTasks(ledger, home, prs, now)
   const report = await collect(ledger, home, { ids: done.map((d) => d.id) })
   return { report, done, unchecked }
 }
 
-// Cheap signals first: the ledger, then git, then the git service.
+// Cheap signals first: the ledger, then git, then the git service, so a git service that cannot be
+// read holds back only what it alone could end.
 async function signal(
   ledger: Ledger,
   tasks: Task[],
@@ -66,31 +75,35 @@ async function signal(
 ): Promise<string | null> {
   const branch = branchState(task)
   if (branch?.unpushed) return null
-  if (task.status === 'cancelled') return 'dropped'
-  const newer = tasks.find((t) => t.id > task.id && t.todoId !== null && t.todoId === task.todoId)
-  if (newer !== undefined) return `#${newer.id} took over t${task.todoId}`
-  if (branch !== null && branch.own > 0 && landed(branch.repo, branch.ref)) {
-    return 'its changes are in the default branch'
-  }
-  // A review task is done once the person approves; one that asked for changes has another round.
-  for (const url of ledger.links(task.id)) {
-    const pr = await prs(url)
-    if (pr === null) continue
-    if (pr.state !== 'open') return `${pr.state}: ${url}`
-    if (pr.myVerdict === 'approved') return `approved: ${url}`
-  }
+  if (ledger.waiting(task.id).length > 0) return null
   if (task.finishedAt !== null && Date.parse(task.finishedAt) <= now.getTime() - STALE_DAYS * DAY) {
     return `finished ${STALE_DAYS}+ days ago`
   }
-  return null
+  if (task.repo === null) return null
+  if (task.status === 'cancelled') return 'dropped'
+  const newer = tasks.find((t) => t.id > task.id && t.todoId !== null && t.todoId === task.todoId)
+  if (newer !== undefined) return `#${newer.id} took over t${task.todoId}`
+  if (branch?.landed && branch.own > 0) return 'its changes are in the default branch'
+  // Done once no linked pull request waits on anything: each merged, closed, or approved by the
+  // person since the task was added. An approval from an earlier round does not end a new one, and
+  // one that asked for changes has another round.
+  const ends: string[] = []
+  for (const url of ledger.links(task.id)) {
+    const pr = await prs(url)
+    if (pr === null) continue
+    if (pr.state !== 'open') ends.push(`${pr.state}: ${url}`)
+    else if (pr.approvedAt !== null && Date.parse(pr.approvedAt) >= Date.parse(task.createdAt)) {
+      ends.push(`approved: ${url}`)
+    } else return null
+  }
+  return ends.length > 0 ? ends.join(', ') : null
 }
 
-// A repo task's branch: how many commits it has that the remote's default branch lacks, and
-// whether some of them are on no remote and not merged either. Null without a repo, or once the
-// branch is gone. Only as fresh as the repo's last fetch.
-function branchState(
-  task: Task,
-): { repo: string; ref: string; own: number; unpushed: boolean } | null {
+// A repo task's branch: how many commits it has that the remote's default branch lacks, whether
+// the default branch has its changes, and whether some of its commits are on no remote and not
+// merged either. Null without a repo, or once the branch is gone. Only as fresh as the repo's last
+// fetch.
+function branchState(task: Task): { own: number; landed: boolean; unpushed: boolean } | null {
   const { repo, branch } = task
   if (repo === null || branch === null) return null
   const ref = `refs/heads/${branch}`
@@ -104,5 +117,6 @@ function branchState(
   const notOnRemotes = count(ref, '--not', '--remotes')
   const main = 'refs/remotes/origin/HEAD'
   const own = git('rev-parse', '--verify', '-q', main).exitCode === 0 ? count(`${main}..${ref}`) : 0
-  return { repo, ref, own, unpushed: notOnRemotes > 0 && !landed(repo, ref) }
+  const merged = landed(repo, ref)
+  return { own, landed: merged, unpushed: notOnRemotes > 0 && !merged }
 }

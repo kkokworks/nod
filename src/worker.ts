@@ -738,6 +738,9 @@ async function rebuildWorktree(
     }
     return ref
   }
+  // A worktree folder deleted by hand stays registered, which keeps git from adding it again and
+  // its branch checked out.
+  await spawn(['git', '-C', repo, 'worktree', 'prune'], undefined)
   const args = has(`refs/heads/${branch}`) ? [cwd, branch] : ['-b', branch, cwd, from()]
   const { code, output } = await spawn(['git', '-C', repo, 'worktree', 'add', ...args], undefined)
   if (code !== 0) throw new Error(`git worktree add failed: ${output.trim()}`)

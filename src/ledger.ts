@@ -443,6 +443,18 @@ export class Ledger {
     )
   }
 
+  // The queued tasks that come after this one.
+  waiting(id: number): number[] {
+    return this.run(
+      q
+        .selectFrom('taskDeps as d')
+        .innerJoin('tasks as t', 't.id', 'd.taskId')
+        .select('t.id')
+        .where('d.afterId', '=', id)
+        .where('t.status', '=', 'queued'),
+    ).map((t) => t.id)
+  }
+
   // Marks running the waiting tasks whose earlier tasks have all succeeded, and returns them. One
   // statement, so two workers finishing at once cannot both start the same task.
   claimReady(): number[] {
@@ -493,8 +505,10 @@ export class Ledger {
     this.setStatus(id, 'error', message)
   }
 
+  // A gc that finds the branch already gone has no head to record and keeps the one recorded.
   collected(id: number, head: string | null): void {
-    this.run(q.updateTable('tasks').set({ collectedAt: now(), head }).where('id', '=', id))
+    const set = head === null ? { collectedAt: now() } : { collectedAt: now(), head }
+    this.run(q.updateTable('tasks').set(set).where('id', '=', id))
   }
 
   // resume brought the task back after gc, so ls lists it again.
@@ -886,16 +900,8 @@ export class Ledger {
     // A task that waits for a cancelled one can never start. An error is left alone: the task can
     // still be resumed and succeed.
     if (status !== 'cancelled') return
-    const waiting = this.run(
-      q
-        .selectFrom('taskDeps as d')
-        .innerJoin('tasks as t', 't.id', 'd.taskId')
-        .select('t.id')
-        .where('d.afterId', '=', id)
-        .where('t.status', '=', 'queued'),
-    )
-    for (const w of waiting) {
-      this.setStatus(w.id, 'cancelled', `task #${id} it waits for was cancelled`)
+    for (const w of this.waiting(id)) {
+      this.setStatus(w, 'cancelled', `task #${id} it waits for was cancelled`)
     }
   }
 

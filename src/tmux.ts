@@ -49,6 +49,12 @@ export class Terminals {
     return this.run(['has-session', '-t', `=${name}`]).exitCode === 0
   }
 
+  // Whether a person has the session open (nod attach).
+  attached(name: string): boolean {
+    const clients = this.run(['list-clients', '-t', `=${name}`])
+    return clients.exitCode === 0 && clients.stdout.toString().trim() !== ''
+  }
+
   // A bracketed paste keeps a multi-line message together; Enter then sends it.
   send(name: string, text: string): void {
     this.tmux(['load-buffer', '-b', name, '-'], text)
