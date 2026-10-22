@@ -71,6 +71,9 @@ export type Todo = {
   // While it is `waiting`, a shell command that exits 0 once what it waits on has happened; nod's
   // tick runs it and then makes the todo a next action again.
   watch: string | null
+  // With a watch, one of the tasks the todo was delegated to: once the watch passes, that task's
+  // session hears what the watch printed and carries on, and the todo waits on it again.
+  backTo: number | null
   // Where it was captured: `cli`, or the channel a scan read it from. With a key, that channel's
   // id for it, so the same item is captured only once.
   source: string
@@ -106,6 +109,7 @@ export type TodoEdit = Partial<
     | 'repeat'
     | 'focus'
     | 'watch'
+    | 'backTo'
   >
 >
 export type ProjectEdit = Partial<Pick<Project, 'title' | 'outcome' | 'status'>>
@@ -459,15 +463,24 @@ export class Todos {
   }
 
   // Makes a watched todo a next action again once its watch has ended, with a line in its notes
-  // saying when and how: `passed`, or `cannot run (<why>)`. A todo that left waiting or got another
-  // watch while the command ran is left as it is; false says so.
-  endWatch(id: number, watch: string, outcome: string, actor: string): boolean {
+  // saying when and how: `passed`, or `cannot run (<why>)`. Handed `back` to a task, it waits on
+  // that task instead, which moves it on when it ends (followTasks). A todo that left waiting or got
+  // another watch while the command ran is left as it is; false says so.
+  endWatch(
+    id: number,
+    watch: string,
+    outcome: string,
+    actor: string,
+    back: number | null = null,
+  ): boolean {
     return this.db.transaction(() => {
       const t = this.get(id)
       if (t.status !== 'waiting' || t.watch !== watch) return false
-      const line = `${localTime(new Date())} watch ${outcome}: ${watch}`
+      const to = back === null ? '' : `, back to task #${back}`
+      const line = `${localTime(new Date())} watch ${outcome}${to}: ${watch}`
       const notes = [t.notes, line].filter((x) => x !== null).join('\n')
-      this.set(id, { status: 'next', notes }, actor)
+      const edit: TodoEdit = back === null ? { status: 'next' } : { waitingOn: null, watch: null }
+      this.set(id, { ...edit, notes }, actor)
       return true
     })()
   }
@@ -690,6 +703,20 @@ export class Todos {
     ) {
       throw new Error(`t${before.id} waits on its task, which moves it on when it ends`)
     }
+    // It goes back to a task that did it and whose session can still be reopened.
+    if (typeof edit.backTo === 'number') {
+      if ((edit.watch === undefined ? before.watch : edit.watch) === null || status !== 'waiting') {
+        throw new Error('--back-to is for when a watch passes; give the waiting todo a --watch')
+      }
+      const task = this.ledger.tasksOf(before.id).find((t) => t.id === edit.backTo)
+      if (task === undefined) {
+        throw new Error(`task #${edit.backTo} does not do t${before.id}; --back-to takes its task`)
+      }
+      if (task.workspace === null || task.collectedAt !== null) {
+        const why = task.workspace === null ? 'never started' : 'was collected by gc'
+        throw new Error(`task #${task.id} ${why}, so it cannot carry on`)
+      }
+    }
     const projectId = edit.projectId === undefined ? before.projectId : edit.projectId
     if (projectId !== null && OPEN.includes(status)) {
       const p = this.project(projectId)
@@ -723,7 +750,8 @@ export class Todos {
       ...dates,
       ...(typeof edit.context === 'string' ? { context: asContext(edit.context) } : {}),
       ...(leftWaiting && edit.waitingOn === undefined ? { waitingOn: null } : {}),
-      ...(leftWaiting ? { watch: null } : {}),
+      // The task to go back to is for when the watch passes, so it goes with the watch.
+      ...(leftWaiting || edit.watch === null ? { watch: null, backTo: null } : {}),
     }
   }
 

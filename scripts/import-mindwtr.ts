@@ -197,6 +197,7 @@ export function mapMindwtr(rawTasks: unknown, rawProjects: unknown, tools: Tools
         repeat,
         focus: t.isFocusedToday === true ? day(t.updatedAt) : null,
         watch: null,
+        backTo: null,
         ...sourceOf(t),
         createdAt: t.createdAt,
         statusAt: at,

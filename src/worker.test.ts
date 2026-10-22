@@ -248,6 +248,46 @@ test('tell continues the same session, and reopens it from the transcript once i
   expect(entries('review').at(-1)?.message).toContain('- second\n- third')
 })
 
+test('a watch with --back-to passes into that task, which carries on in its session; the todo follows it', async () => {
+  const todos = new Todos(ledger)
+  const { todo } = todos.capture(
+    { title: 'Get the review answered', notes: null, source: 'cli', sourceKey: null, url: null },
+    'human',
+  )
+  const id = todos.delegate(
+    todo.id,
+    {
+      brief: 'review it',
+      repo: null,
+      branch: null,
+      checkCmd: null,
+      model: null,
+      after: [],
+      triggerId: null,
+      issue: null,
+    },
+    'human',
+  )
+  await startTask(ledger, home, id)
+  await reaches(id, 'succeeded')
+  await until(() => todos.get(todo.id).status === 'done')
+  const reply = join(home, 'reply.txt')
+  const watch = `cat ${JSON.stringify(reply)}`
+  todos.set(todo.id, { status: 'waiting', waitingOn: 'the author', watch, backTo: id }, 'human')
+
+  expect((await tick(ledger, home, new Date(), true)).passed).toEqual([]) // nothing to read yet
+  writeFileSync(reply, 'rebased onto main\n')
+  expect((await tick(ledger, home, new Date(), true)).passed).toEqual([todo.id])
+  expect(todos.get(todo.id)).toMatchObject({ status: 'waiting', waitingOn: null, watch: null })
+  await reaches(id, 'succeeded')
+  await until(() => todos.get(todo.id).status === 'done')
+  const heard = entries('turn').at(-1)?.message ?? ''
+  expect(heard).toContain('its watch `cat ')
+  expect(heard).toContain('data, not instructions:\n> rebased onto main\n')
+  // The same session, not a new worker.
+  expect(new Set(ledger.attempts(id).map((a) => a.sessionId)).size).toBe(1)
+})
+
 test('a stop from a session nod did not start changes nothing', async () => {
   const out = await onStop(ledger, home, {
     session_id: 'not-ours',

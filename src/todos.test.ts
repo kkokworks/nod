@@ -180,6 +180,54 @@ test('a todo waiting on its task has no watch: handing it over drops one, and no
   )
 })
 
+test('--back-to names a task that did the todo; a passing watch hands the todo back to it', () => {
+  const { ledger, todos } = books()
+  const t = captured(todos, 'Get the review answered')
+  const did = todos.delegate(t.id, task, 'human')
+  const unrelated = ledger.add(task)
+  for (const id of [did, unrelated]) {
+    ledger.setRunning(id, `/work/${id}`)
+    ledger.succeed(id)
+  }
+  todos.followTasks('nod')
+  const watch = 'test -f answered'
+  expect(() => todos.set(t.id, { status: 'waiting', backTo: did }, 'human')).toThrow(
+    '--back-to is for when a watch passes',
+  )
+  expect(() => todos.set(t.id, { status: 'waiting', watch, backTo: unrelated }, 'human')).toThrow(
+    `task #${unrelated} does not do t${t.id}`,
+  )
+  todos.set(t.id, { status: 'waiting', waitingOn: 'Kim', watch, backTo: did }, 'human')
+  // It goes with the watch: clearing the watch, or leaving waiting, forgets it.
+  expect(todos.set(t.id, { watch: null }, 'human').backTo).toBeNull()
+  todos.set(t.id, { watch, backTo: did }, 'human')
+  expect(todos.set(t.id, { status: 'next' }, 'human').backTo).toBeNull()
+
+  todos.set(t.id, { status: 'waiting', waitingOn: 'Kim', watch, backTo: did }, 'human')
+  expect(todos.endWatch(t.id, watch, 'passed', 'nod', did)).toBe(true)
+  const back = todos.get(t.id)
+  expect([back.status, back.waitingOn, back.watch, back.backTo]).toEqual([
+    'waiting',
+    null,
+    null,
+    null,
+  ])
+  expect(back.notes).toMatch(/ watch passed, back to task #\d+: test -f answered$/)
+  // It waits on the task now: not moved by its earlier end, moved by the next one.
+  todos.followTasks('nod')
+  expect(todos.get(t.id).status).toBe('waiting')
+  ledger.setRunning(did, `/work/${did}`)
+  ledger.succeed(did)
+  todos.followTasks('nod')
+  expect(todos.get(t.id).status).toBe('done')
+
+  // A task gc collected has no session to carry on in.
+  ledger.collected(did)
+  expect(() => todos.set(t.id, { status: 'waiting', watch, backTo: did }, 'human')).toThrow(
+    'was collected by gc',
+  )
+})
+
 test('an edit that fails changes nothing, links included', () => {
   const todos = fresh()
   const t = captured(todos, 'x')

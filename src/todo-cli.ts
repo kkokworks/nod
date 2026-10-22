@@ -38,7 +38,7 @@ export const TODO_USAGE = `  nod in <what...> [--notes <text>] [--source <channe
                       [--project <p>]
                       [--context <@x>] [--waiting-on <who>] [--link <url>]...
                       [--due <day>] [--on <day>] [--start <day>] [--focus <day>]
-                      [--repeat daily|weekly|monthly] [--watch <command>]
+                      [--repeat daily|weekly|monthly] [--watch <command>] [--back-to <task>]
                                    clarify and organize it; an empty value clears a field.
                                    Leaving waiting forgets whom it waited on and its watch.
                                    --watch gives a waiting todo a command that nod's tick runs
@@ -48,7 +48,10 @@ export const TODO_USAGE = `  nod in <what...> [--notes <text>] [--source <channe
                                    that does not parse, passes already, or that the shell cannot
                                    run, is refused. When it last ran and how it ended show with
                                    the todo. Keep secrets out of it: it is kept in the notes and
-                                   history. A <day> is
+                                   history. --back-to names a task the todo was handed to (t<n>: its
+                                   latest): once the watch passes, that task's session hears what
+                                   the watch printed and carries on, asking before anything that
+                                   needs you, and the todo waits on it instead. A <day> is
                                    YYYY-MM-DD, today or tomorrow; --due and --on also take a time,
                                    '<day> HH:MM'. --on is a day- or time-specific action, --start
                                    leaves it out of the lists until that day, and --focus picks it
@@ -239,6 +242,7 @@ async function setTodo(todos: Todos, home: string, args: string[]): Promise<void
       focus: { type: 'string' },
       repeat: { type: 'string' },
       watch: { type: 'string' },
+      'back-to': { type: 'string' },
     },
   })
   const [ref, ...extra] = positionals
@@ -254,6 +258,9 @@ async function setTodo(todos: Todos, home: string, args: string[]): Promise<void
     throw new Error('--notes replaces the notes and --add-note adds a line to them; give one')
   }
   const watch = cleared(values.watch)
+  const backToRef = cleared(values['back-to'])
+  const backTo = typeof backToRef === 'string' ? todos.taskRef(backToRef) : backToRef
+  if (Number.isNaN(backTo)) throw new Error(`--back-to takes a task number or t<n>: ${backToRef}`)
   const edit = {
     status,
     title: values.title,
@@ -265,6 +272,7 @@ async function setTodo(todos: Todos, home: string, args: string[]): Promise<void
     focus: cleared(values.focus),
     repeat: repeatOf(values.repeat),
     watch,
+    backTo,
     projectId:
       project === undefined ? undefined : project === '' ? null : todos.findProject(project).id,
   }
@@ -311,6 +319,7 @@ function showTodo(todos: Todos, id: number): void {
   if (where.length > 0) console.log(`  ${where.join(' · ')}`)
   console.log(`  from ${t.source}${t.sourceKey === null ? '' : ` ${t.sourceKey}`}`)
   if (t.watch !== null) console.log(`  watch ${t.watch}\n    ${checkText(todos.lastCheck(t))}`)
+  if (t.backTo !== null) console.log(`  back to task #${t.backTo} once the watch passes`)
   for (const l of todos.links(id)) {
     console.log(`  link ${l.url}${l.title === null ? '' : ` (${l.title})`}`)
   }
