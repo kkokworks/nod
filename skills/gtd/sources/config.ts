@@ -9,7 +9,14 @@ export const configPath = (): string => join(nodHome(), 'config.json')
 const Config = z.object({
   // The tools that are on, by their folder name under sources/.
   sources: z.array(z.string()),
-  slack: z.object({ selfDm: z.string().optional() }).optional(),
+  // Read by the agent, not a script: the slack SOURCE.md says what each is for.
+  slack: z
+    .object({
+      selfId: z.string().optional(),
+      selfDm: z.string().optional(),
+      notifyDms: z.array(z.string()).optional(),
+    })
+    .optional(),
   // A repo is mine when its maintainerFile has a `<maintainerKey>: <my login>` line.
   forgejo: z
     .object({
