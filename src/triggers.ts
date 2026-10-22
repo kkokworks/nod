@@ -1,16 +1,22 @@
-import { rmSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { z } from 'zod'
 import { Ledger, type Trigger } from './ledger'
 import { notify, taskRef } from './notify'
 import { homeId } from './tmux'
-import { message, startTask } from './worker'
+import { Todos } from './todos'
+import { oneLine } from './view'
+import { message, SELF, startTask } from './worker'
 
-// Triggers add tasks on a schedule. While any exists, the OS scheduler (launchd on macOS, crontab
-// on Linux, through Bun.cron) runs tick every minute; nod itself still never stays running.
+// Triggers add tasks on a schedule, and watches tell when what a waiting todo waits on has
+// happened. Once `nod schedule on` registers it, the OS scheduler (launchd on macOS, crontab on
+// Linux, through Bun.cron) runs tick every minute; nod itself still never stays running.
 
-// A hung source must not stall every later tick.
+// A hung source or watch must not stall every later tick.
 const SOURCE_TIMEOUT_MS = 60_000
 const OUTPUT_LIMIT = 2000
+// Watches mostly ask another service; every minute would be more calls than a wait needs.
+const WATCH_EVERY_MINUTES = 5
 
 export type Item = { key: string; issue: string | null; text: string }
 
@@ -59,9 +65,14 @@ export async function addTrigger(
   return { id, seen: items.length }
 }
 
-// Runs the triggers due at `now` and starts the tasks they add. A run missed while the machine
-// slept happens once, on the first tick after.
-export async function tick(ledger: Ledger, home: string, now: Date): Promise<number[]> {
+// Runs the triggers due at `now` and starts the tasks they add, then, with `watches`, the watches.
+// A run missed while the machine slept happens once, on the first tick after.
+export async function tick(
+  ledger: Ledger,
+  home: string,
+  now: Date,
+  watches: boolean,
+): Promise<{ added: number[]; passed: number[] }> {
   const added: number[] = []
   for (const t of ledger.triggers()) {
     const next = nextRun(t.cron, new Date(t.lastRunAt ?? t.createdAt))
@@ -84,7 +95,99 @@ export async function tick(ledger: Ledger, home: string, now: Date): Promise<num
       ),
     ),
   )
-  return added
+  const passed = watches ? await checkWatches(ledger, home) : []
+  return { added, passed }
+}
+
+// A watch passes when it exits 0. A command the shell cannot run (126, 127) never will; anything
+// else, a failed request too, means not yet. It runs in <home>, so it names the repo it asks about.
+async function runWatch(
+  watch: string,
+  home: string,
+  env: Record<string, string | undefined>,
+): Promise<{ code: number; output: string }> {
+  const { code, stdout, stderr } = await shell(watch, home, env)
+  return { code, output: (stdout + stderr).trim().slice(-OUTPUT_LIMIT) }
+}
+
+const cannotRun = (code: number): boolean => code === 126 || code === 127
+
+// Runs a new watch once, as a source is run when its trigger is added, with the PATH the tick will
+// give it. One that does not parse, cannot run, or passes already is refused: it would never wait,
+// or never end. Any other failure looks like not yet, so how it ended is recorded and shown.
+// ponytail: only the schedule's PATH and Claude config dir are the tick's; the rest of this shell's
+// environment (a token in it) is not, so a watch that needs it passes here and fails in the tick.
+export async function tryWatch(
+  watch: string,
+  home: string,
+): Promise<{ code: number; output: string }> {
+  const parsed = Bun.spawnSync(['sh', '-n', '-c', watch], { stdout: 'ignore', stderr: 'pipe' })
+  if (parsed.exitCode !== 0) {
+    throw new Error(`the watch does not parse: ${parsed.stderr.toString().trim()}`)
+  }
+  const tried = await runWatch(watch, home, { ...process.env, ...scheduleEnv(home) })
+  if (tried.code === 0) throw new Error('the watch passes already, so there is nothing to wait for')
+  if (cannotRun(tried.code)) throw new Error(`the watch cannot run: ${tried.output}`)
+  return tried
+}
+
+// One at a time, so two watches on the same service do not call it at once. Each run is recorded,
+// so the person sees a watch is alive and why it has not passed. One that can no longer run (the
+// schedule was turned on again from a shell whose PATH lacks its command) ends, so its todo does
+// not wait on nothing.
+async function checkWatches(ledger: Ledger, home: string): Promise<number[]> {
+  const todos = new Todos(ledger)
+  const passed: number[] = []
+  for (const t of todos.watched()) {
+    const { code, output } = await runWatch(t.watch, home, process.env)
+    todos.recordCheck(t.id, t.watch, code, output)
+    if (code !== 0 && !cannotRun(code)) continue
+    const outcome = code === 0 ? 'passed' : `cannot run (${oneLine(output, 200)})`
+    if (!todos.endWatch(t.id, t.watch, outcome, SELF)) continue
+    const todo = { id: t.id, title: t.title }
+    if (code === 0) {
+      passed.push(t.id)
+      await notify(home, { event: 'watch_passed', todo, watch: t.watch })
+    } else {
+      await notify(home, { event: 'watch_failed', todo, watch: t.watch, error: output })
+    }
+  }
+  return passed
+}
+
+// Runs a source or a watch in a process group of its own, so the timeout ends all of a pipeline.
+// Killing only `sh` leaves the rest holding its output open, and the wait goes on (measured).
+export async function shell(
+  cmd: string,
+  cwd: string,
+  env: Record<string, string | undefined> = process.env,
+  timeoutMs = SOURCE_TIMEOUT_MS,
+): Promise<{ code: number; stdout: string; stderr: string }> {
+  const proc = Bun.spawn(['sh', '-c', cmd], {
+    cwd,
+    env,
+    stdin: 'ignore',
+    stdout: 'pipe',
+    stderr: 'pipe',
+    detached: true,
+  })
+  const timer = setTimeout(() => {
+    try {
+      process.kill(-proc.pid, 'SIGKILL')
+    } catch {
+      // The group has ended already.
+    }
+  }, timeoutMs)
+  try {
+    const [stdout, stderr, code] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+      proc.exited,
+    ])
+    return { code, stdout, stderr }
+  } finally {
+    clearTimeout(timer)
+  }
 }
 
 async function addTasks(ledger: Ledger, home: string, t: Trigger): Promise<number[]> {
@@ -100,49 +203,54 @@ async function addTasks(ledger: Ledger, home: string, t: Trigger): Promise<numbe
 }
 
 async function readSource(source: string, cwd: string): Promise<Item[]> {
-  const proc = Bun.spawn(['sh', '-c', source], {
-    cwd,
-    stdout: 'pipe',
-    stderr: 'pipe',
-    env: process.env,
-    timeout: SOURCE_TIMEOUT_MS,
-  })
-  const [stdout, stderr, code] = await Promise.all([
-    new Response(proc.stdout).text(),
-    new Response(proc.stderr).text(),
-    proc.exited,
-  ])
+  const { code, stdout, stderr } = await shell(source, cwd)
   if (code !== 0) {
     throw new Error(`source \`${source}\` exited ${code}: ${stderr.trim().slice(-OUTPUT_LIMIT)}`)
   }
   return parseItems(stdout)
 }
 
-// Registers the every-minute tick with the OS scheduler while triggers exist, and removes it when
-// none are left. Registering again replaces the job, so this is safe to repeat.
-export async function syncSchedule(ledger: Ledger, home: string): Promise<void> {
-  const title = `nod-tick-${homeId(home)}`
-  const module = join(home, 'tick.ts')
-  if (ledger.triggers().length === 0) {
-    await Bun.cron.remove(title)
-    rmSync(module, { force: true })
-    return
-  }
-  writeFileSync(module, tickModule(home))
-  await Bun.cron(module, '* * * * *', title)
+const tickPath = (home: string): string => join(home, 'tick.ts')
+const envPath = (home: string): string => join(home, 'schedule.json')
+const cronTitle = (home: string): string => `nod-tick-${homeId(home)}`
+
+export const SCHEDULE_OFF =
+  'the schedule is off, so nothing runs it yet: turn it on with `nod schedule on`'
+
+// The environment the tick runs in, fixed when the schedule was turned on; null while it is off.
+export function scheduleEnv(home: string): Record<string, string> | null {
+  const path = envPath(home)
+  if (!existsSync(path)) return null
+  return z.record(z.string(), z.string()).parse(JSON.parse(readFileSync(path, 'utf8')))
 }
 
-// The module the OS scheduler runs. It starts with the scheduler's bare environment, so it brings
-// the PATH (tmux, claude, git) and Claude config dir of the shell that added the trigger.
-function tickModule(home: string): string {
+// Registers the every-minute tick with the OS scheduler. The scheduler starts it with a bare
+// environment, so it brings this shell's PATH (tmux, claude, git) and Claude config dir, which the
+// triggers' workers and the watches use; turning it on again replaces both. It stays on, whether
+// or not anything is due, until turned off: a tick with nothing to do ends at once, while one that
+// came and went with the triggers and watches took the environment of whichever shell added one.
+export async function scheduleOn(home: string): Promise<void> {
   const env: Record<string, string> = { NOD_HOME: home, PATH: process.env.PATH ?? '' }
   if (process.env.CLAUDE_CONFIG_DIR) env.CLAUDE_CONFIG_DIR = process.env.CLAUDE_CONFIG_DIR
-  return `// Written by nod; the OS scheduler runs it every minute while triggers exist.
+  writeFileSync(envPath(home), `${JSON.stringify(env, null, 2)}\n`)
+  writeFileSync(tickPath(home), tickModule(home))
+  await Bun.cron(tickPath(home), '* * * * *', cronTitle(home))
+}
+
+export async function scheduleOff(home: string): Promise<void> {
+  await Bun.cron.remove(cronTitle(home))
+  rmSync(tickPath(home), { force: true })
+  rmSync(envPath(home), { force: true })
+}
+
+function tickModule(home: string): string {
+  return `// Written by \`nod schedule on\`; the OS scheduler runs it every minute.
+import env from ${JSON.stringify(envPath(home))}
 import { tickHome } from ${JSON.stringify(join(import.meta.dir, 'triggers.ts'))}
 
 export default {
   async scheduled() {
-    Object.assign(process.env, ${JSON.stringify(env)})
+    Object.assign(process.env, env)
     await tickHome(${JSON.stringify(home)})
   },
 }
@@ -150,6 +258,12 @@ export default {
 }
 
 export async function tickHome(home: string): Promise<void> {
-  const added = await tick(new Ledger(home), home, new Date())
-  if (added.length > 0) console.log(`${new Date().toISOString()} added task(s) ${added.join(', ')}`)
+  const ledger = new Ledger(home)
+  const now = new Date()
+  const watches = now.getMinutes() % WATCH_EVERY_MINUTES === 0
+  const { added, passed } = await tick(ledger, home, now, watches)
+  const at = new Date().toISOString()
+  if (added.length > 0) console.log(`${at} added task(s) ${added.join(', ')}`)
+  if (passed.length > 0)
+    console.log(`${at} watch passed: ${passed.map((id) => `t${id}`).join(', ')}`)
 }

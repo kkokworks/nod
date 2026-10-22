@@ -14,7 +14,15 @@ import {
   todoCommand,
 } from './todo-cli'
 import { parseRef, Todos } from './todos'
-import { addTrigger, nextRun, syncSchedule, tick } from './triggers'
+import {
+  addTrigger,
+  nextRun,
+  SCHEDULE_OFF,
+  scheduleEnv,
+  scheduleOff,
+  scheduleOn,
+  tick,
+} from './triggers'
 import { indent, oneLine, taskNote, taskStatus } from './view'
 import {
   answer,
@@ -77,15 +85,19 @@ const USAGE = `usage:
                                    which is also the task's issue). In a repo each task works on
                                    the branch <prefix>/<task>
   nod trigger ls | rm <trigger>
-  nod tick                         run the triggers that are due; the OS scheduler calls this
-                                   every minute while any trigger exists
+  nod schedule [on | off]          whether the OS scheduler runs the tick every minute; on, it
+                                   runs with this shell's PATH and Claude config dir, which the
+                                   triggers' workers and the watches use. It stays on until off
+  nod tick                         run the triggers that are due and the watches; the scheduled
+                                   tick runs the watches every fifth minute
   nod hook stop|notification       called by Claude Code hooks in worker sessions
 
 A <task> is a task's number, or t<n> for the latest task doing todo t<n>.
 ${TODO_USAGE}
 
 When <home>/notify exists, nod runs it with a JSON event on stdin whenever a decision opens, a
-task succeeds or fails to start, or a trigger fails. <home> is $NOD_HOME, or ~/.nod.`
+task succeeds or fails to start, a trigger fails, or a watch passes or can no longer run. <home>
+is $NOD_HOME, or ~/.nod.`
 
 const [command, ...rest] = Bun.argv.slice(2)
 const home = nodHome()
@@ -151,9 +163,15 @@ switch (command) {
   case 'trigger':
     await trigger(rest)
     break
+  case 'schedule':
+    await schedule(rest)
+    break
   case 'tick': {
-    const added = await tick(ledger, home, new Date())
-    console.log(added.length > 0 ? `added task(s) ${added.join(', ')}` : 'nothing due')
+    // Run by hand, it checks the watches now too, not only on their every fifth minute.
+    const { added, passed } = await tick(ledger, home, new Date(), true)
+    if (added.length > 0) console.log(`added task(s) ${added.join(', ')}`)
+    if (passed.length > 0) console.log(`watch passed: ${passed.map((id) => `t${id}`).join(', ')}`)
+    if (added.length === 0 && passed.length === 0) console.log('nothing due')
     break
   }
   case 'hook':
@@ -163,7 +181,7 @@ switch (command) {
     capture(new Todos(ledger), rest)
     break
   case 'todo':
-    todoCommand(new Todos(ledger), home, rest)
+    await todoCommand(new Todos(ledger), home, rest)
     break
   case 'project':
     projectCommand(new Todos(ledger), rest)
@@ -255,19 +273,33 @@ async function trigger([sub, ...args]: string[]): Promise<void> {
       model: values.model ?? null,
       source: values.source ?? null,
     })
-    await syncSchedule(ledger, home)
     console.log(id)
     if (values.source) console.log(`the source lists ${seen} item(s) now; only new ones add tasks`)
     printTrigger(ledger.trigger(id))
+    if (scheduleEnv(home) === null) console.log(SCHEDULE_OFF)
   } else if (sub === 'ls') {
     for (const t of ledger.triggers()) printTrigger(t)
   } else if (sub === 'rm') {
     ledger.removeTrigger(Number(args[0]))
-    await syncSchedule(ledger, home)
     console.log('removed')
   } else {
     throw new Error(USAGE)
   }
+}
+
+async function schedule([sub, ...extra]: string[]): Promise<void> {
+  if (extra.length > 0) throw new Error(USAGE)
+  if (sub === 'on') await scheduleOn(home)
+  else if (sub === 'off') await scheduleOff(home)
+  else if (sub !== undefined) throw new Error(USAGE)
+  const env = scheduleEnv(home)
+  if (env === null) {
+    console.log('off')
+    return
+  }
+  console.log('on, every minute')
+  console.log(`  PATH ${env.PATH}`)
+  console.log(`  CLAUDE_CONFIG_DIR ${env.CLAUDE_CONFIG_DIR ?? '(not set)'}`)
 }
 
 function printTrigger(t: Trigger): void {

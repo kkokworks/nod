@@ -123,6 +123,63 @@ test('leaving waiting forgets whom it waited on, unless the edit names someone',
   })
 })
 
+test('a watch is only for a waiting todo, and passing it makes the todo next again, once', () => {
+  const todos = fresh()
+  const t = captured(todos, 'Get the repo pushed')
+  expect(() => todos.set(t.id, { watch: 'true' }, 'human')).toThrow('a watch is for a waiting todo')
+  expect(() => todos.set(t.id, { status: 'waiting', watch: '' }, 'human')).toThrow('empty watch')
+  todos.set(t.id, { status: 'waiting', waitingOn: 'Kim', watch: 'test -f pushed' }, 'human')
+  expect(ids(todos.watched())).toEqual([t.id])
+
+  // Its watch changed while the command ran: that result is not for this watch.
+  expect(todos.endWatch(t.id, 'test -f other', 'passed', 'nod')).toBe(false)
+  expect(todos.endWatch(t.id, 'test -f pushed', 'passed', 'nod')).toBe(true)
+  const back = todos.get(t.id)
+  expect([back.status, back.waitingOn, back.watch]).toEqual(['next', null, null])
+  expect(back.notes).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2} watch passed: test -f pushed$/)
+  expect(todos.changes(t.id).at(-1)?.actor).toBe('nod')
+  expect(todos.endWatch(t.id, 'test -f pushed', 'passed', 'nod')).toBe(false)
+  expect(todos.watched()).toEqual([])
+
+  // Leaving waiting any other way forgets the watch too.
+  const u = captured(todos, 'Hear back on the quote')
+  todos.set(u.id, { status: 'waiting', watch: 'false' }, 'human')
+  expect(todos.set(u.id, { status: 'done' }, 'human').watch).toBeNull()
+})
+
+test('the last check of a watch is the one it ran in this wait', () => {
+  const todos = fresh()
+  const t = todos.set(captured(todos, 'Hear back').id, { status: 'waiting', watch: 'a' }, 'human')
+  expect(todos.lastCheck(t)).toBeNull()
+  todos.recordCheck(t.id, 'a', 1, 'not yet')
+  todos.recordCheck(t.id, 'a', 2, 'still not')
+  expect(todos.lastCheck(t)).toMatchObject({ watch: 'a', code: 2, output: 'still not' })
+  // Another watch has not run yet, nor has the same one in a later wait, nor one whose run was
+  // for the watch before.
+  expect(todos.lastCheck(todos.set(t.id, { watch: 'b' }, 'human'))).toBeNull()
+  todos.set(t.id, { status: 'next' }, 'human')
+  expect(todos.lastCheck(todos.set(t.id, { status: 'waiting', watch: 'a' }, 'human'))).toBeNull()
+  todos.recordCheck(t.id, 'b', 1, '')
+  expect(todos.lastCheck(todos.get(t.id))).toBeNull()
+})
+
+test('a todo waiting on its task has no watch: handing it over drops one, and none is given', () => {
+  const { ledger, todos } = books()
+  const t = captured(todos, 'Ship the fix')
+  todos.set(t.id, { status: 'waiting', watch: 'test -f shipped' }, 'human')
+  const first = todos.delegate(t.id, task, 'human')
+  expect(todos.get(t.id)).toMatchObject({ status: 'waiting', watch: null })
+  expect(() => todos.check(t.id, { watch: 'test -f shipped' })).toThrow(
+    `t${t.id} waits on its task`,
+  )
+  // Once the task has ended, the todo is the person's again and can be watched.
+  ledger.succeed(first)
+  todos.followTasks('nod')
+  expect(todos.set(t.id, { status: 'waiting', watch: 'test -f shipped' }, 'human').watch).toBe(
+    'test -f shipped',
+  )
+})
+
 test('an edit that fails changes nothing, links included', () => {
   const todos = fresh()
   const t = captured(todos, 'x')

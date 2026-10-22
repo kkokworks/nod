@@ -7,7 +7,8 @@ import type { DayTodos, Project, Todo } from './todos'
 // The channel of the weekly review's repeating todo (`nod in … --source review`). A repeating
 // todo's next one keeps its channel, so the last one done is the last weekly review.
 export const REVIEW_SOURCE = 'review'
-// A person waited on this long, with nothing recorded on the todo since, is due a reminder.
+// A person or a watch waited on this long, with nothing recorded on the todo since, is due a
+// reminder: a watch that fails for good shows here too.
 export const STALE_DAYS = 7
 // GTD's weekly review.
 export const REVIEW_DAYS = 7
@@ -21,7 +22,8 @@ export type Trust = {
   today: Todo[]
   // Active projects with no next action; an open decision on one of their tasks counts as one.
   stuck: Project[]
-  // Waiting on a person, with no change to the todo since `since`, STALE_DAYS or more ago.
+  // Waiting on a person or a watch, with no change to the todo since `since`, STALE_DAYS or more
+  // ago.
   stale: { todo: Todo; since: string; days: number }[]
   // Days since the last weekly review; null before the first.
   sinceReview: number | null
@@ -39,14 +41,16 @@ export type TrustInput = {
 export function trust(s: TrustInput, today: string): Trust {
   const daysSince = (iso: string) => daysBetween(localDay(new Date(iso)), today)
   const inbox = s.open.filter((t) => t.status === 'inbox')
-  const waitingOnPeople = s.open.filter((t) => t.status === 'waiting' && t.waitingOn !== null)
+  const waitingLong = s.open.filter(
+    (t) => t.status === 'waiting' && (t.waitingOn !== null || t.watch !== null),
+  )
   return {
     inbox: inbox.length,
     oldestInbox: inbox.map((t) => localDay(new Date(t.createdAt))).sort()[0] ?? null,
     overdue: s.day.overdue,
     today: [...s.day.scheduled, ...s.day.due],
     stuck: s.projects.filter((p) => p.next === 0),
-    stale: waitingOnPeople
+    stale: waitingLong
       .map((todo) => {
         const last = s.lastChange.get(todo.id)
         if (last === undefined) throw new Error(`t${todo.id} has no recorded change`)

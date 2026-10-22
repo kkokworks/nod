@@ -2,7 +2,7 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { parseArgs } from 'node:util'
 import { type CalendarEvent, calendarBuild, readEvents } from './calendar'
-import { addDays, dayOf, localDay, parseWhen, REPEATS, type Repeat } from './days'
+import { addDays, dayOf, localDay, localTime, parseWhen, REPEATS, type Repeat } from './days'
 import {
   type Change,
   OPEN,
@@ -13,7 +13,9 @@ import {
   type Todo,
   type TodoDecision,
   type Todos,
+  type WatchCheck,
 } from './todos'
+import { SCHEDULE_OFF, scheduleEnv, tryWatch } from './triggers'
 import { nudgeLine, STALE_DAYS, type Trust } from './trust'
 import { changeText, indent, oneLine } from './view'
 import { message } from './worker'
@@ -36,9 +38,17 @@ export const TODO_USAGE = `  nod in <what...> [--notes <text>] [--source <channe
                       [--project <p>]
                       [--context <@x>] [--waiting-on <who>] [--link <url>]...
                       [--due <day>] [--on <day>] [--start <day>] [--focus <day>]
-                      [--repeat daily|weekly|monthly]
+                      [--repeat daily|weekly|monthly] [--watch <command>]
                                    clarify and organize it; an empty value clears a field.
-                                   Leaving waiting forgets whom it waited on. A <day> is
+                                   Leaving waiting forgets whom it waited on and its watch.
+                                   --watch gives a waiting todo a command that nod's tick runs
+                                   in <home> every 5 minutes (cd to a repo in it); once it exits
+                                   0, or can no longer run, the todo is a next action again, with
+                                   a note. It runs once when given, with the schedule's PATH; one
+                                   that does not parse, passes already, or that the shell cannot
+                                   run, is refused. When it last ran and how it ended show with
+                                   the todo. Keep secrets out of it: it is kept in the notes and
+                                   history. A <day> is
                                    YYYY-MM-DD, today or tomorrow; --due and --on also take a time,
                                    '<day> HH:MM'. --on is a day- or time-specific action, --start
                                    leaves it out of the lists until that day, and --focus picks it
@@ -117,12 +127,12 @@ export function capture(todos: Todos, args: string[]): void {
   console.log(created ? line(todos, todo) : `${line(todos, todo)}  (already captured)`)
 }
 
-export function todoCommand(todos: Todos, home: string, args: string[]): void {
+export async function todoCommand(todos: Todos, home: string, args: string[]): Promise<void> {
   const [sub, ...rest] = args
   if (sub === 'check') {
     checkTodos(todos, home, rest)
   } else if (sub === 'set') {
-    setTodo(todos, rest)
+    await setTodo(todos, home, rest)
   } else if (sub === 'done' || sub === 'drop') {
     finishTodos(todos, sub, rest)
   } else if (sub !== undefined && /^t?\d+$/.test(sub) && rest.length === 0) {
@@ -205,12 +215,12 @@ function trustLines(t: Trust): string[] {
     `overdue  ${t.overdue.length}${listed(t.overdue.map(todo))}`,
     `today    ${t.today.length}${listed(t.today.map(todo))}`,
     `stuck    ${t.stuck.length} active project(s) with no next action${listed(t.stuck.map((p) => `p${p.id} ${p.title}`))}`,
-    `waiting  ${t.stale.length} on a person, unchanged for ${STALE_DAYS}+ days${listed(t.stale.map((x) => `${todo(x.todo)} (${x.todo.waitingOn}, ${x.days} days)`))}`,
+    `waiting  ${t.stale.length} on a person or a watch, unchanged for ${STALE_DAYS}+ days${listed(t.stale.map((x) => `${todo(x.todo)} (${x.todo.waitingOn ?? 'watched'}, ${x.days} days)`))}`,
     `review   weekly: ${review}`,
   ]
 }
 
-function setTodo(todos: Todos, args: string[]): void {
+async function setTodo(todos: Todos, home: string, args: string[]): Promise<void> {
   const { values, positionals } = parseArgs({
     args,
     allowPositionals: true,
@@ -228,6 +238,7 @@ function setTodo(todos: Todos, args: string[]): void {
       start: { type: 'string' },
       focus: { type: 'string' },
       repeat: { type: 'string' },
+      watch: { type: 'string' },
     },
   })
   const [ref, ...extra] = positionals
@@ -242,32 +253,47 @@ function setTodo(todos: Todos, args: string[]): void {
   if (added !== undefined && values.notes !== undefined) {
     throw new Error('--notes replaces the notes and --add-note adds a line to them; give one')
   }
-  // A line added below the notes, so recording why leaves what was there alone.
+  const watch = cleared(values.watch)
+  const edit = {
+    status,
+    title: values.title,
+    context: cleared(values.context),
+    waitingOn: cleared(values['waiting-on']),
+    due: cleared(values.due),
+    scheduled: cleared(values.on),
+    start: cleared(values.start),
+    focus: cleared(values.focus),
+    repeat: repeatOf(values.repeat),
+    watch,
+    projectId:
+      project === undefined ? undefined : project === '' ? null : todos.findProject(project).id,
+  }
+  // A new watch runs once, which can take a while, so only for an edit that holds.
+  if (typeof watch === 'string') todos.check(id, edit)
+  const tried = typeof watch === 'string' ? { watch, ...(await tryWatch(watch, home)) } : null
+  // A line added below the notes, so recording why leaves what was there alone. Read after the
+  // watch ran, so nothing written meanwhile is lost.
   const notes =
     added === undefined
       ? cleared(values.notes)
       : [todos.get(id).notes, added].filter((x) => x !== null).join('\n')
-  const todo = todos.set(
-    id,
-    {
-      status,
-      title: values.title,
-      notes,
-      context: cleared(values.context),
-      waitingOn: cleared(values['waiting-on']),
-      due: cleared(values.due),
-      scheduled: cleared(values.on),
-      start: cleared(values.start),
-      focus: cleared(values.focus),
-      repeat: repeatOf(values.repeat),
-      projectId:
-        project === undefined ? undefined : project === '' ? null : todos.findProject(project).id,
-    },
-    actorFromEnv(),
-    values.link ?? [],
-  )
+  const todo = todos.set(id, { ...edit, notes }, actorFromEnv(), values.link ?? [])
+  if (tried !== null) todos.recordCheck(id, tried.watch, tried.code, tried.output)
   console.log(line(todos, todo))
+  if (tried === null) return
+  console.log(`  ${checkText(todos.lastCheck(todo))}`)
+  if (scheduleEnv(home) === null) console.log(`  ${SCHEDULE_OFF}`)
 }
+
+// When a watch last ran and how it ended, so the person sees it is alive and why it has not passed.
+function checkText(check: WatchCheck | null): string {
+  if (check === null) return checkedWhen(check)
+  const said = check.output === '' ? '' : `: ${oneLine(check.output, 200)}`
+  return `${checkedWhen(check)}, exit ${check.code}${said}`
+}
+
+const checkedWhen = (check: WatchCheck | null): string =>
+  check === null ? 'not checked yet' : `checked ${localTime(new Date(check.at))}`
 
 function finishTodos(todos: Todos, sub: 'done' | 'drop', refs: string[]): void {
   if (refs.length === 0) {
@@ -284,6 +310,7 @@ function showTodo(todos: Todos, id: number): void {
   const where = tags(todos, t)
   if (where.length > 0) console.log(`  ${where.join(' · ')}`)
   console.log(`  from ${t.source}${t.sourceKey === null ? '' : ` ${t.sourceKey}`}`)
+  if (t.watch !== null) console.log(`  watch ${t.watch}\n    ${checkText(todos.lastCheck(t))}`)
   for (const l of todos.links(id)) {
     console.log(`  link ${l.url}${l.title === null ? '' : ` (${l.title})`}`)
   }
@@ -460,7 +487,7 @@ function decisionLine(todos: Todos, { decision, task, todo }: TodoDecision): str
     decision.reason,
     `task #${task.id}`,
     project === null ? null : `p${project.id} ${project.title}`,
-    `since ${localTime(decision.createdAt)}`,
+    `since ${localTime(new Date(decision.createdAt))}`,
   ].filter((x) => x !== null)
   const title = oneLine(todo?.title ?? task.brief, 80)
   return `#${String(decision.id).padEnd(4)} ${'decide'.padEnd(9)} ${title}  · ${rest.join(' · ')}`
@@ -474,13 +501,16 @@ function tags(todos: Todos, t: Todo): string[] {
     t.context,
     project === null ? null : `p${project.id} ${project.title}`,
     on === null ? null : `waiting on ${on}`,
+    t.watch === null ? null : `watched, ${checkedWhen(todos.lastCheck(t))}`,
     t.scheduled === null ? null : `scheduled ${t.scheduled}`,
     t.due === null ? null : `due ${t.due}`,
     t.start === null ? null : `starts ${t.start}`,
     t.repeat === null ? null : `repeats ${t.repeat}`,
     t.focus === null ? null : `focus ${t.focus}`,
-    t.status === 'inbox' || t.status === 'waiting' ? `since ${localTime(t.statusAt)}` : null,
-    finished ? `on ${localTime(t.statusAt)}` : null,
+    t.status === 'inbox' || t.status === 'waiting'
+      ? `since ${localTime(new Date(t.statusAt))}`
+      : null,
+    finished ? `on ${localTime(new Date(t.statusAt))}` : null,
   ].filter((x) => x !== null)
 }
 
@@ -492,8 +522,6 @@ const projectLine = (p: Project): string => {
 function printChanges(changes: Change[]): void {
   console.log('  changes')
   for (const c of changes) {
-    console.log(`    ${localTime(c.at)}  ${c.actor}  ${changeText(c)}`)
+    console.log(`    ${localTime(new Date(c.at))}  ${c.actor}  ${changeText(c)}`)
   }
 }
-
-const localTime = (iso: string): string => new Date(iso).toLocaleString('sv-SE').slice(0, 16)

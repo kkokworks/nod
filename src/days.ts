@@ -8,6 +8,8 @@ export type Repeat = (typeof REPEATS)[number]
 export type Dates = { due: string | null; scheduled: string | null; start: string | null }
 
 export const localDay = (d: Date): string => d.toLocaleDateString('sv-SE')
+// To the minute, as the lists and notes show a moment.
+export const localTime = (d: Date): string => d.toLocaleString('sv-SE').slice(0, 16)
 export const dayOf = (when: string): string => when.slice(0, 10)
 
 // `today`, `tomorrow` or `YYYY-MM-DD`, then ` HH:MM` when `time` allows one.

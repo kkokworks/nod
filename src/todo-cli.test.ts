@@ -1,5 +1,6 @@
 import { afterAll, expect, test } from 'bun:test'
-import { resolve } from 'node:path'
+import { existsSync } from 'node:fs'
+import { join, resolve } from 'node:path'
 import { tempDirs } from '../test/tmp'
 import { Ledger } from './ledger'
 import { actorFromEnv } from './todo-cli'
@@ -101,7 +102,7 @@ test('capture, clarify into a project, finish, and read back who changed what', 
 })
 
 test('a channel key is captured once, and bad input is refused without changing anything', async () => {
-  const { ok, fails } = runner()
+  const { ok, fails, home } = runner()
   expect(await ok('in', 'Review the PR', '--source', 'chat', '--key', 'm1')).toEqual([
     't1    inbox     Review the PR  · since <time>',
   ])
@@ -119,7 +120,40 @@ test('a channel key is captured once, and bad input is refused without changing 
   expect(await fails('todo', 'done')).toContain('finished todos list with --all')
   expect(await fails('todo', 'next', '--all')).toContain('--all lists every status')
   expect(await fails('project', '1')).toContain('not a project: 1 (write p<n>)')
+  // A watch runs once when given; one that would never wait, or never run, is refused.
+  const watch = (cmd: string) => fails('todo', 'set', 't1', '--status', 'waiting', '--watch', cmd)
+  expect(await watch('true')).toContain('the watch passes already')
+  expect(await watch('no-such-command-here')).toContain('the watch cannot run')
+  expect(await watch('test -f "x')).toContain('the watch does not parse')
+  // An edit that would be refused is refused before its watch runs.
+  const ran = join(home, 'ran')
+  expect(await fails('todo', 'set', 't1', '--watch', `touch ${JSON.stringify(ran)}`)).toContain(
+    'a watch is for a waiting todo',
+  )
+  expect(existsSync(ran)).toBe(false)
   expect(await ok('todo', '--all')).toEqual(['t1    inbox     Review the PR  · since <time>'])
+})
+
+test('a watch shows when it last ran and how, and says when nothing will run it', async () => {
+  const { ok } = runner()
+  await ok('in', 'Hear back on the quote')
+  expect(
+    await ok('todo', 'set', 't1', '--status', 'waiting', '--watch', 'echo not yet; exit 1'),
+  ).toEqual([
+    't1    waiting   Hear back on the quote  · watched, checked <time> · since <time>',
+    '  checked <time>, exit 1: not yet',
+    '  the schedule is off, so nothing runs it yet: turn it on with `nod schedule on`',
+  ])
+  expect(await ok('todo', 't1')).toEqual([
+    't1 waiting: Hear back on the quote',
+    '  watched, checked <time> · since <time>',
+    '  from cli',
+    '  watch echo not yet; exit 1',
+    '    checked <time>, exit 1: not yet',
+    '  changes',
+    '    <time>  human  title — → Hear back on the quote, status — → inbox, source — → cli',
+    '    <time>  human  status inbox → waiting, watch — → echo not yet; exit 1',
+  ])
 })
 
 test('the todos of a someday project leave the lists until it is named', async () => {
