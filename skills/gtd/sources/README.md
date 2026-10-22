@@ -23,8 +23,8 @@
 
 | 이름 | 읽는 것 |
 |---|---|
-| [slack](slack/SOURCE.md) | "나중에" 저장, 나에게 보낸 메시지(휴대폰 받아 적기), 안 읽은 멘션·DM, 스레드 회신 |
-| [plane](plane/SOURCE.md) | 나에게 배정된 이슈, 이슈에 댓글 남기기 |
+| [slack](slack/SOURCE.md) | "나중에" 저장, 나에게 보낸 메시지(휴대폰 받아 적기), 최근 멘션(읽음 무관)·안 읽은 DM·알림 DM, 스레드 회신 |
+| [plane](plane/SOURCE.md) | 나에게 배정된 이슈, 내가 만들어 남에게 맡긴 이슈와 그 마지막 댓글, 이슈에 댓글 남기기 |
 | [linear](linear/SOURCE.md) | 나에게 배정된 이슈와 알림 |
 | [github](github/SOURCE.md) | 리뷰 요청, 내가 연 PR |
 | [forgejo](forgejo/SOURCE.md) | 리뷰 요청, 내가 연 PR, 내가 맡은 레포의 CI |

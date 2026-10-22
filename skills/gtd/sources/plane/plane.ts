@@ -1,6 +1,7 @@
 // Reads Plane work items and comments on them. The token comes from the keychain item plane-api.
-// Usage: bun <skill folder>/sources/plane/plane.ts              open items assigned to me
-//        bun <skill folder>/sources/plane/plane.ts get <key>...   the state of items
+// Usage: bun <skill folder>/sources/plane/plane.ts              open items assigned to me, and open
+//                                                                 items I created for others
+//        bun <skill folder>/sources/plane/plane.ts get <key>...   the state and last comment of items
 //        bun <skill folder>/sources/plane/plane.ts comment <key>  stdin's text as a comment
 // Settings (config.json's plane): url, workspace, projects (the identifiers to scan).
 import { loadConfig } from '../config'
@@ -16,11 +17,37 @@ type Item = {
   state: string
   assignees: string[]
   target_date: string | null
+  updated_at: string
 }
+type Comment = { actor: string; created_at: string; comment_html: string }
+type Member = { id: string; display_name: string }
 type Page<T> = T[] | { results: T[]; next_page_results?: boolean; next_cursor?: string }
 
 const DONE = new Set(['completed', 'cancelled'])
 const MAX_TRIES = 5
+// Items I created for others get their last comment read only if they moved this recently: one
+// call each, and the server blocks a burst of calls for about 15 minutes.
+const RECENT_DAYS = 7
+
+// The newest comment as one line: who, when (local time), and the start of the text. A reply
+// to something I asked shows here even when no state changed.
+export function lastComment(comments: Comment[], names: Map<string, string>): string | null {
+  const last = comments.toSorted((a, b) => a.created_at.localeCompare(b.created_at)).at(-1)
+  if (!last) return null
+  const text = last.comment_html
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&amp;/g, '&')
+    .replace(/\s+/g, ' ')
+    .trim()
+  const when = new Date(last.created_at).toLocaleString('sv-SE').slice(5, 16)
+  const who = names.get(last.actor) ?? last.actor
+  return `  ↳ last comment ${who} ${when}: ${text.length > 120 ? `${text.slice(0, 120)}…` : text}`
+}
 
 // Blank-line paragraphs become <p>, line breaks <br>: Plane takes comments as HTML.
 export const toHtml = (text: string) =>
@@ -97,12 +124,20 @@ async function connect() {
     return fetched
   }
   const browse = (key: string) => `${plane.url}/${plane.workspace}/browse/${key}/`
-  return { plane, api, ws, call, all, states, browse }
+  let memberNames: Map<string, string> | undefined
+  async function commentLine(item: Item) {
+    memberNames ??= new Map(
+      (await all<Member>(`${ws}/members/`)).map((m) => [m.id, m.display_name]),
+    )
+    const url = `${ws}/projects/${item.project}/work-items/${item.id}/comments/`
+    return lastComment(await all<Comment>(url), memberNames)
+  }
+  return { plane, api, ws, call, all, states, browse, commentLine }
 }
 
 if (import.meta.main) {
   const [command = 'mine', ...keys] = Bun.argv.slice(2)
-  const { plane, api, ws, call, all, states, browse } = await connect()
+  const { plane, api, ws, call, all, states, browse, commentLine } = await connect()
 
   if (command === 'mine') {
     const me = await call<{ id: string }>(`${api}/users/me/`)
@@ -126,6 +161,28 @@ if (import.meta.main) {
         console.log(`- ${key} ${i.name} (${state}${due}) ${browse(key)}`)
       }
     }
+
+    // What I asked of others: answers come as comments on these, in any project, while the
+    // state often stays where it was.
+    const pql = encodeURIComponent('createdBy = currentUser() AND stateGroup IN openStates()')
+    const asked = (await all<Item>(`${ws}/work-items/?pql=${pql}`)).filter(
+      (i) => !i.assignees.includes(me.id),
+    )
+    const recent = Date.now() - RECENT_DAYS * 86_400_000
+    console.log(`## ${asked.length} open item(s) I created for others`)
+    for (const i of asked.toSorted((a, b) => b.updated_at.localeCompare(a.updated_at))) {
+      const project = projects.find((p) => p.id === i.project)
+      if (!project) throw new Error(`Plane item ${i.id} is in a project not listed for me`)
+      const key = `${project.identifier}-${i.sequence_id}`
+      const state = (await states(i.project)).get(i.state)?.name ?? '?'
+      console.log(
+        `- ${key} ${i.name} (${state}, updated ${i.updated_at.slice(0, 10)}) ${browse(key)}`,
+      )
+      if (Date.parse(i.updated_at) >= recent) {
+        const line = await commentLine(i)
+        if (line) console.log(line)
+      }
+    }
   } else if (command === 'get') {
     for (const key of keys) {
       const item = await call<Item>(`${ws}/work-items/${key}/`)
@@ -133,6 +190,8 @@ if (import.meta.main) {
       console.log(
         `- ${key} ${state?.group ?? '?'} ${state?.name ?? '?'} ${item.name} ${browse(key)}`,
       )
+      const line = await commentLine(item)
+      if (line) console.log(line)
     }
   } else if (command === 'comment') {
     const [key] = keys
