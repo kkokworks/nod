@@ -13,8 +13,9 @@ import {
   type Todo,
   type TodoDecision,
   type Todos,
+  type WatchCheck,
 } from './todos'
-import { ensureSchedule, tryWatch } from './triggers'
+import { SCHEDULE_OFF, scheduleEnv, tryWatch } from './triggers'
 import { nudgeLine, STALE_DAYS, type Trust } from './trust'
 import { changeText, indent, oneLine } from './view'
 import { message } from './worker'
@@ -43,10 +44,11 @@ export const TODO_USAGE = `  nod in <what...> [--notes <text>] [--source <channe
                                    --watch gives a waiting todo a command that nod's tick runs
                                    in <home> every 5 minutes (cd to a repo in it); once it exits
                                    0, or can no longer run, the todo is a next action again, with
-                                   a note. It runs once when given, and how it ended is shown;
-                                   one that does not parse, passes already, or that the shell
-                                   cannot run, is refused. Keep secrets out of it: it is kept in
-                                   the notes and history. A <day> is
+                                   a note. It runs once when given, with the schedule's PATH; one
+                                   that does not parse, passes already, or that the shell cannot
+                                   run, is refused. When it last ran and how it ended show with
+                                   the todo. Keep secrets out of it: it is kept in the notes and
+                                   history. A <day> is
                                    YYYY-MM-DD, today or tomorrow; --due and --on also take a time,
                                    '<day> HH:MM'. --on is a day- or time-specific action, --start
                                    leaves it out of the lists until that day, and --focus picks it
@@ -268,7 +270,7 @@ async function setTodo(todos: Todos, home: string, args: string[]): Promise<void
   }
   // A new watch runs once, which can take a while, so only for an edit that holds.
   if (typeof watch === 'string') todos.check(id, edit)
-  const tried = typeof watch === 'string' ? await tryWatch(watch, home) : null
+  const tried = typeof watch === 'string' ? { watch, ...(await tryWatch(watch, home)) } : null
   // A line added below the notes, so recording why leaves what was there alone. Read after the
   // watch ran, so nothing written meanwhile is lost.
   const notes =
@@ -276,11 +278,22 @@ async function setTodo(todos: Todos, home: string, args: string[]): Promise<void
       ? cleared(values.notes)
       : [todos.get(id).notes, added].filter((x) => x !== null).join('\n')
   const todo = todos.set(id, { ...edit, notes }, actorFromEnv(), values.link ?? [])
-  // Only the tick runs a watch. It takes itself off once nothing is left to watch.
-  if (typeof watch === 'string') await ensureSchedule(todos.ledger, home)
+  if (tried !== null) todos.recordCheck(id, tried.watch, tried.code, tried.output)
   console.log(line(todos, todo))
-  if (tried !== null) console.log(`  ${tried}`)
+  if (tried === null) return
+  console.log(`  ${checkText(todos.lastCheck(todo))}`)
+  if (scheduleEnv(home) === null) console.log(`  ${SCHEDULE_OFF}`)
 }
+
+// When a watch last ran and how it ended, so the person sees it is alive and why it has not passed.
+function checkText(check: WatchCheck | null): string {
+  if (check === null) return checkedWhen(check)
+  const said = check.output === '' ? '' : `: ${oneLine(check.output, 200)}`
+  return `${checkedWhen(check)}, exit ${check.code}${said}`
+}
+
+const checkedWhen = (check: WatchCheck | null): string =>
+  check === null ? 'not checked yet' : `checked ${localTime(new Date(check.at))}`
 
 function finishTodos(todos: Todos, sub: 'done' | 'drop', refs: string[]): void {
   if (refs.length === 0) {
@@ -297,7 +310,7 @@ function showTodo(todos: Todos, id: number): void {
   const where = tags(todos, t)
   if (where.length > 0) console.log(`  ${where.join(' · ')}`)
   console.log(`  from ${t.source}${t.sourceKey === null ? '' : ` ${t.sourceKey}`}`)
-  if (t.watch !== null) console.log(`  watch ${t.watch}`)
+  if (t.watch !== null) console.log(`  watch ${t.watch}\n    ${checkText(todos.lastCheck(t))}`)
   for (const l of todos.links(id)) {
     console.log(`  link ${l.url}${l.title === null ? '' : ` (${l.title})`}`)
   }
@@ -488,7 +501,7 @@ function tags(todos: Todos, t: Todo): string[] {
     t.context,
     project === null ? null : `p${project.id} ${project.title}`,
     on === null ? null : `waiting on ${on}`,
-    t.watch === null ? null : 'watched',
+    t.watch === null ? null : `watched, ${checkedWhen(todos.lastCheck(t))}`,
     t.scheduled === null ? null : `scheduled ${t.scheduled}`,
     t.due === null ? null : `due ${t.due}`,
     t.start === null ? null : `starts ${t.start}`,

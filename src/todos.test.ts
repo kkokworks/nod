@@ -147,6 +147,22 @@ test('a watch is only for a waiting todo, and passing it makes the todo next aga
   expect(todos.set(u.id, { status: 'done' }, 'human').watch).toBeNull()
 })
 
+test('the last check of a watch is the one it ran in this wait', () => {
+  const todos = fresh()
+  const t = todos.set(captured(todos, 'Hear back').id, { status: 'waiting', watch: 'a' }, 'human')
+  expect(todos.lastCheck(t)).toBeNull()
+  todos.recordCheck(t.id, 'a', 1, 'not yet')
+  todos.recordCheck(t.id, 'a', 2, 'still not')
+  expect(todos.lastCheck(t)).toMatchObject({ watch: 'a', code: 2, output: 'still not' })
+  // Another watch has not run yet, nor has the same one in a later wait, nor one whose run was
+  // for the watch before.
+  expect(todos.lastCheck(todos.set(t.id, { watch: 'b' }, 'human'))).toBeNull()
+  todos.set(t.id, { status: 'next' }, 'human')
+  expect(todos.lastCheck(todos.set(t.id, { status: 'waiting', watch: 'a' }, 'human'))).toBeNull()
+  todos.recordCheck(t.id, 'b', 1, '')
+  expect(todos.lastCheck(todos.get(t.id))).toBeNull()
+})
+
 test('a todo waiting on its task has no watch: handing it over drops one, and none is given', () => {
   const { ledger, todos } = books()
   const t = captured(todos, 'Ship the fix')

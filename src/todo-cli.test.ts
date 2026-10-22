@@ -134,6 +134,28 @@ test('a channel key is captured once, and bad input is refused without changing 
   expect(await ok('todo', '--all')).toEqual(['t1    inbox     Review the PR  · since <time>'])
 })
 
+test('a watch shows when it last ran and how, and says when nothing will run it', async () => {
+  const { ok } = runner()
+  await ok('in', 'Hear back on the quote')
+  expect(
+    await ok('todo', 'set', 't1', '--status', 'waiting', '--watch', 'echo not yet; exit 1'),
+  ).toEqual([
+    't1    waiting   Hear back on the quote  · watched, checked <time> · since <time>',
+    '  checked <time>, exit 1: not yet',
+    '  the schedule is off, so nothing runs it yet: turn it on with `nod schedule on`',
+  ])
+  expect(await ok('todo', 't1')).toEqual([
+    't1 waiting: Hear back on the quote',
+    '  watched, checked <time> · since <time>',
+    '  from cli',
+    '  watch echo not yet; exit 1',
+    '    checked <time>, exit 1: not yet',
+    '  changes',
+    '    <time>  human  title — → Hear back on the quote, status — → inbox, source — → cli',
+    '    <time>  human  status inbox → waiting, watch — → echo not yet; exit 1',
+  ])
+})
+
 test('the todos of a someday project leave the lists until it is named', async () => {
   const { ok } = runner()
   await ok('project', 'add', 'Trip')

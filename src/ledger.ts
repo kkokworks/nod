@@ -288,8 +288,19 @@ const MIGRATIONS = [
   alter table todos add column repeat text;
   alter table todos add column focus text;
   `,
-  // v13: a waiting todo's watch, the command that tells when what it waits on has happened.
-  'alter table todos add column watch text;',
+  // v13: a waiting todo's watch, the command that tells when what it waits on has happened, and
+  // what it said when last run. A check is not a change to the todo, so it is kept apart from the
+  // todo and its history, one row per todo.
+  `
+  alter table todos add column watch text;
+  create table watch_checks (
+    todo_id integer primary key references todos(id),
+    watch text not null,
+    at text not null,
+    code integer not null,
+    output text not null
+  );
+  `,
 ]
 
 // The tables as the migrations leave them, in camelCase; CamelCasePlugin maps names to snake_case.

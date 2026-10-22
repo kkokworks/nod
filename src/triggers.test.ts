@@ -73,12 +73,14 @@ test('a tick with watches brings back the todo whose watch exits 0, or can no lo
     'next',
   ])
   expect(todos.get(gone).notes).toMatch(/ watch cannot run \(.*not found\): no-such-command-here$/)
+  // Each run is kept, for the watch it ran.
+  expect(todos.lastCheck(todos.get(never))).toMatchObject({ watch: 'exit 2', code: 2, output: '' })
   expect(todos.watched().map((t) => t.id)).toEqual([never])
 })
 
 test('a timed-out command ends with all of its pipeline, not only the shell', async () => {
   const started = Date.now()
-  const { code } = await shell('sleep 5 | cat', tmp.make('nod-shell-'), 200)
+  const { code } = await shell('sleep 5 | cat', tmp.make('nod-shell-'), process.env, 200)
   expect(code).not.toBe(0)
   expect(Date.now() - started).toBeLessThan(2000)
 })

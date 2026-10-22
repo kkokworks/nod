@@ -44,9 +44,10 @@ nod gc 1             # 작업 1을 다 처리함: 세션·worktree 와 머지된
 
 `--issue` 로 이슈를 주면 `nod ls` 는 그 작업을 이슈 아래에 묶어 보여 주고, 결정 목록과 알림에도 이슈가 붙습니다. 한 이슈를 여러 작업으로 나눠도 같은 키를 주면 함께 보입니다.
 
-정해진 때나 새 항목마다 할 일은 트리거로 맡깁니다. 트리거가 있는 동안 OS 스케줄러(macOS launchd, Linux crontab)가 매분 `nod tick` 을 돌립니다.
+정해진 때나 새 항목마다 할 일은 트리거로 맡깁니다. `nod schedule on` 으로 한 번 켜 두면 OS 스케줄러(macOS launchd, Linux crontab)가 매분 `nod tick` 을 돌립니다. 켠 셸의 `PATH`·`CLAUDE_CONFIG_DIR` 로 돌기 때문에, 워커가 쓸 Claude 설정이 있는 터미널에서 켭니다.
 
 ```sh
+nod schedule on
 nod trigger add '0 9 * * MON-FRI' '어제 머지된 PR 을 요약해 줘' --repo ~/code/app
 nod trigger add '*/10 * * * *' '이 이슈의 원인을 조사해 줘' \
   --source "gh issue list --assignee @me --json number,title --jq '.[] | \"\(.number)\t\(.title)\"'"

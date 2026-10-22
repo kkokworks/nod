@@ -126,6 +126,8 @@ export type TodoFilter = {
   // Leaves out the todos that start after this day; null shows them.
   day: string | null
 }
+// What a watch said when it last ran: its exit code and the end of its output.
+export type WatchCheck = { watch: string; at: string; code: number; output: string }
 // What a day holds besides its events, each todo once, in the first group it is in.
 export type DayTodos = { overdue: Todo[]; scheduled: Todo[]; due: Todo[]; focus: Todo[] }
 
@@ -135,6 +137,7 @@ type Tables = {
   projects: Omit<Project, 'id'> & { id: Generated<number> }
   todoLinks: { todoId: number; url: string; title: string | null; createdAt: string }
   todoChanges: ChangeRow & { todoId: number }
+  watchChecks: { todoId: number } & WatchCheck
   projectChanges: ChangeRow & { projectId: number }
 }
 
@@ -270,6 +273,8 @@ export class Todos {
         )
         this.recordTodo(id, actor, change, at)
         if ('status' in change && after.status === 'done') this.repeatNext(id, actor)
+        // A new watch, or none, has not run yet.
+        if ('watch' in change) this.run(q.deleteFrom('watchChecks').where('todoId', '=', id))
       }
       for (const url of links) this.link(id, url, null, actor)
       return this.get(id)
@@ -427,6 +432,30 @@ export class Todos {
     return this.run(
       q.selectFrom('todos').selectAll().where('status', '=', 'waiting').orderBy('id'),
     ).filter((t): t is Todo & { watch: string } => t.watch !== null)
+  }
+
+  // Keeps what a watch said when it ran, in place of what it said before.
+  recordCheck(id: number, watch: string, code: number, output: string): void {
+    const check = { watch, at: now(), code, output }
+    this.run(
+      q
+        .insertInto('watchChecks')
+        .values({ todoId: id, ...check })
+        .onConflict((oc) => oc.column('todoId').doUpdateSet(check)),
+    )
+  }
+
+  // What the todo's watch said when it last ran; null before it has run. One that ran while the
+  // watch was changed is for the old watch, not this one.
+  lastCheck(t: Todo): WatchCheck | null {
+    if (t.watch === null) return null
+    return this.first(
+      q
+        .selectFrom('watchChecks')
+        .select(['watch', 'at', 'code', 'output'])
+        .where('todoId', '=', t.id)
+        .where('watch', '=', t.watch),
+    )
   }
 
   // Makes a watched todo a next action again once its watch has ended, with a line in its notes
