@@ -4,7 +4,7 @@ Slack MCP 서버의 도구로 읽습니다.
 
 ## 설치
 
-- 필요한 것: `saved_list`·`saved_update`·`conversations_unreads`·`conversations_history`·`conversations_search_messages` 도구를 주는 Slack MCP 서버. 이 PC 에 로컬로 설치해 Claude Code 에 등록합니다.
+- 필요한 것: `saved_list`·`saved_update`·`conversations_unreads`·`conversations_history`·`conversations_search_messages`·`users_search` 도구를 주는 Slack MCP 서버. 이 PC 에 로컬로 설치해 Claude Code 에 등록합니다.
 - 사용자: Slack 토큰은 MCP 서버 설정에 직접 넣습니다. 대화에 붙이지 않습니다.
 - config.json 의 `slack` 에 넣을 값:
   ```json
@@ -27,7 +27,8 @@ Slack MCP 서버의 도구로 읽습니다.
 
 - 항목이 생긴 뒤 사용자가 그 스레드에 답했으면 회신 항목은 끝난 것입니다.
 - 상대가 확인·완료를 알렸으면("값이 일치합니다", "폐기했습니다") 그 일을 기다리던 항목도 끝난 것입니다.
-- 항목에 스레드 링크가 없으면 제목·메모에 있는 식별자(`<레포>#40`, `ENG-12`)를 그대로 검색어로 써서 `conversations_search_messages` 로 찾습니다. 주제 낱말로 바꿔 짐작해 찾지 않습니다. 상대 이름으로도 찾습니다.
+- 항목에 스레드 링크가 없으면 제목·메모에 있는 식별자(`<레포>#40`, `ENG-12`)를 그대로 검색어로 써서 `conversations_search_messages` 로 찾습니다. 주제 낱말로 바꿔 짐작해 찾지 않습니다.
+- 식별자 없이 끝나는 일도 많으니 그 일의 상대와 나눈 글도 찾습니다. `users_search` 로 상대 ID 를 찾고, `conversations_search_messages` 에 `filter_users_from: <selfId>`·`filter_users_with: <상대 ID>`·`filter_date_after: <14일 전>` 을 줍니다. 채널 스레드와 DM 이 함께 나옵니다.
 - 대기 항목은 대기로 둔 뒤(`statusAt`) 상대가 남긴 말이 있는지 "모으기" 3·4번 결과에서도 찾습니다. 답은 링크와 다른 곳(PR 일인데 이슈 댓글, 이슈 일인데 채널 스레드)에 오는 일이 많습니다.
 - 일부만 답했을 수 있으므로, 사람 없이 돌 때는 이 근거만으로 완료하지 않고 남겨 둡니다.
 
