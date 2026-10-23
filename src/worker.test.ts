@@ -598,6 +598,8 @@ test('a repo worker is told to have a subagent review its branch from where it s
   const [inRepo, alone] = [task('/repo'), task(null)]
   const prompt = workerPrompt(ledger, inRepo)
   expect(prompt).toContain('have a subagent (Agent tool) review `git diff <start>..HEAD`')
+  // A worker that left it running in the background stopped to wait, as a question to the human.
+  expect(prompt).toContain('wait for its result in\nthis same turn, not in the background')
   expect(prompt).toContain('file:line')
   expect(prompt).toContain('its confidence')
   expect(firstMessage(ledger, inRepo, 'abc123')).toBe(

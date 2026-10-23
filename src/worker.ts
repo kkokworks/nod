@@ -32,13 +32,14 @@ NOD: in {"title": "<what to do>", "notes": "<optional>", "link": "<optional URL>
 nod puts them in once it accepts your done. With a source and key, an item goes in only once.`
 // A repo worker also has its change reviewed before it reports done, by a subagent that knows what
 // was asked but not the worker's reasons. nod's independent review after done stays the last word.
-const SUBAGENT_REVIEW_PROMPT = `Before you report done, have a subagent (Agent tool) review \`git diff <start>..HEAD\`, with the
-start commit from your first message. Give it only the brief, what the human said since, and that
+const SUBAGENT_REVIEW_PROMPT = `Before you report done, commit, then have a subagent (Agent tool) review \`git diff <start>..HEAD\`,
+with the start commit from your first message. Run it in the foreground and wait for its result in
+this same turn, not in the background. Give it only the brief, what the human said since, and that
 range, not your reasons. It changes no files and checks that the asked work is done, that each new
 test fails on the code before the change, and for bugs the change adds (boundaries, swallowed
 errors, races, lost data, injection, leaked secrets), reporting each as file:line, a scenario that
-reproduces it, and its confidence. Fix the findings that have a scenario and have it review again.
-In your final report, list each finding and what you did with it (fixed, or why not).`
+reproduces it, and its confidence. Fix the findings that have a scenario, commit, and have it review
+again. In your final report, list each finding and what you did with it (fixed, or why not).`
 
 const RESUME_PROMPT =
   'Your session was interrupted. Check the current state of this directory and continue the task.'
@@ -240,8 +241,8 @@ export async function startReady(ledger: Ledger, home: string): Promise<number[]
 // The worker hears the acceptance check up front: a retrospective found workers could not follow
 // a brief that disagreed with a check they only saw after failing it.
 // `start`: the commit a repo task's branch starts at, for the subagent review (SUBAGENT_REVIEW_PROMPT).
-// ponytail: only here, so a conversation Claude Code compacts may lose it; move it to the system
-// prompt if workers start asking for it.
+// ponytail: only here, so a conversation Claude Code compacts may lose it, and a worktree restore
+// rebuilds on a new branch keeps the old start; tell the worker again if that bites.
 export function firstMessage(ledger: Ledger, task: Task, start: string | null): string {
   const since = start === null ? '' : `\n\nYour branch starts at commit ${start}.`
   const check =
