@@ -32,6 +32,31 @@ export function int(v: unknown, what: string): number {
   return v
 }
 
+// The Done page shows this many of each list at first, and this many more at a time.
+export const SHOWN_STEP = 100
+// The most a page can ask for: each 5-second reload makes every row shown again.
+export const SHOWN_MAX = 5000
+
+// How many of a list to show: the number of rows the page asks for.
+export function shown(v: unknown, what: string): number {
+  const n = int(v, what)
+  if (n < 1 || n > SHOWN_MAX) throw new Error(`${what} must be from 1 to ${SHOWN_MAX}`)
+  return n
+}
+
+// The Done page's three lists, each with how many of it to show.
+export const DONE_LISTS = ['done', 'dropped', 'collected'] as const
+export type DoneShown = Record<(typeof DONE_LISTS)[number], number>
+
+export function doneShown(v: unknown): DoneShown {
+  const o = record(v, 'shown')
+  return {
+    done: shown(o.done, 'done'),
+    dropped: shown(o.dropped, 'dropped'),
+    collected: shown(o.collected, 'collected'),
+  }
+}
+
 export function text(v: unknown, what: string): string {
   if (typeof v !== 'string') throw new Error(`${what} must be text`)
   return v

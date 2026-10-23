@@ -38,13 +38,19 @@ export type Place = { todo: Todo | null; project: Project | null }
 
 export type OpenDecision = Decision & { brief: string; issue: string | null; todoId: number | null }
 
+// The start of a list that only grows, and how long the whole list is.
+export type Shown<T> = { items: T[]; total: number }
+
+// The sidebar's collected tasks; the rest are on the Done page.
+const SIDE_COLLECTED = 20
+
 export type Overview = {
   decisions: OpenDecision[]
   // Tasks by the project of the todo they do. What needs the person comes first, in a group and
   // between groups; the tasks in no project come last.
   groups: { project: Project | null; tasks: TaskRow[] }[]
   // What gc collected, which `nod ls` lists only with --all.
-  collected: TaskRow[]
+  collected: Shown<TaskRow>
   triggers: Trigger[]
   stats: Stats
   // For the sidebar's link to the todos.
@@ -85,7 +91,7 @@ export function overview(): Overview {
           Number(a.project === null) - Number(b.project === null) ||
           (a.project?.id ?? 0) - (b.project?.id ?? 0),
       ),
-    collected: tasks.filter((t) => t.collectedAt !== null).map((t) => row(todos, t)),
+    collected: latestCollected(todos, tasks, SIDE_COLLECTED),
     triggers: ledger.triggers(),
     stats: ledger.stats(),
     inbox: todos.list({
@@ -96,6 +102,17 @@ export function overview(): Overview {
       day: null,
     }).length,
   }
+}
+
+export const collected = (limit: number): Shown<TaskRow> =>
+  latestCollected(new Todos(ledger), ledger.list(), limit)
+
+// The latest collected first; a row is made only for those shown.
+function latestCollected(todos: Todos, tasks: Task[], limit: number): Shown<TaskRow> {
+  const all = tasks
+    .filter((t) => t.collectedAt !== null)
+    .sort((a, b) => (b.collectedAt ?? '').localeCompare(a.collectedAt ?? '') || b.id - a.id)
+  return { items: all.slice(0, limit).map((t) => row(todos, t)), total: all.length }
 }
 
 export function detail(id: number): Detail {

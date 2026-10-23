@@ -16,8 +16,8 @@ import {
 import type { Trust } from '../../src/trust'
 import { changeText } from '../../src/view'
 import { message } from '../../src/worker'
-import type { RawEdit, RawProjectEdit } from './input'
-import { home, ledger } from './nod.server'
+import type { DoneShown, RawEdit, RawProjectEdit } from './input'
+import { collected, home, ledger, type Shown, type TaskRow } from './nod.server'
 
 // Changes made here record this actor. The server may run inside a Claude session, where the
 // environment would make them claude's.
@@ -42,7 +42,13 @@ export type Lists = {
   projects: Project[]
 }
 
-export type DonePage = { today: string; done: TodoItem[]; dropped: TodoItem[] }
+export type DonePage = {
+  today: string
+  done: Shown<TodoItem>
+  dropped: Shown<TodoItem>
+  // The tasks gc collected, which the sidebar shows only the latest of.
+  collected: Shown<TaskRow>
+}
 
 export type TodoPage = {
   today: string
@@ -104,14 +110,12 @@ export function lists(): Lists {
   }
 }
 
-// ponytail: the latest hundred of each; a search of older ones when the list is outgrown.
-const DONE_SHOWN = 100
-
 // What was finished or dropped, the latest first, so a todo closed by mistake can be found and
-// moved back.
-export function donePage(): DonePage {
-  const of = (status: TodoStatus): TodoItem[] =>
-    todos
+// moved back; and the tasks collected. `shown` says how many of each the page asked for.
+// ponytail: the page asks for more a hundred at a time; a search of older ones when that is outgrown.
+export function donePage(shown: DoneShown): DonePage {
+  const of = (status: 'done' | 'dropped'): Shown<TodoItem> => {
+    const all = todos
       .list({
         statuses: [status],
         context: null,
@@ -120,9 +124,14 @@ export function donePage(): DonePage {
         day: null,
       })
       .sort((a, b) => b.statusAt.localeCompare(a.statusAt))
-      .slice(0, DONE_SHOWN)
-      .map(item)
-  return { today: localDay(new Date()), done: of('done'), dropped: of('dropped') }
+    return { items: all.slice(0, shown[status]).map(item), total: all.length }
+  }
+  return {
+    today: localDay(new Date()),
+    done: of('done'),
+    dropped: of('dropped'),
+    collected: collected(shown.collected),
+  }
 }
 
 export function todoPage(id: number): TodoPage {
