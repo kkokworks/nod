@@ -749,6 +749,19 @@ test("tasks that start at once trust nod's work folder once, together", async ()
   expect(entries('launch').filter((l) => l.sessionId === 'missing')).toHaveLength(1)
 })
 
+test("Claude Code's default folder trusts nod's work folder for itself, whatever an older nod left", async () => {
+  // An older nod's mark, for the account of the shell that started it, whichever that was.
+  writeFileSync(join(home, 'work', '.trusted'), '')
+  const current = join(home, 'account')
+  writeFileSync(current, '') // no account: Claude Code's default folder
+  setAccountRule(home, { file: current })
+  const id = await add('first')
+  await reaches(id, 'succeeded')
+  // The fake gives a session nod starts without an ID (the trust check's) the ID `missing`.
+  const checks = entries('launch').filter((l) => l.sessionId === 'missing')
+  expect(checks.map((l) => l.config)).toEqual([null])
+})
+
 type Heard = { event: string; task?: { id: number }; error?: string; reason?: string }
 
 // Makes <home>/notify keep each event, and returns what it has kept so far. One file per event,

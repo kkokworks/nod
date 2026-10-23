@@ -1245,8 +1245,11 @@ async function trustWork(home: string, config: string | null, trusted: string): 
   writeFileSync(trusted, '')
 }
 
+// Named after the account, Claude Code's default folder (null) too: `.trusted`, which nod wrote
+// before it had accounts, is for whatever account its shell had, and the default folder may never
+// have trusted the work folder.
 export const trustedFile = (home: string, config: string | null): string =>
-  join(home, 'work', config === null ? '.trusted' : `.trusted-${Bun.hash(config).toString(36)}`)
+  join(home, 'work', `.trusted-${Bun.hash(config ?? '').toString(36)}`)
 
 // Picks "Yes" in the trust dialog and waits until the session has started. Keys sent before the
 // dialog takes input are lost, so act on what is selected right now, and press Enter only with
