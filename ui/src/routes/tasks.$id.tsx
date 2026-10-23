@@ -97,6 +97,12 @@ function TaskPage() {
               {retro.outcome !== null && `, ${retro.outcome}`}
             </span>
           )}
+          {retro?.rules.map((r) => (
+            <span key={r.id} className="tag" title={r.text}>
+              rule {r.id} {r.state}
+              {r.edited && ', edited'}
+            </span>
+          ))}
           {after.map((a) => (
             <span key={a.id} className="tag">
               after{' '}

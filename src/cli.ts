@@ -4,7 +4,15 @@ import { join, resolve } from 'node:path'
 import { parseArgs } from 'node:util'
 import { sweep } from './done'
 import { collect, type GcPick, type GcReport, remotesHolding } from './gc'
-import { type Attempt, type Decision, Ledger, nodHome, type Task, type Trigger } from './ledger'
+import {
+  type Attempt,
+  type Decision,
+  Ledger,
+  nodHome,
+  type Rule,
+  type Task,
+  type Trigger,
+} from './ledger'
 import { pullRequests } from './prs'
 import { Terminals } from './tmux'
 import {
@@ -92,6 +100,14 @@ const USAGE = `usage:
                                    which is also the task's issue). In a repo each task works on
                                    the branch <prefix>/<task>
   nod trigger ls | rm <trigger>
+  nod rule ls                      the rules every worker gets after the built-in ones: each one's
+                                   number, on or off, the retrospective r<n> it came from, and
+                                   the rule. Answering yes to a rule decision adds one
+  nod rule add <rule...>           add a rule of your own
+  nod rule edit <rule> <rule...>   reword a rule
+  nod rule off|on <rule>           stop or start giving a rule to workers. Nothing deletes a rule,
+                                   so where one came from stays known. Each change records who
+                                   made it, as a todo's do; a worker cannot make one
   nod schedule [on | off]          whether the OS scheduler runs the tick every minute; on, it
                                    runs with this shell's PATH and Claude config dir, which the
                                    triggers' workers and the watches use. It stays on until off
@@ -171,6 +187,9 @@ switch (command) {
   case 'trigger':
     await trigger(rest)
     break
+  case 'rule':
+    rule(rest)
+    break
   case 'schedule':
     await schedule(rest)
     break
@@ -203,7 +222,7 @@ switch (command) {
       console.error(USAGE)
       process.exit(1)
     }
-    await answer(ledger, home, id, words(rest))
+    await answer(ledger, home, id, words(rest), actorFromEnv())
     console.log(`answered; sent to task #${ledger.decision(id).taskId}`)
   }
 }
@@ -293,6 +312,37 @@ async function trigger([sub, ...args]: string[]): Promise<void> {
   } else {
     throw new Error(USAGE)
   }
+}
+
+function rule([sub, ...args]: string[]): void {
+  if (sub === 'ls' && args.length === 0) {
+    for (const r of ledger.rules()) printRule(r)
+    return
+  }
+  // A rule reaches every later worker. The sandbox already keeps a worker out of the ledger; this
+  // refuses plainly should a write path ever open.
+  if (process.env.NOD_TASK !== undefined) throw new Error('a worker cannot change the rules')
+  const actor = actorFromEnv()
+  if (sub === 'add') {
+    printRule(ledger.addRule(words(args), null, actor))
+  } else if (sub === 'edit') {
+    printRule(ledger.setRule(ruleId(args[0]), { text: words(args.slice(1)) }, actor))
+  } else if ((sub === 'on' || sub === 'off') && args.length === 1) {
+    printRule(ledger.setRule(ruleId(args[0]), { state: sub }, actor))
+  } else {
+    throw new Error(USAGE)
+  }
+}
+
+function ruleId(ref: string | undefined): number {
+  const id = Number(ref)
+  if (!Number.isInteger(id)) throw new Error(`not a rule number: ${ref}`)
+  return id
+}
+
+function printRule(r: Rule): void {
+  const from = r.retroId === null ? '' : `r${r.retroId}`
+  console.log(`${String(r.id).padEnd(4)} ${r.state.padEnd(3)} ${from.padEnd(5)} ${r.text}`)
 }
 
 async function schedule([sub, ...extra]: string[]): Promise<void> {
@@ -455,6 +505,11 @@ function show(id: number): void {
   if (task.retroId !== null) {
     const r = ledger.retro(task.retroId)
     console.log(`  retrospective: r${r.id} of #${r.ofTaskId}${r.outcome ? `, ${r.outcome}` : ''}`)
+    // The rule it added, as it stands now: edited once its words differ from the proposal.
+    for (const added of ledger.rules().filter((x) => x.retroId === r.id)) {
+      const edited = added.text === r.rule ? '' : ', edited'
+      console.log(`  rule ${added.id} ${added.state}${edited}: ${added.text}`)
+    }
   }
   if (task.todoId !== null) console.log(`  todo: t${task.todoId}`)
   for (const url of ledger.links(id)) console.log(`  link: ${url}`)

@@ -5,7 +5,7 @@ import { z } from 'zod'
 import type { AttemptKind, DecisionReason, Ledger, Task } from './ledger'
 import { notify, taskRef } from './notify'
 import { type Changes, reviewBrief } from './review'
-import { addRule, hadTrouble, isNoRule, readRules, retroBrief, rulesPath } from './rules'
+import { activeRules, hadTrouble, isNoRule, retroBrief } from './rules'
 import { quote, Terminals } from './tmux'
 import { Todos } from './todos'
 
@@ -126,7 +126,7 @@ export async function startTask(ledger: Ledger, home: string, taskId: number): P
   const started = task.repo === null ? null : startedMarker(home, taskId)
   try {
     if (started !== null) rmSync(started, { force: true })
-    launch(home, taskId, cwd, ['--session-id', sessionId], prompt, task.model, started)
+    launch(ledger, home, taskId, cwd, ['--session-id', sessionId], prompt, task.model, started)
     if (started !== null) await awaitStart(ledger, home, task, attemptId, started)
   } catch (error) {
     ledger.failAttempt(attemptId, message(error))
@@ -168,11 +168,13 @@ function baseOf(ledger: Ledger, task: Task): Task | null {
   return ledger.after(task.id).find((a) => task.repo !== null && a.repo === task.repo) ?? null
 }
 
+// `actor`: who answers, recorded on the rule a yes to a rule decision adds.
 export async function answer(
   ledger: Ledger,
   home: string,
   decisionId: number,
   text: string,
+  actor: string,
 ): Promise<void> {
   const decision = ledger.decision(decisionId)
   const yes = /^y(es)?$/i.test(text.trim())
@@ -190,13 +192,15 @@ export async function answer(
   })
   // The retrospective proposed the rule as its report; adding it is all that is left to do.
   if (decision.reason === 'rule') {
-    const rule = ledger.attempt(decision.attemptId).summary
-    if (!rule) throw new Error(`decision ${decisionId} has no rule to add`)
     const { retroId } = ledger.get(decision.taskId)
     if (retroId === null) throw new Error(`decision ${decisionId} is on no retrospective`)
-    addRule(home, rule)
-    ledger.endRetro(retroId, 'added')
-    ledger.succeed(decision.taskId)
+    const { rule } = ledger.retro(retroId)
+    if (!rule) throw new Error(`decision ${decisionId} has no rule to add`)
+    ledger.db.transaction(() => {
+      ledger.addRule(rule, retroId, actor)
+      ledger.endRetro(retroId, 'added')
+      ledger.succeed(decision.taskId)
+    })()
     return
   }
   const terminals = Terminals.of(home)
@@ -255,7 +259,7 @@ export async function drop(ledger: Ledger, home: string, decisionId: number): Pr
 async function startRetro(ledger: Ledger, home: string, task: Task): Promise<void> {
   if (task.retroId !== null || ledger.retroFor(task.id) !== null) return
   if (!hadTrouble(ledger, task.id)) return
-  const id = ledger.addRetro(task, retroBrief(ledger, task, workerPrompt(home)))
+  const id = ledger.addRetro(task, retroBrief(ledger, task, workerPrompt(ledger)))
   await startTask(ledger, home, id).catch((error) =>
     notify(home, { event: 'error', task: taskRef(ledger.get(id)), error: message(error) }),
   )
@@ -378,7 +382,7 @@ async function settle(
         task.id,
         attemptId,
         'rule',
-        `Task #${retro.ofTaskId} ran into trouble, and its retrospective r${retro.id} proposes this rule for every future worker:\n${summary}\nAnswer yes to add it to ${rulesPath(home)}; anything else drops it.`,
+        `Task #${retro.ofTaskId} ran into trouble, and its retrospective r${retro.id} proposes this rule for every future worker:\n${summary}\nAnswer yes to add it to the rules every worker gets (nod rule ls); anything else drops it.`,
       )
       return null
     }
@@ -529,7 +533,17 @@ function deliver(
   })
   try {
     if (live) terminals.send(name, text)
-    else launch(home, taskId, task.workspace, ['--resume', last.sessionId], text, task.model, null)
+    else
+      launch(
+        ledger,
+        home,
+        taskId,
+        task.workspace,
+        ['--resume', last.sessionId],
+        text,
+        task.model,
+        null,
+      )
   } catch (error) {
     ledger.failAttempt(attemptId, message(error))
     ledger.error(taskId, message(error))
@@ -538,6 +552,7 @@ function deliver(
 }
 
 function launch(
+  ledger: Ledger,
   home: string,
   taskId: number,
   cwd: string,
@@ -557,16 +572,16 @@ function launch(
     '--settings',
     workerSettings(started),
     '--append-system-prompt',
-    workerPrompt(home),
+    workerPrompt(ledger),
     ...(model === null ? [] : ['--model', model]),
     prompt,
   ]
   Terminals.of(home).start(sessionName(taskId), cwd, argv, workerEnv(home, taskId))
 }
 
-// The built-in rules, then the ones the human approved from retrospectives.
-function workerPrompt(home: string): string {
-  const rules = readRules(home)
+// The built-in rules, then the ledger's rules that are on.
+function workerPrompt(ledger: Ledger): string {
+  const rules = activeRules(ledger)
   if (rules === '') return WORKER_PROMPT
   return `${WORKER_PROMPT}\nRules the human approved for every task:\n${rules}`
 }
