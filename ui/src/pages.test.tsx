@@ -1,9 +1,9 @@
-import { afterAll, beforeEach, expect, mock, test } from 'bun:test'
+import { afterAll, beforeEach, expect, mock, setSystemTime, test } from 'bun:test'
 import { GlobalRegistrator } from '@happy-dom/global-registrator'
 import type { AnyRoute } from '@tanstack/react-router'
 import { tempDirs } from '../../test/tmp'
 
-// The forms on the real pages, in a DOM, under a router; the server functions are answered here.
+// The real pages and rows, in a DOM, under a router; the server functions are answered here.
 GlobalRegistrator.register()
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 
@@ -33,16 +33,29 @@ mock.module('@tanstack/react-start', () => ({
 const tmp = tempDirs()
 process.on('exit', tmp.removeAll)
 const before = process.env.NOD_HOME
-process.env.NOD_HOME = tmp.make('nod-ui-forms-')
+process.env.NOD_HOME = tmp.make('nod-ui-pages-')
 const { act } = await import('react')
 const { createRoot } = await import('react-dom/client')
 const R = await import('@tanstack/react-router')
 const tasks = await import('./routes/tasks.$id')
 const todos = await import('./routes/todos_.$id')
+const { TodoRow } = await import('./todo-parts')
 if (before === undefined) delete process.env.NOD_HOME
 else process.env.NOD_HOME = before
 
 const root = R.createRootRoute() as unknown as AnyRoute
+// A list of todo rows, as the list pages show them.
+let rows: ReturnType<typeof todoItem>[] = []
+const rowsRoute = R.createRoute({
+  getParentRoute: () => root,
+  path: '/rows',
+  loader: () => rows,
+  component: function Rows() {
+    return (rowsRoute.useLoaderData() as typeof rows).map((t) => (
+      <TodoRow key={t.id} t={t as never} today="2026-10-23" usual="next" />
+    ))
+  },
+})
 const router = R.createRouter({
   routeTree: root.addChildren([
     tasks.Route.update({
@@ -55,6 +68,7 @@ const router = R.createRouter({
       path: '/todos/$id',
       getParentRoute: () => root,
     } as never),
+    rowsRoute,
   ]),
   history: R.createMemoryHistory({ initialEntries: ['/'] }),
   defaultNotFoundComponent: () => null,
@@ -107,9 +121,40 @@ async function submit(selector: string) {
   })
   await settle()
 }
+async function press(code: string, key: string) {
+  act(() => {
+    document.activeElement?.dispatchEvent(
+      new KeyboardEvent('keydown', { code, key, bubbles: true }),
+    )
+  })
+  await settle()
+}
 const banners = () => [...document.querySelectorAll('.banner')].map((b) => b.textContent)
 
 const AT = '2026-10-23T09:00:00.000Z'
+
+const todoItem = (id: number, title: string) => ({
+  id,
+  title,
+  notes: 'first',
+  status: 'next',
+  projectId: null,
+  context: null as string | null,
+  waitingOn: null,
+  due: null,
+  scheduled: null,
+  start: null,
+  repeat: null,
+  focus: null,
+  watch: null,
+  backTo: null,
+  source: 'cli',
+  sourceKey: null,
+  createdAt: AT,
+  statusAt: AT,
+  project: null,
+  waitingFor: null,
+})
 
 // The task pages: tasks 3 to 5, each with the decision open on it, if any.
 const open: Record<number, { id: number; reason: string } | undefined> = {}
@@ -190,28 +235,7 @@ test('answering with a button keeps what was being written', async () => {
 })
 
 test('a change to the todo keeps what is being typed in the form and says so', async () => {
-  let todo = {
-    id: 9,
-    title: 'old title',
-    notes: 'first',
-    status: 'next',
-    projectId: null,
-    context: null as string | null,
-    waitingOn: null,
-    due: null,
-    scheduled: null,
-    start: null,
-    repeat: null,
-    focus: null,
-    watch: null,
-    backTo: null,
-    source: 'cli',
-    sourceKey: null,
-    createdAt: AT,
-    statusAt: AT,
-    project: null,
-    waitingFor: null,
-  }
+  let todo = todoItem(9, 'old title')
   const changes = [{ actor: 'human', at: AT, text: 'captured' }]
   answer = () => ({ today: '2026-10-23', todo, links: [], tasks: [], changes, projects: [] })
   await go('/todos/9?edit=true')
@@ -243,4 +267,35 @@ test('a change to the todo keeps what is being typed in the form and says so', a
   expect(posted.splice(0)).toMatchObject([
     { id: 9, edit: { title: 'new title', context: '@desk', notes: 'first\nsecond' } },
   ])
+})
+
+test('a key pressed as the refresh takes its row away does not act on the next row', async () => {
+  rows = [todoItem(1, 'one'), todoItem(2, 'two'), todoItem(3, 'three')]
+  await go('/rows')
+  const focused = () => document.activeElement?.textContent
+  act(() => [...document.querySelectorAll<HTMLElement>('.todo-title')][0]?.focus())
+  expect(focused()).toBe('one')
+
+  // The CLI finishes the todo being read, and the refresh hands its focus to the next row.
+  rows = rows.slice(1)
+  await reload()
+  expect(focused()).toBe('two')
+  await press('KeyX', 'x')
+  await press('KeyS', 's')
+  expect(posted).toEqual([])
+  // `s` would have opened the status menu and focused its current status.
+  expect(focused()).toBe('two')
+
+  // A moment on, the keys are for the row in front of the person.
+  setSystemTime(new Date(Date.now() + 1500))
+  onPost = () => {
+    rows = rows.slice(1)
+  }
+  await press('KeyX', 'x')
+  expect(posted.splice(0)).toEqual([{ id: 2, edit: { status: 'done' } }])
+  // Its own row gone, the next takes keys at once.
+  expect(focused()).toBe('three')
+  await press('KeyX', 'x')
+  expect(posted.splice(0)).toEqual([{ id: 3, edit: { status: 'done' } }])
+  setSystemTime()
 })
