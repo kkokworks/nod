@@ -9,9 +9,8 @@ import {
 import { createServerFn } from '@tanstack/react-start'
 import { type ReactNode, type Ref, useEffect, useRef } from 'react'
 import { bindKeys, ignoreOnPage, KEYS } from '../keys'
-import type { TaskRow } from '../nod.server'
 import { overview } from '../nod.server'
-import { statusClass, TaskId } from '../parts'
+import { TaskId, TaskItem } from '../parts'
 import css from '../styles.css?url'
 import { focusRow, UndoBar } from '../todo-parts'
 
@@ -237,12 +236,17 @@ function Sidebar() {
         </details>
       ))}
 
-      {collected.length > 0 && (
+      {collected.total > 0 && (
         <details className="side-group">
-          <summary className="side-label">Collected ({collected.length})</summary>
-          {collected.map((t) => (
+          <summary className="side-label">Collected ({collected.total})</summary>
+          {collected.items.map((t) => (
             <TaskItem key={t.id} t={t} />
           ))}
+          {collected.items.length < collected.total && (
+            <Link to="/done" hash="collected" className="side-item side-more">
+              See all in Done →
+            </Link>
+          )}
         </details>
       )}
 
@@ -258,21 +262,5 @@ function Sidebar() {
         refreshes every {REFRESH_MS / 1000}s
       </div>
     </aside>
-  )
-}
-
-function TaskItem({ t }: { t: TaskRow }) {
-  return (
-    <Link
-      to="/tasks/$id"
-      params={{ id: String(t.id) }}
-      className="side-item"
-      activeProps={{ className: 'active' }}
-    >
-      <span className={`dot ${statusClass(t.status)}`} title={t.status} />
-      <span className="side-text">
-        <TaskId id={t.id} todoId={t.todoId} /> {t.title}
-      </span>
-    </Link>
   )
 }

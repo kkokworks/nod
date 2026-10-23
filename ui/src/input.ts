@@ -32,6 +32,45 @@ export function int(v: unknown, what: string): number {
   return v
 }
 
+// The Done page shows this many of each list at first, and this many more at a time.
+export const SHOWN_STEP = 100
+// The most a page can ask for: each 5-second reload makes every row shown again.
+export const SHOWN_MAX = 5000
+
+// How many of a list to show: the number of rows the page asks for.
+const isShown = (v: unknown): v is number =>
+  typeof v === 'number' && Number.isInteger(v) && v >= 1 && v <= SHOWN_MAX
+
+function shown(v: unknown, what: string): number {
+  if (!isShown(v)) throw new Error(`${what} must be an integer from 1 to ${SHOWN_MAX}`)
+  return v
+}
+
+// The Done page's three lists, each with how many of it to show.
+export const DONE_LISTS = ['done', 'dropped', 'collected'] as const
+export type DoneShown = Record<(typeof DONE_LISTS)[number], number>
+
+export function doneShown(v: unknown): DoneShown {
+  const o = record(v, 'shown')
+  return {
+    done: shown(o.done, 'done'),
+    dropped: shown(o.dropped, 'dropped'),
+    collected: shown(o.collected, 'collected'),
+  }
+}
+
+// The counts in the Done page's address. One that is not a count (an address edited by hand, a
+// bookmark from before SHOWN_MAX was lowered) is dropped, as the todo page drops a bad `edit`, and
+// its list shows the first SHOWN_STEP.
+export function doneSearch(s: Record<string, unknown>): Partial<DoneShown> {
+  const out: Partial<DoneShown> = {}
+  for (const list of DONE_LISTS) {
+    const v = s[list]
+    if (isShown(v)) out[list] = v
+  }
+  return out
+}
+
 export function text(v: unknown, what: string): string {
   if (typeof v !== 'string') throw new Error(`${what} must be text`)
   return v

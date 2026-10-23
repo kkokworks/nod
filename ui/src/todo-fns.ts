@@ -1,6 +1,8 @@
 // The server functions of the todo pages. Their handlers run on the server only.
 import { createServerFn } from '@tanstack/react-start'
 import {
+  type DoneShown,
+  doneShown,
   int,
   type RawEdit,
   type RawProjectEdit,
@@ -23,7 +25,9 @@ import {
 
 export const getLists = createServerFn({ method: 'GET' }).handler(() => lists())
 
-export const getDone = createServerFn({ method: 'GET' }).handler(() => donePage())
+export const getDone = createServerFn({ method: 'GET' })
+  .validator((s: DoneShown) => doneShown(s))
+  .handler(({ data }) => donePage(data))
 
 export const getTodo = createServerFn({ method: 'GET' })
   .validator((id: number) => int(id, 'todo id'))

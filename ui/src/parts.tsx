@@ -1,7 +1,9 @@
+import { Link } from '@tanstack/react-router'
 import type { ReactNode } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import type { Decision } from '../../src/ledger'
+import type { TaskRow } from './nod.server'
 
 // Briefs, reports and questions are Markdown that workers and people wrote. react-markdown leaves
 // raw HTML out and drops unsafe link protocols by default, so this text cannot run in the page.
@@ -43,6 +45,23 @@ export function TaskId({ id, todoId }: { id: number; todoId: number | null }) {
 
 // A CSS class per status: 'session ended' → 'session_ended'.
 export const statusClass = (status: string): string => status.replaceAll(' ', '_')
+
+// A task on one line, to its page: in the sidebar, and on the Done page for the collected ones.
+export function TaskItem({ t }: { t: TaskRow }) {
+  return (
+    <Link
+      to="/tasks/$id"
+      params={{ id: String(t.id) }}
+      className="side-item"
+      activeProps={{ className: 'active' }}
+    >
+      <span className={`dot ${statusClass(t.status)}`} title={t.status} />
+      <span className="side-text">
+        <TaskId id={t.id} todoId={t.todoId} /> {t.title}
+      </span>
+    </Link>
+  )
+}
 
 export function Status({ status }: { status: string }) {
   return (
