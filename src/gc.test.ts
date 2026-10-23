@@ -405,11 +405,16 @@ test('gc keeps a worktree holding the only copy of commits: in a submodule, or o
   git(removedSub.cwd, 'rm', '-q', 'lib')
   commit(removedSub.cwd, 'drop lib')
   push('feat/removed-sub')
+  // Uncommitted work in a submodule the repo tells status to ignore.
+  const ignored = task('feat/ignored')
+  push('feat/ignored')
+  writeFileSync(join(ignored.cwd, 'lib', 'draft.txt'), 'draft')
+  git(repo, 'config', 'submodule.lib.ignore', 'all')
   const detached = task('feat/detached')
   push('feat/detached')
   git(detached.cwd, 'checkout', '-q', '--detach')
   commit(detached.cwd, 'detached work')
-  const kept = [inSub, onSide, stashed, tagged, removedSub, detached]
+  const kept = [inSub, onSide, stashed, tagged, removedSub, ignored, detached]
 
   const report = await collect(ledger, home, { ids: [plain.id, ...kept.map((t) => t.id)] })
 
@@ -423,6 +428,7 @@ test('gc keeps a worktree holding the only copy of commits: in a submodule, or o
       { id: stashed.id, reason: inLib },
       { id: tagged.id, reason: inLib },
       { id: removedSub.id, reason: inLib },
+      { id: ignored.id, reason: 'uncommitted changes in worktree' },
       { id: detached.id, reason: 'HEAD has commits feat/detached does not' },
     ],
   })
@@ -459,53 +465,45 @@ test('gc removes nothing of a task told to go on while it checks the worktree', 
   git(repo, 'update-ref', 'refs/remotes/origin/feat/pushed', 'feat/pushed')
   ledger.setRunning(id, cwd)
   ledger.succeed(id)
-  // `nod tell` comes once the session is closed, as gc looks for commits only the worktree has:
-  // the message sets the task running. gc has marked nothing yet, so a gc that stopped here would
-  // leave the task listed.
+  // `nod tell` comes as gc runs the git command named in `tellAt`: the message sets the task
+  // running. Then gc has marked nothing yet, so a gc that stopped there would leave it listed.
+  let tellAt = ''
   let markedMidway: string | null = null
-  const spawnSync = Bun.spawnSync
-  const spy = spyOn(Bun, 'spawnSync').mockImplementation(((
-    ...args: Parameters<typeof spawnSync>
-  ) => {
+  const spawn = Bun.spawn
+  const spy = spyOn(Bun, 'spawn').mockImplementation(((...args: Parameters<typeof spawn>) => {
     const [cmd] = args
-    if (Array.isArray(cmd) && cmd.includes('--is-ancestor')) {
+    if (Array.isArray(cmd) && cmd.includes(tellAt)) {
       markedMidway = ledger.get(id).collectedAt
       ledger.setRunning(id, cwd)
     }
-    return spawnSync.apply(Bun, args)
-  }) as typeof spawnSync)
-
-  const report = await collect(ledger, home, { ids: [id] }).finally(() => spy.mockRestore())
-
-  expect(markedMidway).toBeNull()
-  expect(report).toEqual({
-    removed: [],
-    clean: [],
-    skipped: [{ id, reason: 'told to go on while gc ran' }],
-  })
-  expect(existsSync(cwd)).toBe(true)
-  expect(git(repo, 'branch', '--list', 'feat/pushed')).toContain('feat/pushed')
-  expect(ledger.get(id).collectedAt).toBeNull()
-
-  // Told to go on while the worktree goes: the folder is gone, but the task stays listed and keeps
-  // its branch.
-  ledger.succeed(id)
-  const spawn = Bun.spawn
-  const spawnSpy = spyOn(Bun, 'spawn').mockImplementation(((...args: Parameters<typeof spawn>) => {
-    const [cmd] = args
-    if (Array.isArray(cmd) && cmd.includes('remove')) ledger.setRunning(id, cwd)
     return spawn.apply(Bun, args)
   }) as typeof spawn)
+  try {
+    // Once the session is closed, as gc looks for uncommitted changes.
+    tellAt = 'status'
+    expect(await collect(ledger, home, { ids: [id] })).toEqual({
+      removed: [],
+      clean: [],
+      skipped: [{ id, reason: 'told to go on while gc ran' }],
+    })
+    expect(markedMidway).toBeNull()
+    expect(existsSync(cwd)).toBe(true)
+    expect(git(repo, 'branch', '--list', 'feat/pushed')).toContain('feat/pushed')
+    expect(ledger.get(id).collectedAt).toBeNull()
 
-  const second = await collect(ledger, home, { ids: [id] }).finally(() => spawnSpy.mockRestore())
-
-  expect(second).toEqual({
-    removed: [],
-    clean: [],
-    skipped: [{ id, reason: 'told to go on while gc ran' }],
-  })
-  expect(git(repo, 'branch', '--list', 'feat/pushed')).toContain('feat/pushed')
-  expect(ledger.get(id).collectedAt).toBeNull()
+    // While the worktree goes: the folder is gone, but the task stays listed and keeps its branch.
+    ledger.succeed(id)
+    tellAt = 'remove'
+    expect(await collect(ledger, home, { ids: [id] })).toEqual({
+      removed: [],
+      clean: [],
+      skipped: [{ id, reason: 'told to go on while gc ran' }],
+    })
+    expect(git(repo, 'branch', '--list', 'feat/pushed')).toContain('feat/pushed')
+    expect(ledger.get(id).collectedAt).toBeNull()
+  } finally {
+    spy.mockRestore()
+  }
 })
 
 test('gc reads each task again as it gets to it: one told to go on meanwhile is left alone', async () => {

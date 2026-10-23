@@ -90,8 +90,9 @@ export async function collect(ledger: Ledger, home: string, pick: GcPick): Promi
       const head = headOf(task)
 
       if (task.repo !== null) {
+        // Submodules too, even one the repo tells status to ignore: their changes go with --force.
         const status = await spawn(
-          ['git', '-C', task.workspace, 'status', '--porcelain'],
+          ['git', '-C', task.workspace, 'status', '--porcelain', '--ignore-submodules=none'],
           undefined,
         )
         if (status.code !== 0 || status.stdout.trim()) {
@@ -170,32 +171,28 @@ function onlyCopy(repo: string, workspace: string, branch: string): string | nul
   for (const name of submoduleNames(root)) {
     const sub = join(root, name)
     // The git folder stands in for the work tree it names, which is gone for a submodule since
-    // removed; these only read.
-    const inSub = (...args: string[]) =>
-      Bun.spawnSync(['git', `--git-dir=${sub}`, `--work-tree=${sub}`, ...args])
-    const head = inSub('rev-parse', '--verify', '-q', 'HEAD')
-    // Every ref but the remote ones, a tag peeled to its commit.
-    const refs = inSub(
-      'for-each-ref',
-      '--format=%(refname) %(if)%(*objectname)%(then)%(*objectname)%(else)%(objectname)%(end)',
-    )
-    if (refs.exitCode !== 0) throw new Error(`git for-each-ref in ${sub}: ${refs.stderr}`)
-    const commits = refs.stdout
+    // removed; this only reads.
+    // The commits HEAD and every ref reach (branches, tags, stash) that no remote branch does.
+    const lone = Bun.spawnSync([
+      'git',
+      `--git-dir=${sub}`,
+      `--work-tree=${sub}`,
+      'rev-list',
+      '--all',
+      '--not',
+      '--remotes',
+    ])
+    if (lone.exitCode !== 0) throw new Error(`git rev-list in ${sub}: ${lone.stderr}`)
+    const commits = lone.stdout.toString().trim()
+    if (commits === '') continue
+    const there = Bun.spawnSync(['git', '-C', join(repo, name), 'cat-file', '--batch-check'], {
+      stdin: Buffer.from(`${commits}\n`),
+    })
+    const missing = there.stdout
       .toString()
       .split('\n')
-      .filter((line) => line !== '' && !line.startsWith('refs/remotes/'))
-      .map((line) => line.slice(line.lastIndexOf(' ') + 1))
-    const onRemote = (commit: string): boolean =>
-      inSub('for-each-ref', '--contains', commit, '--format=%(refname)', 'refs/remotes')
-        .stdout.toString()
-        .split('\n')
-        .some((r) => r !== '' && !r.endsWith('/HEAD'))
-    const safe = (commit: string): boolean =>
-      onRemote(commit) ||
-      git(join(repo, name), 'cat-file', '-e', `${commit}^{commit}`).exitCode === 0
-    if (head.exitCode !== 0 || ![head.stdout.toString().trim(), ...commits].every(safe)) {
-      return `submodule ${name} has commits no remote has`
-    }
+      .some((line) => line.endsWith(' missing'))
+    if (there.exitCode !== 0 || missing) return `submodule ${name} has commits no remote has`
   }
   return null
 }
