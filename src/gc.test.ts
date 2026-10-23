@@ -506,6 +506,60 @@ test('gc removes nothing of a task told to go on while it checks the worktree', 
   }
 })
 
+test('a task gc cannot finish after its worktree went stays listed, and a later gc ends it', async () => {
+  const home = tmp.make('nod-gc-')
+  process.env.CLAUDE_CONFIG_DIR = tmp.make('nod-gc-claude-')
+  const ledger = new Ledger(home)
+  const repo = join(home, 'repo')
+  mkdirSync(repo)
+  const git = (cwd: string, ...args: string[]): string =>
+    sh(['git', '-c', 'user.email=t@t', '-c', 'user.name=t', ...args], cwd)
+  git(repo, 'init', '-q', '-b', 'main')
+  git(repo, 'commit', '-q', '--allow-empty', '-m', 'init')
+  const id = ledger.add({
+    brief: 'pushed',
+    repo,
+    branch: 'feat/pushed',
+    checkCmd: null,
+    model: null,
+    after: [],
+    triggerId: null,
+    issue: null,
+  })
+  const cwd = workspaceOf(home, ledger.get(id))
+  git(repo, 'worktree', 'add', '-q', '-b', 'feat/pushed', cwd)
+  git(cwd, 'commit', '-q', '--allow-empty', '-m', 'work')
+  git(repo, 'update-ref', 'refs/remotes/origin/feat/pushed', 'feat/pushed')
+  ledger.setRunning(id, cwd)
+  ledger.succeed(id)
+  // Looking for the remote branches that hold the branch fails, so it cannot be deleted.
+  const spawnSync = Bun.spawnSync
+  const spy = spyOn(Bun, 'spawnSync').mockImplementation(((
+    ...args: Parameters<typeof spawnSync>
+  ) => {
+    const [cmd] = args
+    if (Array.isArray(cmd) && cmd.includes('--contains')) throw new Error('for-each-ref failed')
+    return spawnSync.apply(Bun, args)
+  }) as typeof spawnSync)
+
+  const failed = await collect(ledger, home, { ids: [id] }).finally(() => spy.mockRestore())
+
+  expect(failed).toEqual({
+    removed: [],
+    clean: [],
+    skipped: [{ id, reason: 'for-each-ref failed' }],
+  })
+  expect(existsSync(cwd)).toBe(false)
+  expect(ledger.get(id).collectedAt).toBeNull()
+  expect(await collect(ledger, home, { before: new Date(Date.now() + 60_000) })).toEqual({
+    removed: [],
+    clean: [id],
+    skipped: [],
+  })
+  expect(git(repo, 'branch', '--list', 'feat/pushed')).toBe('')
+  expect(ledger.get(id).collectedAt).not.toBeNull()
+})
+
 test('gc reads each task again as it gets to it: one told to go on meanwhile is left alone', async () => {
   const home = tmp.make('nod-gc-')
   process.env.CLAUDE_CONFIG_DIR = tmp.make('nod-gc-claude-')

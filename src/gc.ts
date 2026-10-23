@@ -57,6 +57,16 @@ export async function collect(ledger: Ledger, home: string, pick: GcPick): Promi
       now.status === judged.status &&
       now.finishedAt === judged.finishedAt &&
       now.collectedAt === judged.collectedAt
+    // What gc does once the task is marked; if it fails, the task is listed again as gc found it,
+    // so a later gc tries again.
+    const afterMark = (finish: () => void): void => {
+      try {
+        finish()
+      } catch (error) {
+        if (judged.collectedAt === null) ledger.uncollected(id)
+        throw error
+      }
+    }
     // One task gc cannot get through, a file it may not delete say, must not stop the rest.
     try {
       if (!FINISHED.has(task.status)) {
@@ -78,7 +88,7 @@ export async function collect(ledger: Ledger, home: string, pick: GcPick): Promi
           skip('told to go on while gc ran')
           continue
         }
-        dropBranch(task)
+        afterMark(() => dropBranch(task))
         report.clean.push(task.id)
         continue
       }
@@ -132,16 +142,19 @@ export async function collect(ledger: Ledger, home: string, pick: GcPick): Promi
         skip('told to go on while gc ran')
         continue
       }
-      dropBranch(task)
-      // A worktree sits in folders named after its repo and branch; drop the ones it leaves empty.
-      for (
-        let dir = dirname(task.workspace);
-        dir.startsWith(workRoot) && readdirSync(dir).length === 0;
-        dir = dirname(dir)
-      ) {
-        rmdirSync(dir)
-      }
-
+      const { workspace } = task
+      afterMark(() => {
+        dropBranch(task)
+        // A worktree sits in folders named after its repo and branch; drop the ones it leaves
+        // empty.
+        for (
+          let dir = dirname(workspace);
+          dir.startsWith(workRoot) && readdirSync(dir).length === 0;
+          dir = dirname(dir)
+        ) {
+          rmdirSync(dir)
+        }
+      })
       report.removed.push(task.id)
     } catch (error) {
       skip(message(error))
