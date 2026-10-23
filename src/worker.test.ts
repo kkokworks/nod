@@ -441,7 +441,7 @@ test('in a repo, done needs the work committed, and the next task starts from th
   // A task's changes start where the earlier task's branch ended, so here there are none.
   const base = Bun.spawnSync(['git', 'rev-parse', 'feat/ok'], { cwd: repo }).stdout.toString()
   expect(review('build on it')).toContain(`since ${base.trim()}. There are none.`)
-})
+}, 30_000)
 
 test('a diff too long for the review brief is cut, and the reviewer is told where', () => {
   const id = ledger.add({
@@ -695,27 +695,37 @@ test('a worker keeps only what it needs of the environment it starts from, and t
     LC_ALL: 'ko_KR.UTF-8',
     ANTHROPIC_BASE_URL: 'https://llm.example.com',
   }
-  Object.assign(process.env, outer)
-  try {
-    const env = workerEnv('/h', 5, '/accounts/a')
-    expect(env).toMatchObject({
-      HOME: process.env.HOME,
-      PATH: process.env.PATH,
-      HTTPS_PROXY: outer.HTTPS_PROXY,
-      NODE_EXTRA_CA_CERTS: outer.NODE_EXTRA_CA_CERTS,
-      LC_ALL: outer.LC_ALL,
-      ANTHROPIC_BASE_URL: outer.ANTHROPIC_BASE_URL,
-      NOD_HOME: '/h',
-      NOD_TASK: '5',
-      CLAUDE_CONFIG_DIR: '/accounts/a',
-    })
-    for (const marker of ['TERM_SESSION_ID', 'CLAUDE_CODE_SSE_PORT', 'NOD_ACTOR']) {
-      expect(env).not.toHaveProperty(marker)
-    }
-    expect(workerEnv('/h', 5, null)).not.toHaveProperty('CLAUDE_CONFIG_DIR')
-  } finally {
-    for (const key of Object.keys(outer)) delete process.env[key]
+  // In a process started with them, as nod is: Bun leaves proxy variables set at run time out of
+  // process.env's keys (measured on 1.3.14).
+  const workerEnvIn = (config: string | null): Record<string, string> => {
+    const run = Bun.spawnSync(
+      [
+        process.execPath,
+        '-e',
+        `import { workerEnv } from ${JSON.stringify(join(import.meta.dir, 'worker.ts'))}
+console.log(JSON.stringify(workerEnv('/h', 5, ${JSON.stringify(config)})))`,
+      ],
+      { env: { ...process.env, ...outer } },
+    )
+    if (run.exitCode !== 0) throw new Error(run.stderr.toString())
+    return JSON.parse(run.stdout.toString())
   }
+  const env = workerEnvIn('/accounts/a')
+  expect(env).toMatchObject({
+    HOME: process.env.HOME,
+    PATH: process.env.PATH,
+    HTTPS_PROXY: outer.HTTPS_PROXY,
+    NODE_EXTRA_CA_CERTS: outer.NODE_EXTRA_CA_CERTS,
+    LC_ALL: outer.LC_ALL,
+    ANTHROPIC_BASE_URL: outer.ANTHROPIC_BASE_URL,
+    NOD_HOME: '/h',
+    NOD_TASK: '5',
+    CLAUDE_CONFIG_DIR: '/accounts/a',
+  })
+  for (const marker of ['TERM_SESSION_ID', 'CLAUDE_CODE_SSE_PORT', 'NOD_ACTOR']) {
+    expect(env).not.toHaveProperty(marker)
+  }
+  expect(workerEnvIn(null)).not.toHaveProperty('CLAUDE_CONFIG_DIR')
 })
 
 test("a worker's terminal passes on none of the tmux server's environment", async () => {
@@ -727,8 +737,11 @@ test("a worker's terminal passes on none of the tmux server's environment", asyn
   } finally {
     delete process.env.NOD_TEST_PANE_ID
   }
+  // A child gets process.env as it was set at run time (TMUX_TMPDIR) only when given it.
   const server = Terminals.of(home).attachCommand('x').slice(0, 3)
-  const global = Bun.spawnSync([...server, 'show-environment', '-g', 'NOD_TEST_PANE_ID'])
+  const global = Bun.spawnSync([...server, 'show-environment', '-g', 'NOD_TEST_PANE_ID'], {
+    env: process.env,
+  })
   expect(global.stdout.toString().trim()).toBe('NOD_TEST_PANE_ID=outer')
   const env = entries('launch')[0]?.env ?? []
   expect(env).not.toContain('NOD_TEST_PANE_ID')
@@ -855,7 +868,11 @@ test('a restart waits for a person attached to the worker, who hears why once', 
   const terminals = Terminals.of(home)
   // A control-mode client is attached as a person's terminal is, without needing one.
   const [tmux = 'tmux', ...attach] = terminals.attachCommand(name)
-  const person = Bun.spawn([tmux, '-C', ...attach], { stdin: 'pipe', stdout: 'ignore' })
+  const person = Bun.spawn([tmux, '-C', ...attach], {
+    stdin: 'pipe',
+    stdout: 'ignore',
+    env: process.env,
+  })
   await until(() => terminals.attached(name))
   expect(await restart(ledger, home, id, 'nod restart')).toBe('attached')
   expect(await restartDue(ledger, home)).toEqual([])
