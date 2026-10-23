@@ -838,6 +838,50 @@ console.log(JSON.stringify(workerEnv('/h', 5, ${JSON.stringify(config)})))`,
   expect(workerEnvIn(null)).not.toHaveProperty('CLAUDE_CONFIG_DIR')
 })
 
+test('a saved environment leaves out secrets, by name or in a URL, and the SSH agent, which moves at each boot', () => {
+  const outer = {
+    HTTPS_PROXY: 'http://user:pass@proxy.example.com:8080',
+    https_proxy: 'http://user:pass@proxy.example.com:8080',
+    ANTHROPIC_BASE_URL: 'https://u:pw@llm.example.com',
+    ANTHROPIC_CUSTOM_HEADERS: 'Authorization: Bearer example',
+    ANTHROPIC_API_KEY: 'example',
+    SSH_AUTH_SOCK: '/private/tmp/ssh-example/agent.1',
+    // Kept.
+    HTTP_PROXY: 'http://proxy.example.com:3128',
+    NO_PROXY: 'localhost,.example.com',
+    LC_ALL: 'ko_KR.UTF-8',
+  }
+  // In a process started with them, as in the workerEnv test above.
+  const run = Bun.spawnSync(
+    [
+      process.execPath,
+      '-e',
+      `import { savedEnv, workerEnv } from ${JSON.stringify(join(import.meta.dir, 'worker.ts'))}
+console.log(JSON.stringify([savedEnv(), workerEnv('/h', 5, null)]))`,
+    ],
+    { env: { ...process.env, ...outer } },
+  )
+  if (run.exitCode !== 0) throw new Error(run.stderr.toString())
+  const [saved, worker] = JSON.parse(run.stdout.toString())
+  expect(saved).toMatchObject({
+    HTTP_PROXY: outer.HTTP_PROXY,
+    NO_PROXY: outer.NO_PROXY,
+    LC_ALL: outer.LC_ALL,
+  })
+  for (const name of [
+    'HTTPS_PROXY',
+    'https_proxy',
+    'ANTHROPIC_BASE_URL',
+    'ANTHROPIC_CUSTOM_HEADERS',
+    'ANTHROPIC_API_KEY',
+    'SSH_AUTH_SOCK',
+  ]) {
+    expect(saved).not.toHaveProperty(name)
+  }
+  // A worker nod starts gets them all.
+  expect(worker).toMatchObject(outer)
+})
+
 test("a worker's terminal passes on none of the tmux server's environment", async () => {
   // As a terminal marks its panes; the home's tmux server starts with it.
   process.env.NOD_TEST_PANE_ID = 'outer'
