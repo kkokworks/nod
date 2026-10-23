@@ -7,7 +7,8 @@ import { tempDirs } from '../../test/tmp'
 GlobalRegistrator.register()
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 
-// What a GET answers, what a POST does to it, and the POSTs sent.
+// What a GET answers, what a POST does to it, and the POSTs sent. Bun keeps a module mock for the
+// rest of the run, which can't be undone, so no other test file may import the server functions.
 let answer: (data: unknown) => unknown = () => undefined
 let onPost: (data: unknown) => void = () => {}
 const posted: unknown[] = []
