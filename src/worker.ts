@@ -276,32 +276,19 @@ export async function answer(
   actor: string,
 ): Promise<void> {
   const decision = ledger.decision(decisionId)
-  // Before anything reaches the worker, such as a key in the middle of its next turn.
-  if (decision.answer !== null) throw new Error(`decision ${decisionId} is already answered`)
   const yes = /^y(es)?$/i.test(text.trim())
   // Trust and rules are yes-or-nothing: anything but yes ends the task.
   if ((decision.reason === 'trust' || decision.reason === 'rule') && !yes) {
     await drop(ledger, home, decisionId)
     return
   }
-  // The decision closes as its answer takes effect, so an answer that fails before (an account rule
-  // that cannot be read) leaves it open to answer again. A to-do list that mirrors open decisions
-  // hears of it after.
-  const answered = { id: decisionId, answer: text }
+  // A to-do list that mirrors open decisions can close this one.
   const told = (): Promise<void> =>
     notify(home, {
       event: 'answered',
       task: taskRef(ledger.get(decision.taskId)),
       decision: { id: decisionId, reason: decision.reason, answer: text },
     })
-  // Heard of once deliver closed the decision, even if the message then could not go in.
-  const reply = async (message: string): Promise<void> => {
-    try {
-      deliver(ledger, home, decision.taskId, 'answer', message, answered)
-    } finally {
-      if (ledger.decision(decisionId).answer !== null) await told()
-    }
-  }
   // The retrospective proposed the rule as its report; adding it is all that is left to do, with
   // the decision, so neither happens without the other.
   if (decision.reason === 'rule') {
@@ -318,42 +305,46 @@ export async function answer(
     await told()
     return
   }
+  // Closed first, so of two answers at once only one reaches the worker.
+  ledger.answer(decisionId, text)
+  await told()
+  // The decision is closed, so a message that cannot go in (an account rule that cannot be read,
+  // say) leaves the task in error, and the person tells it again.
+  const reply = (words: string): void => {
+    try {
+      deliver(ledger, home, decision.taskId, 'answer', words, decisionId)
+    } catch (error) {
+      ledger.error(decision.taskId, message(error))
+      throw error
+    }
+  }
   const terminals = Terminals.of(home)
   const name = sessionName(decision.taskId)
   if (decision.reason === 'trust') {
-    ledger.answer(decisionId, text)
-    await told()
     await acceptTrust(terminals, name, startedMarker(home, decision.taskId))
     return
   }
   if (decision.reason !== 'permission') {
-    await reply(
+    reply(
       `${decision.reason === 'interrupted' ? `${CUT_OFF_PROMPT}\n` : ''}Human decision: ${text}`,
     )
     return
   }
-  // The permission dialog has "Yes" selected first (measured on 2.1.290). A denial whose message
-  // could not reach the worker has ended the dialog with its turn, so what comes after it goes to
-  // the worker as a message.
-  const dialog = ledger.attempt(decision.attemptId).finishedAt === null
-  if (yes && dialog) {
-    ledger.answer(decisionId, text)
-    await told()
+  // The permission dialog has "Yes" selected first (measured on 2.1.290).
+  if (yes) {
     terminals.keys(name, 'Enter')
     return
   }
-  if (dialog) {
-    // Escape answers no, but also ends the turn without a Stop hook (measured on 2.1.290), so
-    // close the attempt here and tell the worker in a new turn.
-    terminals.keys(name, 'Escape')
-    await waitForScreen(terminals, name, 'Interrupted')
-    ledger.endAttempt(decision.attemptId, {
-      outcome: 'needs_decision',
-      summary: 'permission denied',
-      report: null,
-    })
-  }
-  await reply(`Human decision: ${yes ? '' : 'permission denied. '}${text}`)
+  // Escape answers no, but also ends the turn without a Stop hook (measured on 2.1.290), so close
+  // the attempt here and tell the worker in a new turn.
+  terminals.keys(name, 'Escape')
+  await waitForScreen(terminals, name, 'Interrupted')
+  ledger.endAttempt(decision.attemptId, {
+    outcome: 'needs_decision',
+    summary: 'permission denied',
+    report: null,
+  })
+  reply(`Human decision: permission denied. ${text}`)
 }
 
 async function waitForScreen(terminals: Terminals, name: string, text: string): Promise<void> {
@@ -667,15 +658,14 @@ function trailingRetries(ledger: Ledger, taskId: number): number {
 }
 
 // Sends a message into the task's session so the worker keeps its context. A session that has ended
-// (exited, machine restarted) is reopened from Claude Code's transcript first. `answered`: the
-// decision the message answers, which closes with the ledger's other changes.
+// (exited, machine restarted) is reopened from Claude Code's transcript first.
 function deliver(
   ledger: Ledger,
   home: string,
   taskId: number,
   kind: AttemptKind,
   text: string,
-  answered: { id: number; answer: string } | null,
+  decisionId: number | null,
 ): void {
   const task = ledger.get(taskId)
   const last = ledger.lastAttempt(taskId)
@@ -689,7 +679,6 @@ function deliver(
   const restarting = live && terminals.option(name, RESTARTING_OPTION) !== ''
   // The worker is mid-turn: Claude Code queues the message into the turn in progress.
   if (open !== null && live) {
-    if (answered !== null) ledger.answer(answered.id, answered.answer)
     if (restarting) leavePrompt(home, taskId, text)
     else terminals.send(name, text)
     return
@@ -705,14 +694,13 @@ function deliver(
     !settling(terminals, name) &&
     !terminals.attached(name) &&
     accountChanged(home, task.account)
-  if (answered !== null) ledger.answer(answered.id, answered.answer)
   if (open !== null) ledger.failAttempt(open.id, 'session ended')
 
   ledger.setRunning(taskId, task.workspace)
   const attemptId = ledger.startAttempt({
     taskId,
     kind,
-    decisionId: answered?.id ?? null,
+    decisionId,
     sessionId: last.sessionId,
     prompt: text,
   })
@@ -948,8 +936,8 @@ type Start = {
 // The next start of a worker's Claude Code (keepWorker): as the account the rule gives now, which
 // trusts nod's work folder first, in the conversation of its last turn. A conversation with no
 // transcript and no turn that ended never began: Claude Code ended before it took the brief, so
-// it starts anew with the brief and any message deliver left after it (`fresh`), and that turn
-// was not cut off. One kept only in the folder of the account it ran as before cannot go on in
+// it starts anew with the brief (`fresh`), and that turn was not cut off; a message deliver left
+// goes in after it. One kept only in the folder of the account it ran as before cannot go on in
 // this one.
 async function nextRun(ledger: Ledger, home: string, taskId: number): Promise<Start> {
   const config = configDir(home)
@@ -975,11 +963,10 @@ async function nextRun(ledger: Ledger, home: string, taskId: number): Promise<St
   }
   const ended = attempts.some((a) => a.outcome !== null && a.outcome !== 'error')
   if (!ended && !here) {
-    // A message left since (an answer, a tell) goes in after the brief.
-    const left = takePrompt(home, taskId)
-    const prompt = left === null ? first.prompt : `${first.prompt}\n\n${left}`
+    // A message left since (an answer, a tell) stays where deliver left it: keepWorker puts it in
+    // after the brief once Claude Code is up, so a start that ends again at once keeps it.
     const session = ['--session-id', first.sessionId]
-    const argv = claudeArgs(ledger, task, session, prompt, marker)
+    const argv = claudeArgs(ledger, task, session, first.prompt, marker)
     return { argv, env, fresh: true, started: marker }
   }
   const session = ['--resume', last.sessionId]

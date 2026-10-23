@@ -908,71 +908,6 @@ test('a retrospective that finds no general rule just succeeds', async () => {
   await expect(tell(ledger, home, retro, 'look again')).rejects.toThrow('which ended (none)')
 })
 
-// A task that started and asked, as its hooks leave it in the ledger, with no terminal.
-function asked(reason: 'question' | 'permission'): { taskId: number; decisionId: number } {
-  const taskId = ledger.add({
-    brief: 'x',
-    repo: null,
-    branch: null,
-    checkCmd: null,
-    model: null,
-    after: [],
-    triggerId: null,
-    issue: null,
-  })
-  const workspace = join(home, 'work', String(taskId))
-  mkdirSync(workspace)
-  ledger.setRunning(taskId, workspace)
-  const attemptId = ledger.startAttempt({
-    taskId,
-    kind: 'start',
-    decisionId: null,
-    sessionId: `session-${taskId}`,
-    prompt: 'x',
-  })
-  if (reason === 'question') {
-    ledger.endAttempt(attemptId, { outcome: 'needs_decision', summary: 'ok?', report: 'ok?' })
-  }
-  return { taskId, decisionId: ledger.ask(taskId, attemptId, reason, 'ok?') }
-}
-
-// Where nod reopens a worker's terminal, a file, so any answer that has to reopen one fails.
-function noTerminals(): void {
-  rmSync(join(home, 'work'), { recursive: true })
-  writeFileSync(join(home, 'work'), '')
-}
-
-test('a decision answered already is not answered again, and nothing reaches its worker', async () => {
-  const { decisionId } = asked('permission')
-  ledger.answer(decisionId, 'no')
-  await expect(answer(ledger, home, decisionId, 'no again', 'human')).rejects.toThrow(
-    'already answered',
-  )
-})
-
-test('an answer whose worker cannot be reached is still heard of once its decision closes', async () => {
-  const events = listen()
-  const { taskId, decisionId } = asked('question')
-  noTerminals()
-  await expect(answer(ledger, home, decisionId, 'go on', 'human')).rejects.toThrow()
-  expect(ledger.decision(decisionId).answer).toBe('go on')
-  expect(status(taskId)).toBe('error')
-  expect(events().map((e) => e.event)).toEqual(['answered'])
-})
-
-test('an answer to a permission prompt a denial already ended goes to the worker as a message', async () => {
-  const { taskId, decisionId } = asked('permission')
-  // As a denial leaves it whose message could not reach the worker: Escape ended the turn.
-  const prompt = ledger.decision(decisionId).attemptId
-  ledger.endAttempt(prompt, { outcome: 'needs_decision', summary: 'denied', report: null })
-  noTerminals()
-  await expect(answer(ledger, home, decisionId, 'yes', 'human')).rejects.toThrow()
-  expect(ledger.attempts(taskId).map((a) => [a.kind, a.prompt])).toEqual([
-    ['start', 'x'],
-    ['answer', 'Human decision: yes'],
-  ])
-})
-
 test('yes to a rule closes its decision and adds the rule at once, before anyone hears of it', async () => {
   const of = ledger.add({
     brief: 'x',
@@ -1201,9 +1136,12 @@ test('a message that comes before a first turn that never began goes in after th
 
   rmSync(join(home, 'fake-exit'))
   await answer(ledger, home, decision.id, 'go on', 'human')
+  // The answer goes in once Claude Code is up with the brief.
+  await until(() => entries('turn')[1])
   await reaches(id, 'succeeded')
   expect(entries('turn').map((t) => t.message)).toEqual([
-    expect.stringMatching(/^first\n\nYour last turn was cut off.*\nHuman decision: go on$/s),
+    'first',
+    expect.stringMatching(/^Your last turn was cut off.*\nHuman decision: go on$/s),
   ])
 }, 30_000)
 
@@ -1384,7 +1322,7 @@ test('a conversation kept only in the folder of the old account is not started o
   expect(events().some((e) => e.error?.includes('must share their projects/ folder'))).toBe(true)
 }, 30_000)
 
-test('an answer the account rule cannot be read for leaves its decision open, to answer again', async () => {
+test('an answer the account rule cannot be read for leaves its task in error, to tell again', async () => {
   const current = join(home, 'account')
   const [a] = accounts('a')
   setAccountRule(home, { file: current })
@@ -1395,14 +1333,17 @@ test('an answer the account rule cannot be read for leaves its decision open, to
 
   rmSync(current)
   await expect(answer(ledger, home, decision.id, 'yes', 'human')).rejects.toThrow('ENOENT')
-  expect(ledger.decision(decision.id).answer).toBeNull()
-  expect(status(id)).toBe('needs_decision')
+  expect(ledger.decision(decision.id).answer).toBe('yes')
+  expect(ledger.get(id)).toMatchObject({
+    status: 'error',
+    error: expect.stringContaining('ENOENT'),
+  })
   expect(ledger.attempts(id)).toHaveLength(1)
 
   writeFileSync(current, `${a}\n`)
-  await answer(ledger, home, decision.id, 'yes', 'human')
+  await tell(ledger, home, id, 'yes')
   await reaches(id, 'succeeded')
-  expect(entries('turn').map((t) => t.message)).toEqual(['ask-first', 'Human decision: yes'])
+  expect(entries('turn').map((t) => t.message)).toEqual(['ask-first', 'yes'])
 }, 30_000)
 
 test('a restart waits for a person attached to the worker, who hears why once', async () => {
