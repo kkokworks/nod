@@ -112,9 +112,46 @@ const retroTask = (of: number): Task | undefined => {
   return retro === null ? undefined : ledger.list().find((t) => t.retroId === retro.id)
 }
 const reaches = (id: number, want: TaskStatus): Promise<true> =>
-  until(() => status(id) === want || (status(id) === 'error' && fail(id)))
+  until(() => status(id) === want || (status(id) === 'error' && fail(id))).catch(
+    (error: unknown) => {
+      throw new Error(`task ${id} is not ${want}: ${String(error)}\n${whereIs(id)}`)
+    },
+  )
 const fail = (id: number): never => {
   throw new Error(`task ${id} errored: ${ledger.get(id).error}`)
+}
+
+// Where a task got to, for a test that gave up waiting on it.
+function whereIs(id: number): string {
+  const task = ledger.get(id)
+  const terminals = Terminals.of(home)
+  const name = sessionName(id)
+  const git =
+    task.repo !== null && task.workspace !== null
+      ? Bun.spawnSync(['git', 'status', '--porcelain'], { cwd: task.workspace, env: process.env })
+          .stdout.toString()
+          .trim()
+      : null
+  const state = {
+    status: task.status,
+    error: task.error,
+    attempts: ledger
+      .attempts(id)
+      .map((a) => [
+        a.kind,
+        a.outcome,
+        a.checkResult,
+        a.summary,
+        a.error,
+        a.checkOutput?.slice(0, 300),
+      ]),
+    decisions: ledger.decisions(id).map((d) => [d.reason, d.question.slice(0, 500)]),
+    launches: entries('launch').map((l) => [l.sessionId, l.resumed, l.prompt?.slice(0, 40)]),
+    turns: entries('turn').map((t) => [t.sessionId, t.message?.split('\n')[0]]),
+    git,
+  }
+  const screen = terminals.alive(name) ? terminals.screen(name).trimEnd() : '(no terminal)'
+  return `${JSON.stringify(state, null, 1)}\nscreen:\n${screen}`
 }
 
 async function add(brief: string, check: string | null = null): Promise<number> {
