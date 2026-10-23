@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { z } from 'zod'
+import { localTime } from './days'
 import { sweep } from './done'
 import { Ledger, type Trigger } from './ledger'
 import { notify, taskRef } from './notify'
@@ -149,9 +150,7 @@ async function checkWatches(ledger: Ledger, home: string): Promise<number[]> {
     todos.recordCheck(t.id, t.watch, code, output)
     if (code !== 0 && !cannotRun(code)) continue
     const outcome = code === 0 ? 'passed' : `cannot run (${oneLine(output, 200)})`
-    // A task gc collected since `--back-to` named it has no session left, so the person takes it.
-    const named = t.backTo === null ? null : ledger.get(t.backTo)
-    const back = code === 0 && named?.collectedAt === null ? named.id : null
+    const back = code === 0 ? t.backTo : null
     if (!todos.endWatch(t.id, t.watch, outcome, SELF, back)) continue
     const todo = { id: t.id, title: t.title }
     if (code === 0) {
@@ -159,10 +158,13 @@ async function checkWatches(ledger: Ledger, home: string): Promise<number[]> {
       await notify(home, { event: 'watch_passed', todo, watch: t.watch })
       if (back === null) continue
       try {
-        tell(ledger, home, back, carryOn(t, output))
+        await tell(ledger, home, back, carryOn(t, output))
       } catch (error) {
-        // The task is left in error and the todo waits on it, as on any task of its that errors:
-        // resuming or cancelling the task moves it on.
+        // The task could not carry on (its transcript gone after gc, its session failing to start),
+        // so the person takes the todo, as when no task is named.
+        const line = `${localTime(new Date())} task #${back} could not carry on: ${oneLine(message(error), 200)}`
+        const notes = [todos.get(t.id).notes, line].filter((x) => x !== null).join('\n')
+        todos.set(t.id, { status: 'next', notes }, SELF)
         await notify(home, {
           event: 'error',
           task: taskRef(ledger.get(back)),

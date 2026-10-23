@@ -203,6 +203,7 @@ test('--back-to names the task that did the todo; a passing watch hands the todo
   todos.set(t.id, { watch, backTo: did }, 'human')
   expect(todos.set(t.id, { status: 'next' }, 'human').backTo).toBeNull()
 
+  Bun.sleepSync(2) // so it starts waiting after the task ended, on a millisecond clock
   todos.set(t.id, { status: 'waiting', waitingOn: 'Kim', watch, backTo: did }, 'human')
   expect(todos.endWatch(t.id, watch, 'passed', 'nod', did)).toBe(true)
   const back = todos.get(t.id)
@@ -221,14 +222,12 @@ test('--back-to names the task that did the todo; a passing watch hands the todo
   todos.followTasks('nod')
   expect(todos.get(t.id).status).toBe('done')
 
-  // A task gc collected has no session to carry on in.
-  ledger.collected(did)
-  expect(() => todos.set(t.id, { status: 'waiting', watch, backTo: did }, 'human')).toThrow(
-    'was collected by gc',
-  )
+  // A task gc collected comes back when told, so it can still be named.
+  ledger.collected(did, null)
+  expect(todos.set(t.id, { status: 'waiting', watch, backTo: did }, 'human').backTo).toBe(did)
 })
 
-test('--back-to takes only the latest task, which the todo follows; one that errors keeps it waiting', () => {
+test('--back-to takes only the latest task, the one whose end moves the todo', () => {
   const { ledger, todos } = books()
   const t = captured(todos, 'Get the review answered')
   const ended = (id: number) => {
@@ -248,12 +247,6 @@ test('--back-to takes only the latest task, which the todo follows; one that err
   )
   todos.set(t.id, { status: 'waiting', watch, backTo: latest }, 'human')
   todos.endWatch(t.id, watch, 'passed', 'nod', latest)
-  // A session that cannot be reopened leaves the task in error, as tell does, and the todo waits on
-  // it until the task is resumed or cancelled.
-  ledger.setRunning(latest, `/work/${latest}`)
-  ledger.error(latest, 'session ended')
-  todos.followTasks('nod')
-  expect(todos.get(t.id).status).toBe('waiting')
   ended(latest)
   expect(todos.get(t.id).status).toBe('done')
 })

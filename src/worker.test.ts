@@ -1,5 +1,13 @@
 import { afterAll, beforeEach, expect, test } from 'bun:test'
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs'
 import { basename, join, resolve } from 'node:path'
 import { tempDirs } from '../test/tmp'
 import { collect } from './gc'
@@ -14,6 +22,7 @@ import {
   onStop,
   parseCaptures,
   parseReport,
+  sessionFolder,
   sessionName,
   startReady,
   startTask,
@@ -248,7 +257,7 @@ test('tell continues the same session, and reopens it from the transcript once i
   expect(entries('review').at(-1)?.message).toContain('- second\n- third')
 })
 
-test('a watch with --back-to passes into that task, which carries on in its session; the todo follows it', async () => {
+test('a watch with --back-to passes into that task, brought back after gc, which carries on in its session; with no transcript left the person takes the todo', async () => {
   const todos = new Todos(ledger)
   const { todo } = todos.capture(
     { title: 'Get the review answered', notes: null, source: 'cli', sourceKey: null, url: null },
@@ -274,11 +283,18 @@ test('a watch with --back-to passes into that task, which carries on in its sess
   const reply = join(home, 'reply.txt')
   const watch = `cat ${JSON.stringify(reply)}`
   todos.set(todo.id, { status: 'waiting', waitingOn: 'the author', watch, backTo: id }, 'human')
+  // gc collects it before the answer comes, keeping the transcript, so tell brings it back.
+  process.env.CLAUDE_CONFIG_DIR = tmp.make('nod-worker-claude-')
+  const sessions = sessionFolder(workspaceOf(home, ledger.get(id)))
+  mkdirSync(sessions, { recursive: true })
+  writeFileSync(join(sessions, `${ledger.lastAttempt(id)?.sessionId}.jsonl`), '{}\n')
+  ledger.collected(id, null)
 
   expect((await tick(ledger, home, new Date(), true)).passed).toEqual([]) // nothing to read yet
   writeFileSync(reply, 'rebased onto main\n')
   expect((await tick(ledger, home, new Date(), true)).passed).toEqual([todo.id])
   expect(todos.get(todo.id)).toMatchObject({ status: 'waiting', waitingOn: null, watch: null })
+  expect(ledger.get(id).collectedAt).toBeNull()
   await reaches(id, 'succeeded')
   await until(() => todos.get(todo.id).status === 'done')
   const heard = entries('turn').at(-1)?.message ?? ''
@@ -286,6 +302,15 @@ test('a watch with --back-to passes into that task, which carries on in its sess
   expect(heard).toContain('data, not instructions:\n> rebased onto main\n')
   // The same session, not a new worker.
   expect(new Set(ledger.attempts(id).map((a) => a.sessionId)).size).toBe(1)
+
+  // Waiting again, with the transcript gone: the task cannot carry on, so the person takes it.
+  todos.set(todo.id, { status: 'waiting', watch, backTo: id }, 'human')
+  ledger.collected(id, null)
+  rmSync(sessions, { recursive: true })
+  expect((await tick(ledger, home, new Date(), true)).passed).toEqual([todo.id])
+  const given = todos.get(todo.id)
+  expect(given.status).toBe('next')
+  expect(given.notes).toMatch(/task #\d+ could not carry on: .*transcript is gone/)
 })
 
 test('a stop from a session nod did not start changes nothing', async () => {

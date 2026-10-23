@@ -703,8 +703,8 @@ export class Todos {
     ) {
       throw new Error(`t${before.id} waits on its task, which moves it on when it ends`)
     }
-    // It goes back to its latest task, the one followTasks moves it on with, while that task's
-    // session can still be reopened.
+    // It goes back to its latest task, the one followTasks moves it on with, which has a session to
+    // go on in. One gc collected comes back when told (restore in worker.ts).
     if (typeof edit.backTo === 'number') {
       if ((edit.watch === undefined ? before.watch : edit.watch) === null || status !== 'waiting') {
         throw new Error('--back-to is for when a watch passes; give the waiting todo a --watch')
@@ -715,9 +715,8 @@ export class Todos {
           `task #${edit.backTo} is not the latest task of t${before.id}; give --back-to t${before.id}`,
         )
       }
-      if (task.workspace === null || task.collectedAt !== null) {
-        const why = task.workspace === null ? 'never started' : 'was collected by gc'
-        throw new Error(`task #${task.id} ${why}, so it cannot carry on`)
+      if (task.workspace === null) {
+        throw new Error(`task #${task.id} never started, so it cannot carry on`)
       }
     }
     const projectId = edit.projectId === undefined ? before.projectId : edit.projectId
