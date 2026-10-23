@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <title>받아 적기</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+      }
+      body {
+        margin: 0;
+        padding: 14px 16px;
+      }
+      input {
+        box-sizing: border-box;
+        width: 100%;
+        border: 0;
+        outline: 0;
+        background: transparent;
+        font: inherit;
+        font-size: 20px;
+      }
+      #error {
+        max-height: 3.6em;
+        margin: 8px 0 0;
+        overflow-y: auto;
+        color: #d1242f;
+        font-size: 12px;
+        white-space: pre-wrap;
+      }
+    </style>
+  </head>
+  <body>
+    <input
+      id="text"
+      aria-label="받아 적을 일"
+      autocomplete="off"
+      spellcheck="false"
+      placeholder="떠오른 일 — Enter 로 Inbox 에 넣고, Esc 로 닫습니다"
+    />
+    <p id="error"></p>
+    <script src="capture.js"></script>
+  </body>
+</html>

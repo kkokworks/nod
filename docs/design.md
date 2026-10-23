@@ -41,6 +41,7 @@ nod 는 여러 에이전트를 동시에 돌려 일을 처리하고, 사람에�
 | `src/trust.ts` | 시스템을 믿어도 되는지의 숫자. 장부에서 읽은 값만 받는 순수 함수와, 하루 첫 세션 알림 한 줄. |
 | `src/todo-cli.ts` | `nod in`, `nod todo`(`check` 포함), `nod project`, `nod today` |
 | `ui/` | 이 컴퓨터에서만 여는 웹 화면. 작업·결정 화면(`nod.server.ts`)과 할 일 화면(`todos.server.ts`, `todo-fns.ts`)이 같은 장부 연결을 씁니다. |
+| `desktop/` | macOS 데스크톱 앱(Tauri). 화면 서버를 창에 띄우는 껍데기와 메뉴·전역 단축키·받아 적기 창(`src-tauri/src/main.rs`, `src/`), 화면 서버를 로그인할 때 띄우는 launchd 설정(`launchd/`). |
 | `src/cli.ts` | `nod`, `nod <결정> <답>`, `nod drop`, `nod add`, `nod tell`, `nod resume`, `nod attach`, `nod watch`, `nod ls`, `nod show`, `nod stats`, `nod gc`, `nod trigger add·ls·rm`, `nod tick`, `nod hook` |
 | `skills/nod/SKILL.md` | Claude 세션을 앞단으로 만드는 스킬입니다. 요청을 작업으로 나눠 넣고, `nod watch` 를 Monitor 로 걸어 결정을 바로 전합니다. 결정은 대신 내리지 않습니다. |
 | `skills/gtd/` | 할 일 장부로 GTD 를 하는 스킬 묶음(`gtd:capture`·`scan`·`clarify`·`focus`·`tomorrow`·`review` 등)과 업무 도구 연결부(`sources/`). 켠 도구와 도구별 값은 `<홈>/config.json` 에서 읽습니다. |
@@ -466,6 +467,18 @@ Mindwtr 의 할 일을 nod 장부로 옮기고 gtd 레포를 닫습니다. 이 �
 | 상태 메뉴 (실제 `StatusSelect`) | 현재 상태에서 `↓`·`j`(반복 포함)·`k`·`↑` 로 옮기고, 처음에서 멈춤 |
 
 happy-dom 의 `navigator.platform` 은 `X11; Darwin arm64` 라서 tinykeys 의 `$mod` 가 Ctrl 이 됩니다. 확인할 때는 Mac 브라우저의 값(`MacIntel`)으로 두었습니다. 실제 브라우저에서 아직 보지 않은 것은 세 가지입니다. 브라우저가 한글 입력 상태에서 보내는 `isComposing`·`code` 값, `s` → `Esc` 뒤 포커스가 제목으로 돌아오는지, Safari·WKWebView 의 기본 설정(Tab 이 버튼을 건너뜀)에서 Tab 으로 목록에 들어가는지입니다. `⌘⇧0` 은 이 설정과 상관없이 동작합니다.
+
+## 데스크톱 앱 (2026-10-23)
+
+목표는 둘입니다. 다른 앱을 쓰다가 떠오른 일을 바로 받아 적는 것, 그리고 nod 화면을 키 하나로 불러오는 것입니다.
+
+1. **앱은 화면 서버를 창에 띄우는 껍데기입니다.** 화면 서버는 장부·tmux·git·캘린더를 직접 부르는 Bun 서버라 앱 안으로 옮기지 않습니다.
+2. **화면 서버는 앱이 아니라 launchd 가 띄웁니다.** 앱이 띄우면 앱을 끌 때 서버도 꺼지고, 캘린더 읽기 권한을 앱 이름으로 다시 받아야 할 수 있습니다. 에이전트는 개발 서버가 아니라 빌드한 서버(`vite build` 뒤 `vite preview`, TanStack Start 가 서버 진입점을 붙여 줌)를 띄웁니다. 개발 서버는 레포에서 브랜치를 바꿀 때 잠깐 500 을 냅니다. 대신 레포를 바꾸면 다시 빌드해야 해서, 설치 스크립트를 다시 돌리면 빌드부터 다시 합니다.
+3. **웹 화면은 앱 기능을 부르지 않습니다.** 앱 명령은 `build.rs` 의 앱 매니페스트에 올려 권한 뒤에 두고, 권한은 앱에 든 페이지에만 줍니다(받아 적기 창은 `capture`·`dismiss`, 서버가 꺼졌을 때의 페이지는 `retry`). 원격 주소를 적은 권한이 없으므로 4800 의 화면은 아무 명령도 부르지 못합니다. 단축키·메뉴·창 다루기는 Rust 쪽에서 하고, 페이지 이동은 앱이 메인 창의 주소를 바꿔서 합니다. 화면 밖으로 나가는 링크(PR 등)는 창을 옮기지 않고 브라우저로 엽니다.
+4. **받아 적기는 `nod in` 을 부릅니다.** 장부를 바꾸는 길을 `nod` 명령 하나로 유지합니다. 누가는 `human:desktop` 입니다. Finder 에서 연 앱은 launchd 의 빈약한 PATH 를 받으므로, 시작할 때 로그인 셸(대화형까지, bun 설치기가 `~/.zshrc` 에 PATH 를 넣기 때문)에서 PATH 를 읽어 씁니다.
+5. **전역 단축키는 ⌃⌥⌘ 조합입니다.** 전역 단축키는 다른 앱이 앞에 있을 때도 키를 가로채므로 macOS 기본 단축키(⌥⌘Space·⌃⌘Space·⌃Space·⌃⌥Space)와 Orca(⌘·⌘⇧·⌘⌥·⌘⌥⇧·⌃)가 쓰지 않는 조합으로 정했습니다. 앱 메뉴의 ⌘1~6·⌘N·⌘W 는 Orca 의 손에 익은 키를 따릅니다.
+
+샌드박스에서는 crates.io 에 닿지 못해 앱을 빌드·실행해 보지 못했습니다. 빌드한 화면 서버는 서버 진입점의 `fetch` 로 여섯 화면(`/focus`~`/done`)이 200 을 내는 것까지 확인했습니다.
 
 ## 실사용에서 고친 것 (2026-10-07)
 

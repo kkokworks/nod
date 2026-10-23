@@ -4,6 +4,8 @@
   "type": "module",
   "scripts": {
     "dev": "bun --bun vite dev --host 127.0.0.1 --port 4800 --strictPort",
+    "build": "bun --bun vite build",
+    "start": "bun --bun vite preview --host 127.0.0.1 --port 4800 --strictPort",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Keeps nod's UI server up from login. A sample: `sh desktop/launchd/ui.sh install` copies it
+     to ~/Library/LaunchAgents and fills in the bun, ui folder, PATH and log below. -->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>io.github.kkokworks.nod.ui</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/path/to/bun</string>
+    <string>run</string>
+    <string>start</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>/path/to/nod/ui</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/usr/bin:/bin</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>/path/to/nod-ui.log</string>
+  <key>StandardErrorPath</key>
+  <string>/path/to/nod-ui.log</string>
+</dict>
+</plist>
