@@ -34,6 +34,33 @@ test('a repeating todo moves on whole periods from its schedule, past today', ()
   expect(() => nextDates(none, 'daily', '2026-10-20')).toThrow('needs a date')
 })
 
+test('a monthly series keeps its day through short months, asking the ones before', () => {
+  const none = { due: null, scheduled: null, start: null }
+  const next = (due: string, before: string[], today: string) =>
+    nextDates(
+      { ...none, due },
+      'monthly',
+      today,
+      before.map((d) => ({ ...none, due: d })),
+    ).due
+  // February's 28th stands for the 31st, or the 30th, the series was set on.
+  expect(next('2026-02-28', ['2026-01-31'], '2026-02-28')).toBe('2026-03-31')
+  expect(next('2026-02-28', ['2026-01-30'], '2026-02-28')).toBe('2026-03-30')
+  expect(next('2026-04-30 09:00', ['2026-03-31', '2026-02-28'], '2026-04-30')).toBe(
+    '2026-05-31 09:00',
+  )
+  // Done on March 29th, February's one still has March 31st to come.
+  expect(next('2026-02-28', ['2026-01-31'], '2026-03-29')).toBe('2026-03-31')
+  // A day the person moved it to is the series' day from then on.
+  expect(next('2026-02-15', ['2026-01-31'], '2026-02-15')).toBe('2026-03-15')
+  expect(next('2026-03-28', ['2026-02-28', '2026-01-31'], '2026-03-28')).toBe('2026-04-28')
+  // A date the one before did not have is its own.
+  const start = { ...none, start: '2026-02-28' }
+  expect(nextDates(start, 'monthly', '2026-02-28', [{ ...none, due: '2026-01-31' }]).start).toBe(
+    '2026-03-28',
+  )
+})
+
 test('the next workday after a Friday or a weekend day is Monday', () => {
   // 2026-10-23 is a Friday.
   const after = ['2026-10-22', '2026-10-23', '2026-10-24', '2026-10-25'].map(nextWorkday)

@@ -791,7 +791,7 @@ export class Todos {
       status: 'next' as const,
       projectId: done.projectId,
       context: done.context,
-      ...nextDates(done, done.repeat, localDay(new Date())),
+      ...nextDates(done, done.repeat, localDay(new Date()), this.earlier(done)),
       repeat: done.repeat,
       source: done.source,
       sourceKey,
@@ -804,6 +804,27 @@ export class Todos {
         .returning('id'),
     )
     this.recordTodo(next, actor, diff({}, fields), at)
+  }
+
+  // The todos of a monthly series before this one, latest first, through the key each next one
+  // has (repeatNext); only a monthly series needs them (nextDates).
+  // ponytail: reads the whole series though a date asks at most a few back; a series of years is
+  // a few dozen rows.
+  private earlier(t: Todo): Todo[] {
+    if (t.repeat !== 'monthly') return []
+    const before: Todo[] = []
+    for (let at = t; ; ) {
+      // A next one is made after the one it follows, so the walk only goes down, and ends.
+      const id = Number(/^t(\d+)$/.exec(at.sourceKey ?? '')?.[1])
+      if (!(id < at.id)) break
+      const prev = this.first(
+        q.selectFrom('todos').selectAll().where('id', '=', id).where('source', '=', at.source),
+      )
+      if (prev === null) break
+      before.push(prev)
+      at = prev
+    }
+    return before
   }
 
   private recordTodo(id: number, actor: string, change: Change['change'], at: string): void {

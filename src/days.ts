@@ -31,9 +31,24 @@ export function parseWhen(text: string, today: string, time: boolean): string {
 
 // Moves the dates on by the same whole periods from the schedule, not from when it was done, until
 // the earliest is after today: one done late does not leave its next one overdue already. A time
-// stays as it was.
-export function nextDates(dates: Dates, repeat: Repeat, today: string): Dates {
-  const first = [dates.due, dates.scheduled, dates.start]
+// stays as it was. `before`: the dates of the series' earlier todos, latest first, so a monthly one
+// keeps its day (seriesDay).
+export function nextDates(
+  dates: Dates,
+  repeat: Repeat,
+  today: string,
+  before: Dates[] = [],
+): Dates {
+  const from = (k: keyof Dates): string | null => {
+    const when = dates[k]
+    if (when === null || repeat !== 'monthly') return when
+    return seriesDay(
+      when,
+      before.map((b) => b[k]),
+    )
+  }
+  const kept: Dates = { due: from('due'), scheduled: from('scheduled'), start: from('start') }
+  const first = [kept.due, kept.scheduled, kept.start]
     .filter((d) => d !== null)
     .map(dayOf)
     .sort()[0]
@@ -42,13 +57,32 @@ export function nextDates(dates: Dates, repeat: Repeat, today: string): Dates {
   while (step(first, repeat, periods) <= today) periods += 1
   const move = (when: string | null) =>
     when === null ? null : `${step(dayOf(when), repeat, periods)}${when.slice(10)}`
-  return { due: move(dates.due), scheduled: move(dates.scheduled), start: move(dates.start) }
+  return { due: move(kept.due), scheduled: move(kept.scheduled), start: move(kept.start) }
+}
+
+// A monthly date on the last day of a short month may stand for a later day the series was set on,
+// moved there because the month has no such day: the same date of the todo before tells, latest
+// first, and may stand for one in turn. The day comes back as the series has it, so `2026-02-28`
+// after `2026-01-31` is `2026-02-31`, which step reads as the last day of whatever month it moves to.
+function seriesDay(when: string, before: (string | null)[]): string {
+  let day = Number(when.slice(8, 10))
+  let at = when
+  for (const earlier of before) {
+    // On a day before its month's last, or on the 31st, nothing was moved.
+    if (earlier === null || !addDays(dayOf(at), 1).endsWith('-01') || at.slice(8, 10) === '31') {
+      break
+    }
+    day = Math.max(day, Number(earlier.slice(8, 10)))
+    at = earlier
+  }
+  return `${when.slice(0, 8)}${String(day).padStart(2, '0')}${when.slice(10)}`
 }
 
 function step(day: string, repeat: Repeat, periods: number): string {
   if (repeat === 'daily') return addDays(day, periods)
   if (repeat === 'weekly') return addDays(day, 7 * periods)
-  // The 31st moves to the last day of a shorter month.
+  // The 31st moves to the last day of a shorter month; so does a day that only the series has
+  // (seriesDay).
   const [y, m, d] = day.split('-').map(Number)
   if (y === undefined || m === undefined || d === undefined) throw new Error(`not a day: ${day}`)
   const last = new Date(Date.UTC(y, m + periods, 0)).getUTCDate()

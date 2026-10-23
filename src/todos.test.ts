@@ -1,4 +1,4 @@
-import { afterAll, expect, test } from 'bun:test'
+import { afterAll, expect, setSystemTime, test } from 'bun:test'
 import { tempDirs } from '../test/tmp'
 import { Ledger, type NewTask } from './ledger'
 import { OPEN, parseRef, type TodoEdit, type TodoFilter, Todos } from './todos'
@@ -559,6 +559,24 @@ test('done makes the next one of a repeating todo, once; dropped ends it', () =>
   expect(() => todos.set(undated.id, { repeat: 'daily' }, 'human')).toThrow(
     'a repeating todo needs a due, on or start day',
   )
+})
+
+test('a monthly series keeps the day it was set on through short months', () => {
+  setSystemTime(new Date(2026, 0, 15, 12))
+  try {
+    const todos = fresh()
+    const edit: TodoEdit = { status: 'next', due: '2026-01-31', repeat: 'monthly' }
+    let t = todos.set(captured(todos, 'Pay the rent').id, edit, 'human')
+    const dues: (string | null)[] = []
+    for (let i = 0; i < 3; i += 1) {
+      todos.finish([t.id], 'done', 'human')
+      t = only(todos.list({ ...open, statuses: ['next'] }))
+      dues.push(t.due)
+    }
+    expect(dues).toEqual(['2026-02-28', '2026-03-31', '2026-04-30'])
+  } finally {
+    setSystemTime()
+  }
 })
 
 test('a day holds what is overdue, scheduled, due and focused, each open todo once', () => {
