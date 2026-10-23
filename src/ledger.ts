@@ -306,6 +306,8 @@ const MIGRATIONS = [
   // v14: the commit a repo task's branch pointed at when gc removed its worktree, so resume can
   // rebuild the worktree after gc deleted the branch.
   'alter table tasks add column head text;',
+  // v15: the task a watched todo goes back to once its watch passes, instead of to the person.
+  'alter table todos add column back_to integer references tasks(id);',
 ]
 
 // The tables as the migrations leave them, in camelCase; CamelCasePlugin maps names to snake_case.

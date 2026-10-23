@@ -79,6 +79,8 @@ nod todo set t1 --status next --project 건강 --context @전화   # 다음 행�
 nod in '견적서 회신 받기'
 nod todo set t2 --status waiting --waiting-on 민수           # 기다리는 일
 nod todo set t2 --watch 'test -f ~/Downloads/견적서.pdf'     # 생기면 다음 행동으로(5분마다 확인)
+nod todo set t3 --status waiting --watch '<답이 오면 0 으로 끝나며 받은 내용을 출력하는 명령>' --back-to t3
+                         # 통과하면 t3 을 맡았던 작업의 세션이 그 출력을 받아 이어서 처리
 nod todo                 # 받은 일함·다음 행동·대기
 nod todo next --context @전화
 nod project              # 진행 중인 프로젝트와 다음 행동 수 (없으면 알려 줌)

@@ -180,6 +180,77 @@ test('a todo waiting on its task has no watch: handing it over drops one, and no
   )
 })
 
+test('--back-to names the task that did the todo; a passing watch hands the todo back to it', () => {
+  const { ledger, todos } = books()
+  const t = captured(todos, 'Get the review answered')
+  const did = todos.delegate(t.id, task, 'human')
+  const unrelated = ledger.add(task)
+  for (const id of [did, unrelated]) {
+    ledger.setRunning(id, `/work/${id}`)
+    ledger.succeed(id)
+  }
+  todos.followTasks('nod')
+  const watch = 'test -f answered'
+  expect(() => todos.set(t.id, { status: 'waiting', backTo: did }, 'human')).toThrow(
+    '--back-to is for when a watch passes',
+  )
+  expect(() => todos.set(t.id, { status: 'waiting', watch, backTo: unrelated }, 'human')).toThrow(
+    `task #${unrelated} is not the latest task of t${t.id}`,
+  )
+  todos.set(t.id, { status: 'waiting', waitingOn: 'Kim', watch, backTo: did }, 'human')
+  // It goes with the watch: clearing the watch, or leaving waiting, forgets it.
+  expect(todos.set(t.id, { watch: null }, 'human').backTo).toBeNull()
+  todos.set(t.id, { watch, backTo: did }, 'human')
+  expect(todos.set(t.id, { status: 'next' }, 'human').backTo).toBeNull()
+
+  Bun.sleepSync(2) // so it starts waiting after the task ended, on a millisecond clock
+  todos.set(t.id, { status: 'waiting', waitingOn: 'Kim', watch, backTo: did }, 'human')
+  expect(todos.endWatch(t.id, watch, 'passed', 'nod', did)).toBe(true)
+  const back = todos.get(t.id)
+  expect([back.status, back.waitingOn, back.watch, back.backTo]).toEqual([
+    'waiting',
+    null,
+    null,
+    null,
+  ])
+  expect(back.notes).toMatch(/ watch passed, back to task #\d+: test -f answered$/)
+  // It waits on the task now: not moved by its earlier end, moved by the next one.
+  todos.followTasks('nod')
+  expect(todos.get(t.id).status).toBe('waiting')
+  ledger.setRunning(did, `/work/${did}`)
+  ledger.succeed(did)
+  todos.followTasks('nod')
+  expect(todos.get(t.id).status).toBe('done')
+
+  // A task gc collected comes back when told, so it can still be named.
+  ledger.collected(did, null)
+  expect(todos.set(t.id, { status: 'waiting', watch, backTo: did }, 'human').backTo).toBe(did)
+})
+
+test('--back-to takes only the latest task, the one whose end moves the todo', () => {
+  const { ledger, todos } = books()
+  const t = captured(todos, 'Get the review answered')
+  const ended = (id: number) => {
+    ledger.setRunning(id, `/work/${id}`)
+    ledger.succeed(id)
+    todos.followTasks('nod')
+  }
+  const earlier = todos.delegate(t.id, task, 'human')
+  ended(earlier)
+  todos.set(t.id, { status: 'next' }, 'human')
+  const latest = todos.delegate(t.id, task, 'human')
+  ended(latest)
+  const watch = 'test -f answered'
+  // followTasks goes by the latest task, so an earlier one carrying on would never move the todo.
+  expect(() => todos.set(t.id, { status: 'waiting', watch, backTo: earlier }, 'human')).toThrow(
+    `task #${earlier} is not the latest task of t${t.id}`,
+  )
+  todos.set(t.id, { status: 'waiting', watch, backTo: latest }, 'human')
+  todos.endWatch(t.id, watch, 'passed', 'nod', latest)
+  ended(latest)
+  expect(todos.get(t.id).status).toBe('done')
+})
+
 test('an edit that fails changes nothing, links included', () => {
   const todos = fresh()
   const t = captured(todos, 'x')
