@@ -842,6 +842,7 @@ test('a saved environment leaves out secrets, by name or in a URL, and the SSH a
   const outer = {
     HTTPS_PROXY: 'http://user:pass@proxy.example.com:8080',
     https_proxy: 'http://user:pass@proxy.example.com:8080',
+    ALL_PROXY: 'user:pass@proxy.example.com:8080', // curl and git take a proxy without a scheme
     ANTHROPIC_BASE_URL: 'https://u:pw@llm.example.com',
     ANTHROPIC_CUSTOM_HEADERS: 'Authorization: Bearer example',
     ANTHROPIC_API_KEY: 'example',
@@ -850,6 +851,7 @@ test('a saved environment leaves out secrets, by name or in a URL, and the SSH a
     HTTP_PROXY: 'http://proxy.example.com:3128',
     NO_PROXY: 'localhost,.example.com',
     LC_ALL: 'ko_KR.UTF-8',
+    ANTHROPIC_MODEL: 'claude-example@20250101', // an @ that is no user
   }
   // In a process started with them, as in the workerEnv test above.
   const run = Bun.spawnSync(
@@ -867,10 +869,12 @@ console.log(JSON.stringify([savedEnv(), workerEnv('/h', 5, null)]))`,
     HTTP_PROXY: outer.HTTP_PROXY,
     NO_PROXY: outer.NO_PROXY,
     LC_ALL: outer.LC_ALL,
+    ANTHROPIC_MODEL: outer.ANTHROPIC_MODEL,
   })
   for (const name of [
     'HTTPS_PROXY',
     'https_proxy',
+    'ALL_PROXY',
     'ANTHROPIC_BASE_URL',
     'ANTHROPIC_CUSTOM_HEADERS',
     'ANTHROPIC_API_KEY',

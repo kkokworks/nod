@@ -55,11 +55,14 @@ const PROXY_ENV = ['HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY'].flatMap
   n.toLowerCase(),
 ])
 // What a saved environment leaves out: names that hold a secret (a header carries a token), values
-// that are a URL with a user in it (a proxy's password), and the SSH agent's socket, a new path at
-// each boot, so a saved one would break the workers' SSH git after a restart.
+// that are a URL with a user in it (a proxy's password), proxies with a user and no scheme, which
+// curl and git take too, and the SSH agent's socket, a new path at each boot, so a saved one would
+// break the workers' SSH git after a restart.
 const SECRET_ENV = /KEY|TOKEN|SECRET|PASSWORD|HEADER/
 const USER_IN_URL = /:\/\/[^/?#\s]*@/
 const UNSAVED_ENV = new Set(['SSH_AUTH_SOCK'])
+const hasUser = (key: string, value: string): boolean =>
+  USER_IN_URL.test(value) || (/_PROXY$/i.test(key) && value.includes('@'))
 
 // What PASS_ENV keeps of nod's environment.
 function passedEnv(): Record<string, string> {
@@ -78,7 +81,7 @@ function passedEnv(): Record<string, string> {
 export function savedEnv(): Record<string, string> {
   return Object.fromEntries(
     Object.entries(passedEnv()).filter(
-      ([key, value]) => !SECRET_ENV.test(key) && !USER_IN_URL.test(value) && !UNSAVED_ENV.has(key),
+      ([key, value]) => !SECRET_ENV.test(key) && !hasUser(key, value) && !UNSAVED_ENV.has(key),
     ),
   )
 }
