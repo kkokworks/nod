@@ -895,6 +895,40 @@ test('a retrospective that finds no general rule just succeeds', async () => {
   await expect(tell(ledger, home, retro, 'look again')).rejects.toThrow('which ended (none)')
 })
 
+test('yes to a rule closes its decision and adds the rule at once, before anyone hears of it', async () => {
+  const of = ledger.add({
+    brief: 'x',
+    repo: null,
+    branch: null,
+    checkCmd: null,
+    model: null,
+    after: [],
+    triggerId: null,
+    issue: null,
+  })
+  const retro = ledger.addRetro(ledger.get(of), 'look back')
+  ledger.startAttempt({
+    taskId: retro,
+    kind: 'start',
+    decisionId: null,
+    sessionId: 'retro-session',
+    prompt: 'look back',
+  })
+  await onStop(ledger, home, {
+    session_id: 'retro-session',
+    last_assistant_message: 'NOD: done | keep it short',
+    stop_hook_active: false,
+  })
+  const decision = ledger.decisions(retro)[0]
+  if (decision === undefined) throw new Error('no rule decision')
+  // A notify that cannot run fails the answer once the rule is in.
+  writeFileSync(join(home, 'notify'), '')
+  await expect(answer(ledger, home, decision.id, 'yes', 'human')).rejects.toThrow()
+  expect(ledger.decision(decision.id).answer).toBe('yes')
+  expect(ledger.rules().map((r) => r.text)).toEqual(['keep it short'])
+  expect(status(retro)).toBe('succeeded')
+})
+
 test('a worker learns its task through NOD_TASK, so the todos it changes name it', () => {
   expect(workerEnv('/h', 5)).toMatchObject({ NOD_HOME: '/h', NOD_TASK: '5' })
   expect(workerEnv('/h', null)).not.toHaveProperty('NOD_TASK')

@@ -292,19 +292,20 @@ export async function answer(
       task: taskRef(ledger.get(decision.taskId)),
       decision: { id: decisionId, reason: decision.reason, answer: text },
     })
-  // The retrospective proposed the rule as its report; adding it is all that is left to do.
+  // The retrospective proposed the rule as its report; adding it is all that is left to do, with
+  // the decision, so neither happens without the other.
   if (decision.reason === 'rule') {
-    ledger.answer(decisionId, text)
-    await told()
     const { retroId } = ledger.get(decision.taskId)
     if (retroId === null) throw new Error(`decision ${decisionId} is on no retrospective`)
     const { rule } = ledger.retro(retroId)
     if (!rule) throw new Error(`decision ${decisionId} has no rule to add`)
     ledger.db.transaction(() => {
+      ledger.answer(decisionId, text)
       ledger.addRule(rule, retroId, actor)
       ledger.endRetro(retroId, 'added')
       ledger.succeed(decision.taskId)
     })()
+    await told()
     return
   }
   const terminals = Terminals.of(home)

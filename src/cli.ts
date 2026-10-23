@@ -283,6 +283,10 @@ switch (command) {
       console.error(USAGE)
       process.exit(1)
     }
+    // Yes to a rule decision adds a rule, which `nod rule` refuses a worker.
+    if (process.env.NOD_TASK !== undefined && ledger.decision(id).reason === 'rule') {
+      throw new Error('a worker cannot change the rules')
+    }
     await answer(ledger, home, id, words(rest), actorFromEnv())
     console.log(`answered; sent to task #${ledger.decision(id).taskId}`)
   }

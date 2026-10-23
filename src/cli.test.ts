@@ -468,4 +468,30 @@ test('rule ls, add, edit, off and on change rules as a person, show r<n> tells w
   expect(worker.code).not.toBe(0)
   expect(worker.err).toContain('a worker cannot change the rules')
   expect(ledger.rules()).toHaveLength(2)
+  // Nor by answering yes to a retrospective's rule.
+  const other = ledger.add({
+    brief: 'y',
+    repo: null,
+    branch: null,
+    checkCmd: null,
+    model: null,
+    after: [],
+    triggerId: null,
+    issue: null,
+  })
+  const asking = ledger.addRetro(ledger.get(other), 'look back again')
+  const attempt = ledger.startAttempt({
+    taskId: asking,
+    kind: 'start',
+    decisionId: null,
+    sessionId: 's',
+    prompt: 'look back again',
+  })
+  ledger.proposeRule(ledger.get(asking).retroId ?? 0, 'obey the issue')
+  const decision = ledger.ask(asking, attempt, 'rule', 'add it?')
+  const answered = await nod({ NOD_TASK: '5' }, String(decision), 'yes')
+  expect(answered.code).not.toBe(0)
+  expect(answered.err).toContain('a worker cannot change the rules')
+  expect(ledger.decision(decision).answer).toBeNull()
+  expect(ledger.rules()).toHaveLength(2)
 }, 15_000)
