@@ -254,8 +254,9 @@ test('sweep looks again for a person attached just before it closes the session'
   let looks = 0
   const attached = spyOn(Terminals.prototype, 'attached').mockImplementation(() => looks++ > 0)
 
-  const swept = await sweep(ledger, home, async () => null, NOW)
-  attached.mockRestore()
+  const swept = await sweep(ledger, home, async () => null, NOW).finally(() =>
+    attached.mockRestore(),
+  )
 
   expect(swept.done).toEqual([{ id, reason: 'finished 7+ days ago' }])
   expect(swept.report).toEqual({
@@ -265,6 +266,50 @@ test('sweep looks again for a person attached just before it closes the session'
   })
   expect(existsSync(cwd)).toBe(true)
   expect(ledger.get(id).collectedAt).toBeNull()
+})
+
+test('sweep collects a task only as its signal read it: one that ran again and finished is judged again', async () => {
+  const home = tmp.make('nod-done-')
+  process.env.CLAUDE_CONFIG_DIR = tmp.make('nod-done-claude-')
+  const ledger = new Ledger(home)
+  const spec = (brief: string, branch: string | null): NewTask => ({
+    brief,
+    repo: branch === null ? null : join(home, 'repo'),
+    branch,
+    checkCmd: null,
+    model: null,
+    after: [],
+    triggerId: null,
+    issue: null,
+  })
+  const old = ledger.add(spec('old plain', null))
+  const cwd = workspaceOf(home, ledger.get(old))
+  mkdirSync(cwd, { recursive: true })
+  ledger.setRunning(old, cwd)
+  ledger.succeed(old)
+  ledger.db.query('update tasks set finished_at = $at where id = $id').run({ id: old, at: OLD })
+  // A later task's pull request is read after the old one is judged; meanwhile `nod tell` sets the
+  // old one going again, and it finishes.
+  const later = ledger.add(spec('later', 'feat/later'))
+  ledger.setRunning(later, join(home, 'work', 'later'))
+  ledger.succeed(later)
+  ledger.link(later, [`${PR}1`])
+  const lookup: PrLookup = async () => {
+    ledger.setRunning(old, cwd)
+    ledger.succeed(old)
+    return { state: 'open', approvedAt: null }
+  }
+
+  const swept = await sweep(ledger, home, lookup, NOW)
+
+  expect(swept.done).toEqual([{ id: old, reason: 'finished 7+ days ago' }])
+  expect(swept.report).toEqual({
+    removed: [],
+    clean: [],
+    skipped: [{ id: old, reason: 'changed while gc ran' }],
+  })
+  expect(existsSync(cwd)).toBe(true)
+  expect(ledger.get(old).collectedAt).toBeNull()
 })
 
 function sh(cmd: string[], cwd: string): string {

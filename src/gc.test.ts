@@ -1,4 +1,4 @@
-import { afterAll, expect, test } from 'bun:test'
+import { afterAll, expect, spyOn, test } from 'bun:test'
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tempDirs } from '../test/tmp'
@@ -378,26 +378,93 @@ test('gc keeps a worktree holding the only copy of commits: in a submodule, or o
   git(inSub.cwd, 'add', 'lib')
   commit(inSub.cwd, 'record lib work')
   push('feat/in-sub')
+  // A commit on a branch of the submodule, which is back on the commit the repo records.
+  const onSide = task('feat/side')
+  push('feat/side')
+  const sideLib = join(onSide.cwd, 'lib')
+  git(sideLib, 'checkout', '-q', '-b', 'side')
+  commit(sideLib, 'side work')
+  git(sideLib, 'checkout', '-q', '--detach', 'HEAD~1')
+  // Work stashed in the submodule.
+  const stashed = task('feat/stashed')
+  push('feat/stashed')
+  writeFileSync(join(stashed.cwd, 'lib', 'draft.txt'), 'draft')
+  git(join(stashed.cwd, 'lib'), 'stash', 'push', '-q', '-u')
   const detached = task('feat/detached')
   push('feat/detached')
   git(detached.cwd, 'checkout', '-q', '--detach')
   commit(detached.cwd, 'detached work')
+  const kept = [inSub, onSide, stashed, detached]
 
-  const report = await collect(ledger, home, { ids: [plain.id, inSub.id, detached.id] })
+  const report = await collect(ledger, home, { ids: [plain.id, ...kept.map((t) => t.id)] })
 
   expect(report).toEqual({
     removed: [plain.id],
     clean: [],
     skipped: [
       { id: inSub.id, reason: 'submodule lib has commits no remote has' },
+      { id: onSide.id, reason: 'submodule lib has commits no remote has' },
+      { id: stashed.id, reason: 'submodule lib has commits no remote has' },
       { id: detached.id, reason: 'HEAD has commits feat/detached does not' },
     ],
   })
   expect(existsSync(plain.cwd)).toBe(false)
-  expect(existsSync(inSub.cwd)).toBe(true)
-  expect(existsSync(detached.cwd)).toBe(true)
-  expect(ledger.get(inSub.id).collectedAt).toBeNull()
-  expect(ledger.get(detached.id).collectedAt).toBeNull()
+  for (const t of kept) {
+    expect(existsSync(t.cwd)).toBe(true)
+    expect(ledger.get(t.id).collectedAt).toBeNull()
+  }
+})
+
+test('gc removes nothing of a task told to go on while it checks the worktree', async () => {
+  const home = tmp.make('nod-gc-')
+  process.env.CLAUDE_CONFIG_DIR = tmp.make('nod-gc-claude-')
+  const ledger = new Ledger(home)
+  const repo = join(home, 'repo')
+  mkdirSync(repo)
+  const git = (cwd: string, ...args: string[]): string =>
+    sh(['git', '-c', 'user.email=t@t', '-c', 'user.name=t', ...args], cwd)
+  git(repo, 'init', '-q', '-b', 'main')
+  git(repo, 'commit', '-q', '--allow-empty', '-m', 'init')
+  const id = ledger.add({
+    brief: 'pushed',
+    repo,
+    branch: 'feat/pushed',
+    checkCmd: null,
+    model: null,
+    after: [],
+    triggerId: null,
+    issue: null,
+  })
+  const cwd = workspaceOf(home, ledger.get(id))
+  git(repo, 'worktree', 'add', '-q', '-b', 'feat/pushed', cwd)
+  git(cwd, 'commit', '-q', '--allow-empty', '-m', 'work')
+  git(repo, 'update-ref', 'refs/remotes/origin/feat/pushed', 'feat/pushed')
+  ledger.setRunning(id, cwd)
+  ledger.succeed(id)
+  // `nod tell` comes once the session is closed, as gc looks for commits only the worktree has:
+  // restore takes the task back, and the message sets it running.
+  const spawnSync = Bun.spawnSync
+  const spy = spyOn(Bun, 'spawnSync').mockImplementation(((
+    ...args: Parameters<typeof spawnSync>
+  ) => {
+    const [cmd] = args
+    if (Array.isArray(cmd) && cmd.includes('--is-ancestor')) {
+      ledger.uncollected(id)
+      ledger.setRunning(id, cwd)
+    }
+    return spawnSync.apply(Bun, args)
+  }) as typeof spawnSync)
+
+  const report = await collect(ledger, home, { ids: [id] }).finally(() => spy.mockRestore())
+
+  expect(report).toEqual({
+    removed: [],
+    clean: [],
+    skipped: [{ id, reason: 'told to go on while gc ran' }],
+  })
+  expect(existsSync(cwd)).toBe(true)
+  expect(git(repo, 'branch', '--list', 'feat/pushed')).toContain('feat/pushed')
+  expect(ledger.get(id).collectedAt).toBeNull()
 })
 
 test('gc reads each task again as it gets to it: one told to go on meanwhile is left alone', async () => {

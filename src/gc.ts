@@ -13,8 +13,9 @@ export type GcReport = {
   skipped: { id: number; reason: string }[]
 }
 
-// Which tasks to collect: those finished before a cutoff, or the ones the human named.
-export type GcPick = { before: Date } | { ids: number[] }
+// Which tasks to collect: those finished before a cutoff, the ones the human named, or the ones a
+// signal said are done with, as the signal read them (sweep in done.ts).
+export type GcPick = { before: Date } | { ids: number[] } | { seen: Task[] }
 
 // Removes what the picked finished tasks left behind: the worker's tmux session, the workspace or
 // worktree, and the task's branch once its work is safe elsewhere (see dropBranch). Ledger rows
@@ -26,14 +27,19 @@ export async function collect(ledger: Ledger, home: string, pick: GcPick): Promi
   const report: GcReport = { removed: [], clean: [], skipped: [] }
   const workRoot = `${join(home, 'work')}/`
   const terminals = Terminals.of(home)
-  const picked = (task: Task): boolean =>
-    'ids' in pick
-      ? pick.ids.includes(task.id)
-      : task.collectedAt === null &&
-        task.finishedAt !== null &&
-        Date.parse(task.finishedAt) <= pick.before.getTime() &&
-        // As sweep: a queued task starts from this one's branch.
-        ledger.waiting(task.id).length === 0
+  const seen = (id: number): Task | undefined =>
+    'seen' in pick ? pick.seen.find((t) => t.id === id) : undefined
+  const picked = (task: Task): boolean => {
+    if ('ids' in pick) return pick.ids.includes(task.id)
+    if ('seen' in pick) return seen(task.id) !== undefined
+    return (
+      task.collectedAt === null &&
+      task.finishedAt !== null &&
+      Date.parse(task.finishedAt) <= pick.before.getTime() &&
+      // As sweep: a queued task starts from this one's branch.
+      ledger.waiting(task.id).length === 0
+    )
+  }
   for (const { id } of ledger.list()) {
     // Read again as gc gets to it, since gc waits on each task before: one told to go on meanwhile
     // is running again.
@@ -42,27 +48,33 @@ export async function collect(ledger: Ledger, home: string, pick: GcPick): Promi
     const skip = (reason: string): void => {
       report.skipped.push({ id, reason })
     }
-    if (!FINISHED.has(task.status)) {
-      skip(`still ${task.status}`)
-      continue
-    }
-    // A turn the person types in keeps the status succeeded until it ends.
-    if (terminals.attached(sessionName(id))) {
-      skip('a person is attached to its terminal')
-      continue
-    }
-    // Taken before the session closes, so a task told to go on or collected by another gc since it
-    // was read is left alone. A task gc does not get through is let go again.
-    if (!ledger.claimCollect(task)) {
-      skip('changed while gc ran')
-      continue
-    }
+    let claimed = false
+    // A task gc does not get through is let go again.
     const release = (reason: string): void => {
-      if (task.collectedAt === null) ledger.uncollected(id)
+      if (claimed && task.collectedAt === null) ledger.uncollected(id)
       skip(reason)
     }
+    // `nod tell` took the task back (restore in worker.ts) since gc claimed it.
+    const takenBack = (): boolean => ledger.get(id).collectedAt === null
     // One task gc cannot get through, a file it may not delete say, must not stop the rest.
     try {
+      if (!FINISHED.has(task.status)) {
+        skip(`still ${task.status}`)
+        continue
+      }
+      // A turn the person types in keeps the status succeeded until it ends.
+      if (terminals.attached(sessionName(id))) {
+        skip('a person is attached to its terminal')
+        continue
+      }
+      // Taken before the session closes, so a task told to go on or collected by another gc since
+      // it was read is left alone; for sweep, since its signal read it, so one that ran again and
+      // finished is judged again.
+      claimed = ledger.claimCollect(seen(id) ?? task)
+      if (!claimed) {
+        skip('changed while gc ran')
+        continue
+      }
       if (task.workspace === null || !existsSync(task.workspace)) {
         const head = headOf(task)
         dropBranch(task)
@@ -75,11 +87,6 @@ export async function collect(ledger: Ledger, home: string, pick: GcPick): Promi
         continue
       }
       await terminals.close(sessionName(task.id))
-      // Told to go on while its session closed: `nod tell` took it back (restore in worker.ts).
-      if (ledger.get(id).collectedAt === null) {
-        skip('told to go on while gc ran')
-        continue
-      }
       const head = headOf(task)
 
       if (task.repo !== null) {
@@ -96,6 +103,15 @@ export async function collect(ledger: Ledger, home: string, pick: GcPick): Promi
           release(only)
           continue
         }
+      }
+      // Looked at last before anything goes, as the session closing and the checks take a while.
+      // ponytail: a tell during the removal itself still finds its folder going; closing that needs
+      // restore to wait for gc.
+      if (takenBack()) {
+        skip('told to go on while gc ran')
+        continue
+      }
+      if (task.repo !== null) {
         // --force only because git refuses any worktree with submodules; the checks above already
         // made sure nothing uncommitted or committed only here is lost.
         const removed = await spawn(
@@ -106,10 +122,16 @@ export async function collect(ledger: Ledger, home: string, pick: GcPick): Promi
           release(removed.output.trim())
           continue
         }
-        dropBranch(task)
       } else {
         rmSync(task.workspace, { recursive: true })
       }
+      // Taken back while its folder went: it stays listed, and keeps its branch.
+      if (takenBack()) {
+        skip('told to go on while gc ran')
+        continue
+      }
+      ledger.collected(task.id, head)
+      dropBranch(task)
       // A worktree sits in folders named after its repo and branch; drop the ones it leaves empty.
       for (
         let dir = dirname(task.workspace);
@@ -119,7 +141,6 @@ export async function collect(ledger: Ledger, home: string, pick: GcPick): Promi
         rmdirSync(dir)
       }
 
-      ledger.collected(task.id, head)
       report.removed.push(task.id)
     } catch (error) {
       release(message(error))
@@ -129,10 +150,11 @@ export async function collect(ledger: Ledger, home: string, pick: GcPick): Promi
 }
 
 // Why removing the worktree would lose commits, or null: worktree remove takes with it the
-// worktree's own clone of each submodule (.git/worktrees/<worktree>/modules), and its HEAD may hold
-// commits no branch has, made on a detached HEAD say. A submodule commit is safe on a remote branch,
-// or in the repo's own checkout of the submodule, which initSubmodules (worker.ts) cloned it from.
-// ponytail: one level of submodules, as initSubmodules fills.
+// worktree's own clone of each submodule (.git/worktrees/<worktree>/modules), with its HEAD,
+// branches and stash, and the worktree's HEAD may hold commits no branch has, made on a detached
+// HEAD say. A submodule commit is safe on a remote branch, or in the repo's own checkout of the
+// submodule, which initSubmodules (worker.ts) cloned it from.
+// ponytail: one level of submodules, as initSubmodules fills; a commit only a reflog reaches goes.
 function onlyCopy(repo: string, workspace: string, branch: string): string | null {
   const git = (cwd: string, ...args: string[]) => Bun.spawnSync(['git', '-C', cwd, ...args])
   if (
@@ -156,12 +178,16 @@ function onlyCopy(repo: string, workspace: string, branch: string): string | nul
     const path = entry.slice(entry.indexOf('\n') + 1)
     const sub = join(workspace, path)
     if (!existsSync(join(sub, '.git'))) continue // never filled, so nothing of its own
-    const head = git(sub, 'rev-parse', '--verify', '-q', 'HEAD').stdout.toString().trim()
-    if (head !== '' && remotesHolding(sub, 'HEAD').length > 0) continue
-    if (head !== '' && git(join(repo, path), 'cat-file', '-e', `${head}^{commit}`).exitCode === 0) {
-      continue
+    const head = git(sub, 'rev-parse', '--verify', '-q', 'HEAD')
+    const refs = git(sub, 'for-each-ref', '--format=%(objectname)', 'refs/heads', 'refs/stash')
+    if (refs.exitCode !== 0) throw new Error(`git for-each-ref in ${sub}: ${refs.stderr}`)
+    const commits = `${head.stdout}\n${refs.stdout}`.split('\n').filter(Boolean)
+    const safe = (commit: string): boolean =>
+      remotesHolding(sub, commit).length > 0 ||
+      git(join(repo, path), 'cat-file', '-e', `${commit}^{commit}`).exitCode === 0
+    if (head.exitCode !== 0 || !commits.every(safe)) {
+      return `submodule ${path} has commits no remote has`
     }
-    return `submodule ${path} has commits no remote has`
   }
   return null
 }

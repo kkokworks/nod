@@ -28,13 +28,14 @@ export type Done = { id: number; reason: string }
 // A task whose signals could not be read, a git service call that failed, say: it waits.
 export type Unchecked = { id: number; error: string }
 
+// `tasks`: the ledger's tasks, as read once for the signals.
 export async function doneTasks(
   ledger: Ledger,
   home: string,
   prs: PrLookup,
   now: Date,
+  tasks: Task[] = ledger.list(),
 ): Promise<{ done: Done[]; unchecked: Unchecked[] }> {
-  const tasks = ledger.list()
   const terminals = Terminals.of(home)
   const done: Done[] = []
   const unchecked: Unchecked[] = []
@@ -53,15 +54,19 @@ export async function doneTasks(
   return { done, unchecked }
 }
 
-// Collects the finished tasks a signal says are done with.
+// Collects the finished tasks a signal says are done with, each only while it is as the signal read
+// it: reading the git service takes a while, and a task told to go on meanwhile may have finished
+// again with commits no remote has.
 export async function sweep(
   ledger: Ledger,
   home: string,
   prs: PrLookup,
   now: Date,
 ): Promise<{ report: GcReport; done: Done[]; unchecked: Unchecked[] }> {
-  const { done, unchecked } = await doneTasks(ledger, home, prs, now)
-  const report = await collect(ledger, home, { ids: done.map((d) => d.id) })
+  const tasks = ledger.list()
+  const { done, unchecked } = await doneTasks(ledger, home, prs, now, tasks)
+  const seen = tasks.filter((t) => done.some((d) => d.id === t.id))
+  const report = await collect(ledger, home, { seen })
   return { report, done, unchecked }
 }
 
