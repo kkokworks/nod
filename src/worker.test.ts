@@ -1080,6 +1080,21 @@ test('a worker in a folder whose path Claude Code changes more of for its transc
   expect(entries('launch').map((l) => l.resumed)).toEqual([false, true])
 }, 30_000)
 
+test('a message that comes before a first turn that never began goes in after the brief', async () => {
+  writeFileSync(join(home, 'fake-exit'), '')
+  const id = await add('first')
+  const decision = await until(() => ledger.decisions(id)[0])
+  expect(decision.question).toContain('exited 3 times as it started')
+  await until(() => !Terminals.of(home).alive(sessionName(id)))
+
+  rmSync(join(home, 'fake-exit'))
+  await answer(ledger, home, decision.id, 'go on', 'human')
+  await reaches(id, 'succeeded')
+  expect(entries('turn').map((t) => t.message)).toEqual([
+    expect.stringMatching(/^first\n\nYour last turn was cut off.*\nHuman decision: go on$/s),
+  ])
+}, 30_000)
+
 test('a Claude Code that keeps exiting as it starts is not started again: the person hears why, and the next message starts it', async () => {
   const events = listen()
   const id = await add('first')

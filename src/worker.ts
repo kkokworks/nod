@@ -920,8 +920,9 @@ type Start = {
 // The next start of a worker's Claude Code (keepWorker): as the account the rule gives now, which
 // trusts nod's work folder first, in the conversation of its last turn. A conversation with no
 // transcript and no turn that ended never began: Claude Code ended before it took the brief, so
-// it starts anew with the brief (`fresh`), and that turn was not cut off. One kept only in the
-// folder of the account it ran as before cannot go on in this one.
+// it starts anew with the brief and any message deliver left after it (`fresh`), and that turn
+// was not cut off. One kept only in the folder of the account it ran as before cannot go on in
+// this one.
 async function nextRun(ledger: Ledger, home: string, taskId: number): Promise<Start> {
   const config = configDir(home)
   await ensureTrusted(home, config)
@@ -946,9 +947,11 @@ async function nextRun(ledger: Ledger, home: string, taskId: number): Promise<St
   }
   const ended = attempts.some((a) => a.outcome !== null && a.outcome !== 'error')
   if (!ended && !here) {
-    rmSync(promptFile(home, taskId), { force: true })
+    // A message left since (an answer, a tell) goes in after the brief.
+    const left = takePrompt(home, taskId)
+    const prompt = left === null ? first.prompt : `${first.prompt}\n\n${left}`
     const session = ['--session-id', first.sessionId]
-    const argv = claudeArgs(ledger, task, session, first.prompt, marker)
+    const argv = claudeArgs(ledger, task, session, prompt, marker)
     return { argv, env, fresh: true, started: marker }
   }
   const session = ['--resume', last.sessionId]
