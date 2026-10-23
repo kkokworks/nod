@@ -1,0 +1,6 @@
+{
+  "identifier": "capture",
+  "description": "The capture window runs `nod in` and puts itself away.",
+  "windows": ["capture"],
+  "permissions": ["allow-capture", "allow-dismiss"]
+}

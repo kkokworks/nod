@@ -1,0 +1,6 @@
+{
+  "identifier": "offline",
+  "description": "The app's own page in the main window, shown while the UI server is down, asks to go back to it. The UI server's pages get no capability: a capability without remote URLs holds only for the app's own pages.",
+  "windows": ["main"],
+  "permissions": ["allow-retry"]
+}
