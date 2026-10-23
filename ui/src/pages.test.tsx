@@ -277,7 +277,7 @@ test('a change to the todo keeps what is being typed in the form and says so', a
   // A line added to the notes shows in them, and the title stays.
   onPost = () => {
     todo = { ...todo, notes: 'first\nsecond' }
-    changes.push({ actor: 'human:ui', at: AT, text: 'notes' })
+    changes.push({ actor: 'human:ui', at: AT, text: 'notes + second' })
   }
   type(field('input[placeholder="Add a line to the notes…"]'), 'second')
   await click('Add')
@@ -289,7 +289,7 @@ test('a change to the todo keeps what is being typed in the form and says so', a
   type(field('.todo-form textarea'), 'first, edited\nsecond')
   onPost = () => {
     todo = { ...todo, notes: 'first\nsecond\nthird' }
-    changes.push({ actor: 'human:ui', at: AT, text: 'notes' })
+    changes.push({ actor: 'human:ui', at: AT, text: 'notes + third' })
   }
   type(field('input[placeholder="Add a line to the notes…"]'), 'third')
   await click('Add')
@@ -299,12 +299,11 @@ test('a change to the todo keeps what is being typed in the form and says so', a
   )
   onPost = () => {}
 
+  // Saving sends only what the person changed, so a change the page has not reloaded yet stays.
+  todo = { ...todo, status: 'done' }
   await click('Save')
-  expect(posted.splice(0)).toMatchObject([
-    {
-      id: 9,
-      edit: { title: 'new title', context: '@desk', notes: 'first, edited\nsecond\nthird' },
-    },
+  expect(posted.splice(0)).toEqual([
+    { id: 9, edit: { title: 'new title', notes: 'first, edited\nsecond\nthird' } },
   ])
 })
 

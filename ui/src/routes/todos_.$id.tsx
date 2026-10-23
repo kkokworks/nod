@@ -104,8 +104,13 @@ const datePart = (when: string | null) => when?.slice(0, 10) ?? ''
 const timePart = (when: string | null) => when?.slice(11, 16) ?? ''
 const join = (date: string, time: string) =>
   date === '' ? '' : time === '' ? date : `${date} ${time}`
+// The edit's fields the form shows as two.
+const PAIRS: Record<string, string[]> = {
+  due: ['dueDate', 'dueTime'],
+  scheduled: ['onDate', 'onTime'],
+}
 
-// Every field at once, as `nod todo set` takes them; the ledger records only what changed.
+// The fields the person changed, as `nod todo set` takes them.
 function EditForm({ page }: { page: TodoPage }) {
   const { todo } = page
   const held = {
@@ -147,7 +152,7 @@ function EditForm({ page }: { page: TodoPage }) {
     )
     setNote('')
   }
-  const all: RawEdit = {
+  const every: RawEdit = {
     title: f.title,
     status: f.status,
     projectId: f.projectId === '' ? null : Number(f.projectId),
@@ -160,12 +165,17 @@ function EditForm({ page }: { page: TodoPage }) {
     focus: f.focus,
     notes: f.notes,
   }
+  // Only those: the others may have changed in the ledger since the page last reloaded, and
+  // sending them would put the old values back.
+  const changed = Object.fromEntries(
+    Object.entries(every).filter(([key]) => (PAIRS[key] ?? [key]).some((field) => field in typed)),
+  ) as RawEdit
   return (
     <form
       className="composer todo-form"
       onSubmit={(e) => {
         e.preventDefault()
-        void save(all).then((ok) => {
+        void save(changed).then((ok) => {
           if (ok) void done()
         })
       }}
