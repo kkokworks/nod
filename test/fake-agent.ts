@@ -129,7 +129,7 @@ async function turn(message: string, continuing: boolean): Promise<void> {
   keepTranscript()
   const head = message.split('\n')[0] ?? ''
   let reply = 'NOD: done | did it'
-  if (head.includes('hang')) {
+  if (head.startsWith('hang')) {
     // A turn that goes on until something ends Claude Code.
     await new Promise(() => {})
   } else if (head.includes('need-permission')) {
