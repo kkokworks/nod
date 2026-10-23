@@ -1,19 +1,13 @@
-import { appendFileSync, existsSync, readFileSync } from 'node:fs'
-import { join } from 'node:path'
 import type { Ledger, Task } from './ledger'
 
-// Rules every worker gets after the built-in ones, one per line. They come from retrospectives the
-// human approved, and the human may edit the file by hand.
-export const rulesPath = (home: string): string => join(home, 'rules.md')
-
-export function readRules(home: string): string {
-  const path = rulesPath(home)
-  return existsSync(path) ? readFileSync(path, 'utf8').trim() : ''
-}
-
-export function addRule(home: string, rule: string): void {
-  appendFileSync(rulesPath(home), `- ${rule}\n`)
-}
+// Rules every worker gets after the built-in ones, one per line: the ledger's rules that are on.
+// They come from retrospectives the human approved, or from `nod rule add`.
+export const activeRules = (ledger: Ledger): string =>
+  ledger
+    .rules()
+    .filter((r) => r.state === 'on')
+    .map((r) => `- ${r.text}`)
+    .join('\n')
 
 // Worth a retrospective: a check sent the worker back, or it gave up or kept failing. Questions,
 // permissions and trust are ordinary decisions, not trouble.

@@ -1,5 +1,5 @@
 import { Database, type SQLQueryBindings } from 'bun:sqlite'
-import { mkdirSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, renameSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -73,6 +73,22 @@ export type Retro = {
   createdAt: string
   endedAt: string | null
 }
+
+// A rule every worker gets after the built-in ones, while it is on: one a retrospective proposed and
+// the person approved, or one the person wrote (retroId null). Nothing deletes a rule; turned off,
+// it stays tied to the retrospective it came from. Every change records who made it, as a todo's do.
+export type RuleState = 'on' | 'off'
+export type Rule = {
+  id: number
+  text: string
+  retroId: number | null
+  state: RuleState
+  createdAt: string
+  changedAt: string
+}
+export type RuleEdit = Partial<Pick<Rule, 'text' | 'state'>>
+// Each field a change set, as [before, after], the way todo_changes keeps it (todos.ts).
+type Changed = Record<string, [unknown, unknown]>
 
 // Adds tasks on a schedule. With a source command, each line it prints that the trigger has not
 // seen before becomes a task.
@@ -360,7 +376,30 @@ export const MIGRATIONS = [
   update tasks set retro_id = (select r.id from retros r where r.of_task_id = tasks.retro_of)
   where retro_of is not null;
   `,
+  // v17: the rules every worker gets, which <home>/rules.md held until now, with the retrospective
+  // each came from and who changed what, as todo_changes has it. The file's lines move over with
+  // this migration (importRulesFile).
+  `
+  create table rules (
+    id integer primary key,
+    text text not null,
+    retro_id integer references retros(id),
+    state text not null default 'on',
+    created_at text not null,
+    changed_at text not null
+  );
+  create table rule_changes (
+    id integer primary key,
+    rule_id integer not null references rules(id),
+    actor text not null,
+    change text not null,
+    at text not null
+  );
+  create index rule_changes_rule on rule_changes(rule_id);
+  `,
 ]
+// The migration that moves <home>/rules.md into the ledger, numbered as user_version counts.
+const RULES_FILE_MIGRATION = 17
 
 // The tables as the migrations leave them, in camelCase; CamelCasePlugin maps names to snake_case.
 // The todo tables (v10) are typed in todos.ts.
@@ -373,6 +412,8 @@ type Tables = {
   attempts: Omit<Attempt, 'id'> & { id: Generated<number>; pid: number | null }
   decisions: Omit<Decision, 'id'> & { id: Generated<number> }
   retros: Omit<Retro, 'id'> & { id: Generated<number> }
+  rules: Omit<Rule, 'id'> & { id: Generated<number> }
+  ruleChanges: { id: Generated<number>; ruleId: number; actor: string; change: string; at: string }
 }
 
 // Kysely only builds and type-checks the queries; bun:sqlite runs them (runQuery), so the ledger
@@ -469,6 +510,7 @@ export class Ledger {
           for (const statement of sql.split(';')) {
             if (statement.trim() !== '') this.db.run(statement)
           }
+          if (i + 1 === RULES_FILE_MIGRATION) this.importRulesFile(home)
           this.db.exec(`pragma user_version = ${i + 1}`)
         })
         .immediate()
@@ -810,6 +852,88 @@ export class Ledger {
     return this.first(q.selectFrom('retros').selectAll().where('ofTaskId', '=', taskId))
   }
 
+  // ── rules ──
+
+  // `retroId`: the retrospective that proposed it; null for one the person wrote.
+  addRule(text: string, retroId: number | null, actor: string): Rule {
+    ruleText(text)
+    return this.db.transaction(() => {
+      const at = now()
+      const id = this.insert(
+        q
+          .insertInto('rules')
+          .values({ text, retroId, state: 'on', createdAt: at, changedAt: at })
+          .returning('id'),
+      )
+      const from: Changed = retroId === null ? {} : { retroId: [null, retroId] }
+      this.recordRule(id, actor, { text: [null, text], ...from, state: [null, 'on'] }, at)
+      return this.rule(id)
+    })()
+  }
+
+  rule(id: number): Rule {
+    const rule = this.first(q.selectFrom('rules').selectAll().where('id', '=', id))
+    if (!rule) throw new Error(`rule ${id} not found`)
+    return rule
+  }
+
+  rules(): Rule[] {
+    return this.run(q.selectFrom('rules').selectAll().orderBy('id'))
+  }
+
+  // Changes what the edit names and records who changed what; a field set to the value it has is
+  // not a change.
+  setRule(id: number, edit: RuleEdit, actor: string): Rule {
+    if (edit.text !== undefined) ruleText(edit.text)
+    return this.db.transaction(() => {
+      const before = this.rule(id)
+      const change = Object.fromEntries(
+        (['text', 'state'] as const)
+          .filter((k) => edit[k] !== undefined && edit[k] !== before[k])
+          .map((k): [string, Changed[string]] => [k, [before[k], edit[k]]]),
+      )
+      if (Object.keys(change).length === 0) return before
+      const at = now()
+      this.run(
+        q
+          .updateTable('rules')
+          .set({ ...edit, changedAt: at })
+          .where('id', '=', id),
+      )
+      this.recordRule(id, actor, change, at)
+      return this.rule(id)
+    })()
+  }
+
+  private recordRule(id: number, actor: string, change: Changed, at: string): void {
+    const row = { ruleId: id, actor, change: JSON.stringify(change), at }
+    this.run(q.insertInto('ruleChanges').values(row))
+  }
+
+  // Moves each line of <home>/rules.md, where approved rules were kept before v17, into the rules
+  // table without its leading `- `, tied to the added retrospective that proposed the same words.
+  // The file is renamed, not deleted, so it plainly no longer counts. Run inside the migration's
+  // transaction, so a failed rename leaves the ledger as it was.
+  private importRulesFile(home: string): void {
+    const path = join(home, 'rules.md')
+    if (!existsSync(path)) return
+    for (const line of readFileSync(path, 'utf8').split('\n')) {
+      const text = line.replace(/^- /, '').trim()
+      if (text === '') continue
+      const retro = this.first(
+        q
+          .selectFrom('retros')
+          .select('id')
+          .where('outcome', '=', 'added')
+          .where('rule', '=', text)
+          .orderBy('id'),
+      )
+      // Recorded as nod's: who wrote the line the file does not say, and nod moved it.
+      this.addRule(text, retro?.id ?? null, 'nod')
+    }
+    renameSync(path, `${path}.imported`)
+  }
+
   // ── attempts ──
 
   startAttempt(a: {
@@ -1034,6 +1158,12 @@ const camelKeys = (row: Record<string, unknown>): Record<string, unknown> =>
       v,
     ]),
   )
+
+// A rule goes into every worker's prompt as one line of a list.
+function ruleText(text: string): void {
+  if (text.trim() === '') throw new Error('empty rule')
+  if (text.includes('\n')) throw new Error('a rule is one line')
+}
 
 function median(sorted: number[]): number | null {
   const mid = Math.floor(sorted.length / 2)

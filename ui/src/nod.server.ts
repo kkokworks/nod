@@ -6,6 +6,7 @@ import {
   Ledger,
   nodHome,
   type Retro,
+  type Rule,
   type Stats,
   type Task,
   type Trigger,
@@ -20,6 +21,9 @@ export const home = nodHome()
 // write while this reads.
 export const ledger = new Ledger(home)
 const terminals = Terminals.of(home)
+// Changes made here record this actor. The server may run inside a Claude session, where the
+// environment would make them claude's.
+export const ACTOR = 'human:ui'
 
 export type TaskRow = {
   id: number
@@ -74,7 +78,8 @@ export type Detail = {
   decisions: Decision[]
   report: string | null
   place: Place
-  retro: Retro | null
+  // With the rule it added as it stands now, edited once its words differ from the proposal.
+  retro: (Retro & { rules: (Rule & { edited: boolean })[] }) | null
   // The worker's terminal right now, while its session is alive.
   screen: string | null
 }
@@ -136,9 +141,18 @@ export function detail(id: number): Detail {
     decisions: ledger.decisions(id),
     report: attempts.filter((a) => a.report).at(-1)?.report ?? null,
     place: place(new Todos(ledger), task),
-    retro: task.retroId === null ? null : ledger.retro(task.retroId),
+    retro: task.retroId === null ? null : retroOf(task.retroId),
     screen: terminals.alive(name) ? terminals.screen(name).trimEnd() : null,
   }
+}
+
+function retroOf(id: number): Detail['retro'] {
+  const retro = ledger.retro(id)
+  const rules = ledger
+    .rules()
+    .filter((r) => r.retroId === id)
+    .map((r) => ({ ...r, edited: r.text !== retro.rule }))
+  return { ...retro, rules }
 }
 
 export type Message = { taskId: number; decisionId: number | null; text: string }
@@ -160,7 +174,7 @@ export async function send(m: Message): Promise<void> {
   }
   if (open?.id !== m.decisionId)
     throw new Error(`decision #${m.decisionId} is not open on #${task.id}`)
-  await answer(ledger, home, m.decisionId, m.text)
+  await answer(ledger, home, m.decisionId, m.text, ACTOR)
 }
 
 // Decisions first, then tasks that went wrong, then those at work.

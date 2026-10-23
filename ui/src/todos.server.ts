@@ -17,11 +17,8 @@ import type { Trust } from '../../src/trust'
 import { changeText } from '../../src/view'
 import { message } from '../../src/worker'
 import type { DoneShown, RawEdit, RawProjectEdit } from './input'
-import { collected, home, ledger, type Shown, type TaskRow } from './nod.server'
+import { ACTOR, collected, home, ledger, type Shown, type TaskRow } from './nod.server'
 
-// Changes made here record this actor. The server may run inside a Claude session, where the
-// environment would make them claude's.
-const ACTOR = 'human:ui'
 // Reading the calendar launches an app, and the pages reload every few seconds.
 const CALENDAR_TTL_MS = 5 * 60_000
 // Today's focus holds this many: few enough that picking means choosing (Mindwtr's default is 3).

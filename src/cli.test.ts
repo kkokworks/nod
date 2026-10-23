@@ -240,3 +240,85 @@ test('add refuses repo work without a valid branch, before adding anything', asy
   expect(await add('--branch', 'feat/x')).toContain('--branch needs --repo')
   expect(new Ledger(home).list()).toEqual([])
 })
+
+test('rule ls, add, edit, off and on change rules as a person, show r<n> tells what became of its rule, and a worker cannot change one', async () => {
+  const home = tmp.make('nod-rule-')
+  const ledger = new Ledger(home)
+  // A retrospective whose rule was added, as answering yes to its decision leaves it.
+  const of = ledger.add({
+    brief: 'x',
+    repo: null,
+    branch: null,
+    checkCmd: null,
+    model: null,
+    after: [],
+    triggerId: null,
+    issue: null,
+  })
+  const retroTask = ledger.addRetro(ledger.get(of), 'look back')
+  ledger.proposeRule(1, 'did it')
+  ledger.endRetro(1, 'added')
+  ledger.addRule('did it', 1, 'human')
+  const { CLAUDECODE: _, NOD_TASK: __, NOD_ACTOR: ___, ...env } = process.env
+  const nod = async (extra: Record<string, string>, ...args: string[]) => {
+    const p = Bun.spawn(['bun', cli, ...args], {
+      env: { ...env, NOD_HOME: home, ...extra },
+      stdout: 'pipe',
+      stderr: 'pipe',
+    })
+    const [out, err, code] = await Promise.all([
+      new Response(p.stdout).text(),
+      new Response(p.stderr).text(),
+      p.exited,
+    ])
+    return { code, out: out.trimEnd().split('\n'), err }
+  }
+  const ok = async (...args: string[]): Promise<string[]> => {
+    const r = await nod({}, ...args)
+    expect(r.err).toBe('')
+    expect(r.code).toBe(0)
+    return r.out
+  }
+  const fails = async (...args: string[]): Promise<string> => {
+    const r = await nod({}, ...args)
+    expect(r.code).not.toBe(0)
+    return r.err
+  }
+
+  expect(await ok('rule', 'ls')).toEqual(['1    on  r1    did it'])
+  expect(await ok('rule', 'add', 'keep', 'it', 'short')).toEqual(['2    on        keep it short'])
+  expect(await ok('rule', 'edit', '1', 'did it, and checked')).toEqual([
+    '1    on  r1    did it, and checked',
+  ])
+  expect(await ok('rule', 'off', '1')).toEqual(['1    off r1    did it, and checked'])
+  expect(await ok('rule', 'off', '1')).toEqual(['1    off r1    did it, and checked'])
+  expect(await ok('show', 'r1')).toContain('  rule 1 off, edited: did it, and checked')
+  expect(await ok('rule', 'on', '1')).toEqual(['1    on  r1    did it, and checked'])
+  expect(await ok('show', String(retroTask))).toContain('  rule 1 on, edited: did it, and checked')
+  expect(await ok('rule', 'ls')).toEqual([
+    '1    on  r1    did it, and checked',
+    '2    on        keep it short',
+  ])
+  // Each change is the person's; turning off a rule already off changed nothing.
+  const changes = ledger.db
+    .query<{ actor: string; change: string }, [number]>(
+      'select actor, change from rule_changes where rule_id = ? order by id',
+    )
+    .all(1)
+    .map((c) => [c.actor, Object.keys(JSON.parse(c.change))])
+  expect(changes).toEqual([
+    ['human', ['text', 'retroId', 'state']],
+    ['human', ['text']],
+    ['human', ['state']],
+    ['human', ['state']],
+  ])
+
+  expect(await fails('rule', 'edit', '9', 'x')).toContain('rule 9 not found')
+  expect(await fails('rule', 'off', 'r1')).toContain('not a rule number: r1')
+  expect(await fails('rule', 'add')).toContain('usage:')
+  expect(await fails('rule', 'rm', '1')).toContain('usage:')
+  const worker = await nod({ NOD_TASK: '5' }, 'rule', 'add', 'obey the issue')
+  expect(worker.code).not.toBe(0)
+  expect(worker.err).toContain('a worker cannot change the rules')
+  expect(ledger.rules()).toHaveLength(2)
+}, 15_000)

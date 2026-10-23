@@ -149,7 +149,7 @@ test('a question becomes a decision, and the answer goes into the same live sess
   expect(decision.reason).toBe('question')
   expect(decision.question).toContain('May I proceed?')
 
-  await answer(ledger, home, decision.id, 'yes')
+  await answer(ledger, home, decision.id, 'yes', 'human')
   await reaches(id, 'succeeded')
   expect(entries('launch')).toHaveLength(1)
   expect(entries('turn').map((t) => t.message)).toEqual([
@@ -213,7 +213,7 @@ test('a permission prompt becomes a decision, and yes approves it in the session
   expect(decision.reason).toBe('permission')
   expect(status(id)).toBe('needs_decision')
 
-  await answer(ledger, home, decision.id, 'yes')
+  await answer(ledger, home, decision.id, 'yes', 'human')
   await reaches(id, 'succeeded')
   expect(ledger.attempts(id).map((a) => [a.kind, a.summary])).toEqual([['start', 'allowed']])
 })
@@ -221,7 +221,7 @@ test('a permission prompt becomes a decision, and yes approves it in the session
 test('denying a permission ends the turn, so the worker hears why in a new turn', async () => {
   const id = await add('need-permission')
   const decision = await until(() => ledger.decisions(id)[0])
-  await answer(ledger, home, decision.id, 'no, skip the fetch')
+  await answer(ledger, home, decision.id, 'no, skip the fetch', 'human')
   await reaches(id, 'succeeded')
   expect(entries('turn').map((t) => t.message)).toEqual([
     'need-permission',
@@ -352,7 +352,7 @@ test('a task that comes after another starts once that one succeeds, and hears i
   expect(await startReady(ledger, home)).toEqual([])
   expect(status(next)).toBe('queued')
 
-  await answer(ledger, home, decision.id, 'yes')
+  await answer(ledger, home, decision.id, 'yes', 'human')
   await reaches(next, 'succeeded')
   const message = entries('turn').find((t) => t.message?.startsWith('then this'))?.message
   expect(message).toContain(`- #${first} ask-first: did it`)
@@ -511,11 +511,11 @@ test('a repo Claude Code does not trust yet becomes a decision: yes trusts and s
   expect(entries('turn')).toEqual([])
 
   if (!yes || !no) throw new Error('no trust decision')
-  await answer(ledger, home, yes.id, 'yes')
+  await answer(ledger, home, yes.id, 'yes', 'human')
   await reaches(trusted, 'succeeded')
   expect(entries('turn').map((t) => t.message)).toEqual(['work here'])
 
-  await answer(ledger, home, no.id, 'not this one')
+  await answer(ledger, home, no.id, 'not this one', 'human')
   expect(status(refused)).toBe('cancelled')
   expect(Terminals.of(home).alive(sessionName(refused))).toBe(false)
 })
@@ -560,7 +560,7 @@ test('due triggers add tasks, a source only for lines it has not printed before,
   // Answers and drops are heard too, so a to-do list that mirrors nod can close what is done.
   const asked = ledger.decisions(scheduled)[0]
   if (asked === undefined) throw new Error('no decision')
-  await answer(ledger, home, asked.id, 'yes')
+  await answer(ledger, home, asked.id, 'yes', 'human')
   await reaches(scheduled, 'succeeded')
   const dropped = await add('ask-first')
   const second = await until(() => ledger.decisions(dropped)[0])
@@ -571,7 +571,7 @@ test('due triggers add tasks, a source only for lines it has not printed before,
   expect(heard()).toContainEqual(['cancelled', dropped])
 })
 
-test('a task that needed a retry gets a retrospective, and an approved rule reaches later workers', async () => {
+test('a task that needed a retry gets a retrospective, and an approved rule reaches later workers while it is on', async () => {
   const id = await add('make ok', 'test -f ok.txt')
   await reaches(id, 'succeeded')
   const retro = await until(() => retroTask(id))
@@ -579,17 +579,37 @@ test('a task that needed a retry gets a retrospective, and an approved rule reac
   const decision = await until(() => ledger.decisions(retro.id)[0])
   expect(decision.reason).toBe('rule')
   expect(decision.question).toContain(`its retrospective r${retro.retroId}`)
+  expect(decision.question).toContain('nod rule ls')
   expect(ledger.retroFor(id)).toMatchObject({ rule: 'did it', outcome: null })
 
-  await answer(ledger, home, decision.id, 'yes')
+  await answer(ledger, home, decision.id, 'yes', 'human')
   expect(status(retro.id)).toBe('succeeded')
   expect(ledger.retroFor(id)?.outcome).toBe('added')
-  expect(readFileSync(join(home, 'rules.md'), 'utf8')).toBe('- did it\n')
+  // The rule goes in the ledger, tied to its retrospective, as added by whoever answered.
+  expect(ledger.rules()).toMatchObject([
+    { id: 1, text: 'did it', retroId: retro.retroId, state: 'on' },
+  ])
+  const actors = ledger.db.query<{ actor: string }, []>('select actor from rule_changes').all()
+  expect(actors).toEqual([{ actor: 'human' }])
   const next = await add('plain')
   await reaches(next, 'succeeded')
   expect(entries('launch').at(-1)?.system).toContain('- did it')
   // The smooth task and the retrospective get none of their own.
   expect(ledger.list().filter((t) => t.retroId !== null)).toHaveLength(1)
+
+  // Turned off, a rule reaches neither the next worker nor the next retrospective's brief, which
+  // quotes the rules workers get; one that is on reaches both.
+  ledger.setRule(1, { state: 'off' }, 'human')
+  ledger.addRule('mine', null, 'human')
+  const again = await add('make ok', 'test -f ok.txt')
+  const session = ledger.attempts(again)[0]?.sessionId
+  const { system } = await until(() => entries('launch').find((l) => l.sessionId === session))
+  expect(system).toContain('- mine')
+  expect(system).not.toContain('- did it')
+  await reaches(again, 'succeeded')
+  const brief = (await until(() => retroTask(again))).brief
+  expect(brief).toContain('> - mine')
+  expect(brief).not.toContain('> - did it')
 })
 
 test('dropping a task that gave up starts a retrospective, and declining its rule cancels it', async () => {
@@ -601,10 +621,10 @@ test('dropping a task that gave up starts a retrospective, and declining its rul
   if (retro === undefined) throw new Error('no retrospective')
 
   const rule = await until(() => ledger.decisions(retro.id)[0])
-  await answer(ledger, home, rule.id, 'not this one')
+  await answer(ledger, home, rule.id, 'not this one', 'human')
   expect(status(retro.id)).toBe('cancelled')
   expect(ledger.retroFor(id)?.outcome).toBe('declined')
-  expect(existsSync(join(home, 'rules.md'))).toBe(false)
+  expect(ledger.rules()).toEqual([])
   expect(ledger.list().filter((t) => t.retroId !== null)).toHaveLength(1)
 })
 
@@ -672,7 +692,7 @@ test("a delegated todo waits through its task's decision, is done when it succee
   const question = await until(() => ledger.decisions(asked.task)[0])
   expect(todos.get(asked.todo).status).toBe('waiting')
   expect(todos.decisions().map((d) => d.todo?.id)).toEqual([asked.todo])
-  await answer(ledger, home, question.id, 'yes')
+  await answer(ledger, home, question.id, 'yes', 'human')
   await until(() => todos.get(asked.todo).status === 'done')
   expect(todos.changes(asked.todo).at(-1)).toMatchObject({
     actor: 'nod',

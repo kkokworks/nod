@@ -1,5 +1,6 @@
 import { Database } from 'bun:sqlite'
 import { afterAll, expect, test } from 'bun:test'
+import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tempDirs } from '../test/tmp'
 import { Ledger, MIGRATIONS } from './ledger'
@@ -23,7 +24,80 @@ test('reopening a ledger keeps its data and does not re-run migrations', () => {
   })
   const reopened = new Ledger(home)
   expect(reopened.get(id).brief).toBe('keep me')
-  expect(reopened.db.query('pragma user_version').get()).toEqual({ user_version: 16 })
+  expect(reopened.db.query('pragma user_version').get()).toEqual({ user_version: 17 })
+})
+
+// A ledger as v16 left it, with retrospectives (id, rule, outcome) of tasks of the same id.
+function v16Home(retros: [number, string, string][]): string {
+  const home = freshHome()
+  const old = new Database(join(home, 'nod.db'), { create: true, strict: true })
+  for (const sql of MIGRATIONS.slice(0, 16)) old.exec(sql)
+  old.exec('pragma user_version = 16')
+  for (const [id, rule, outcome] of retros) {
+    old.query("insert into tasks (id, brief, created_at) values ($id, 'x', 'at')").run({ id })
+    old
+      .query(
+        `insert into retros (id, of_task_id, rule, outcome, created_at)
+         values ($id, $id, $rule, $outcome, 'at')`,
+      )
+      .run({ id, rule, outcome })
+  }
+  old.close()
+  return home
+}
+
+test('v17 moves rules.md into the ledger, each line tied to the added retrospective that proposed it, and renames the file', () => {
+  const home = v16Home([
+    [1, 'do A', 'added'],
+    [2, 'do B', 'declined'],
+    [3, 'do C', 'added'],
+  ])
+  const file = '- do A\n- do C, reworded by hand\n\n- do B\nno dash\n'
+  writeFileSync(join(home, 'rules.md'), file)
+
+  const ledger = new Ledger(home)
+  expect(ledger.rules().map((r) => [r.text, r.retroId, r.state])).toEqual([
+    ['do A', 1, 'on'],
+    ['do C, reworded by hand', null, 'on'],
+    ['do B', null, 'on'],
+    ['no dash', null, 'on'],
+  ])
+  const actors = ledger.db.query<{ actor: string }, []>('select actor from rule_changes').all()
+  expect(new Set(actors.map((a) => a.actor))).toEqual(new Set(['nod']))
+  expect(existsSync(join(home, 'rules.md'))).toBe(false)
+  expect(readFileSync(join(home, 'rules.md.imported'), 'utf8')).toBe(file)
+
+  // From then on nod neither reads nor moves the file, whatever a person writes to it.
+  writeFileSync(join(home, 'rules.md'), '- written later\n')
+  expect(new Ledger(home).rules()).toHaveLength(4)
+  expect(existsSync(join(home, 'rules.md'))).toBe(true)
+})
+
+test('v17 without rules.md leaves the rules empty and makes no file', () => {
+  const home = v16Home([[1, 'do A', 'added']])
+  expect(new Ledger(home).rules()).toEqual([])
+  expect(existsSync(join(home, 'rules.md.imported'))).toBe(false)
+})
+
+test('a rule changes only when told something new, records who changed what, and is one line', () => {
+  const ledger = new Ledger(freshHome())
+  const { id } = ledger.addRule('keep it short', null, 'human')
+  ledger.setRule(id, { text: 'keep it short', state: 'on' }, 'human')
+  ledger.setRule(id, { text: 'keep it shorter' }, 'claude:ab12')
+  ledger.setRule(id, { state: 'off' }, 'human')
+  expect(ledger.rule(id)).toMatchObject({ text: 'keep it shorter', state: 'off', retroId: null })
+  const changes = ledger.db
+    .query<{ actor: string; change: string }, []>('select actor, change from rule_changes')
+    .all()
+    .map((c) => [c.actor, JSON.parse(c.change)])
+  expect(changes).toEqual([
+    ['human', { text: [null, 'keep it short'], state: [null, 'on'] }],
+    ['claude:ab12', { text: ['keep it short', 'keep it shorter'] }],
+    ['human', { state: ['on', 'off'] }],
+  ])
+  expect(() => ledger.addRule(' ', null, 'human')).toThrow('empty rule')
+  expect(() => ledger.setRule(id, { text: 'two\nlines' }, 'human')).toThrow('one line')
+  expect(() => ledger.setRule(9, { state: 'off' }, 'human')).toThrow('rule 9 not found')
 })
 
 test('v16 moves the retrospectives so far into their own table, with what became of each', () => {
