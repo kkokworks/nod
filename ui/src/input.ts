@@ -38,10 +38,12 @@ export const SHOWN_STEP = 100
 export const SHOWN_MAX = 5000
 
 // How many of a list to show: the number of rows the page asks for.
-export function shown(v: unknown, what: string): number {
-  const n = int(v, what)
-  if (n < 1 || n > SHOWN_MAX) throw new Error(`${what} must be from 1 to ${SHOWN_MAX}`)
-  return n
+const isShown = (v: unknown): v is number =>
+  typeof v === 'number' && Number.isInteger(v) && v >= 1 && v <= SHOWN_MAX
+
+function shown(v: unknown, what: string): number {
+  if (!isShown(v)) throw new Error(`${what} must be an integer from 1 to ${SHOWN_MAX}`)
+  return v
 }
 
 // The Done page's three lists, each with how many of it to show.
@@ -55,6 +57,18 @@ export function doneShown(v: unknown): DoneShown {
     dropped: shown(o.dropped, 'dropped'),
     collected: shown(o.collected, 'collected'),
   }
+}
+
+// The counts in the Done page's address. One that is not a count (an address edited by hand, a
+// bookmark from before SHOWN_MAX was lowered) is dropped, as the todo page drops a bad `edit`, and
+// its list shows the first SHOWN_STEP.
+export function doneSearch(s: Record<string, unknown>): Partial<DoneShown> {
+  const out: Partial<DoneShown> = {}
+  for (const list of DONE_LISTS) {
+    const v = s[list]
+    if (isShown(v)) out[list] = v
+  }
+  return out
 }
 
 export function text(v: unknown, what: string): string {

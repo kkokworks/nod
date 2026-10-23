@@ -1,5 +1,5 @@
 import { createFileRoute, Link } from '@tanstack/react-router'
-import { DONE_LISTS, type DoneShown, SHOWN_MAX, SHOWN_STEP, shown } from '../input'
+import { type DoneShown, doneSearch, SHOWN_MAX, SHOWN_STEP } from '../input'
 import type { Shown } from '../nod.server'
 import { TaskItem } from '../parts'
 import { getDone } from '../todo-fns'
@@ -7,12 +7,8 @@ import { Section, TodoRow } from '../todo-parts'
 
 export const Route = createFileRoute('/done')({
   // How many of each list to show, in the address so a reload or Back keeps them
-  // (`?done=200&collected=300`). A list left out shows the first hundred; a bad count fails here.
-  validateSearch: (s: Record<string, unknown>): Partial<DoneShown> => {
-    const out: Partial<DoneShown> = {}
-    for (const list of DONE_LISTS) if (s[list] !== undefined) out[list] = shown(s[list], list)
-    return out
-  },
+  // (`?done=200&collected=300`). A list left out, or with a bad count, shows the first hundred.
+  validateSearch: doneSearch,
   loaderDeps: ({ search }): DoneShown => ({
     done: search.done ?? SHOWN_STEP,
     dropped: search.dropped ?? SHOWN_STEP,
@@ -66,17 +62,9 @@ function DoneView() {
 const count = (s: Shown<unknown>): string =>
   s.items.length < s.total ? `${s.items.length} / ${s.total}` : String(s.total)
 
-// Shows a hundred more of a list by asking for them in the address; the other lists stay as they
-// are, and so does the scroll.
-function More({
-  list,
-  of,
-  asked,
-}: {
-  list: (typeof DONE_LISTS)[number]
-  of: Shown<unknown>
-  asked: number
-}) {
+// Shows up to a hundred more of a list, never past SHOWN_MAX, by asking for them in the address;
+// the other lists stay as they are, and so does the scroll.
+function More({ list, of, asked }: { list: keyof DoneShown; of: Shown<unknown>; asked: number }) {
   if (of.items.length >= of.total || asked >= SHOWN_MAX) return null
   return (
     <Link
@@ -86,7 +74,7 @@ function More({
       resetScroll={false}
       className="more-rows"
     >
-      Show {Math.min(SHOWN_STEP, of.total - of.items.length)} more
+      Show {Math.min(SHOWN_STEP, of.total - of.items.length, SHOWN_MAX - asked)} more
     </Link>
   )
 }

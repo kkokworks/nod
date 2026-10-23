@@ -242,9 +242,11 @@ function Sidebar() {
           {collected.items.map((t) => (
             <TaskItem key={t.id} t={t} />
           ))}
-          <Link to="/done" hash="collected" className="side-item side-more">
-            See all in Done →
-          </Link>
+          {collected.items.length < collected.total && (
+            <Link to="/done" hash="collected" className="side-item side-more">
+              See all in Done →
+            </Link>
+          )}
         </details>
       )}
 
