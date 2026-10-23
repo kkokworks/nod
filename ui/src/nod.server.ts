@@ -6,7 +6,7 @@ import {
   Ledger,
   nodHome,
   type Retro,
-  type Rule,
+  type RuleNow,
   type Stats,
   type Task,
   type Trigger,
@@ -78,8 +78,8 @@ export type Detail = {
   decisions: Decision[]
   report: string | null
   place: Place
-  // With the rule it added as it stands now, edited once its words differ from the proposal.
-  retro: (Retro & { rules: (Rule & { edited: boolean })[] }) | null
+  // With the rule it added as it stands now.
+  retro: (Retro & { rules: RuleNow[] }) | null
   // The worker's terminal right now, while its session is alive.
   screen: string | null
 }
@@ -147,12 +147,20 @@ export function detail(id: number): Detail {
 }
 
 function retroOf(id: number): Detail['retro'] {
-  const retro = ledger.retro(id)
-  const rules = ledger
-    .rules()
-    .filter((r) => r.retroId === id)
-    .map((r) => ({ ...r, edited: r.text !== retro.rule }))
-  return { ...retro, rules }
+  return { ...ledger.retro(id), rules: ledger.rulesNow().filter((r) => r.retroId === id) }
+}
+
+// A rule on the Settings page, with the task its retrospective ran in; null for one the person
+// wrote.
+export type RuleRow = RuleNow & { retroTaskId: number | null }
+
+// Every rule, on or off.
+export function rules(): RuleRow[] {
+  const retroTask = new Map(ledger.list().map((t) => [t.retroId, t.id]))
+  return ledger.rulesNow().map((r) => ({
+    ...r,
+    retroTaskId: r.retroId === null ? null : (retroTask.get(r.retroId) ?? null),
+  }))
 }
 
 export type Message = { taskId: number; decisionId: number | null; text: string }

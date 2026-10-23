@@ -505,9 +505,9 @@ function show(id: number): void {
   if (task.retroId !== null) {
     const r = ledger.retro(task.retroId)
     console.log(`  retrospective: r${r.id} of #${r.ofTaskId}${r.outcome ? `, ${r.outcome}` : ''}`)
-    // The rule it added, as it stands now: edited once its words differ from the proposal.
-    for (const added of ledger.rules().filter((x) => x.retroId === r.id)) {
-      const edited = added.text === r.rule ? '' : ', edited'
+    // The rule it added, as it stands now.
+    for (const added of ledger.rulesNow().filter((x) => x.retroId === r.id)) {
+      const edited = added.edited ? ', edited' : ''
       console.log(`  rule ${added.id} ${added.state}${edited}: ${added.text}`)
     }
   }
