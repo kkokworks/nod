@@ -169,23 +169,24 @@ async function checkWatches(ledger: Ledger, home: string): Promise<number[]> {
     const todo = { id: t.id, title: t.title }
     if (code === 0) {
       passed.push(t.id)
-      // notify throws nothing, so the task is told even when the person cannot be.
-      await notify(home, { event: 'watch_passed', todo, watch: t.watch })
-      if (back === null) continue
-      try {
-        await tell(ledger, home, back, carryOn(t, output))
-      } catch (error) {
-        // The task could not carry on (its transcript gone after gc, its session failing to start),
-        // so the person takes the todo, as when no task is named.
-        const line = `${localTime(new Date())} task #${back} could not carry on: ${oneLine(message(error), 200)}`
-        const notes = [todos.get(t.id).notes, line].filter((x) => x !== null).join('\n')
-        todos.set(t.id, { status: 'next', notes }, SELF)
-        await notify(home, {
-          event: 'error',
-          task: taskRef(ledger.get(back)),
-          error: message(error),
-        })
+      // The task is told first: a todo handed back to it waits on nothing until it is.
+      if (back !== null) {
+        try {
+          await tell(ledger, home, back, carryOn(t, output))
+        } catch (error) {
+          // The task could not carry on (its transcript gone after gc, its session failing to
+          // start), so the person takes the todo, as when no task is named.
+          const line = `${localTime(new Date())} task #${back} could not carry on: ${oneLine(message(error), 200)}`
+          const notes = [todos.get(t.id).notes, line].filter((x) => x !== null).join('\n')
+          todos.set(t.id, { status: 'next', notes }, SELF)
+          await notify(home, {
+            event: 'error',
+            task: taskRef(ledger.get(back)),
+            error: message(error),
+          })
+        }
       }
+      await notify(home, { event: 'watch_passed', todo, watch: t.watch })
     } else {
       await notify(home, { event: 'watch_failed', todo, watch: t.watch, error: output })
     }
