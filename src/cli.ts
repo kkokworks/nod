@@ -45,11 +45,13 @@ import {
   NotificationEvent,
   onNotification,
   onStop,
+  onStopFailure,
   type Restart,
   restart,
   restartDue,
   resume,
   StopEvent,
+  StopFailureEvent,
   sessionName,
   startReady,
   startTask,
@@ -495,6 +497,8 @@ async function hook(event: string | undefined): Promise<void> {
     if (out !== null) console.log(out)
   } else if (event === 'notification') {
     await onNotification(ledger, home, NotificationEvent.parse(input))
+  } else if (event === 'stop-failure') {
+    await onStopFailure(ledger, home, StopFailureEvent.parse(input))
   } else {
     throw new Error(USAGE)
   }

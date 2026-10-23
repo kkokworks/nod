@@ -59,10 +59,14 @@ const RELAUNCH_DELAY_MS = 1000
 const RESTART_GRACE_MS = 1000
 // A turn younger than this may still be launching, its terminal not yet there.
 const LAUNCH_GRACE_MS = 30_000
-// Kept on a worker's tmux session: the restart it waits to do once its turn ends, and the reason
-// the person attached to it was last told about, so they hear it once.
+// Kept on a worker's tmux session: the restart it waits to do once its turn ends, the reason the
+// person attached to it was last told about, so they hear it once, and the API error that ended its
+// turn (StopFailure) until a Stop says the turn went on.
 const RESTART_OPTION = 'nod_restart'
 const TOLD_OPTION = 'nod_told'
+const STALLED_OPTION = 'nod_stalled'
+// Set while the Stop hook checks a turn it has already closed.
+const SETTLING_OPTION = 'nod_settling'
 
 // The OS sandbox is the boundary, not a command allowlist: once a worker may run tests it can run
 // anything, so limit where it can write and what it can reach instead. Measured on 2.1.289:
@@ -119,6 +123,8 @@ export const NotificationEvent = z.object({
   notification_type: z.string(),
   message: z.string(),
 })
+// Sent instead of Stop when an API error ended the turn: a usage limit, a login (2.1.309).
+export const StopFailureEvent = z.object({ session_id: z.string(), error: z.string() })
 
 type Report = { status: 'done' | 'question' | 'failed'; text: string }
 
@@ -324,12 +330,23 @@ export async function onStop(
 ): Promise<string | null> {
   const taskId = ledger.taskOfSession(event.session_id)
   if (taskId === null) return null
+  // The turn went on after all (Claude Code continued it once the limit reset). While nod checks
+  // the turn, after it has closed it, a restart would end this hook with Claude Code, so restarts
+  // wait for the end of the hook (restartDue below). A retrospective has no terminal.
+  const terminals = Terminals.of(home)
+  const name = sessionName(taskId)
+  const live = terminals.alive(name)
+  if (live) {
+    terminals.setOption(name, STALLED_OPTION, null)
+    terminals.setOption(name, SETTLING_OPTION, '1')
+  }
   const attemptId = currentAttempt(ledger, taskId, event.session_id)
   const out = await settle(ledger, home, ledger.get(taskId), attemptId, event).catch((error) => {
     ledger.failAttempt(attemptId, message(error))
     ledger.error(taskId, message(error))
     return null
   })
+  if (live && terminals.alive(name)) terminals.setOption(name, SETTLING_OPTION, null)
   new Todos(ledger).followTasks(SELF)
   // A task that just succeeded may let others start.
   await startReady(ledger, home)
@@ -339,6 +356,21 @@ export async function onStop(
     console.error(`nod: could not restart task ${taskId}: ${message(error)}`),
   )
   return out
+}
+
+// Called by the StopFailure hook. The turn stays open: Claude Code continues it by itself once a
+// usage limit resets. A restart it waits on, as another account, runs now and continues it.
+export async function onStopFailure(
+  ledger: Ledger,
+  home: string,
+  event: z.infer<typeof StopFailureEvent>,
+): Promise<void> {
+  const taskId = ledger.taskOfSession(event.session_id)
+  if (taskId === null) return
+  Terminals.of(home).setOption(sessionName(taskId), STALLED_OPTION, event.error)
+  await restartDue(ledger, home, taskId).catch((error) =>
+    console.error(`nod: could not restart task ${taskId}: ${message(error)}`),
+  )
 }
 
 // Called by the Notification hook. A permission prompt pauses the worker mid-turn, so it becomes a
@@ -707,6 +739,8 @@ export async function keepWorker(
       if (stopping) return
       if (next.fresh) cut = null
       ledger.setAccount(taskId, next.env.CLAUDE_CONFIG_DIR ?? '')
+      // A Stop hook of the Claude Code that ended no longer holds up restarts.
+      terminals.setOption(name, SETTLING_OPTION, null)
       child = Bun.spawn(next.argv, { env: next.env, stdio: ['inherit', 'inherit', 'inherit'] })
       exited = child.exited
       failure = ''
@@ -893,14 +927,24 @@ export async function restart(
     }
     return 'attached'
   }
-  if (ledger.openAttempt(taskId) !== null) {
+  // A turn an API error ended waits for nothing but Claude Code: it goes on in the new start.
+  const stalled = terminals.option(name, STALLED_OPTION)
+  const busy = ledger.openAttempt(taskId) !== null && !stalled
+  if (busy || terminals.option(name, SETTLING_OPTION)) {
     terminals.setOption(name, RESTART_OPTION, why)
     return 'after its turn'
+  }
+  if (stalled) {
+    writeFileSync(promptFile(home, taskId), continueAfter(stalled), { mode: 0o600 })
+    terminals.setOption(name, STALLED_OPTION, null)
   }
   terminals.setOption(name, RESTART_OPTION, null)
   terminals.signal(name, 'SIGUSR1')
   return 'restarted'
 }
+
+const continueAfter = (error: string): string =>
+  `Your last turn stopped on an API error (${error}), and nod started Claude Code again. Continue where you left off.`
 
 // Restarts the workers due one: those a restart waits on, and, with an account rule, those whose
 // Claude Code runs as another account than the current one. `only`: just that task, for its Stop
@@ -919,7 +963,11 @@ export async function restartDue(ledger: Ledger, home: string, only?: number): P
     const why =
       terminals.option(sessionName(t.id), RESTART_OPTION) ||
       (changed ? `the account is now ${current || "Claude Code's default"}` : '')
-    if (why !== '' && (await restart(ledger, home, t.id, why)) === 'restarted') restarted.push(t.id)
+    if (why === '' || (await restart(ledger, home, t.id, why)) !== 'restarted') continue
+    restarted.push(t.id)
+    // Until Claude Code starts again and records the account it got, a check in between would see
+    // the old one and restart it a second time.
+    if (current !== null) ledger.setAccount(t.id, current)
   }
   return restarted
 }
@@ -945,6 +993,7 @@ function workerSettings(started: string | null): string {
         { hooks: [{ type: 'command', command: hook('stop'), timeout: STOP_HOOK_TIMEOUT_SECS }] },
       ],
       Notification: [{ hooks: [{ type: 'command', command: hook('notification') }] }],
+      StopFailure: [{ hooks: [{ type: 'command', command: hook('stop-failure') }] }],
       ...(started === null ? {} : { SessionStart: touch(started) }),
     },
   })

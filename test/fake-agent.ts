@@ -53,10 +53,11 @@ const prompt = args.find((a, i) => !a.startsWith('--') && !VALUED.has(args[i - 1
 
 // Like `claude -p`, which nod runs as the reviewer: the prompt comes on stdin and the reply is
 // printed once. A brief with `review-strict` fails until ok.txt exists; `review-mute` gives no
-// verdict.
+// verdict; `review-slow` takes a while.
 if (args.includes('-p')) {
   const stdin = await Bun.stdin.text()
   log({ event: 'review', sessionId, message: stdin })
+  if (stdin.includes('review-slow')) await Bun.sleep(3000)
   let reply = 'NOD: done | looks right'
   if (stdin.includes('review-strict') && !existsSync('ok.txt')) {
     reply = 'ok.txt is missing.\nNOD: failed | ok.txt is missing'
@@ -132,6 +133,10 @@ async function turn(message: string, continuing: boolean): Promise<void> {
   if (head.startsWith('hang')) {
     // A turn that goes on until something ends Claude Code.
     await new Promise(() => {})
+  } else if (head.startsWith('stall')) {
+    // Like Claude Code at a usage limit: the turn ends with StopFailure in place of Stop.
+    await runHooks('StopFailure', { session_id: sessionId, error: 'rate_limit' })
+    return
   } else if (head.includes('need-permission')) {
     await runHooks('Notification', {
       session_id: sessionId,

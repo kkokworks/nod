@@ -6,6 +6,7 @@ import {
   readdirSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs'
 import { basename, join, resolve } from 'node:path'
@@ -895,6 +896,47 @@ test('with an account rule, a worker starts again as the current account: at onc
   ])
   expect(entries('turn').map((t) => t.message)).toEqual(['first', 'need-permission', 'go on'])
   expect(ledger.get(id).account).toBe(d ?? '')
+}, 30_000)
+
+test('a turn a usage limit ended does not hold up a restart: the new account continues it', async () => {
+  const current = join(home, 'account')
+  const [a, b] = ['a', 'b'].map((x) => tmp.make(`nod-account-${x}-`))
+  for (const x of [a, b]) trust(x ?? null)
+  // The turn never ended, so the new account finds the conversation only in history they share.
+  mkdirSync(join(a ?? '', 'projects'))
+  symlinkSync(join(a ?? '', 'projects'), join(b ?? '', 'projects'))
+  setAccountRule(home, { file: current })
+  writeFileSync(current, `${a}\n`)
+  const id = await add('stall at the limit')
+  await until(() => Terminals.of(home).option(sessionName(id), 'nod_stalled') === 'rate_limit')
+  expect(await restartDue(ledger, home)).toEqual([]) // the account is the same: Claude Code waits
+
+  writeFileSync(current, `${b}\n`)
+  expect(await restartDue(ledger, home)).toEqual([id])
+  await reaches(id, 'succeeded')
+  const session = ledger.attempts(id)[0]?.sessionId
+  expect(entries('launch').map((l) => [l.sessionId, l.config])).toEqual([
+    [session, a],
+    [session, b],
+  ])
+  expect(entries('launch')[1]?.prompt).toContain('API error (rate_limit)')
+  expect(ledger.attempts(id).map((a) => [a.kind, a.outcome])).toEqual([['start', 'succeeded']])
+}, 30_000)
+
+test('a restart waits while nod checks a turn it has closed, and comes once', async () => {
+  const current = join(home, 'account')
+  const [a, b] = ['a', 'b'].map((x) => tmp.make(`nod-account-${x}-`))
+  for (const x of [a, b]) trust(x ?? null)
+  setAccountRule(home, { file: current })
+  writeFileSync(current, `${a}\n`)
+  const id = await add('review-slow')
+  await until(() => entries('review')[0])
+  writeFileSync(current, `${b}\n`)
+  expect(await restartDue(ledger, home)).toEqual([]) // its review would end with Claude Code
+  await reaches(id, 'succeeded')
+  await until(() => entries('launch')[1])
+  expect(await restartDue(ledger, home)).toEqual([])
+  expect(entries('launch').map((l) => l.config)).toEqual([a, b])
 }, 30_000)
 
 test('a restart waits for a person attached to the worker, who hears why once', async () => {
