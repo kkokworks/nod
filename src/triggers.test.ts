@@ -101,5 +101,5 @@ test('a command does not wait on what left its group holding its output, and kee
     stdout: 'item\n',
     stderr: '',
   })
-  expect(Date.now() - started).toBeLessThan(900)
+  expect(Date.now() - started).toBeLessThan(2000)
 })

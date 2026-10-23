@@ -45,14 +45,21 @@ test('a notify script past its time ends with what it started, which holds its s
 })
 
 test('a notify script that ends leaves what it put in the background running, unwaited', async () => {
-  const home = tmp.make('nod-notify-')
-  const mark = join(home, 'sent')
-  writeFileSync(join(home, 'notify'), `#!/bin/sh\n(sleep 1; touch ${JSON.stringify(mark)}) &\n`)
-  chmodSync(join(home, 'notify'), 0o755)
-  const started = Date.now()
-  await notify(home, event)
-  expect(Date.now() - started).toBeLessThan(900)
-  const deadline = Date.now() + 3000
-  while (!existsSync(mark) && Date.now() < deadline) await Bun.sleep(50)
-  expect(existsSync(mark)).toBe(true)
-})
+  // Ending at once, and just before its limit, which passes while nod waits on the output.
+  for (const [ends, limit] of [
+    [0, 10_000],
+    [0.7, 1000],
+  ] as const) {
+    const home = tmp.make('nod-notify-')
+    const mark = join(home, 'sent')
+    const sent = `(sleep 2; touch ${JSON.stringify(mark)}) &`
+    writeFileSync(join(home, 'notify'), `#!/bin/sh\nsleep ${ends}\n${sent}\n`)
+    chmodSync(join(home, 'notify'), 0o755)
+    const started = Date.now()
+    await notify(home, event, limit)
+    expect(Date.now() - started).toBeLessThan(ends * 1000 + 1500)
+    const deadline = Date.now() + 4000
+    while (!existsSync(mark) && Date.now() < deadline) await Bun.sleep(50)
+    expect(existsSync(mark)).toBe(true)
+  }
+}, 15_000)

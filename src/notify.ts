@@ -100,6 +100,8 @@ export async function runGroup(
   let grace: ReturnType<typeof setTimeout> | undefined
   try {
     const code = await proc.exited
+    // Ended in time, it is not killed while its output is waited on.
+    clearTimeout(timer)
     await Promise.race([
       output,
       new Promise((resolve) => {
