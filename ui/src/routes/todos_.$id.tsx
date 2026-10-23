@@ -52,7 +52,7 @@ function TodoDetail() {
       </div>
 
       {error !== null && <div className="banner">{error}</div>}
-      {edit ? <EditForm page={page} /> : <TodoFacts t={todo} />}
+      {edit ? <EditForm key={todo.id} page={page} /> : <TodoFacts t={todo} />}
 
       {page.links.length > 0 && (
         <>
@@ -138,6 +138,15 @@ function EditForm({ page }: { page: TodoPage }) {
     setTyped({ ...typed, [field]: e.target.value })
   }
   const save = (edit: RawEdit) => run(() => changeTodo({ data: { id: todo.id, edit } }))
+  // A line added below notes being rewritten goes below what is typed too, or saving would drop it.
+  const add = (line: string) => {
+    setTyped(({ notes, ...rest }) =>
+      notes === undefined
+        ? rest
+        : { ...rest, notes: [notes, line.trim()].filter(Boolean).join('\n') },
+    )
+    setNote('')
+  }
   const all: RawEdit = {
     title: f.title,
     status: f.status,
@@ -252,7 +261,7 @@ function EditForm({ page }: { page: TodoPage }) {
         <button
           type="button"
           disabled={busy || note.trim() === ''}
-          onClick={() => void save({ addNote: note }).then((ok) => ok && setNote(''))}
+          onClick={() => void save({ addNote: note }).then((ok) => ok && add(note))}
         >
           Add
         </button>

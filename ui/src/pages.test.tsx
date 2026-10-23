@@ -283,11 +283,27 @@ test('a change to the todo keeps what is being typed in the form and says so', a
   expect(posted.splice(0)).toEqual([{ id: 9, edit: { addNote: 'second' } }])
   expect(field<HTMLTextAreaElement>('.todo-form textarea').value).toBe('first\nsecond')
   expect(title()).toBe('new title')
+
+  // Added below notes being rewritten, the line goes below what is typed too.
+  type(field('.todo-form textarea'), 'first, edited\nsecond')
+  onPost = () => {
+    todo = { ...todo, notes: 'first\nsecond\nthird' }
+    changes.push({ actor: 'human:ui', at: AT, text: 'notes' })
+  }
+  type(field('input[placeholder="Add a line to the notes…"]'), 'third')
+  await click('Add')
+  expect(posted.splice(0)).toEqual([{ id: 9, edit: { addNote: 'third' } }])
+  expect(field<HTMLTextAreaElement>('.todo-form textarea').value).toBe(
+    'first, edited\nsecond\nthird',
+  )
   onPost = () => {}
 
   await click('Save')
   expect(posted.splice(0)).toMatchObject([
-    { id: 9, edit: { title: 'new title', context: '@desk', notes: 'first\nsecond' } },
+    {
+      id: 9,
+      edit: { title: 'new title', context: '@desk', notes: 'first, edited\nsecond\nthird' },
+    },
   ])
 })
 
