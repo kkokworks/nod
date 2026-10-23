@@ -53,7 +53,7 @@ Claude 세션에서 `nod add` 를 하면 작업에 그 세션(루트 세션)의 
 
 ```sh
 nod schedule on
-nod trigger add '0 9 * * MON-FRI' '어제 머지된 PR 을 요약해 줘' --repo ~/code/app
+nod trigger add '0 9 * * MON-FRI' '어제 머지된 PR 을 요약해 줘' --repo ~/code/app --branch pr-digest
 nod trigger add '*/10 * * * *' '이 이슈의 원인을 조사해 줘' \
   --source "gh issue list --assignee @me --json number,title --jq '.[] | \"\(.number)\t\(.title)\"'"
 nod trigger ls
