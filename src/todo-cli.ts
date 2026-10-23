@@ -95,10 +95,20 @@ export function actorFromEnv(env: Record<string, string | undefined> = process.e
   if (env.NOD_ACTOR) return env.NOD_ACTOR
   if (env.NOD_TASK) return `worker:${env.NOD_TASK}`
   if (env.CLAUDECODE) {
-    const session = env.CLAUDE_CODE_SESSION_ID
+    const session = sessionFromEnv(env)
     return session ? `claude:${session.slice(0, 8)}` : 'claude'
   }
   return 'human'
+}
+
+// The whole id of the Claude session acting, when actorFromEnv names one: `nod add` records it as
+// the task's root session, and `--mine` picks the tasks it added. Null otherwise, an explicit
+// NOD_ACTOR and a nod worker included.
+export function sessionFromEnv(
+  env: Record<string, string | undefined> = process.env,
+): string | null {
+  if (env.NOD_ACTOR || env.NOD_TASK || !env.CLAUDECODE) return null
+  return env.CLAUDE_CODE_SESSION_ID || null
 }
 
 // `nod in`: capture first, clarify later, so it asks for nothing but the words.

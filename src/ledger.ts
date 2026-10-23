@@ -49,6 +49,9 @@ export type Task = {
   retroId: number | null
   // The person's todo the task does, when it was delegated from one (todos.ts).
   todoId: number | null
+  // The Claude session that ran `nod add`, its whole id so `claude --resume` can reopen it; a
+  // retrospective takes its task's. Null for a task added outside a Claude session.
+  rootSession: string | null
   workspace: string | null
   // Set by gc: the human has dealt with what the task produced, so ls stops listing it.
   collectedAt: string | null
@@ -105,6 +108,8 @@ export type NewTask = {
   after: number[]
   triggerId: number | null
   issue: string | null
+  // Left out by the tasks nod adds on its own (triggers).
+  rootSession?: string | null
 }
 
 export type Trigger = {
@@ -400,6 +405,9 @@ export const MIGRATIONS = [
   );
   create index rule_changes_rule on rule_changes(rule_id);
   `,
+  // v18: the Claude session that added a task. Tasks before this keep it empty: their history has
+  // only the first 8 characters of the id (`claude:<session>`), too few to reopen the session.
+  'alter table tasks add column root_session text;',
 ]
 // The migration that moves <home>/rules.md into the ledger, numbered as user_version counts.
 const RULES_FILE_MIGRATION = 17
@@ -445,6 +453,7 @@ const TASK = [
   'issue',
   'retroId',
   'todoId',
+  'rootSession',
   'workspace',
   'collectedAt',
   'head',
@@ -545,6 +554,7 @@ export class Ledger {
             model: t.model,
             triggerId: t.triggerId,
             issue: t.issue,
+            rootSession: t.rootSession ?? null,
             createdAt: now(),
           })
           .returning('id'),
@@ -786,7 +796,8 @@ export class Ledger {
   }
 
   // A retrospective of `of`, and the task it runs in: an empty folder with the same model. Returns
-  // the task.
+  // the task. It keeps the issue and root session of `of`, so whoever watches that task's
+  // decisions gets its rule decision too.
   addRetro(of: Task, brief: string): number {
     return this.db.transaction(() => {
       const retroId = this.insert(
@@ -801,6 +812,7 @@ export class Ledger {
         after: [],
         triggerId: null,
         issue: of.issue,
+        rootSession: of.rootSession,
       })
       this.run(q.updateTable('tasks').set({ retroId }).where('id', '=', id))
       return id

@@ -3,7 +3,7 @@ import { existsSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { tempDirs } from '../test/tmp'
 import { Ledger } from './ledger'
-import { actorFromEnv } from './todo-cli'
+import { actorFromEnv, sessionFromEnv } from './todo-cli'
 
 const tmp = tempDirs()
 afterAll(tmp.removeAll)
@@ -182,6 +182,17 @@ test('the actor is NOD_ACTOR if set, else a worker, a Claude session, or a perso
   )
   expect(actorFromEnv({ CLAUDECODE: '1' })).toBe('claude')
   expect(actorFromEnv({})).toBe('human')
+})
+
+test('the session is the whole id of the Claude session acting, and none where the actor is not one', () => {
+  const id = 'abcdef12-3456'
+  expect(sessionFromEnv({ CLAUDECODE: '1', CLAUDE_CODE_SESSION_ID: id })).toBe(id)
+  expect(sessionFromEnv({ CLAUDECODE: '1' })).toBeNull()
+  expect(sessionFromEnv({ CLAUDE_CODE_SESSION_ID: id })).toBeNull()
+  expect(sessionFromEnv({ CLAUDECODE: '1', CLAUDE_CODE_SESSION_ID: id, NOD_TASK: '7' })).toBeNull()
+  expect(
+    sessionFromEnv({ CLAUDECODE: '1', CLAUDE_CODE_SESSION_ID: id, NOD_ACTOR: 'human:ui' }),
+  ).toBeNull()
 })
 
 test('a todo delegated with nod add waits on its task, whose decision is listed first', async () => {

@@ -19,6 +19,7 @@ import {
   actorFromEnv,
   capture,
   projectCommand,
+  sessionFromEnv,
   TODO_USAGE,
   todayCommand,
   todoCommand,
@@ -65,20 +66,25 @@ const USAGE = `usage:
                                    a next action again if it is dropped; the brief may then be
                                    left out for the todo's title and notes. Without --todo the
                                    task gets a todo of its own, titled by the brief's first line,
-                                   in --project when given
+                                   in --project when given. Run in a Claude session, the task
+                                   records that session as its root, for --mine
   nod tell <task> <message...>     send a follow-up into the task's session
   nod resume <task>                reopen a task whose session ended, from its transcript
   nod attach <task>                open the worker's terminal (tmux)
   nod peek <task>                  print what the worker's terminal shows right now
-  nod watch [--issue <key,...>]    print decisions as they open, until no worker is running;
-                                   --issue: only decisions and workers of tasks on these issues,
-                                   so several root sessions can each watch their own issues
+  nod watch [--issue <key,...>] [--mine]
+                                   print decisions as they open, until no worker is running;
+                                   --issue: only decisions and workers of tasks on these issues;
+                                   --mine: only those of tasks this Claude session added, so
+                                   several root sessions can each watch their own
   nod link <task> <url...>         record where the task's result went (a pull request, a posted
                                    review), so ls and show list it next to the task. Until then
                                    they list the remote branches that hold the task's branch
-  nod ls [--all]                   tasks not yet collected by gc (--all: every task); those with an
-                                   issue are listed under it
-  nod show <task>                  history, links, then the worker's last full report
+  nod ls [--all] [--mine]          tasks not yet collected by gc (--all: every task; --mine: only
+                                   those this Claude session added); those with an issue are
+                                   listed under it
+  nod show <task>                  history, links, then the worker's last full report. root: is
+                                   the Claude session that added it (claude --resume <session>)
   nod stats
   nod gc [<task...> | --older-than <days>]
                                    close sessions and delete workspaces and worktrees of the named
@@ -134,7 +140,11 @@ const WATCH_GRACE_SECS = 5
 switch (command) {
   case undefined:
   case '--issue': {
-    const keys = issueKeys(Bun.argv.slice(2))
+    const { values } = parseArgs({
+      args: Bun.argv.slice(2),
+      options: { issue: { type: 'string' } },
+    })
+    const keys = issueKeys(values.issue)
     printDecisions(ledger.openDecisions().filter((d) => onIssues(keys, ledger.get(d.taskId))))
     break
   }
@@ -155,9 +165,16 @@ switch (command) {
   case 'peek':
     peek(taskRef(rest[0]))
     break
-  case 'watch':
-    await watch(issueKeys(rest))
+  case 'watch': {
+    const { values } = parseArgs({
+      args: rest,
+      options: { issue: { type: 'string' }, mine: { type: 'boolean' } },
+    })
+    const keys = issueKeys(values.issue)
+    const session = mySession(values.mine)
+    await watch((t) => onIssues(keys, t) && isMine(session, t))
     break
+  }
   case 'link': {
     const id = taskRef(rest[0])
     const urls = rest.slice(1)
@@ -167,8 +184,14 @@ switch (command) {
     break
   }
   case 'ls': {
-    const { values } = parseArgs({ args: rest, options: { all: { type: 'boolean' } } })
-    printTasks(ledger.list().filter((t) => values.all || t.collectedAt === null))
+    const { values } = parseArgs({
+      args: rest,
+      options: { all: { type: 'boolean' }, mine: { type: 'boolean' } },
+    })
+    const session = mySession(values.mine)
+    printTasks(
+      ledger.list().filter((t) => (values.all || t.collectedAt === null) && isMine(session, t)),
+    )
     break
   }
   case 'show':
@@ -265,6 +288,7 @@ async function add(args: string[]): Promise<void> {
     after,
     triggerId: null,
     issue: values.issue ?? null,
+    rootSession: sessionFromEnv(),
   }
   const actor = actorFromEnv()
   const id =
@@ -430,10 +454,9 @@ function peek(taskId: number): void {
 
 // Lets a Claude session relay each decision as soon as it opens.
 // null means every issue, and tasks without one.
-function issueKeys(args: string[]): Set<string> | null {
-  const { values } = parseArgs({ args, options: { issue: { type: 'string' } } })
-  if (values.issue === undefined) return null
-  const keys = values.issue
+function issueKeys(issue: string | undefined): Set<string> | null {
+  if (issue === undefined) return null
+  const keys = issue
     .split(',')
     .map((k) => k.trim())
     .filter((k) => k !== '')
@@ -445,7 +468,23 @@ function onIssues(keys: Set<string> | null, task: Task): boolean {
   return keys === null || (task.issue !== null && keys.has(task.issue))
 }
 
-async function watch(keys: Set<string> | null): Promise<void> {
+// `--mine`: the session whose tasks count. Outside a Claude session there is none, and it stops
+// there rather than show every task as if they were this session's. null without --mine.
+function mySession(mine: boolean | undefined): string | null {
+  if (!mine) return null
+  const session = sessionFromEnv()
+  if (session === null) {
+    throw new Error('--mine picks the tasks a Claude session added; run it in that session')
+  }
+  return session
+}
+
+function isMine(session: string | null, task: Task): boolean {
+  return session === null || task.rootSession === session
+}
+
+// `counts`: the tasks whose decisions it prints and whose workers keep it going.
+async function watch(counts: (t: Task) => boolean): Promise<void> {
   const seen = new Set(ledger.openDecisions().map((d) => d.id))
   let idleSecs = 0
   while (idleSecs < WATCH_GRACE_SECS) {
@@ -453,9 +492,9 @@ async function watch(keys: Set<string> | null): Promise<void> {
     for (const d of ledger.openDecisions()) {
       if (seen.has(d.id)) continue
       seen.add(d.id)
-      if (onIssues(keys, ledger.get(d.taskId))) printDecision(d)
+      if (counts(ledger.get(d.taskId))) printDecision(d)
     }
-    const running = ledger.list().some((t) => t.status === 'running' && onIssues(keys, t))
+    const running = ledger.list().some((t) => t.status === 'running' && counts(t))
     idleSecs = running ? 0 : idleSecs + 1
   }
 }
@@ -497,6 +536,7 @@ function show(id: number): void {
   const task = ledger.get(id)
   printTask(task)
   if (task.issue !== null) console.log(`  issue: ${task.issue}`)
+  if (task.rootSession !== null) console.log(`  root: ${task.rootSession}`)
   console.log(`  brief: ${task.brief}`)
   if (task.repo) console.log(`  repo: ${task.repo} (branch ${branchOf(task)})`)
   if (task.workspace) console.log(`  workspace: ${task.workspace}`)

@@ -88,6 +88,11 @@ function TaskPage() {
             </span>
           )}
           {task.triggerId !== null && <span className="tag">trigger #{task.triggerId}</span>}
+          {task.rootSession !== null && (
+            <span className="tag" title="The Claude session that added it: claude --resume <id>">
+              root <code>{task.rootSession}</code>
+            </span>
+          )}
           {retro !== null && (
             <span className="tag">
               r{retro.id} of{' '}
