@@ -323,9 +323,16 @@ test('account sets which account workers run as and shows the one current now; r
     'env: CLAUDE_CONFIG_DIR of the shell that starts each worker\n  now /from/env',
   )
   expect(out('account', 'file', current)).toBe(`file ${current}\n  now /accounts/a`)
-  expect(out('account', 'command', 'echo', '/accounts/b')).toBe(
+  expect(out('account', 'command', 'echo /accounts/b')).toBe(
     'command echo /accounts/b\n  now /accounts/b',
   )
+  // One shell command, quotes and all; words given apart would lose theirs.
+  const spaced = join(home, 'a b')
+  mkdirSync(spaced)
+  writeFileSync(join(spaced, 'current'), '/accounts/c\n')
+  expect(out('account', 'command', `cat "${spaced}/current"`)).toEndWith('  now /accounts/c')
+  expect(nod('account', 'command', 'cat', `${spaced}/current`).exitCode).not.toBe(0)
+  expect(out('account')).toStartWith(`command cat "${spaced}/current"`)
   expect(nod('account', 'nonsense').exitCode).not.toBe(0)
   expect(out('account', 'env')).toStartWith('env:')
   expect(out('restart')).toBe('no worker to restart')

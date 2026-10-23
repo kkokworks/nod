@@ -134,10 +134,11 @@ const USAGE = `usage:
                                    again in the same terminal and conversation: at once between
                                    turns, after its turn otherwise, and only once nobody is
                                    attached. For a tool that switches accounts to run after a switch
-  nod account [env | file <path> | command <command...>]
+  nod account [env | file <path> | command <command>]
                                    which Claude account (config dir) workers run as: the
                                    CLAUDE_CONFIG_DIR of the shell that starts one (env, the
-                                   default), the path a file holds, or what a command prints;
+                                   default), the path a file holds, or what a command prints
+                                   (one quoted argument, run with sh -c);
                                    empty means Claude Code's default. With a file or a command,
                                    every nod command and tick restarts the workers that run as
                                    another account than the current one, as nod restart does
@@ -456,8 +457,10 @@ function accountCommand([how, ...args]: string[]): void {
   if (how === 'env' && args.length === 0) setAccountRule(home, null)
   else if (how === 'file' && path !== undefined && args.length === 1) {
     setAccountRule(home, { file: resolve(path) })
-  } else if (how === 'command' && args.length > 0) setAccountRule(home, { command: words(args) })
-  else if (how !== undefined) throw new Error(USAGE)
+  } else if (how === 'command' && args.length === 1) {
+    // One shell command, as a source or a watch is: words joined back would lose their quotes.
+    setAccountRule(home, { command: words(args) })
+  } else if (how !== undefined) throw new Error(USAGE)
   console.log(describeRule(accountRule(home)))
   console.log(`  now ${configDir(home) ?? "(none: Claude Code's default)"}`)
 }

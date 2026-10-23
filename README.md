@@ -72,7 +72,7 @@ source 가 탭으로 앞에 붙인 키(위에서는 이슈 번호)는 그 항목
 ```sh
 nod account                                   # 지금 규칙과 지금 계정 보기
 nod account file ~/.config/switcher/current   # 파일에 적힌 경로 (앞뒤 공백 제거, 비어 있으면 Claude Code 기본 폴더)
-nod account command 'switcher current'        # 명령이 출력한 경로
+nod account command 'switcher current'        # 명령이 출력한 경로 (명령은 따옴표로 묶어 인자 하나로)
 nod account env                               # 기본: 워커를 띄우는 셸의 CLAUDE_CONFIG_DIR
 nod restart                                   # 모든 워커의 Claude Code 를 같은 칸·같은 대화로 다시 띄우기
 nod restart 3 t5                              # 이 작업들만
