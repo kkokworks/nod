@@ -48,7 +48,7 @@ test('gc removes old finished workspaces, keeps their session transcripts, and k
     const cwd = workspaceOf(home, ledger.get(id))
     if (withRepo) sh(['git', 'worktree', 'add', '-q', '-b', branchOf(ledger.get(id)), cwd], repo)
     else mkdirSync(cwd, { recursive: true })
-    mkdirSync(sessionFolder(cwd), { recursive: true })
+    mkdirSync(sessionFolder(cwd, process.env.CLAUDE_CONFIG_DIR ?? null), { recursive: true })
     ledger.setRunning(id, cwd)
     ledger.succeed(id)
     ledger.db.query('update tasks set finished_at = $at where id = $id').run({ id, at: finishedAt })
@@ -59,8 +59,14 @@ test('gc removes old finished workspaces, keeps their session transcripts, and k
   const dirty = task('old dirty repo', true, OLD)
   writeFileSync(join(workspaceOf(home, ledger.get(dirty)), 'uncommitted.txt'), 'x')
   const recent = task('recent', false, new Date().toISOString())
-  const recentSessions = sessionFolder(workspaceOf(home, ledger.get(recent)))
-  const oldPlainSessions = sessionFolder(workspaceOf(home, ledger.get(oldPlain)))
+  const recentSessions = sessionFolder(
+    workspaceOf(home, ledger.get(recent)),
+    process.env.CLAUDE_CONFIG_DIR ?? null,
+  )
+  const oldPlainSessions = sessionFolder(
+    workspaceOf(home, ledger.get(oldPlain)),
+    process.env.CLAUDE_CONFIG_DIR ?? null,
+  )
 
   const report = await collect(ledger, home, { before: new Date(Date.now() - 7 * 86_400_000) })
 
@@ -228,8 +234,11 @@ test('resume brings a collected task back: the worktree returns at the same path
     const sessionId = `session-${id}`
     ledger.startAttempt({ taskId: id, kind: 'start', decisionId: null, sessionId, prompt: brief })
     ledger.succeed(id)
-    mkdirSync(sessionFolder(cwd), { recursive: true })
-    writeFileSync(join(sessionFolder(cwd), `${sessionId}.jsonl`), '{}\n')
+    mkdirSync(sessionFolder(cwd, process.env.CLAUDE_CONFIG_DIR ?? null), { recursive: true })
+    writeFileSync(
+      join(sessionFolder(cwd, process.env.CLAUDE_CONFIG_DIR ?? null), `${sessionId}.jsonl`),
+      '{}\n',
+    )
     return id
   }
   const id = task('feature', 'feat/x')
@@ -248,7 +257,7 @@ test('resume brings a collected task back: the worktree returns at the same path
   expect(ledger.get(id).head).toBe(head)
   git(repo, 'update-ref', '-d', 'refs/remotes/origin/feat/x')
 
-  await restore(ledger, id)
+  await restore(ledger, home, id)
 
   expect(readFileSync(join(cwd, 'x.txt'), 'utf8')).toBe('x')
   expect(git(repo, 'rev-parse', 'feat/x').trim()).toBe(head)
@@ -262,15 +271,15 @@ test('resume brings a collected task back: the worktree returns at the same path
   git(byHandCwd, 'commit', '-q', '-m', 'y')
   rmSync(byHandCwd, { recursive: true })
   await collect(ledger, home, { ids: [byHand] })
-  await restore(ledger, byHand)
+  await restore(ledger, home, byHand)
   expect(readFileSync(join(byHandCwd, 'y.txt'), 'utf8')).toBe('y')
 
   // A task collected before gc kept transcripts cannot come back, and says so.
   const plain = task('plain', null)
   await collect(ledger, home, { ids: [plain] })
   const plainCwd = workspaceOf(home, ledger.get(plain))
-  rmSync(sessionFolder(plainCwd), { recursive: true })
-  await expect(restore(ledger, plain)).rejects.toThrow('transcript is gone')
+  rmSync(sessionFolder(plainCwd, process.env.CLAUDE_CONFIG_DIR ?? null), { recursive: true })
+  await expect(restore(ledger, home, plain)).rejects.toThrow('transcript is gone')
   expect(existsSync(plainCwd)).toBe(false)
   expect(ledger.get(plain).collectedAt).not.toBeNull()
 })

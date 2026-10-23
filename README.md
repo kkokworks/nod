@@ -49,7 +49,7 @@ nod resume 1         # 정리한 작업도 되살림: 같은 경로에 worktree 
 
 Claude 세션에서 `nod add` 를 하면 작업에 그 세션(루트 세션)의 ID 가 남습니다. `nod show` 와 웹 화면의 작업 상세에 `root: <세션 ID>` 로 보이고, `claude --resume <세션 ID>` 로 그 세션을 다시 열 수 있습니다. 루트 세션은 `nod ls --mine`·`nod watch --mine` 으로 자기가 맡긴 작업만 보고 그 결정만 받습니다. 회고 작업은 돌아보는 작업의 루트 세션을 물려받습니다. 셸·트리거에서 맡긴 작업에는 루트 세션이 없고, Claude 세션 밖에서 `--mine` 을 쓰면 오류로 멈춥니다.
 
-정해진 때나 새 항목마다 할 일은 트리거로 맡깁니다. `nod schedule on` 으로 한 번 켜 두면 OS 스케줄러(macOS launchd, Linux crontab)가 매분 `nod tick` 을 돌립니다. 켠 셸의 `PATH`·`CLAUDE_CONFIG_DIR` 로 돌기 때문에, 워커가 쓸 Claude 설정이 있는 터미널에서 켭니다.
+정해진 때나 새 항목마다 할 일은 트리거로 맡깁니다. `nod schedule on` 으로 한 번 켜 두면 OS 스케줄러(macOS launchd, Linux crontab)가 매분 `nod tick` 을 돌립니다. 켠 셸의 `PATH`·`CLAUDE_CONFIG_DIR` 와, 워커가 받는 변수 가운데 비밀이 아닌 것(프록시·언어·`TMUX_TMPDIR` 등, 아래 「워커가 끊기지 않게」)을 `<홈>/schedule.json` 에 남겨 그 환경으로 돌기 때문에, 워커가 쓸 Claude 설정이 있는 터미널에서 켭니다(`nod account` 로 계정 규칙을 정했으면 트리거 워커는 그 규칙의 계정으로 뜹니다). 이름에 `KEY`·`TOKEN`·`SECRET`·`PASSWORD` 가 든 변수는 파일에 남기지 않으니, API 키는 Claude Code 설정의 `env` 에 둡니다. 웹 화면(`desktop/launchd/ui.sh`)도 같습니다.
 
 ```sh
 nod schedule on
@@ -60,6 +60,27 @@ nod trigger ls
 ```
 
 source 가 탭으로 앞에 붙인 키(위에서는 이슈 번호)는 그 항목으로 생긴 작업의 이슈가 됩니다.
+
+## 워커가 끊기지 않게
+
+워커의 tmux 칸에서는 Claude Code 를 지켜보는 `nod run` 이 돕니다. Claude Code 가 끝나면(계정 전환, `/exit`, 충돌) nod 가 일부러 끈 것(gc·drop)이 아닌 한 **같은 칸에서 같은 대화**(세션 ID)로 다시 띄웁니다. 첫 지시는 다시 보내지 않습니다. 답하던 도중에 끝났으면 다시 띄운 뒤 결정(`interrupted`)으로 올려, 이어 갈지 사람이 정합니다. 그 차례의 일이 일부 됐을 수 있어서 저절로 다시 시키지 않습니다. 띄우자마자 세 번 거듭 끝나면(로그인이 없는 등) 다시 띄우기를 멈추고 마지막 화면과 함께 알립니다. 재부팅이나 tmux 종료로 칸까지 사라지면, 답하던 작업은 tick 이 결정으로 올리고 쉬던 작업은 다음 `nod tell` 때 다시 뜹니다.
+
+워커는 nod 를 부른 셸의 환경 변수 가운데 정해 둔 것만 받습니다. 사용자(`HOME`·`USER`·`LOGNAME`, 로그인 키체인에 필요), `SHELL`·`TMPDIR`·`TZ`·`LANG`·`LC_*`, git·gh 설정 폴더(`XDG_*_HOME`), `SSH_AUTH_SOCK`, 프록시(`HTTP(S)_PROXY`·`NO_PROXY`·`ALL_PROXY`)와 인증서(`NODE_EXTRA_CA_CERTS`·`SSL_CERT_FILE`·`SSL_CERT_DIR`), `ANTHROPIC_*`, nod 의 tmux 소켓 폴더(`TMUX_TMPDIR`) 입니다. 터미널이나 에이전트 호스트가 칸마다 넣는 식별 변수는 넘기지 않습니다. tmux 서버가 그런 변수를 가진 채 떠 있어도 마찬가지입니다. 워커에 다른 변수가 필요하면 Claude Code 설정 폴더의 `settings.json` 에 `env` 로 둡니다. Bedrock·Vertex 처럼 셸 변수(`CLAUDE_CODE_USE_BEDROCK`·`AWS_*`·`CLOUD_ML_REGION` 등)로 고르는 설정도 여기로 옮겨야 워커가 로그인합니다.
+
+계정을 바꾸는 도구를 쓴다면, 지금 계정(Claude 설정 폴더)을 nod 가 읽을 곳을 한 번 정해 둡니다. 정해 두면 워커·트리거 워커·다시 띄우는 워커가 모두 그때의 계정으로 뜹니다.
+
+```sh
+nod account                                   # 지금 규칙과 지금 계정 보기
+nod account file ~/.config/switcher/current   # 파일에 적힌 경로 (앞뒤 공백 제거, 비어 있으면 Claude Code 기본 폴더)
+nod account command 'switcher current'        # 명령이 출력한 경로
+nod account env                               # 기본: 워커를 띄우는 셸의 CLAUDE_CONFIG_DIR
+nod restart                                   # 모든 워커의 Claude Code 를 같은 칸·같은 대화로 다시 띄우기
+nod restart 3 t5                              # 이 작업들만
+```
+
+규칙이 파일이나 명령이면, nod 명령이 돌 때와 tick 이 매분 돌 때 워커가 뜬 계정(`nod show` 의 `account`)과 지금 계정을 비교합니다. 다르면 쉬는 워커는 Claude Code 만 끄고 칸 안에서 지금 계정으로 다시 띄우고, 답하는 중인 워커는 그 차례가 끝난 뒤 다시 띄웁니다. 사용량 한도 같은 API 오류로 멈춘 차례는 한도가 풀릴 때까지 끝나지 않으므로 기다리지 않고 바로 다시 띄워, 새 계정에서 이어서 하게 합니다. 계정이 바뀐 뒤 처음 보내는 `nod tell`·답은 다시 띄운 Claude Code 의 첫 메시지로 들어갑니다. 사람이 `nod attach` 로 붙어 있으면 끄지 않고 `<홈>/notify` 에 `restart_held` 로 한 번 알린 뒤, 사람이 나간 다음에 다시 띄웁니다. 바깥 도구가 계정을 바꾼 바로 그때 알리려면 `nod restart` 를 부르게 합니다. 기본 규칙(`env`)에서는 워커마다 자기를 띄운 셸의 계정이라 비교하지 않고, `nod restart` 만 다시 띄웁니다.
+
+계정을 바꿔 가며 쓰려면 계정 폴더들이 대화 기록 폴더(`projects/`)를 함께 써야 합니다. 그래야 다른 계정으로 다시 띄운 Claude Code 가 같은 대화를 이어 갑니다. 대화가 옛 계정 폴더에만 있으면 nod 는 첫 지시를 다시 보내지 않고, 그 이유를 담아 다시 띄우기를 멈춥니다. 레포 작업을 다른 계정으로 다시 띄울 때 Claude Code 가 그 레포를 신뢰할지 다시 물으면, 이 작업이 이미 그 레포에서 돈 적이 있으므로(사람이 처음에 신뢰함) nod 가 그대로 받습니다. 명령 규칙은 부르는 곳마다 환경이 다르니(워커 훅, tick, 셸) 환경 변수에 기대지 않는 명령을 씁니다.
 
 `~/.nod/notify` 실행 파일을 두면 결정이 열리거나 작업이 끝날 때 nod 가 JSON 을 stdin 으로 넘겨 부릅니다. JSON 의 `task` 에는 작업 번호·지시·이슈(`issue`, 없으면 `null`)가 들어 있어, 할 일 앱으로 보낼 때 이슈별로 묶을 수 있습니다. 예를 들어 macOS 알림은 이렇게 받습니다.
 

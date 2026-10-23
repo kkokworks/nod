@@ -2,6 +2,7 @@
 import { existsSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { parseArgs } from 'node:util'
+import { accountRule, configDir, describeRule, setAccountRule } from './account'
 import { sweep } from './done'
 import { collect, type GcPick, type GcReport, remotesHolding } from './gc'
 import {
@@ -39,11 +40,18 @@ import {
   answer,
   branchOf,
   drop,
+  keepWorker,
+  message,
   NotificationEvent,
   onNotification,
   onStop,
+  onStopFailure,
+  type Restart,
+  restart,
+  restartDue,
   resume,
   StopEvent,
+  StopFailureEvent,
   sessionName,
   startReady,
   startTask,
@@ -118,16 +126,30 @@ const USAGE = `usage:
                                    runs with this shell's PATH and Claude config dir, which the
                                    triggers' workers and the watches use. It stays on until off
   nod tick                         run the triggers that are due and the watches; the scheduled
-                                   tick runs the watches every fifth minute
+                                   tick runs the watches every fifth minute. It also asks about
+                                   turns whose terminal is gone (a restart of the machine or tmux)
+                                   and restarts the workers due a restart
+  nod restart [<task...>]          start the Claude Code of these workers, or of every worker,
+                                   again in the same terminal and conversation: at once between
+                                   turns, after its turn otherwise, and only once nobody is
+                                   attached. For a tool that switches accounts to run after a switch
+  nod account [env | file <path> | command <command...>]
+                                   which Claude account (config dir) workers run as: the
+                                   CLAUDE_CONFIG_DIR of the shell that starts one (env, the
+                                   default), the path a file holds, or what a command prints;
+                                   empty means Claude Code's default. With a file or a command,
+                                   every nod command and tick restarts the workers that run as
+                                   another account than the current one, as nod restart does
   nod hook stop|notification       called by Claude Code hooks in worker sessions
+  nod run <task> <claude...>       what runs in a worker's terminal: keeps its Claude Code running
 
 A <task> is a task's number, t<n> for the latest task doing todo t<n>, or r<n> for the task
 retrospective r<n> runs in.
 ${TODO_USAGE}
 
 When <home>/notify exists, nod runs it with a JSON event on stdin whenever a decision opens, a
-task succeeds or fails to start, a trigger fails, or a watch passes or can no longer run. <home>
-is $NOD_HOME, or ~/.nod.`
+task succeeds or fails to start, a trigger fails, a watch passes or can no longer run, or a
+restart waits for a person attached to the worker. <home> is $NOD_HOME, or ~/.nod.`
 
 const [command, ...rest] = Bun.argv.slice(2)
 const home = nodHome()
@@ -218,14 +240,27 @@ switch (command) {
     break
   case 'tick': {
     // Run by hand, it checks the watches now too, not only on their every fifth minute.
-    const { added, passed } = await tick(ledger, home, new Date(), true)
+    const { added, passed, lost, restarted } = await tick(ledger, home, new Date(), true)
     if (added.length > 0) console.log(`added task(s) ${added.join(', ')}`)
     if (passed.length > 0) console.log(`watch passed: ${passed.map((id) => `t${id}`).join(', ')}`)
-    if (added.length === 0 && passed.length === 0) console.log('nothing due')
+    if (lost.length > 0) console.log(`turn(s) lost with their terminal: ${lost.join(', ')}`)
+    if (restarted.length > 0) console.log(`restarted task(s) ${restarted.join(', ')}`)
+    if ([added, passed, lost, restarted].every((ids) => ids.length === 0))
+      console.log('nothing due')
     break
   }
+  case 'restart':
+    await restartCommand(rest)
+    break
+  case 'account':
+    accountCommand(rest)
+    break
   case 'hook':
     await hook(rest[0])
+    break
+  case 'run':
+    await keepWorker(ledger, home, taskRef(rest[0]), rest.slice(1))
+    process.exit(0)
     break
   case 'in':
     capture(new Todos(ledger), rest)
@@ -248,6 +283,14 @@ switch (command) {
     await answer(ledger, home, id, words(rest), actorFromEnv())
     console.log(`answered; sent to task #${ledger.decision(id).taskId}`)
   }
+}
+
+// Every nod command checks the workers' account; after the command, so a message it sends goes
+// first (deliver starts that worker again with it). The hooks check their own worker.
+if (command !== 'hook' && command !== 'restart') {
+  await restartDue(ledger, home).catch((error) =>
+    console.error(`nod: could not restart workers: ${message(error)}`),
+  )
 }
 
 async function add(args: string[]): Promise<void> {
@@ -384,6 +427,39 @@ async function schedule([sub, ...extra]: string[]): Promise<void> {
   console.log(`  CLAUDE_CONFIG_DIR ${env.CLAUDE_CONFIG_DIR ?? '(not set)'}`)
 }
 
+async function restartCommand(refs: string[]): Promise<void> {
+  const said: Record<Restart, string> = {
+    restarted: 'restarted',
+    'after its turn': 'restarts once its turn ends',
+    attached: 'has a person attached; it restarts once they detach',
+    'no terminal':
+      'has no terminal that keeps its Claude Code running; once its terminal is gone, nod tell opens one that does',
+  }
+  const live = terminals.sessions()
+  const ids =
+    refs.length > 0
+      ? refs.map(taskRef)
+      : ledger
+          .list()
+          .filter((t) => t.account !== null && live.has(sessionName(t.id)))
+          .map((t) => t.id)
+  if (ids.length === 0) console.log('no worker to restart')
+  for (const id of ids) {
+    console.log(`#${id} ${said[await restart(ledger, home, id, 'nod restart')]}`)
+  }
+}
+
+function accountCommand([how, ...args]: string[]): void {
+  const [path] = args
+  if (how === 'env' && args.length === 0) setAccountRule(home, null)
+  else if (how === 'file' && path !== undefined && args.length === 1) {
+    setAccountRule(home, { file: resolve(path) })
+  } else if (how === 'command' && args.length > 0) setAccountRule(home, { command: words(args) })
+  else if (how !== undefined) throw new Error(USAGE)
+  console.log(describeRule(accountRule(home)))
+  console.log(`  now ${configDir(home) ?? "(none: Claude Code's default)"}`)
+}
+
 function printTrigger(t: Trigger): void {
   const next = nextRun(t.cron, new Date(t.lastRunAt ?? t.createdAt))
   const when = next === null ? 'never' : next.toLocaleString('sv-SE')
@@ -422,6 +498,8 @@ async function hook(event: string | undefined): Promise<void> {
     if (out !== null) console.log(out)
   } else if (event === 'notification') {
     await onNotification(ledger, home, NotificationEvent.parse(input))
+  } else if (event === 'stop-failure') {
+    await onStopFailure(ledger, home, StopFailureEvent.parse(input))
   } else {
     throw new Error(USAGE)
   }
@@ -540,6 +618,7 @@ function show(id: number): void {
   console.log(`  brief: ${task.brief}`)
   if (task.repo) console.log(`  repo: ${task.repo} (branch ${branchOf(task)})`)
   if (task.workspace) console.log(`  workspace: ${task.workspace}`)
+  if (task.account !== null) console.log(`  account: ${task.account || "Claude Code's default"}`)
   if (task.checkCmd) console.log(`  check: ${task.checkCmd}`)
   if (task.triggerId !== null) console.log(`  added by trigger #${task.triggerId}`)
   if (task.retroId !== null) {

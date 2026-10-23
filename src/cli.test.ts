@@ -1,5 +1,6 @@
 import { afterAll, expect, test } from 'bun:test'
-import { resolve } from 'node:path'
+import { writeFileSync } from 'node:fs'
+import { join, resolve } from 'node:path'
 import { tempDirs } from '../test/tmp'
 import { Ledger } from './ledger'
 
@@ -302,6 +303,31 @@ test('ls lists tasks without an issue first, then each issue with its tasks unde
     'PROJ-2',
     '  #3 second',
   ])
+})
+
+test('account sets which account workers run as and shows the one current now; restart with no worker says so', () => {
+  const home = tmp.make('nod-account-cli-')
+  const current = join(home, 'current')
+  writeFileSync(current, '/accounts/a\n')
+  const nod = (...args: string[]) =>
+    Bun.spawnSync(['bun', cli, ...args], {
+      env: { ...process.env, NOD_HOME: home, CLAUDE_CONFIG_DIR: '/from/env' },
+    })
+  const out = (...args: string[]): string =>
+    nod(...args)
+      .stdout.toString()
+      .trim()
+
+  expect(out('account')).toBe(
+    'env: CLAUDE_CONFIG_DIR of the shell that starts each worker\n  now /from/env',
+  )
+  expect(out('account', 'file', current)).toBe(`file ${current}\n  now /accounts/a`)
+  expect(out('account', 'command', 'echo', '/accounts/b')).toBe(
+    'command echo /accounts/b\n  now /accounts/b',
+  )
+  expect(nod('account', 'nonsense').exitCode).not.toBe(0)
+  expect(out('account', 'env')).toStartWith('env:')
+  expect(out('restart')).toBe('no worker to restart')
 })
 
 test('add refuses repo work without a valid branch, before adding anything', async () => {
