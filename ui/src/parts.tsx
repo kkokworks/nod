@@ -31,13 +31,23 @@ export function Url({ url }: { url: string }) {
   )
 }
 
-// A task's number after its todo's, when it does one: the person names their work by the todo.
-export function TaskId({ id, todoId }: { id: number; todoId: number | null }) {
-  return todoId === null ? (
+// A task's number after the name the person knows it by, as `nod ls` shows it: its
+// retrospective's, else its todo's.
+export function TaskId({
+  id,
+  todoId,
+  retroId,
+}: {
+  id: number
+  todoId: number | null
+  retroId: number | null
+}) {
+  const name = retroId !== null ? `r${retroId}` : todoId !== null ? `t${todoId}` : null
+  return name === null ? (
     <span className="side-id">#{id}</span>
   ) : (
     <span className="side-id">
-      t{todoId}
+      {name}
       <small className="task-no">#{id}</small>
     </span>
   )
@@ -57,7 +67,7 @@ export function TaskItem({ t }: { t: TaskRow }) {
     >
       <span className={`dot ${statusClass(t.status)}`} title={t.status} />
       <span className="side-text">
-        <TaskId id={t.id} todoId={t.todoId} /> {t.title}
+        <TaskId id={t.id} todoId={t.todoId} retroId={t.retroId} /> {t.title}
       </span>
     </Link>
   )
