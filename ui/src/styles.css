@@ -406,6 +406,11 @@ details > summary.side-label {
   margin-bottom: 0.75rem;
 }
 
+.card.picked {
+  border-color: var(--brand);
+  scroll-margin-top: 1rem;
+}
+
 .card-head {
   display: flex;
   gap: 0.6rem;
@@ -1541,7 +1546,7 @@ details summary {
   background: var(--warn);
 }
 
-.needs > a:hover {
+.needs a:hover {
   color: var(--brand);
 }
 

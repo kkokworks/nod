@@ -32,26 +32,12 @@ const todos = new Todos(ledger)
 // A todo with what its row shows: its project's title, and whom it waits on.
 export type TodoItem = Todo & { project: string | null; waitingFor: string | null }
 
-export type DecisionItem = {
-  id: number
-  reason: string
-  createdAt: string
-  taskId: number
-  // The todo's title when the task does one, else the task's brief.
-  title: string
-  project: string | null
-}
-
 export type Lists = {
   // The server's day, so the page marks today's focus as the ledger counts it.
   today: string
-  decisions: DecisionItem[]
   inbox: TodoItem[]
-  next: TodoItem[]
   waiting: TodoItem[]
   someday: TodoItem[]
-  reference: TodoItem[]
-  contexts: string[]
   // The projects a todo can go in.
   projects: Project[]
 }
@@ -87,6 +73,8 @@ export type FocusPage = {
   next: TodoItem[]
   // Next actions that start after today, the soonest first.
   upcoming: TodoItem[]
+  // Looked up, not worked from.
+  reference: TodoItem[]
 }
 
 export type ProjectsPage = {
@@ -100,9 +88,6 @@ const item = (t: Todo): TodoItem => ({
   waitingFor: t.status === 'waiting' ? todos.waitingFor(t) : null,
 })
 
-const projectTitle = (id: number | null): string | null =>
-  id === null ? null : todos.project(id).title
-
 // As `nod todo` lists them: todos that start later and those of someday projects stay out.
 export function lists(): Lists {
   const day = localDay(new Date())
@@ -110,23 +95,11 @@ export function lists(): Lists {
     todos
       .list({ statuses: [status], context: null, projectId: null, hideSomedayProjects: true, day })
       .map(item)
-  const next = of('next')
   return {
     today: day,
-    decisions: todos.decisions().map(({ decision, task, todo }) => ({
-      id: decision.id,
-      reason: decision.reason,
-      createdAt: decision.createdAt,
-      taskId: task.id,
-      title: todo?.title ?? task.brief,
-      project: projectTitle(todo?.projectId ?? null),
-    })),
     inbox: of('inbox'),
-    next,
     waiting: of('waiting'),
     someday: of('someday'),
-    reference: of('reference'),
-    contexts: [...new Set(next.flatMap((t) => (t.context === null ? [] : [t.context])))].sort(),
     projects: todos.projects(['active', 'someday']),
   }
 }
@@ -183,9 +156,9 @@ export async function focusPage(): Promise<FocusPage> {
   // The day's groups do not overlap, and a focused todo that is also due today sits under due.
   const ofDay = [...d.overdue, ...d.scheduled, ...d.due, ...d.focus]
   const shown = new Set(ofDay.map((t) => t.id))
-  const next = (day: string | null): Todo[] =>
+  const of = (status: TodoStatus, day: string | null): Todo[] =>
     todos.list({
-      statuses: ['next'],
+      statuses: [status],
       context: null,
       projectId: null,
       hideSomedayProjects: true,
@@ -199,14 +172,15 @@ export async function focusPage(): Promise<FocusPage> {
     trust: todos.trust(today),
     focus: ofDay.filter((t) => t.focus === today).map(item),
     day: ofDay.filter((t) => t.focus !== today).map(item),
-    next: next(today)
+    next: of('next', today)
       .filter((t) => !shown.has(t.id))
       .sort((a, b) => earlier(a) - earlier(b))
       .map(item),
-    upcoming: next(null)
+    upcoming: of('next', null)
       .filter((t) => t.start !== null && t.start > today)
       .sort((a, b) => (a.start ?? '').localeCompare(b.start ?? ''))
       .map(item),
+    reference: of('reference', today).map(item),
   }
 }
 
