@@ -654,21 +654,21 @@ export class Ledger {
     this.run(q.updateTable('tasks').set(set).where('id', '=', id))
   }
 
-  // Marks the task collected if it is still as gc read it, in one statement, so a task told to go
-  // on since, or one another gc took, is not collected from under it. One collected before keeps
-  // when.
-  claimCollect(task: Task): boolean {
-    const claimed = this.run(
+  // collected, but only while the task is as gc read it, in one statement: one told to go on since
+  // is not hidden from ls. One collected before keeps when.
+  collectedAsRead(task: Task, head: string | null): boolean {
+    const at = task.collectedAt ?? now()
+    const marked = this.run(
       q
         .updateTable('tasks')
-        .set({ collectedAt: task.collectedAt ?? now() })
+        .set(head === null ? { collectedAt: at } : { collectedAt: at, head })
         .where('id', '=', task.id)
         .where('status', '=', task.status)
         .where('finishedAt', 'is', task.finishedAt)
         .where('collectedAt', 'is', task.collectedAt)
         .returning('id'),
     )
-    return claimed.length > 0
+    return marked.length > 0
   }
 
   // resume brought the task back after gc, so ls lists it again.

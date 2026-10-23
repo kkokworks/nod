@@ -1,5 +1,5 @@
 import { existsSync, readdirSync, rmdirSync, rmSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import type { Ledger, Task, TaskStatus } from './ledger'
 import { Terminals } from './tmux'
 import { branchOf, message, sessionName, spawn } from './worker'
@@ -48,14 +48,15 @@ export async function collect(ledger: Ledger, home: string, pick: GcPick): Promi
     const skip = (reason: string): void => {
       report.skipped.push({ id, reason })
     }
-    let claimed = false
-    // A task gc does not get through is let go again.
-    const release = (reason: string): void => {
-      if (claimed && task.collectedAt === null) ledger.uncollected(id)
-      skip(reason)
-    }
-    // `nod tell` took the task back (restore in worker.ts) since gc claimed it.
-    const takenBack = (): boolean => ledger.get(id).collectedAt === null
+    // As gc read the task, or, for sweep, as its signal read it, so one that ran again and
+    // finished since is judged again.
+    const judged = seen(id) ?? task
+    // `nod tell` sets a task running (deliver in worker.ts), after taking a collected one back
+    // (restore).
+    const unchanged = (now: Task): boolean =>
+      now.status === judged.status &&
+      now.finishedAt === judged.finishedAt &&
+      now.collectedAt === judged.collectedAt
     // One task gc cannot get through, a file it may not delete say, must not stop the rest.
     try {
       if (!FINISHED.has(task.status)) {
@@ -67,23 +68,22 @@ export async function collect(ledger: Ledger, home: string, pick: GcPick): Promi
         skip('a person is attached to its terminal')
         continue
       }
-      // Taken before the session closes, so a task told to go on or collected by another gc since
-      // it was read is left alone; for sweep, since its signal read it, so one that ran again and
-      // finished is judged again.
-      claimed = ledger.claimCollect(seen(id) ?? task)
-      if (!claimed) {
+      if (!unchanged(task)) {
         skip('changed while gc ran')
         continue
       }
       if (task.workspace === null || !existsSync(task.workspace)) {
         const head = headOf(task)
+        if (!ledger.collectedAsRead(judged, head)) {
+          skip('told to go on while gc ran')
+          continue
+        }
         dropBranch(task)
-        if (task.collectedAt === null) ledger.collected(task.id, head)
         report.clean.push(task.id)
         continue
       }
       if (!task.workspace.startsWith(workRoot)) {
-        release(`workspace outside ${workRoot}`)
+        skip(`workspace outside ${workRoot}`)
         continue
       }
       await terminals.close(sessionName(task.id))
@@ -95,19 +95,19 @@ export async function collect(ledger: Ledger, home: string, pick: GcPick): Promi
           undefined,
         )
         if (status.code !== 0 || status.stdout.trim()) {
-          release('uncommitted changes in worktree')
+          skip('uncommitted changes in worktree')
           continue
         }
         const only = onlyCopy(task.repo, task.workspace, branchOf(task))
         if (only !== null) {
-          release(only)
+          skip(only)
           continue
         }
       }
       // Looked at last before anything goes, as the session closing and the checks take a while.
       // ponytail: a tell during the removal itself still finds its folder going; closing that needs
       // restore to wait for gc.
-      if (takenBack()) {
+      if (!unchanged(ledger.get(id))) {
         skip('told to go on while gc ran')
         continue
       }
@@ -119,18 +119,18 @@ export async function collect(ledger: Ledger, home: string, pick: GcPick): Promi
           undefined,
         )
         if (removed.code !== 0) {
-          release(removed.output.trim())
+          skip(removed.output.trim())
           continue
         }
       } else {
         rmSync(task.workspace, { recursive: true })
       }
-      // Taken back while its folder went: it stays listed, and keeps its branch.
-      if (takenBack()) {
+      // Marked only now, so a gc that stops midway leaves the task listed. One taken back while its
+      // folder went stays listed, and keeps its branch.
+      if (!ledger.collectedAsRead(judged, head)) {
         skip('told to go on while gc ran')
         continue
       }
-      ledger.collected(task.id, head)
       dropBranch(task)
       // A worktree sits in folders named after its repo and branch; drop the ones it leaves empty.
       for (
@@ -143,18 +143,20 @@ export async function collect(ledger: Ledger, home: string, pick: GcPick): Promi
 
       report.removed.push(task.id)
     } catch (error) {
-      release(message(error))
+      skip(message(error))
     }
   }
   return report
 }
 
 // Why removing the worktree would lose commits, or null: worktree remove takes with it the
-// worktree's own clone of each submodule (.git/worktrees/<worktree>/modules), with its HEAD,
-// branches and stash, and the worktree's HEAD may hold commits no branch has, made on a detached
-// HEAD say. A submodule commit is safe on a remote branch, or in the repo's own checkout of the
-// submodule, which initSubmodules (worker.ts) cloned it from.
-// ponytail: one level of submodules, as initSubmodules fills; a commit only a reflog reaches goes.
+// worktree's own git folder of each submodule (.git/worktrees/<worktree>/modules), with its HEAD,
+// branches, tags and stash, even for a submodule since removed from the worktree; and the
+// worktree's HEAD may hold commits no branch has, made on a detached HEAD say. A submodule commit is
+// safe on a remote branch, or in the repo's own checkout of the submodule, which initSubmodules
+// (worker.ts) cloned it from.
+// ponytail: a submodule's checkout is looked for at its name, which is its path unless it moved,
+// and a moved one stays; a commit only a reflog reaches goes.
 function onlyCopy(repo: string, workspace: string, branch: string): string | null {
   const git = (cwd: string, ...args: string[]) => Bun.spawnSync(['git', '-C', cwd, ...args])
   if (
@@ -162,34 +164,51 @@ function onlyCopy(repo: string, workspace: string, branch: string): string | nul
   ) {
     return `HEAD has commits ${branch} does not`
   }
-  const paths = git(
-    workspace,
-    'config',
-    '-z',
-    '-f',
-    '.gitmodules',
-    '--get-regexp',
-    String.raw`^submodule\..*\.path$`,
-  )
-  // 1: no .gitmodules, or no submodule in it.
-  if (paths.exitCode > 1) throw new Error(`git config in ${workspace}: ${paths.stderr}`)
-  // Each entry is the key, a newline, then the path.
-  for (const entry of paths.stdout.toString().split('\0').filter(Boolean)) {
-    const path = entry.slice(entry.indexOf('\n') + 1)
-    const sub = join(workspace, path)
-    if (!existsSync(join(sub, '.git'))) continue // never filled, so nothing of its own
-    const head = git(sub, 'rev-parse', '--verify', '-q', 'HEAD')
-    const refs = git(sub, 'for-each-ref', '--format=%(objectname)', 'refs/heads', 'refs/stash')
+  const modules = git(workspace, 'rev-parse', '--git-path', 'modules')
+  if (modules.exitCode !== 0) throw new Error(`git rev-parse in ${workspace}: ${modules.stderr}`)
+  const root = resolve(workspace, modules.stdout.toString().trim())
+  for (const name of submoduleNames(root)) {
+    const sub = join(root, name)
+    // The git folder stands in for the work tree it names, which is gone for a submodule since
+    // removed; these only read.
+    const inSub = (...args: string[]) =>
+      Bun.spawnSync(['git', `--git-dir=${sub}`, `--work-tree=${sub}`, ...args])
+    const head = inSub('rev-parse', '--verify', '-q', 'HEAD')
+    // Every ref but the remote ones, a tag peeled to its commit.
+    const refs = inSub(
+      'for-each-ref',
+      '--format=%(refname) %(if)%(*objectname)%(then)%(*objectname)%(else)%(objectname)%(end)',
+    )
     if (refs.exitCode !== 0) throw new Error(`git for-each-ref in ${sub}: ${refs.stderr}`)
-    const commits = `${head.stdout}\n${refs.stdout}`.split('\n').filter(Boolean)
+    const commits = refs.stdout
+      .toString()
+      .split('\n')
+      .filter((line) => line !== '' && !line.startsWith('refs/remotes/'))
+      .map((line) => line.slice(line.lastIndexOf(' ') + 1))
+    const onRemote = (commit: string): boolean =>
+      inSub('for-each-ref', '--contains', commit, '--format=%(refname)', 'refs/remotes')
+        .stdout.toString()
+        .split('\n')
+        .some((r) => r !== '' && !r.endsWith('/HEAD'))
     const safe = (commit: string): boolean =>
-      remotesHolding(sub, commit).length > 0 ||
-      git(join(repo, path), 'cat-file', '-e', `${commit}^{commit}`).exitCode === 0
-    if (head.exitCode !== 0 || !commits.every(safe)) {
-      return `submodule ${path} has commits no remote has`
+      onRemote(commit) ||
+      git(join(repo, name), 'cat-file', '-e', `${commit}^{commit}`).exitCode === 0
+    if (head.exitCode !== 0 || ![head.stdout.toString().trim(), ...commits].every(safe)) {
+      return `submodule ${name} has commits no remote has`
     }
   }
   return null
+}
+
+// The submodule git folders under `dir`, by name; a name may hold `/`.
+function submoduleNames(dir: string, name = ''): string[] {
+  if (!existsSync(dir)) return []
+  if (name !== '' && existsSync(join(dir, 'HEAD')) && existsSync(join(dir, 'objects'))) {
+    return [name]
+  }
+  return readdirSync(dir, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .flatMap((entry) => submoduleNames(join(dir, entry.name), join(name, entry.name)))
 }
 
 // Deletes a finished task's branch once its work is safe elsewhere: a remote branch holds its
