@@ -188,3 +188,59 @@ test('answering with a button keeps what was being written', async () => {
   expect(posted.splice(0)).toEqual([{ taskId: 5, decisionId: 8, text: 'yes' }])
   expect(field<HTMLTextAreaElement>('textarea').value).toBe('half a thought')
 })
+
+test('a change to the todo keeps what is being typed in the form and says so', async () => {
+  let todo = {
+    id: 9,
+    title: 'old title',
+    notes: 'first',
+    status: 'next',
+    projectId: null,
+    context: null as string | null,
+    waitingOn: null,
+    due: null,
+    scheduled: null,
+    start: null,
+    repeat: null,
+    focus: null,
+    watch: null,
+    backTo: null,
+    source: 'cli',
+    sourceKey: null,
+    createdAt: AT,
+    statusAt: AT,
+    project: null,
+    waitingFor: null,
+  }
+  const changes = [{ actor: 'human', at: AT, text: 'captured' }]
+  answer = () => ({ today: '2026-10-23', todo, links: [], tasks: [], changes, projects: [] })
+  await go('/todos/9?edit=true')
+  const title = () => field<HTMLInputElement>('.todo-form input').value
+  type(field('.todo-form input'), 'new title')
+  expect(banners()).toEqual([])
+
+  // A worker sets the context.
+  todo = { ...todo, context: '@desk' }
+  changes.push({ actor: 'worker:1', at: AT, text: 'context @desk' })
+  await reload()
+  expect(title()).toBe('new title')
+  expect(field<HTMLInputElement>('input[placeholder="@desk"]').value).toBe('@desk')
+  expect(banners().join()).toContain('changed')
+
+  // A line added to the notes shows in them, and the title stays.
+  onPost = () => {
+    todo = { ...todo, notes: 'first\nsecond' }
+    changes.push({ actor: 'human:ui', at: AT, text: 'notes' })
+  }
+  type(field('input[placeholder="Add a line to the notes…"]'), 'second')
+  await click('Add')
+  expect(posted.splice(0)).toEqual([{ id: 9, edit: { addNote: 'second' } }])
+  expect(field<HTMLTextAreaElement>('.todo-form textarea').value).toBe('first\nsecond')
+  expect(title()).toBe('new title')
+  onPost = () => {}
+
+  await click('Save')
+  expect(posted.splice(0)).toMatchObject([
+    { id: 9, edit: { title: 'new title', context: '@desk', notes: 'first\nsecond' } },
+  ])
+})
