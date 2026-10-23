@@ -1,4 +1,4 @@
-import { createFileRoute } from '@tanstack/react-router'
+import { createFileRoute, useLocation } from '@tanstack/react-router'
 import { useState } from 'react'
 import { changeProject, getProjects, newProject } from '../todo-fns'
 import { Section, TodoRow, useChange } from '../todo-parts'
@@ -38,11 +38,13 @@ function ProjectsView() {
 
 function ProjectCard({ p, today }: { p: ProjectsPage['projects'][number]; today: string }) {
   const { busy, error, run } = useChange()
+  // A link to one project (Focus's "No next action") lands on its card and marks it.
+  const picked = useLocation({ select: (l) => l.hash === `p${p.id}` })
   const status = (s: string) =>
     run(() => changeProject({ data: { id: p.id, edit: { status: s } } }))
   const stuck = p.status === 'active' && p.next === 0
   return (
-    <div className="card">
+    <div className={picked ? 'card picked' : 'card'} id={`p${p.id}`}>
       <div className="card-head">
         <span className="side-id">p{p.id}</span>
         <strong>{p.title}</strong>

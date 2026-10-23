@@ -73,7 +73,9 @@ const ICONS = {
       <circle cx="8" cy="8" r="2.75" />
     </>
   ),
-  todos: <path d="M2.5 4.5l1.2 1.2L6 3.4M2.5 10.5l1.2 1.2L6 9.4M8.5 4.5h5M8.5 10.5h5" />,
+  inbox: (
+    <path d="M2 9h3.5l1 1.5h3l1-1.5H14M3.5 3h9L14 9v3.5a.5.5 0 0 1-.5.5h-11a.5.5 0 0 1-.5-.5V9z" />
+  ),
   projects: (
     <path d="M2 4.5A1.5 1.5 0 0 1 3.5 3h3L8 4.5h4.5A1.5 1.5 0 0 1 14 6v5.5a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 2 11.5z" />
   ),
@@ -126,9 +128,9 @@ function Sidebar() {
           <NavIcon name="focus" />
           Focus
         </Link>
-        <Link to="/todos" className="side-item" activeProps={{ className: 'active' }}>
-          <NavIcon name="todos" />
-          Todos
+        <Link to="/inbox" className="side-item" activeProps={{ className: 'active' }}>
+          <NavIcon name="inbox" />
+          Inbox
           {inbox > 0 && <span className="side-count">{inbox}</span>}
         </Link>
         {/* Mindwtr's lists, folded away when not wanted. */}

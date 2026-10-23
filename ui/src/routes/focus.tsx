@@ -1,4 +1,5 @@
 import { createFileRoute, Link } from '@tanstack/react-router'
+import { Fragment, useState } from 'react'
 import type { CalendarEvent } from '../../../src/calendar'
 import { inboxSince, reviewDue } from '../../../src/trust'
 import { getFocus } from '../todo-fns'
@@ -11,10 +12,18 @@ export const Route = createFileRoute('/focus')({
 })
 
 // The day's first screen, after Mindwtr's Focus: what needs the person, the day's events, the few
-// todos picked for today, what the day holds, the next actions to pick from, and those that start
-// later.
+// todos picked for today, what the day holds, the next actions to pick from, those that start
+// later, and reference to look up.
 function FocusPage() {
   const page = Route.useLoaderData()
+  const [context, setContext] = useState<string | null>(null)
+  const contexts = [
+    ...new Set(page.next.flatMap((t) => (t.context === null ? [] : [t.context]))),
+  ].sort()
+  // A next action with no context can be done anywhere, so it shows in every context.
+  const next = page.next.filter(
+    (t) => context === null || t.context === null || t.context === context,
+  )
   // A full focus offers no more picks; unfocusing one makes room.
   const full = page.focus.length >= page.limit
   const rows = (ts: TodoItem[]) =>
@@ -57,7 +66,21 @@ function FocusPage() {
       )}
 
       <Section title="Next actions" count={page.next.length} bare={page.next.length === 0}>
-        {page.next.length === 0 ? <p className="muted">None.</p> : rows(page.next)}
+        {contexts.length > 0 && (
+          <div className="filters">
+            {[null, ...contexts].map((c) => (
+              <button
+                key={c ?? ''}
+                type="button"
+                className={context === c ? 'on' : ''}
+                onClick={() => setContext(c)}
+              >
+                {c ?? 'Anywhere'}
+              </button>
+            ))}
+          </div>
+        )}
+        {page.next.length === 0 ? <p className="muted">None.</p> : rows(next)}
       </Section>
 
       {page.upcoming.length > 0 && (
@@ -65,47 +88,67 @@ function FocusPage() {
           {rows(page.upcoming)}
         </Section>
       )}
+
+      <Reference ts={page.reference} today={page.today} />
     </div>
   )
 }
 
-type Need = { text: string; to: '/todos' | '/projects' | null }
+// Reference is looked up, not worked from, so it stays folded at the bottom.
+function Reference({ ts, today }: { ts: TodoItem[]; today: string }) {
+  if (ts.length === 0) return null
+  return (
+    <details className="fold">
+      <summary className="section fold-label">
+        Reference
+        <span className="count">{ts.length}</span>
+      </summary>
+      <div className="list">
+        {ts.map((t) => (
+          <TodoRow key={t.id} t={t} today={today} usual="reference" />
+        ))}
+      </div>
+    </details>
+  )
+}
 
 // What keeps the lists from being trusted, as the day's first session is nudged, and only what
-// needs the person: what is overdue or due today has its own list below.
+// needs the person: what is overdue or due today has its own list below. Each line leads to where
+// it is dealt with; a stuck project to its own card.
 function Attention({ page }: { page: Page }) {
   const t = page.trust
   const since = inboxSince(t, page.today)
-  const lines: (Need | null)[] = [
-    since === null
-      ? null
-      : { text: `${t.inbox} in the inbox since ${relDay(since, page.today)}`, to: '/todos' },
-    t.stuck.length === 0
-      ? null
-      : { text: `No next action: ${t.stuck.map((p) => p.title).join(', ')}`, to: '/projects' },
-    t.stale.length === 0
-      ? null
-      : {
-          text: `Waiting long: ${t.stale.map((s) => `${s.todo.waitingOn ?? s.todo.title} (${s.days}d)`).join(', ')}`,
-          to: '/todos',
-        },
-    reviewDue(t) ? { text: `Weekly review ${t.sinceReview} days ago`, to: null } : null,
-  ]
-  const needs = lines.filter((x) => x !== null)
+  const needs = [
+    since !== null && (
+      <Link key="inbox" to="/inbox">
+        {t.inbox} in the inbox since {relDay(since, page.today)}
+      </Link>
+    ),
+    t.stuck.length > 0 && (
+      <span key="stuck">
+        <span>
+          No next action:{' '}
+          {t.stuck.map((p, i) => (
+            <Fragment key={p.id}>
+              {i > 0 && ', '}
+              <Link to="/projects" hash={`p${p.id}`}>
+                {p.title}
+              </Link>
+            </Fragment>
+          ))}
+        </span>
+      </span>
+    ),
+    t.stale.length > 0 && (
+      <Link key="waiting" to="/waiting">
+        Waiting long:{' '}
+        {t.stale.map((s) => `${s.todo.waitingOn ?? s.todo.title} (${s.days}d)`).join(', ')}
+      </Link>
+    ),
+    reviewDue(t) && <span key="review">Weekly review {t.sinceReview} days ago</span>,
+  ].filter((x) => x !== false)
   if (needs.length === 0) return null
-  return (
-    <div className="needs">
-      {needs.map((l) =>
-        l.to === null ? (
-          <span key={l.text}>{l.text}</span>
-        ) : (
-          <Link key={l.text} to={l.to}>
-            {l.text}
-          </Link>
-        ),
-      )}
-    </div>
-  )
+  return <div className="needs">{needs}</div>
 }
 
 // A calendar that could not be read says so, since no events would read as a free day.
