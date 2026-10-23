@@ -23,8 +23,9 @@ function install(savedEnv: { exit: number; out: string }) {
   })
   const calls = existsSync(`${home}/calls`) ? readFileSync(`${home}/calls`, 'utf8') : ''
   // The script's temp files, which it must not leave behind.
-  const left = readdirSync(home).filter((name) => name.startsWith('nod-ui-env'))
-  return { exitCode: run.exitCode, calls, left }
+  const left = readdirSync(home).filter((name) => name.startsWith('nod-ui-'))
+  const agent = existsSync(`${home}/Library/LaunchAgents/io.github.kkokworks.nod.ui.plist`)
+  return { exitCode: run.exitCode, calls, left, agent }
 }
 
 test('the install fails, and loads no agent, when reading the environment for workers fails', () => {
@@ -32,6 +33,8 @@ test('the install fails, and loads no agent, when reading the environment for wo
   expect(failed.exitCode).not.toBe(0)
   expect(failed.calls).not.toContain('launchctl')
   expect(failed.left).toEqual([])
+  // Nor a half-made agent for the next login to load.
+  expect(failed.agent).toBe(false)
 
   const ok = install({ exit: 0, out: 'HTTPS_PROXY\\thttp://proxy.example\\n' })
   expect(ok.exitCode).toBe(0)
@@ -40,4 +43,5 @@ test('the install fails, and loads no agent, when reading the environment for wo
   )
   expect(ok.calls).toContain('launchctl bootstrap')
   expect(ok.left).toEqual([])
+  expect(ok.agent).toBe(true)
 })
