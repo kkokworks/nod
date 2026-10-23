@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { z } from 'zod'
 import { localTime } from './days'
@@ -268,8 +268,17 @@ export async function scheduleOn(home: string): Promise<void> {
   }
   if (process.env.CLAUDE_CONFIG_DIR) env.CLAUDE_CONFIG_DIR = process.env.CLAUDE_CONFIG_DIR
   writeFileSync(envPath(home), `${JSON.stringify(env, null, 2)}\n`, { mode: 0o600 })
+  // The mode applies only to a new file, and an earlier nod wrote this one readable by all.
+  chmodSync(envPath(home), 0o600)
   writeFileSync(tickPath(home), tickModule(home))
-  await Bun.cron(tickPath(home), '* * * * *', cronTitle(home))
+  try {
+    await Bun.cron(tickPath(home), '* * * * *', cronTitle(home))
+  } catch (error) {
+    // The files are what says the schedule is on.
+    rmSync(tickPath(home), { force: true })
+    rmSync(envPath(home), { force: true })
+    throw error
+  }
 }
 
 export async function scheduleOff(home: string): Promise<void> {

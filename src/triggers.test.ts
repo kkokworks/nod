@@ -1,10 +1,10 @@
-import { afterAll, expect, test } from 'bun:test'
-import { existsSync, writeFileSync } from 'node:fs'
+import { afterAll, expect, spyOn, test } from 'bun:test'
+import { existsSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tempDirs } from '../test/tmp'
 import { Ledger } from './ledger'
 import { Todos } from './todos'
-import { addTrigger, nextRun, parseItems, shell, tick } from './triggers'
+import { addTrigger, nextRun, parseItems, scheduleEnv, scheduleOn, shell, tick } from './triggers'
 
 // Only what runs without workers; the tick's triggers start tasks, so they are tested with the
 // fake agent in worker.test.ts. Its watches start none and are tested here.
@@ -76,6 +76,26 @@ test('a tick with watches brings back the todo whose watch exits 0, or can no lo
   // Each run is kept, for the watch it ran.
   expect(todos.lastCheck(todos.get(never))).toMatchObject({ watch: 'exit 2', code: 2, output: '' })
   expect(todos.watched().map((t) => t.id)).toEqual([never])
+})
+
+test('schedule on leaves its environment readable by the owner only, and is off again if the OS scheduler refuses it', async () => {
+  const home = tmp.make('nod-schedule-')
+  const env = join(home, 'schedule.json')
+  writeFileSync(env, '{}\n', { mode: 0o644 }) // as an earlier nod left it
+  // Not the real scheduler, which would register a tick with the OS.
+  const cron = spyOn(Bun, 'cron')
+  try {
+    cron.mockImplementation((() => Promise.resolve()) as never)
+    await scheduleOn(home)
+    expect(statSync(env).mode & 0o777).toBe(0o600)
+
+    cron.mockImplementation((() => Promise.reject(new Error('no scheduler here'))) as never)
+    await expect(scheduleOn(home)).rejects.toThrow('no scheduler here')
+    expect(scheduleEnv(home)).toBeNull()
+    expect(existsSync(join(home, 'tick.ts'))).toBe(false)
+  } finally {
+    cron.mockRestore()
+  }
 })
 
 test('a timed-out command ends with all of its pipeline, not only the shell', async () => {
