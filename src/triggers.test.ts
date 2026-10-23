@@ -129,15 +129,24 @@ test('schedule on leaves its environment readable by the owner only, and is off 
   writeFileSync(env, '{}\n', { mode: 0o644 }) // as an earlier nod left it
   // Not the real scheduler, which would register a tick with the OS.
   const cron = spyOn(Bun, 'cron')
+  const removed: string[] = []
+  Object.assign(Bun.cron, {
+    remove: (title: string) => {
+      removed.push(title)
+      return Promise.resolve()
+    },
+  })
   try {
     cron.mockImplementation((() => Promise.resolve()) as never)
     await scheduleOn(home)
     expect(statSync(env).mode & 0o777).toBe(0o600)
 
+    // Turned on again, the tick registered before would go on running a tick.ts that is gone.
     cron.mockImplementation((() => Promise.reject(new Error('no scheduler here'))) as never)
     await expect(scheduleOn(home)).rejects.toThrow('no scheduler here')
     expect(scheduleEnv(home)).toBeNull()
     expect(existsSync(join(home, 'tick.ts'))).toBe(false)
+    expect(removed).toHaveLength(1)
   } finally {
     cron.mockRestore()
   }

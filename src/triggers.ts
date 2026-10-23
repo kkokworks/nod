@@ -285,9 +285,11 @@ export async function scheduleOn(home: string): Promise<void> {
   try {
     await Bun.cron(tickPath(home), '* * * * *', cronTitle(home))
   } catch (error) {
-    // The files are what says the schedule is on.
+    // The files are what says the schedule is on, and a tick registered before would run the
+    // missing tick.ts every minute, so it goes too; the error to show is the registration's.
     rmSync(tickPath(home), { force: true })
     rmSync(envPath(home), { force: true })
+    await Bun.cron.remove(cronTitle(home)).catch(() => {})
     throw error
   }
 }
