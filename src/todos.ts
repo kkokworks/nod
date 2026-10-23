@@ -71,7 +71,7 @@ export type Todo = {
   // While it is `waiting`, a shell command that exits 0 once what it waits on has happened; nod's
   // tick runs it and then makes the todo a next action again.
   watch: string | null
-  // With a watch, one of the tasks the todo was delegated to: once the watch passes, that task's
+  // With a watch, the latest task the todo was delegated to: once the watch passes, that task's
   // session hears what the watch printed and carries on, and the todo waits on it again.
   backTo: number | null
   // Where it was captured: `cli`, or the channel a scan read it from. With a key, that channel's
@@ -703,14 +703,17 @@ export class Todos {
     ) {
       throw new Error(`t${before.id} waits on its task, which moves it on when it ends`)
     }
-    // It goes back to a task that did it and whose session can still be reopened.
+    // It goes back to its latest task, the one followTasks moves it on with, while that task's
+    // session can still be reopened.
     if (typeof edit.backTo === 'number') {
       if ((edit.watch === undefined ? before.watch : edit.watch) === null || status !== 'waiting') {
         throw new Error('--back-to is for when a watch passes; give the waiting todo a --watch')
       }
-      const task = this.ledger.tasksOf(before.id).find((t) => t.id === edit.backTo)
-      if (task === undefined) {
-        throw new Error(`task #${edit.backTo} does not do t${before.id}; --back-to takes its task`)
+      const task = this.ledger.tasksOf(before.id).at(-1)
+      if (task?.id !== edit.backTo) {
+        throw new Error(
+          `task #${edit.backTo} is not the latest task of t${before.id}; give --back-to t${before.id}`,
+        )
       }
       if (task.workspace === null || task.collectedAt !== null) {
         const why = task.workspace === null ? 'never started' : 'was collected by gc'

@@ -48,10 +48,11 @@ export const TODO_USAGE = `  nod in <what...> [--notes <text>] [--source <channe
                                    that does not parse, passes already, or that the shell cannot
                                    run, is refused. When it last ran and how it ended show with
                                    the todo. Keep secrets out of it: it is kept in the notes and
-                                   history. --back-to names a task the todo was handed to (t<n>: its
-                                   latest): once the watch passes, that task's session hears what
-                                   the watch printed and carries on, asking before anything that
-                                   needs you, and the todo waits on it instead. A <day> is
+                                   history. --back-to names the latest task the todo was handed to
+                                   (t<n> for short): once the watch passes, that task's session
+                                   hears what the watch printed and carries on, asking before
+                                   anything that needs you, and the todo waits on it instead. A
+                                   <day> is
                                    YYYY-MM-DD, today or tomorrow; --due and --on also take a time,
                                    '<day> HH:MM'. --on is a day- or time-specific action, --start
                                    leaves it out of the lists until that day, and --focus picks it

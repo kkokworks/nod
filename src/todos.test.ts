@@ -180,7 +180,7 @@ test('a todo waiting on its task has no watch: handing it over drops one, and no
   )
 })
 
-test('--back-to names a task that did the todo; a passing watch hands the todo back to it', () => {
+test('--back-to names the task that did the todo; a passing watch hands the todo back to it', () => {
   const { ledger, todos } = books()
   const t = captured(todos, 'Get the review answered')
   const did = todos.delegate(t.id, task, 'human')
@@ -195,7 +195,7 @@ test('--back-to names a task that did the todo; a passing watch hands the todo b
     '--back-to is for when a watch passes',
   )
   expect(() => todos.set(t.id, { status: 'waiting', watch, backTo: unrelated }, 'human')).toThrow(
-    `task #${unrelated} does not do t${t.id}`,
+    `task #${unrelated} is not the latest task of t${t.id}`,
   )
   todos.set(t.id, { status: 'waiting', waitingOn: 'Kim', watch, backTo: did }, 'human')
   // It goes with the watch: clearing the watch, or leaving waiting, forgets it.
@@ -226,6 +226,36 @@ test('--back-to names a task that did the todo; a passing watch hands the todo b
   expect(() => todos.set(t.id, { status: 'waiting', watch, backTo: did }, 'human')).toThrow(
     'was collected by gc',
   )
+})
+
+test('--back-to takes only the latest task, which the todo follows; one that errors keeps it waiting', () => {
+  const { ledger, todos } = books()
+  const t = captured(todos, 'Get the review answered')
+  const ended = (id: number) => {
+    ledger.setRunning(id, `/work/${id}`)
+    ledger.succeed(id)
+    todos.followTasks('nod')
+  }
+  const earlier = todos.delegate(t.id, task, 'human')
+  ended(earlier)
+  todos.set(t.id, { status: 'next' }, 'human')
+  const latest = todos.delegate(t.id, task, 'human')
+  ended(latest)
+  const watch = 'test -f answered'
+  // followTasks goes by the latest task, so an earlier one carrying on would never move the todo.
+  expect(() => todos.set(t.id, { status: 'waiting', watch, backTo: earlier }, 'human')).toThrow(
+    `task #${earlier} is not the latest task of t${t.id}`,
+  )
+  todos.set(t.id, { status: 'waiting', watch, backTo: latest }, 'human')
+  todos.endWatch(t.id, watch, 'passed', 'nod', latest)
+  // A session that cannot be reopened leaves the task in error, as tell does, and the todo waits on
+  // it until the task is resumed or cancelled.
+  ledger.setRunning(latest, `/work/${latest}`)
+  ledger.error(latest, 'session ended')
+  todos.followTasks('nod')
+  expect(todos.get(t.id).status).toBe('waiting')
+  ended(latest)
+  expect(todos.get(t.id).status).toBe('done')
 })
 
 test('an edit that fails changes nothing, links included', () => {
