@@ -2,7 +2,7 @@ import { afterAll, expect, test } from 'bun:test'
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tempDirs } from '../test/tmp'
-import { collect } from './gc'
+import { collect, landed } from './gc'
 import { Ledger } from './ledger'
 import { branchOf, restore, sessionFolder, workspaceOf } from './worker'
 
@@ -282,6 +282,202 @@ test('resume brings a collected task back: the worktree returns at the same path
   await expect(restore(ledger, home, plain)).rejects.toThrow('transcript is gone')
   expect(existsSync(plainCwd)).toBe(false)
   expect(ledger.get(plain).collectedAt).not.toBeNull()
+})
+
+test('landed reads a non-ASCII file name as that file, so an unpushed change to it has not landed', () => {
+  const home = tmp.make('nod-gc-')
+  const repo = join(home, 'repo')
+  mkdirSync(repo)
+  const git = (...args: string[]): string =>
+    sh(['git', '-c', 'user.email=t@t', '-c', 'user.name=t', ...args], repo)
+  git('init', '-q', '-b', 'main')
+  // git's default, which quotes such a name in its output.
+  git('config', 'core.quotePath', 'true')
+  git('commit', '-q', '--allow-empty', '-m', 'init')
+  git('update-ref', 'refs/remotes/origin/main', 'HEAD')
+  git('symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main')
+  git('checkout', '-q', '-b', 'feat/plan')
+  writeFileSync(join(repo, '기획.md'), 'plan')
+  git('add', '.')
+  git('commit', '-q', '-m', 'plan')
+  git('checkout', '-q', 'main')
+
+  expect(landed(repo, 'refs/heads/feat/plan')).toBe(false)
+  // A squash merge brings the same file to the default branch.
+  writeFileSync(join(repo, '기획.md'), 'plan')
+  git('add', '.')
+  git('commit', '-q', '-m', 'squash')
+  git('update-ref', 'refs/remotes/origin/main', 'HEAD')
+  expect(landed(repo, 'refs/heads/feat/plan')).toBe(true)
+})
+
+test('gc keeps a worktree holding the only copy of commits: in a submodule, or on a detached HEAD', async () => {
+  const home = tmp.make('nod-gc-')
+  process.env.CLAUDE_CONFIG_DIR = tmp.make('nod-gc-claude-')
+  const ledger = new Ledger(home)
+  const git = (cwd: string, ...args: string[]): string =>
+    sh(
+      [
+        'git',
+        '-c',
+        'user.email=t@t',
+        '-c',
+        'user.name=t',
+        '-c',
+        'protocol.file.allow=always',
+        ...args,
+      ],
+      cwd,
+    )
+  const commit = (cwd: string, msg: string): void => {
+    git(cwd, 'commit', '-q', '--allow-empty', '-m', msg)
+  }
+  // The submodule's remote, and a repo whose checkout of it pins a commit past the branch it was
+  // cloned on, so a worktree's clone of that checkout has the commit on no remote branch.
+  const upstream = join(home, 'lib')
+  mkdirSync(upstream)
+  git(upstream, 'init', '-q', '-b', 'main')
+  commit(upstream, 'one')
+  const repo = join(home, 'repo')
+  mkdirSync(repo)
+  git(repo, 'init', '-q', '-b', 'main')
+  git(repo, 'submodule', 'add', '-q', upstream, 'lib')
+  commit(repo, 'add lib')
+  commit(upstream, 'two')
+  git(join(repo, 'lib'), 'fetch', '-q')
+  git(join(repo, 'lib'), 'checkout', '-q', '--detach', 'origin/main')
+  git(repo, 'add', 'lib')
+  commit(repo, 'lib two')
+  // A pushed task, its submodule filled as initSubmodules does, from the repo's checkout of it.
+  const task = (branch: string): { id: number; cwd: string } => {
+    const id = ledger.add({
+      brief: branch,
+      repo,
+      branch,
+      checkCmd: null,
+      model: null,
+      after: [],
+      triggerId: null,
+      issue: null,
+    })
+    const cwd = workspaceOf(home, ledger.get(id))
+    git(repo, 'worktree', 'add', '-q', '-b', branch, cwd)
+    git(cwd, '-c', `submodule.lib.url=${join(repo, 'lib')}`, 'submodule', 'update', '-q', '--init')
+    ledger.setRunning(id, cwd)
+    ledger.succeed(id)
+    return { id, cwd }
+  }
+  const push = (branch: string): void => {
+    git(repo, 'update-ref', `refs/remotes/origin/${branch}`, branch)
+  }
+  const plain = task('feat/plain')
+  push('feat/plain')
+  // The repo's branch records the submodule's new commit and is pushed; the commit itself is not.
+  const inSub = task('feat/in-sub')
+  commit(join(inSub.cwd, 'lib'), 'lib work')
+  git(inSub.cwd, 'add', 'lib')
+  commit(inSub.cwd, 'record lib work')
+  push('feat/in-sub')
+  const detached = task('feat/detached')
+  push('feat/detached')
+  git(detached.cwd, 'checkout', '-q', '--detach')
+  commit(detached.cwd, 'detached work')
+
+  const report = await collect(ledger, home, { ids: [plain.id, inSub.id, detached.id] })
+
+  expect(report).toEqual({
+    removed: [plain.id],
+    clean: [],
+    skipped: [
+      { id: inSub.id, reason: 'submodule lib has commits no remote has' },
+      { id: detached.id, reason: 'HEAD has commits feat/detached does not' },
+    ],
+  })
+  expect(existsSync(plain.cwd)).toBe(false)
+  expect(existsSync(inSub.cwd)).toBe(true)
+  expect(existsSync(detached.cwd)).toBe(true)
+  expect(ledger.get(inSub.id).collectedAt).toBeNull()
+  expect(ledger.get(detached.id).collectedAt).toBeNull()
+})
+
+test('gc reads each task again as it gets to it: one told to go on meanwhile is left alone', async () => {
+  const home = tmp.make('nod-gc-')
+  process.env.CLAUDE_CONFIG_DIR = tmp.make('nod-gc-claude-')
+  const ledger = new Ledger(home)
+  const task = (brief: string): number => {
+    const id = ledger.add({
+      brief,
+      repo: null,
+      branch: null,
+      checkCmd: null,
+      model: null,
+      after: [],
+      triggerId: null,
+      issue: null,
+    })
+    mkdirSync(workspaceOf(home, ledger.get(id)), { recursive: true })
+    ledger.setRunning(id, workspaceOf(home, ledger.get(id)))
+    ledger.succeed(id)
+    return id
+  }
+  const closing = task('told to go on as its session closes')
+  const told = task('told to go on before gc gets to it')
+  const other = task('other')
+  // As `nod tell` does: restore takes a collected task back, then the message sets it running.
+  const tell = (id: number): void => {
+    ledger.uncollected(id)
+    ledger.setRunning(id, workspaceOf(home, ledger.get(id)))
+  }
+
+  const collecting = collect(ledger, home, { ids: [closing, told, other] })
+  // gc took the first task and is closing its session.
+  expect(ledger.get(closing).collectedAt).not.toBeNull()
+  tell(closing)
+  tell(told)
+  const report = await collecting
+
+  expect(report).toEqual({
+    removed: [other],
+    clean: [],
+    skipped: [
+      { id: closing, reason: 'told to go on while gc ran' },
+      { id: told, reason: 'still running' },
+    ],
+  })
+  for (const id of [closing, told]) {
+    expect(existsSync(workspaceOf(home, ledger.get(id)))).toBe(true)
+    expect(ledger.get(id).collectedAt).toBeNull()
+  }
+})
+
+test('gc --older-than leaves a task a queued one waits for, as sweep does', async () => {
+  const home = tmp.make('nod-gc-')
+  process.env.CLAUDE_CONFIG_DIR = tmp.make('nod-gc-claude-')
+  const ledger = new Ledger(home)
+  const spec = {
+    brief: 'base',
+    repo: null,
+    branch: null,
+    checkCmd: null,
+    model: null,
+    after: [],
+    triggerId: null,
+    issue: null,
+  }
+  const base = ledger.add(spec)
+  mkdirSync(workspaceOf(home, ledger.get(base)), { recursive: true })
+  ledger.setRunning(base, workspaceOf(home, ledger.get(base)))
+  ledger.succeed(base)
+  ledger.db.query('update tasks set finished_at = $at where id = $id').run({ id: base, at: OLD })
+  ledger.add({ ...spec, brief: 'after the base', after: [base] })
+
+  expect(await collect(ledger, home, { before: new Date() })).toEqual({
+    removed: [],
+    clean: [],
+    skipped: [],
+  })
+  expect(existsSync(workspaceOf(home, ledger.get(base)))).toBe(true)
+  expect(ledger.get(base).collectedAt).toBeNull()
 })
 
 function sh(cmd: string[], cwd: string): string {

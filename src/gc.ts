@@ -2,7 +2,7 @@ import { existsSync, readdirSync, rmdirSync, rmSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import type { Ledger, Task, TaskStatus } from './ledger'
 import { Terminals } from './tmux'
-import { message, sessionName, spawn } from './worker'
+import { branchOf, message, sessionName, spawn } from './worker'
 
 const FINISHED: ReadonlySet<TaskStatus> = new Set(['succeeded', 'cancelled', 'error'])
 
@@ -25,20 +25,44 @@ export type GcPick = { before: Date } | { ids: number[] }
 export async function collect(ledger: Ledger, home: string, pick: GcPick): Promise<GcReport> {
   const report: GcReport = { removed: [], clean: [], skipped: [] }
   const workRoot = `${join(home, 'work')}/`
+  const terminals = Terminals.of(home)
   const picked = (task: Task): boolean =>
     'ids' in pick
       ? pick.ids.includes(task.id)
       : task.collectedAt === null &&
         task.finishedAt !== null &&
-        Date.parse(task.finishedAt) <= pick.before.getTime()
-  for (const task of ledger.list()) {
+        Date.parse(task.finishedAt) <= pick.before.getTime() &&
+        // As sweep: a queued task starts from this one's branch.
+        ledger.waiting(task.id).length === 0
+  for (const { id } of ledger.list()) {
+    // Read again as gc gets to it, since gc waits on each task before: one told to go on meanwhile
+    // is running again.
+    const task = ledger.get(id)
     if (!picked(task)) continue
+    const skip = (reason: string): void => {
+      report.skipped.push({ id, reason })
+    }
+    if (!FINISHED.has(task.status)) {
+      skip(`still ${task.status}`)
+      continue
+    }
+    // A turn the person types in keeps the status succeeded until it ends.
+    if (terminals.attached(sessionName(id))) {
+      skip('a person is attached to its terminal')
+      continue
+    }
+    // Taken before the session closes, so a task told to go on or collected by another gc since it
+    // was read is left alone. A task gc does not get through is let go again.
+    if (!ledger.claimCollect(task)) {
+      skip('changed while gc ran')
+      continue
+    }
+    const release = (reason: string): void => {
+      if (task.collectedAt === null) ledger.uncollected(id)
+      skip(reason)
+    }
     // One task gc cannot get through, a file it may not delete say, must not stop the rest.
     try {
-      if (!FINISHED.has(task.status)) {
-        report.skipped.push({ id: task.id, reason: `still ${task.status}` })
-        continue
-      }
       if (task.workspace === null || !existsSync(task.workspace)) {
         const head = headOf(task)
         dropBranch(task)
@@ -47,10 +71,15 @@ export async function collect(ledger: Ledger, home: string, pick: GcPick): Promi
         continue
       }
       if (!task.workspace.startsWith(workRoot)) {
-        report.skipped.push({ id: task.id, reason: `workspace outside ${workRoot}` })
+        release(`workspace outside ${workRoot}`)
         continue
       }
-      await Terminals.of(home).close(sessionName(task.id))
+      await terminals.close(sessionName(task.id))
+      // Told to go on while its session closed: `nod tell` took it back (restore in worker.ts).
+      if (ledger.get(id).collectedAt === null) {
+        skip('told to go on while gc ran')
+        continue
+      }
       const head = headOf(task)
 
       if (task.repo !== null) {
@@ -59,17 +88,22 @@ export async function collect(ledger: Ledger, home: string, pick: GcPick): Promi
           undefined,
         )
         if (status.code !== 0 || status.stdout.trim()) {
-          report.skipped.push({ id: task.id, reason: 'uncommitted changes in worktree' })
+          release('uncommitted changes in worktree')
           continue
         }
-        // --force only because git refuses any worktree with submodules; the status check above
-        // already made sure nothing uncommitted is lost.
+        const only = onlyCopy(task.repo, task.workspace, branchOf(task))
+        if (only !== null) {
+          release(only)
+          continue
+        }
+        // --force only because git refuses any worktree with submodules; the checks above already
+        // made sure nothing uncommitted or committed only here is lost.
         const removed = await spawn(
           ['git', '-C', task.repo, 'worktree', 'remove', '--force', task.workspace],
           undefined,
         )
         if (removed.code !== 0) {
-          report.skipped.push({ id: task.id, reason: removed.output.trim() })
+          release(removed.output.trim())
           continue
         }
         dropBranch(task)
@@ -88,19 +122,58 @@ export async function collect(ledger: Ledger, home: string, pick: GcPick): Promi
       ledger.collected(task.id, head)
       report.removed.push(task.id)
     } catch (error) {
-      report.skipped.push({ id: task.id, reason: message(error) })
+      release(message(error))
     }
   }
   return report
+}
+
+// Why removing the worktree would lose commits, or null: worktree remove takes with it the
+// worktree's own clone of each submodule (.git/worktrees/<worktree>/modules), and its HEAD may hold
+// commits no branch has, made on a detached HEAD say. A submodule commit is safe on a remote branch,
+// or in the repo's own checkout of the submodule, which initSubmodules (worker.ts) cloned it from.
+// ponytail: one level of submodules, as initSubmodules fills.
+function onlyCopy(repo: string, workspace: string, branch: string): string | null {
+  const git = (cwd: string, ...args: string[]) => Bun.spawnSync(['git', '-C', cwd, ...args])
+  if (
+    git(workspace, 'merge-base', '--is-ancestor', 'HEAD', `refs/heads/${branch}`).exitCode !== 0
+  ) {
+    return `HEAD has commits ${branch} does not`
+  }
+  const paths = git(
+    workspace,
+    'config',
+    '-z',
+    '-f',
+    '.gitmodules',
+    '--get-regexp',
+    String.raw`^submodule\..*\.path$`,
+  )
+  // 1: no .gitmodules, or no submodule in it.
+  if (paths.exitCode > 1) throw new Error(`git config in ${workspace}: ${paths.stderr}`)
+  // Each entry is the key, a newline, then the path.
+  for (const entry of paths.stdout.toString().split('\0').filter(Boolean)) {
+    const path = entry.slice(entry.indexOf('\n') + 1)
+    const sub = join(workspace, path)
+    if (!existsSync(join(sub, '.git'))) continue // never filled, so nothing of its own
+    const head = git(sub, 'rev-parse', '--verify', '-q', 'HEAD').stdout.toString().trim()
+    if (head !== '' && remotesHolding(sub, 'HEAD').length > 0) continue
+    if (head !== '' && git(join(repo, path), 'cat-file', '-e', `${head}^{commit}`).exitCode === 0) {
+      continue
+    }
+    return `submodule ${path} has commits no remote has`
+  }
+  return null
 }
 
 // Deletes a finished task's branch once its work is safe elsewhere: a remote branch holds its
 // commits, or the remote's default branch already has what it changed (a squash merge whose remote
 // branch was deleted leaves no remote branch holding them). Otherwise the branch stays, as the only
 // copy of the work. So does a branch still checked out somewhere, which git refuses to delete.
+// A task that never started made no branch: one by its name is someone else's.
 function dropBranch(task: Task): void {
   const { repo, branch } = task
-  if (repo === null || branch === null) return
+  if (repo === null || branch === null || task.workspace === null) return
   const ref = `refs/heads/${branch}`
   const git = (...args: string[]) => Bun.spawnSync(['git', '-C', repo, ...args])
   // The repo or the branch is gone: nothing to delete.
@@ -131,10 +204,20 @@ export function landed(repo: string, ref: string): boolean {
   const main = 'refs/remotes/origin/HEAD'
   const base = git('merge-base', main, ref)
   if (base.exitCode !== 0) return false // no default branch to compare with
-  const changed = git('diff', '--no-renames', '--name-only', base.stdout.toString().trim(), ref)
+  // -z: otherwise git quotes a name that is not ASCII, and the quoted name matches no file.
+  const changed = git(
+    'diff',
+    '-z',
+    '--no-renames',
+    '--name-only',
+    base.stdout.toString().trim(),
+    ref,
+  )
   if (changed.exitCode !== 0) throw new Error(`git diff in ${repo}: ${changed.stderr}`)
-  const files = changed.stdout.toString().split('\n').filter(Boolean)
-  return files.length === 0 || git('diff', '--quiet', ref, main, '--', ...files).exitCode === 0
+  const files = changed.stdout.toString().split('\0').filter(Boolean)
+  // Literal, so a name is the file and not a pattern that matches others or none.
+  const same = () => git('--literal-pathspecs', 'diff', '--quiet', ref, main, '--', ...files)
+  return files.length === 0 || same().exitCode === 0
 }
 
 // The remote branches holding `ref`'s commits. Only as fresh as the repo's last fetch; nod does

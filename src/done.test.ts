@@ -1,9 +1,11 @@
-import { afterAll, expect, test } from 'bun:test'
-import { mkdirSync, writeFileSync } from 'node:fs'
+import { afterAll, expect, spyOn, test } from 'bun:test'
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tempDirs } from '../test/tmp'
 import { doneTasks, type PrLookup, type PullRequest, sweep } from './done'
+import { collect } from './gc'
 import { Ledger, type NewTask } from './ledger'
+import { Terminals } from './tmux'
 import { Todos } from './todos'
 import { workspaceOf } from './worker'
 
@@ -164,6 +166,105 @@ test('done signals: dropped, taken over, merged into the default branch, every p
   expect(ledger.get(unpushed).collectedAt).toBeNull()
   // Collected tasks are not looked at again.
   expect((await doneTasks(ledger, home, lookup, NOW)).done).toEqual([])
+})
+
+test("a task that never started leaves the branch it was named for alone: it is someone else's", async () => {
+  const home = tmp.make('nod-done-')
+  process.env.CLAUDE_CONFIG_DIR = tmp.make('nod-done-claude-')
+  const ledger = new Ledger(home)
+  const repo = join(home, 'repo')
+  mkdirSync(repo)
+  const git = (...args: string[]): string =>
+    sh(['git', '-c', 'user.email=t@t', '-c', 'user.name=t', ...args], repo)
+  git('init', '-q', '-b', 'main')
+  git('commit', '-q', '--allow-empty', '-m', 'init')
+  git('update-ref', 'refs/remotes/origin/main', 'HEAD')
+  git('symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main')
+  // The person's branches: two pushed, one with a commit no remote has.
+  for (const branch of ['feat/mine', 'feat/theirs', 'feat/local']) git('branch', branch)
+  git('update-ref', 'refs/remotes/origin/feat/mine', 'feat/mine')
+  git('update-ref', 'refs/remotes/origin/feat/theirs', 'feat/theirs')
+  git('checkout', '-q', 'feat/local')
+  writeFileSync(join(repo, 'local.txt'), 'local')
+  git('add', '.')
+  git('commit', '-q', '-m', 'local only')
+  git('checkout', '-q', 'main')
+  const spec = (brief: string, branch: string | null, after: number[] = []): NewTask => ({
+    brief,
+    repo: branch === null ? null : repo,
+    branch,
+    checkCmd: null,
+    model: null,
+    after,
+    triggerId: null,
+    issue: null,
+  })
+  // Tasks queued after one the human drops are cancelled with it, before they make a branch.
+  const first = ledger.add(spec('first', null))
+  const queued = ledger.add(spec('after the first', 'feat/mine', [first]))
+  const local = ledger.add(spec('after the first, too', 'feat/local', [first]))
+  const attempt = ledger.startAttempt({
+    taskId: first,
+    kind: 'start',
+    decisionId: null,
+    sessionId: 'session-first',
+    prompt: 'first',
+  })
+  ledger.drop(ledger.ask(first, attempt, 'question', 'go on?'))
+  expect(ledger.get(queued).status).toBe('cancelled')
+  // `worktree add -b` failed: the branch was already there.
+  const taken = ledger.add(spec('taken', 'feat/theirs'))
+  ledger.error(taken, 'git worktree add failed: a branch named feat/theirs already exists')
+
+  const swept = await sweep(ledger, home, async () => null, NOW)
+  const named = await collect(ledger, home, { ids: [taken] })
+
+  expect(swept.done).toEqual([
+    { id: queued, reason: 'dropped' },
+    { id: local, reason: 'dropped' },
+  ])
+  expect(named).toEqual({ removed: [], clean: [taken], skipped: [] })
+  expect(git('branch', '--list', 'feat/*').split('\n').filter(Boolean)).toEqual([
+    '  feat/local',
+    '  feat/mine',
+    '  feat/theirs',
+  ])
+})
+
+test('sweep looks again for a person attached just before it closes the session', async () => {
+  const home = tmp.make('nod-done-')
+  process.env.CLAUDE_CONFIG_DIR = tmp.make('nod-done-claude-')
+  const ledger = new Ledger(home)
+  const id = ledger.add({
+    brief: 'old plain',
+    repo: null,
+    branch: null,
+    checkCmd: null,
+    model: null,
+    after: [],
+    triggerId: null,
+    issue: null,
+  })
+  const cwd = workspaceOf(home, ledger.get(id))
+  mkdirSync(cwd, { recursive: true })
+  ledger.setRunning(id, cwd)
+  ledger.succeed(id)
+  ledger.db.query('update tasks set finished_at = $at where id = $id').run({ id, at: OLD })
+  // The person attaches once sweep has read the signals.
+  let looks = 0
+  const attached = spyOn(Terminals.prototype, 'attached').mockImplementation(() => looks++ > 0)
+
+  const swept = await sweep(ledger, home, async () => null, NOW)
+  attached.mockRestore()
+
+  expect(swept.done).toEqual([{ id, reason: 'finished 7+ days ago' }])
+  expect(swept.report).toEqual({
+    removed: [],
+    clean: [],
+    skipped: [{ id, reason: 'a person is attached to its terminal' }],
+  })
+  expect(existsSync(cwd)).toBe(true)
+  expect(ledger.get(id).collectedAt).toBeNull()
 })
 
 function sh(cmd: string[], cwd: string): string {
