@@ -149,12 +149,15 @@ const q = queryBuilder<Tables>()
 const now = (): string => new Date().toISOString()
 const ChangeJson = z.record(z.string(), z.tuple([z.unknown(), z.unknown()]))
 
-// `t12` for a todo, `p3` for a project. A bare number is refused: `nod 12` answers a decision and
-// `nod drop 12` ends a task, so a number meant for a todo must not read as either.
-export function parseRef(ref: string, prefix: 't' | 'p'): number {
+const REF_NAMES = { t: 'todo', p: 'project', r: 'retrospective' } as const
+
+// `t12` for a todo, `p3` for a project, `r2` for a retrospective. A bare number is refused: `nod 12`
+// answers a decision and `nod drop 12` ends a task, so a number meant for a todo must not read as
+// either.
+export function parseRef(ref: string, prefix: keyof typeof REF_NAMES): number {
   const m = new RegExp(`^${prefix}(\\d+)$`).exec(ref)
   if (m?.[1] === undefined) {
-    throw new Error(`not a ${prefix === 't' ? 'todo' : 'project'}: ${ref} (write ${prefix}<n>)`)
+    throw new Error(`not a ${REF_NAMES[prefix]}: ${ref} (write ${prefix}<n>)`)
   }
   return Number(m[1])
 }
@@ -399,9 +402,15 @@ export class Todos {
     })()
   }
 
-  // A task by its number, or by the todo it does (`t12`): that todo's latest task, so the person
-  // can name their work by the todo alone.
+  // A task by its number, by the todo it does (`t12`): that todo's latest task, so the person can
+  // name their work by the todo alone, or by the retrospective it runs (`r3`), as ls shows it.
   taskRef(ref: string): number {
+    if (ref.startsWith('r')) {
+      const id = parseRef(ref, 'r')
+      const task = this.ledger.list().find((t) => t.retroId === id)
+      if (task === undefined) throw new Error(`r${id} not found`)
+      return task.id
+    }
     if (!ref.startsWith('t')) return Number(ref)
     const id = parseRef(ref, 't')
     const last = this.ledger.tasksOf(id).at(-1)

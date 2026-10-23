@@ -714,6 +714,13 @@ async function prepareWorkspace(ledger: Ledger, home: string, task: Task): Promi
 // branch's changes.
 export async function restore(ledger: Ledger, taskId: number): Promise<void> {
   const task = ledger.get(taskId)
+  // An ended retrospective keeps what became of it; going on would write over that.
+  if (task.retroId !== null) {
+    const { outcome } = ledger.retro(task.retroId)
+    if (outcome !== null) {
+      throw new Error(`task ${taskId} is retrospective r${task.retroId}, which ended (${outcome})`)
+    }
+  }
   if (task.collectedAt === null) return
   const last = ledger.lastAttempt(taskId)
   if (last === null || task.workspace === null) throw new Error(`task ${taskId} has not started`)

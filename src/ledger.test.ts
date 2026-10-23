@@ -56,7 +56,7 @@ test('v16 moves the retrospectives so far into their own table, with what became
       )
       .run({ taskId, id, answer, at })
   }
-  for (const id of [1, 2, 3, 4, 5]) task(id, null, 'succeeded')
+  for (const id of [1, 2, 3, 4, 5, 11, 12]) task(id, null, 'succeeded')
   task(6, 1, 'succeeded')
   rule(6, 'do A', 'yes')
   task(7, 2, 'cancelled')
@@ -64,10 +64,19 @@ test('v16 moves the retrospectives so far into their own table, with what became
   task(8, 3, 'succeeded')
   task(9, 4, 'cancelled')
   task(10, 5, 'error')
+  // Yes as typed; and a rule turned down, then the retrospective resumed and its next rule added.
+  task(13, 11, 'succeeded')
+  rule(13, 'do C', 'y')
+  task(14, 12, 'succeeded')
+  rule(14, 'do D', '(dropped)')
+  rule(14, 'do E', 'yes')
+  // A second retrospective of the same task, started in a race.
+  task(15, 11, 'cancelled')
   old.close()
 
   const ledger = new Ledger(home)
-  const moved = [6, 7, 8, 9, 10].map((id) => {
+  expect(ledger.get(15).retroId).toBe(ledger.get(13).retroId)
+  const moved = [6, 7, 8, 9, 10, 13, 14].map((id) => {
     const { retroId } = ledger.get(id)
     if (retroId === null) throw new Error(`task ${id} lost its retrospective`)
     const r = ledger.retro(retroId)
@@ -79,9 +88,31 @@ test('v16 moves the retrospectives so far into their own table, with what became
     [3, null, 'none'],
     [4, null, 'dropped'],
     [5, null, null],
+    [11, 'do C', 'added'],
+    [12, 'do E', 'added'],
   ])
   expect(ledger.get(1).retroId).toBeNull()
   expect(ledger.retroFor(1)?.outcome).toBe('added')
+})
+
+test('a migration that fails part way is undone, and the ledger does not open', () => {
+  const home = freshHome()
+  const old = new Database(join(home, 'nod.db'), { create: true, strict: true })
+  for (const sql of MIGRATIONS.slice(0, 15)) old.exec(sql)
+  old.exec(`
+    pragma user_version = 15;
+    insert into tasks (id, brief, created_at) values (1, 'x', 'at');
+    insert into tasks (id, brief, created_at, retro_of) values (2, 'x', 'at', 1);
+  `)
+  // Fails v16's last statement as it runs, not as it is prepared: exec of several statements would
+  // go on past that without throwing.
+  old.exec("create trigger boom before update on tasks begin select raise(abort, 'boom'); end")
+  old.close()
+
+  expect(() => new Ledger(home)).toThrow('boom')
+  const after = new Database(join(home, 'nod.db'), { strict: true })
+  expect(after.query('pragma user_version').get()).toEqual({ user_version: 15 })
+  expect(after.query("select name from sqlite_master where name = 'retros'").get()).toBeNull()
 })
 
 test('links are kept once each, and only for a task that exists', () => {

@@ -635,6 +635,8 @@ test('a retrospective that finds no general rule just succeeds', async () => {
   expect(status(retro)).toBe('succeeded')
   expect(ledger.decisions(retro)).toEqual([])
   expect(ledger.retroFor(of)).toMatchObject({ rule: null, outcome: 'none' })
+  // Ended, it is not taken up again, which would write over what became of it.
+  await expect(tell(ledger, home, retro, 'look again')).rejects.toThrow('which ended (none)')
 })
 
 test('a worker learns its task through NOD_TASK, so the todos it changes name it', () => {

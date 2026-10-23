@@ -440,6 +440,16 @@ test('a task can be named by its todo: the latest task doing it', () => {
   expect(ledger.get(second).todoId).toBe(t.id)
 })
 
+test('a task can be named by the retrospective it runs, as ls shows it', () => {
+  const { ledger, todos } = books()
+  const retro = ledger.addRetro(ledger.get(ledger.add(task)), 'look back')
+  const { retroId } = ledger.get(retro)
+  if (retroId === null) throw new Error('no retrospective')
+  expect(todos.taskRef(`r${retroId}`)).toBe(retro)
+  expect(() => todos.taskRef(`r${retroId + 1}`)).toThrow(`r${retroId + 1} not found`)
+  expect(() => todos.taskRef('rx')).toThrow('not a retrospective: rx (write r<n>)')
+})
+
 test('a todo whose task was dropped comes back; one waiting on a person or on no task stays', () => {
   const { ledger, todos } = books()
   const t = captured(todos, 'Fix the build')

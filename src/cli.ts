@@ -99,7 +99,8 @@ const USAGE = `usage:
                                    tick runs the watches every fifth minute
   nod hook stop|notification       called by Claude Code hooks in worker sessions
 
-A <task> is a task's number, or t<n> for the latest task doing todo t<n>.
+A <task> is a task's number, t<n> for the latest task doing todo t<n>, or r<n> for the task
+retrospective r<n> runs in.
 ${TODO_USAGE}
 
 When <home>/notify exists, nod runs it with a JSON event on stdin whenever a decision opens, a

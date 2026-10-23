@@ -326,8 +326,10 @@ export const MIGRATIONS = [
   'alter table todos add column back_to integer references tasks(id);',
   // v16: retrospectives in a table of their own, apart from the person's todos, with the rule each
   // proposed and what became of it; the task a retrospective runs in points at it, as a delegated
-  // task points at its todo. The retrospectives so far move over. tasks.retro_of stays, unused:
-  // SQLite cannot drop a column a foreign key is on.
+  // task points at its todo. The retrospectives so far move over, each with its latest rule
+  // decision: answering one with anything but yes and then resuming the task makes another. Yes is
+  // what answer() takes for it, as typed. tasks.retro_of stays, unused: SQLite cannot drop a column a
+  // foreign key is on.
   `
   create table retros (
     id integer primary key,
@@ -341,7 +343,7 @@ export const MIGRATIONS = [
   insert into retros (of_task_id, rule, outcome, created_at, ended_at)
   select t.retro_of, a.summary,
     case
-      when d.answer = 'yes' then 'added'
+      when lower(trim(d.answer)) in ('y', 'yes') then 'added'
       when d.answer is not null then 'declined'
       when t.status = 'cancelled' then 'dropped'
       when d.id is null and t.status = 'succeeded' then 'none'
@@ -350,9 +352,10 @@ export const MIGRATIONS = [
     case when d.answer is not null then d.answered_at
       when t.status in ('succeeded', 'cancelled') then t.finished_at end
   from tasks t
-  left join decisions d on d.task_id = t.id and d.reason = 'rule'
+  left join decisions d
+    on d.id = (select max(id) from decisions where task_id = t.id and reason = 'rule')
   left join attempts a on a.id = d.attempt_id
-  where t.retro_of is not null
+  where t.id in (select min(id) from tasks where retro_of is not null group by retro_of)
   order by t.id;
   update tasks set retro_id = (select r.id from retros r where r.of_task_id = tasks.retro_of)
   where retro_of is not null;
@@ -386,7 +389,26 @@ export const queryBuilder = <T>(): Kysely<T> =>
   })
 const q = queryBuilder<Tables>()
 
-// Trigger and Attempt leave out a column their table has.
+// Task, Trigger and Attempt leave out a column their table has.
+const TASK = [
+  'id',
+  'brief',
+  'repo',
+  'branch',
+  'checkCmd',
+  'model',
+  'triggerId',
+  'issue',
+  'retroId',
+  'todoId',
+  'workspace',
+  'collectedAt',
+  'head',
+  'status',
+  'error',
+  'createdAt',
+  'finishedAt',
+] as const
 const TRIGGER = [
   'id',
   'cron',
@@ -441,7 +463,12 @@ export class Ledger {
       this.db
         .transaction(() => {
           if (i < version()) return
-          this.db.exec(sql)
+          // One statement at a time: exec of several goes on past one that fails, without throwing
+          // (bun 1.3.14), which would leave a migration half run. ponytail: split on `;`, as no
+          // statement here has one inside it.
+          for (const statement of sql.split(';')) {
+            if (statement.trim() !== '') this.db.run(statement)
+          }
           this.db.exec(`pragma user_version = ${i + 1}`)
         })
         .immediate()
@@ -489,7 +516,7 @@ export class Ledger {
     return this.run(
       q
         .selectFrom('tasks')
-        .selectAll()
+        .select(TASK)
         .where('id', 'in', q.selectFrom('taskDeps').select('afterId').where('taskId', '=', id))
         .orderBy('id'),
     )
@@ -536,13 +563,13 @@ export class Ledger {
   }
 
   get(id: number): Task {
-    const task = this.first(q.selectFrom('tasks').selectAll().where('id', '=', id))
+    const task = this.first(q.selectFrom('tasks').select(TASK).where('id', '=', id))
     if (!task) throw new Error(`task ${id} not found`)
     return task
   }
 
   list(): Task[] {
-    return this.run(q.selectFrom('tasks').selectAll().orderBy('id'))
+    return this.run(q.selectFrom('tasks').select(TASK).orderBy('id'))
   }
 
   setRunning(id: number, workspace: string): void {
@@ -775,7 +802,7 @@ export class Ledger {
 
   // The tasks doing a todo, oldest first.
   tasksOf(todoId: number): Task[] {
-    return this.run(q.selectFrom('tasks').selectAll().where('todoId', '=', todoId).orderBy('id'))
+    return this.run(q.selectFrom('tasks').select(TASK).where('todoId', '=', todoId).orderBy('id'))
   }
 
   // The retrospective of a task, if one was started.
