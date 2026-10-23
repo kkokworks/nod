@@ -58,8 +58,9 @@ test('a notify script that ends leaves what it put in the background running, un
 })
 
 test('a command that ended in time is not killed while its output is waited on', async () => {
-  // The limit passes during the wait, however slow the start: the wait is longer than the limit
-  // and ends only when what was left in the background, holding the output, has done its work.
+  // The limit passes during the wait once `sh` has ended within it (it takes milliseconds): the
+  // wait is longer than the limit and ends only when what was left in the background, holding the
+  // output, has done its work.
   const mark = join(tmp.make('nod-group-'), 'sent')
   const left = ['sh', '-c', `(sleep 3; touch ${JSON.stringify(mark)}) &`]
   const run = await runGroup(left, { env: process.env, timeoutMs: 1500, graceMs: 10_000 })
