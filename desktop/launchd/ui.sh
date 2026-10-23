@@ -40,12 +40,15 @@ install)
     fi
   done
   # And what else a worker gets of this shell but secrets (savedEnv): proxies, locale, TMUX_TMPDIR.
+  # Through a file, not a pipe: sh has no pipefail, so a pipe would hide bun failing.
   src=$(cd "$here/../../src" && pwd)
+  saved=$(mktemp "${TMPDIR:-/tmp}/nod-ui-env.XXXXXX")
+  trap 'rm -f "$saved"' EXIT
   "$bun" -e "import { savedEnv } from '$src/worker.ts'
-for (const [name, value] of Object.entries(savedEnv())) console.log(name + '\t' + value)" |
-    while IFS="$(printf '\t')" read -r name value; do
-      plutil -replace "EnvironmentVariables.$name" -string "$value" "$plist"
-    done
+for (const [name, value] of Object.entries(savedEnv())) console.log(name + '\t' + value)" >"$saved"
+  while IFS="$(printf '\t')" read -r name value; do
+    plutil -replace "EnvironmentVariables.$name" -string "$value" "$plist"
+  done <"$saved"
   chmod 600 "$plist"
   launchctl bootout "$domain/$label" 2>/dev/null || true
   launchctl bootstrap "$domain" "$plist"
