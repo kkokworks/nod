@@ -92,6 +92,14 @@ test('done signals: dropped, taken over, merged into the default branch, every p
   ledger.link(oneOfTwo, [`${PR}3`, `${PR}5`])
   const unpushed = finish(add('unpushed', 'feat/unpushed'), OLD, true)
   ledger.link(unpushed, [`${PR}3`])
+  // Made while the main clone sat on a branch with a commit no remote has: not the task's to push.
+  git(repo, 'checkout', '-q', '-b', 'local')
+  writeFileSync(join(repo, 'local.txt'), 'local')
+  git(repo, 'add', '.')
+  git(repo, 'commit', '-q', '-m', 'local only')
+  const inherited = finish(add('made on a local branch', 'feat/inherited'), RECENT)
+  drop(inherited)
+  git(repo, 'checkout', '-q', '-')
   const waitedOn = finish(add('base of a queued task', 'feat/base'), RECENT)
   ledger.link(waitedOn, [`${PR}3`])
   ledger.add({ ...spec('after the base', 'feat/next'), after: [waitedOn] })
@@ -129,6 +137,7 @@ test('done signals: dropped, taken over, merged into the default branch, every p
     { id: replaced, reason: `#${takeover} took over t${todo.id}` },
     { id: approved, reason: `approved: ${PR}1#issuecomment-9` },
     { id: merged, reason: `merged: ${PR}3` },
+    { id: inherited, reason: 'dropped' },
     { id: landed, reason: 'its changes are in the default branch' },
     { id: old, reason: 'finished 7+ days ago' },
     { id: brokenOld, reason: 'finished 7+ days ago' },

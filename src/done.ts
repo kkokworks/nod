@@ -99,10 +99,10 @@ async function signal(
   return ends.length > 0 ? ends.join(', ') : null
 }
 
-// A repo task's branch: how many commits it has that the remote's default branch lacks, whether
-// the default branch has its changes, and whether some of its commits are on no remote and not
-// merged either. Null without a repo, or once the branch is gone. Only as fresh as the repo's last
-// fetch.
+// A repo task's branch: how many commits the task made that the remote's default branch lacks,
+// whether the default branch has its changes, and whether some of its commits are on no remote and
+// not merged either. Null without a repo, or once the branch is gone. Only as fresh as the repo's
+// last fetch.
 function branchState(task: Task): { own: number; landed: boolean; unpushed: boolean } | null {
   const { repo, branch } = task
   if (repo === null || branch === null) return null
@@ -114,9 +114,19 @@ function branchState(task: Task): { own: number; landed: boolean; unpushed: bool
     if (out.exitCode !== 0) throw new Error(`git rev-list in ${repo}: ${out.stderr.toString()}`)
     return Number(out.stdout.toString().trim())
   }
-  const notOnRemotes = count(ref, '--not', '--remotes')
+  // The commits the branch was made on are not the task's: the main clone may sit on a branch with
+  // commits no remote has. The oldest entry of the branch's reflog says where it was created.
+  // ponytail: reflog entries expire (90 days by default); without the creation entry every commit
+  // counts, as if the task made them.
+  const oldest = git('reflog', 'show', '--format=%H %gs', ref).stdout.toString().trim().split('\n')
+  const [start, ...subject] = (oldest.at(-1) ?? '').split(' ')
+  const notTheirs = subject.join(' ').startsWith('branch: Created from') ? [`^${start}`] : []
+  const notOnRemotes = count(ref, ...notTheirs, '--not', '--remotes')
   const main = 'refs/remotes/origin/HEAD'
-  const own = git('rev-parse', '--verify', '-q', main).exitCode === 0 ? count(`${main}..${ref}`) : 0
+  const own =
+    git('rev-parse', '--verify', '-q', main).exitCode === 0
+      ? count(`${main}..${ref}`, ...notTheirs)
+      : 0
   const merged = landed(repo, ref)
   return { own, landed: merged, unpushed: notOnRemotes > 0 && !merged }
 }
