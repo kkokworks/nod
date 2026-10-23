@@ -206,7 +206,7 @@ async function turn(message: string, continuing: boolean): Promise<void> {
 }
 
 // Like Claude Code in a repo it does not trust: the dialog starts on "No, exit", Down moves to
-// "Yes", Enter picks, and the session starts only after "Yes".
+// "Yes", Enter picks, also after text pasted into it, and the session starts only after "Yes".
 async function trustDialog(): Promise<void> {
   let yes = false
   while (true) {
@@ -216,8 +216,8 @@ async function trustDialog(): Promise<void> {
     )
     const key = await nextInput()
     if (key === DOWN) yes = true
-    else if (key === ENTER && yes) return
-    else if (key === ENTER || key === ESCAPE) process.exit(0)
+    else if (key !== ESCAPE && yes) return
+    else process.exit(0)
   }
 }
 

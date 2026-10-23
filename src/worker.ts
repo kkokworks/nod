@@ -784,11 +784,14 @@ function claudeArgs(
 // A message deliver leaves for the worker's next start of Claude Code.
 const promptFile = (home: string, taskId: number): string => join(home, 'work', `.prompt-${taskId}`)
 
-// Messages that arrive before the next start each go in, in order.
-function leavePrompt(home: string, taskId: number, text: string): void {
+// Messages that arrive before the next start each go in, in order; one a start gave back goes
+// `ahead` of those.
+function leavePrompt(home: string, taskId: number, text: string, ahead = false): void {
   const file = promptFile(home, taskId)
-  const before = existsSync(file) ? `${readFileSync(file, 'utf8')}\n\n` : ''
-  writeFileSync(file, `${before}${text}`, { mode: 0o600 })
+  const kept = existsSync(file) ? readFileSync(file, 'utf8') : null
+  let all = text
+  if (kept !== null) all = ahead ? `${text}\n\n${kept}` : `${kept}\n\n${text}`
+  writeFileSync(file, all, { mode: 0o600 })
 }
 
 function takePrompt(home: string, taskId: number): string | null {
@@ -843,11 +846,13 @@ export async function keepWorker(
   let failure = ''
   for (let run = 0; ; run++) {
     let exited: Promise<unknown> = Promise.resolve()
+    let left: string | null = null
     try {
       const next: Start =
         run === 0 && first.length > 0
-          ? { argv: first, env: process.env, fresh: false, started: null }
+          ? { argv: first, env: process.env, fresh: false, started: null, left: null }
           : await nextRun(ledger, home, taskId)
+      left = next.left
       // The session may have ended while this waited.
       if (stopping) return
       if (next.fresh) cut = null
@@ -875,6 +880,8 @@ export async function keepWorker(
       exited.then(() => false),
       Bun.sleep(QUICK_EXIT_MS).then(() => true),
     ])
+    // A fresh start that ended before it was up gives back the message it took, for the next.
+    if (!up && left !== null) leavePrompt(home, taskId, left, true)
     if (up) {
       quick = 0
       // The new Claude Code is up: messages paste again, and one left while it started goes in.
@@ -925,19 +932,20 @@ const LOST = 'Its terminal went in the middle of a turn: the machine restarted, 
 
 // A start of a worker's Claude Code. `started`: the file its SessionStart hook creates in a repo,
 // where Claude Code may ask about trust first (trustOnStart); null for the first start, whose trust
-// startTask awaits.
+// startTask awaits. `left`: the message deliver left that a fresh start took after its brief.
 type Start = {
   argv: string[]
   env: Record<string, string | undefined>
   fresh: boolean
   started: string | null
+  left: string | null
 }
 
 // The next start of a worker's Claude Code (keepWorker): as the account the rule gives now, which
 // trusts nod's work folder first, in the conversation of its last turn. A conversation with no
 // transcript and no turn that ended never began: Claude Code ended before it took the brief, so
-// it starts anew with the brief (`fresh`), and that turn was not cut off; a message deliver left
-// goes in after it. One kept only in the folder of the account it ran as before cannot go on in
+// it starts anew with the brief and any message deliver left after it (`fresh`), and that turn
+// was not cut off. One kept only in the folder of the account it ran as before cannot go on in
 // this one.
 async function nextRun(ledger: Ledger, home: string, taskId: number): Promise<Start> {
   const config = configDir(home)
@@ -963,15 +971,17 @@ async function nextRun(ledger: Ledger, home: string, taskId: number): Promise<St
   }
   const ended = attempts.some((a) => a.outcome !== null && a.outcome !== 'error')
   if (!ended && !here) {
-    // A message left since (an answer, a tell) stays where deliver left it: keepWorker puts it in
-    // after the brief once Claude Code is up, so a start that ends again at once keeps it.
+    // A message left since (an answer, a tell) goes after the brief, not pasted once Claude Code
+    // is up: by then a trust dialog may be on the screen, and Enter there picks "No, exit".
+    const left = takePrompt(home, taskId)
+    const prompt = left === null ? first.prompt : `${first.prompt}\n\n${left}`
     const session = ['--session-id', first.sessionId]
-    const argv = claudeArgs(ledger, task, session, first.prompt, marker)
-    return { argv, env, fresh: true, started: marker }
+    const argv = claudeArgs(ledger, task, session, prompt, marker)
+    return { argv, env, fresh: true, started: marker, left }
   }
   const session = ['--resume', last.sessionId]
   const argv = claudeArgs(ledger, task, session, takePrompt(home, taskId), marker)
-  return { argv, env, fresh: false, started: marker }
+  return { argv, env, fresh: false, started: marker, left: null }
 }
 
 // Claude Code asks once per account whether to trust a repo. The person answered for this repo

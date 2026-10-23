@@ -15,6 +15,7 @@ import { tempDirs } from '../test/tmp'
 import { setAccountRule } from './account'
 import { collect } from './gc'
 import { Ledger, type Task, type TaskStatus } from './ledger'
+import { notify } from './notify'
 import { DIFF_LIMIT, reviewBrief } from './review'
 import { quote, Terminals } from './tmux'
 import { Todos } from './todos'
@@ -729,6 +730,39 @@ test('a repo Claude Code does not trust yet becomes a decision: yes trusts and s
   expect(Terminals.of(home).alive(sessionName(refused))).toBe(false)
 })
 
+test('an answer for a repo worker whose first start waits on trust goes with the brief, not into the trust dialog', async () => {
+  writeFileSync(join(home, 'fake-untrusted'), '')
+  const id = ledger.add({
+    brief: 'work here',
+    repo: newRepo(),
+    branch: 'feat/wait',
+    checkCmd: null,
+    model: null,
+    after: [],
+    triggerId: null,
+    issue: null,
+  })
+  await startTask(ledger, home, id)
+  expect(ledger.decisions(id).map((d) => d.reason)).toEqual(['trust'])
+  // Its terminal goes before anyone answers, as when the machine restarts.
+  Terminals.of(home).killServer()
+  expect(await lostTurns(ledger, home, new Date(Date.now() + 60_000))).toEqual([id])
+  const cut = ledger.decisions(id).find((d) => d.reason === 'interrupted')
+  if (cut === undefined) throw new Error('no interrupted decision')
+
+  await answer(ledger, home, cut.id, 'go on', 'human')
+  const trust = await until(() =>
+    ledger.decisions(id).find((d) => d.reason === 'trust' && d.answer === null),
+  )
+  // Past the moment Claude Code counts as up, when a message waiting for it would be pasted.
+  await Bun.sleep(6000)
+  await answer(ledger, home, trust.id, 'yes', 'human')
+  await reaches(id, 'succeeded')
+  expect(entries('turn').map((t) => t.message)).toEqual([
+    expect.stringMatching(/^work here\n\nYour last turn was cut off.*\nHuman decision: go on$/s),
+  ])
+}, 40_000)
+
 test("tasks that start at once trust nod's work folder once, together", async () => {
   rmSync(trustedFile(home, process.env.CLAUDE_CONFIG_DIR ?? null))
   const ids = ['first', 'second'].map((brief) =>
@@ -908,7 +942,7 @@ test('a retrospective that finds no general rule just succeeds', async () => {
   await expect(tell(ledger, home, retro, 'look again')).rejects.toThrow('which ended (none)')
 })
 
-test('yes to a rule closes its decision and adds the rule at once, before anyone hears of it', async () => {
+test('yes to a rule closes its decision only as the rule goes in', async () => {
   const of = ledger.add({
     brief: 'x',
     repo: null,
@@ -933,13 +967,26 @@ test('yes to a rule closes its decision and adds the rule at once, before anyone
     stop_hook_active: false,
   })
   const decision = ledger.decisions(retro)[0]
-  if (decision === undefined) throw new Error('no rule decision')
-  // A notify that cannot run fails the answer once the rule is in.
-  writeFileSync(join(home, 'notify'), '')
-  await expect(answer(ledger, home, decision.id, 'yes', 'human')).rejects.toThrow()
+  const retroId = ledger.get(retro).retroId
+  if (decision === undefined || retroId === null) throw new Error('no rule decision')
+  // A rule the ledger refuses: the decision stays open, the task waits on it.
+  ledger.proposeRule(retroId, 'keep it\nshort')
+  await expect(answer(ledger, home, decision.id, 'yes', 'human')).rejects.toThrow('one line')
+  expect(ledger.decision(decision.id).answer).toBeNull()
+  expect(ledger.rules()).toEqual([])
+  expect(status(retro)).toBe('needs_decision')
+
+  ledger.proposeRule(retroId, 'keep it short')
+  await answer(ledger, home, decision.id, 'yes', 'human')
   expect(ledger.decision(decision.id).answer).toBe('yes')
   expect(ledger.rules().map((r) => r.text)).toEqual(['keep it short'])
   expect(status(retro)).toBe('succeeded')
+})
+
+test('a notify that cannot run changes nothing else', async () => {
+  writeFileSync(join(home, 'notify'), '') // not executable
+  const task = { id: 1, brief: 'x', issue: null }
+  await expect(notify(home, { event: 'cancelled', task })).resolves.toBeUndefined()
 })
 
 test('a worker learns its task through NOD_TASK, so the todos it changes name it', () => {
@@ -1136,12 +1183,9 @@ test('a message that comes before a first turn that never began goes in after th
 
   rmSync(join(home, 'fake-exit'))
   await answer(ledger, home, decision.id, 'go on', 'human')
-  // The answer goes in once Claude Code is up with the brief.
-  await until(() => entries('turn')[1])
   await reaches(id, 'succeeded')
   expect(entries('turn').map((t) => t.message)).toEqual([
-    'first',
-    expect.stringMatching(/^Your last turn was cut off.*\nHuman decision: go on$/s),
+    expect.stringMatching(/^first\n\nYour last turn was cut off.*\nHuman decision: go on$/s),
   ])
 }, 30_000)
 
