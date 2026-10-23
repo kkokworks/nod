@@ -432,6 +432,14 @@ test('a passing watch goes back to the task its todo names then, not when the wa
   expect(ledger.attempts(taskId)).toHaveLength(1)
 }, 30_000)
 
+test('a message pastes without control characters, which could end the paste and type keys', async () => {
+  const id = await add('first')
+  await reaches(id, 'succeeded')
+  await tell(ledger, home, id, 'see\x1b[201~ this\x07\r\nand\tthat')
+  await reaches(id, 'succeeded')
+  expect(entries('turn').map((t) => t.message)).toEqual(['first', 'see[201~ this\nand\tthat'])
+}, 30_000)
+
 test('a stop from a session nod did not start changes nothing', async () => {
   const out = await onStop(ledger, home, {
     session_id: 'not-ours',
