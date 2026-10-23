@@ -419,11 +419,13 @@ export function TodoRow({
   const [open, setOpen] = useState(false)
   const row = useRef<HTMLDivElement>(null)
   const title = useRef<HTMLButtonElement>(null)
-  // Whether a change made here is on its way, so a row leaving is its own doing.
-  const changing = useRef(busy)
+  // When a change made here last finished, Infinity while one is on its way: the row leaving then,
+  // or just after, when a later refresh brings the change, is its own doing.
+  const changedAt = useRef(0)
   useLayoutEffect(() => {
-    changing.current = busy
-  })
+    if (busy) changedAt.current = Number.POSITIVE_INFINITY
+    else if (changedAt.current === Number.POSITIVE_INFINITY) changedAt.current = Date.now()
+  }, [busy])
   // A row leaving the page, its todo moved here or the refresh taking it away, hands the focus in it
   // on to the next row (or the one before). React runs this before it takes the row out, so the
   // rows are still there to count; a move that keeps the row, or fails, leaves the focus be.
@@ -432,7 +434,7 @@ export function TodoRow({
     const own = title.current
     return () => {
       if (el === null || own === null || !el.contains(document.activeElement)) return
-      if (!changing.current) handedAt = Date.now()
+      if (Date.now() - changedAt.current >= HANDED_MS) handedAt = Date.now()
       const rows = shownRows()
       const i = rows.indexOf(own)
       rows[i + 1 < rows.length ? i + 1 : i - 1]?.focus()

@@ -335,4 +335,17 @@ test('a key pressed as the refresh takes its row away does not act on the next r
   expect(focused()).toBe('three')
   await press('KeyX', 'x')
   expect(posted.splice(0)).toEqual([{ id: 3, edit: { status: 'done' } }])
+
+  // A change done here that the next refresh brings, the reload after it having been cut short.
+  rows = [todoItem(4, 'four'), todoItem(5, 'five')]
+  await reload()
+  act(() => [...document.querySelectorAll<HTMLElement>('.todo-title')][0]?.focus())
+  onPost = () => {}
+  await press('KeyX', 'x')
+  expect(posted.splice(0)).toEqual([{ id: 4, edit: { status: 'done' } }])
+  rows = rows.slice(1)
+  await reload()
+  expect(focused()).toBe('five')
+  await press('KeyX', 'x')
+  expect(posted.splice(0)).toEqual([{ id: 5, edit: { status: 'done' } }])
 })
