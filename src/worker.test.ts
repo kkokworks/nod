@@ -729,6 +729,26 @@ test('a repo Claude Code does not trust yet becomes a decision: yes trusts and s
   expect(Terminals.of(home).alive(sessionName(refused))).toBe(false)
 })
 
+test("tasks that start at once trust nod's work folder once, together", async () => {
+  rmSync(trustedFile(home, process.env.CLAUDE_CONFIG_DIR ?? null))
+  const ids = ['first', 'second'].map((brief) =>
+    ledger.add({
+      brief,
+      repo: null,
+      branch: null,
+      checkCmd: null,
+      model: null,
+      after: [],
+      triggerId: null,
+      issue: null,
+    }),
+  )
+  expect(await startReady(ledger, home)).toEqual(ids)
+  for (const id of ids) await reaches(id, 'succeeded')
+  // The fake gives a session nod starts without an ID (the trust check's) the ID `missing`.
+  expect(entries('launch').filter((l) => l.sessionId === 'missing')).toHaveLength(1)
+})
+
 type Heard = { event: string; task?: { id: number }; error?: string; reason?: string }
 
 // Makes <home>/notify keep each event, and returns what it has kept so far. One file per event,

@@ -1192,13 +1192,26 @@ function withConfig(
 // ponytail: answers the dialog by reading it off the screen. If Claude Code changes its wording,
 // this times out with the screen in the error rather than guessing.
 async function ensureTrusted(home: string, config: string | null): Promise<void> {
-  const work = join(home, 'work')
   const trusted = trustedFile(home, config)
   if (existsSync(trusted)) return
+  // Tasks this process starts at once (startReady, a tick's) wait on the one check.
+  let pending = trusting.get(trusted)
+  if (pending === undefined) {
+    pending = trustWork(home, config, trusted).finally(() => trusting.delete(trusted))
+    trusting.set(trusted, pending)
+  }
+  await pending
+}
+
+// The checks ensureTrusted has in progress, by the file each writes once it is done.
+const trusting = new Map<string, Promise<void>>()
+
+async function trustWork(home: string, config: string | null, trusted: string): Promise<void> {
+  const work = join(home, 'work')
   mkdirSync(work, { recursive: true })
-  // Named for this process, so several starting at once (a tick's tasks, workers starting again
-  // after an account switch) do not take each other's session.
-  const name = `trust-${process.pid}`
+  // Named for this process and account, so other processes starting workers at once (several
+  // ticks, workers starting again after an account switch) do not take each other's session.
+  const name = `trust-${process.pid}-${Bun.hash(trusted).toString(36)}`
   const started = join(work, `.started-${name}`)
   rmSync(started, { force: true })
   const settings = JSON.stringify({
