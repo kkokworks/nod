@@ -5,6 +5,7 @@ import {
   type Decision,
   Ledger,
   nodHome,
+  type Retro,
   type Stats,
   type Task,
   type Trigger,
@@ -67,6 +68,7 @@ export type Detail = {
   decisions: Decision[]
   report: string | null
   place: Place
+  retro: Retro | null
   // The worker's terminal right now, while its session is alive.
   screen: string | null
 }
@@ -128,6 +130,7 @@ export function detail(id: number): Detail {
     decisions: ledger.decisions(id),
     report: attempts.filter((a) => a.report).at(-1)?.report ?? null,
     place: place(new Todos(ledger), task),
+    retro: task.retroId === null ? null : ledger.retro(task.retroId),
     screen: terminals.alive(name) ? terminals.screen(name).trimEnd() : null,
   }
 }
@@ -172,7 +175,10 @@ function place(todos: Todos, t: Task): Place {
   if (todo === null) {
     return {
       todo: null,
-      project: t.retroOf === null ? null : place(todos, ledger.get(t.retroOf)).project,
+      project:
+        t.retroId === null
+          ? null
+          : place(todos, ledger.get(ledger.retro(t.retroId).ofTaskId)).project,
     }
   }
   return { todo, project: todo.projectId === null ? null : todos.project(todo.projectId) }

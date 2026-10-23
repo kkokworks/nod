@@ -192,7 +192,10 @@ export async function answer(
   if (decision.reason === 'rule') {
     const rule = ledger.attempt(decision.attemptId).summary
     if (!rule) throw new Error(`decision ${decisionId} has no rule to add`)
+    const { retroId } = ledger.get(decision.taskId)
+    if (retroId === null) throw new Error(`decision ${decisionId} is on no retrospective`)
     addRule(home, rule)
+    ledger.endRetro(retroId, 'added')
     ledger.succeed(decision.taskId)
     return
   }
@@ -236,7 +239,11 @@ export async function drop(ledger: Ledger, home: string, decisionId: number): Pr
   ledger.drop(decisionId)
   // The person takes back a todo whose task they ended.
   new Todos(ledger).followTasks(SELF)
-  const task = ledger.get(ledger.decision(decisionId).taskId)
+  const decision = ledger.decision(decisionId)
+  const task = ledger.get(decision.taskId)
+  if (task.retroId !== null) {
+    ledger.endRetro(task.retroId, decision.reason === 'rule' ? 'declined' : 'dropped')
+  }
   await Terminals.of(home).close(sessionName(task.id))
   await notify(home, { event: 'cancelled', task: taskRef(task) })
   await startRetro(ledger, home, task)
@@ -246,7 +253,7 @@ export async function drop(ledger: Ledger, home: string, decisionId: number): Pr
 // turns the rule it proposes into a decision. Once per task, and never on a retrospective.
 // A retrospective that fails to start has the error on its own task, never on the one it is about.
 async function startRetro(ledger: Ledger, home: string, task: Task): Promise<void> {
-  if (task.retroOf !== null || ledger.retroFor(task.id) !== null) return
+  if (task.retroId !== null || ledger.retroFor(task.id) !== null) return
   if (!hadTrouble(ledger, task.id)) return
   const id = ledger.addRetro(task, retroBrief(ledger, task, workerPrompt(home)))
   await startTask(ledger, home, id).catch((error) =>
@@ -362,20 +369,23 @@ async function settle(
       : await verify(ledger, task, text)
   if (check !== null) ledger.recordCheck(attemptId, check.passed, check.output)
   if (check === null || check.passed) {
-    if (task.retroOf !== null && !isNoRule(summary)) {
+    if (task.retroId !== null && !isNoRule(summary)) {
+      const retro = ledger.retro(task.retroId)
+      ledger.proposeRule(retro.id, summary)
       await decide(
         ledger,
         home,
         task.id,
         attemptId,
         'rule',
-        `Task #${task.retroOf} ran into trouble, and its retrospective proposes this rule for every future worker:\n${summary}\nAnswer yes to add it to ${rulesPath(home)}; anything else drops it.`,
+        `Task #${retro.ofTaskId} ran into trouble, and its retrospective r${retro.id} proposes this rule for every future worker:\n${summary}\nAnswer yes to add it to ${rulesPath(home)}; anything else drops it.`,
       )
       return null
     }
     const captures = 'error' in captured ? [] : captured.captures
     ledger.db.transaction(() => {
       captureFor(ledger, task, captures)
+      if (task.retroId !== null) ledger.endRetro(task.retroId, 'none')
       ledger.succeed(task.id)
     })()
     await notify(home, { event: 'succeeded', task: taskRef(task), summary })
@@ -704,6 +714,13 @@ async function prepareWorkspace(ledger: Ledger, home: string, task: Task): Promi
 // branch's changes.
 export async function restore(ledger: Ledger, taskId: number): Promise<void> {
   const task = ledger.get(taskId)
+  // An ended retrospective keeps what became of it; going on would write over that.
+  if (task.retroId !== null) {
+    const { outcome } = ledger.retro(task.retroId)
+    if (outcome !== null) {
+      throw new Error(`task ${taskId} is retrospective r${task.retroId}, which ended (${outcome})`)
+    }
+  }
   if (task.collectedAt === null) return
   const last = ledger.lastAttempt(taskId)
   if (last === null || task.workspace === null) throw new Error(`task ${taskId} has not started`)
@@ -805,7 +822,7 @@ async function verify(
   task: Task,
   report: string,
 ): Promise<{ passed: boolean; output: string } | null> {
-  if (task.retroOf !== null) return null
+  if (task.retroId !== null) return null
   if (task.workspace === null) throw new Error(`task ${task.id} has no workspace`)
   // ponytail: the check runs unsandboxed because a human wrote it; sandbox it once the planner
   // starts generating checks.

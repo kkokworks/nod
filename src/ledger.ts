@@ -44,8 +44,9 @@ export type Task = {
   // The issue the task works on, such as `PROJ-12`, so tasks and their decisions can be seen by
   // issue. From `--issue`, or the key of the source item that added it.
   issue: string | null
-  // Set on a retrospective: the task whose trouble it looks back on.
-  retroOf: number | null
+  // Set on the task a retrospective runs in: the retrospective (r<n>), which names the task whose
+  // trouble it looks back on.
+  retroId: number | null
   // The person's todo the task does, when it was delegated from one (todos.ts).
   todoId: number | null
   workspace: string | null
@@ -57,6 +58,20 @@ export type Task = {
   error: string | null
   createdAt: string
   finishedAt: string | null
+}
+
+// A look back at a task that ran into trouble (startRetro in worker.ts). It is nod's own record, so
+// it is kept apart from the person's todos: the rule it proposed, null until it reports one, and
+// what became of it, null while it runs or after it errored. `declined` is a rule the person turned
+// down; `dropped`, a retrospective ended before it proposed one.
+export type RetroOutcome = 'added' | 'declined' | 'none' | 'dropped'
+export type Retro = {
+  id: number
+  ofTaskId: number
+  rule: string | null
+  outcome: RetroOutcome | null
+  createdAt: string
+  endedAt: string | null
 }
 
 // Adds tasks on a schedule. With a source command, each line it prints that the trigger has not
@@ -126,8 +141,9 @@ export type Stats = {
   costUsd: number
 }
 
-// Append-only: never edit a shipped migration, add a new one.
-const MIGRATIONS = [
+// Append-only: never edit a shipped migration, add a new one. Exported so a test can build a ledger
+// as an older version left it.
+export const MIGRATIONS = [
   `
   create table tasks (
     id integer primary key,
@@ -308,6 +324,42 @@ const MIGRATIONS = [
   'alter table tasks add column head text;',
   // v15: the task a watched todo goes back to once its watch passes, instead of to the person.
   'alter table todos add column back_to integer references tasks(id);',
+  // v16: retrospectives in a table of their own, apart from the person's todos, with the rule each
+  // proposed and what became of it; the task a retrospective runs in points at it, as a delegated
+  // task points at its todo. The retrospectives so far move over, each with its latest rule
+  // decision: answering one with anything but yes and then resuming the task makes another. Yes is
+  // what answer() takes for it, as typed. tasks.retro_of stays, unused: SQLite cannot drop a column a
+  // foreign key is on.
+  `
+  create table retros (
+    id integer primary key,
+    of_task_id integer not null unique references tasks(id),
+    rule text,
+    outcome text,
+    created_at text not null,
+    ended_at text
+  );
+  alter table tasks add column retro_id integer references retros(id);
+  insert into retros (of_task_id, rule, outcome, created_at, ended_at)
+  select t.retro_of, a.summary,
+    case
+      when lower(trim(d.answer)) in ('y', 'yes') then 'added'
+      when d.answer is not null then 'declined'
+      when t.status = 'cancelled' then 'dropped'
+      when d.id is null and t.status = 'succeeded' then 'none'
+    end,
+    t.created_at,
+    case when d.answer is not null then d.answered_at
+      when t.status in ('succeeded', 'cancelled') then t.finished_at end
+  from tasks t
+  left join decisions d
+    on d.id = (select max(id) from decisions where task_id = t.id and reason = 'rule')
+  left join attempts a on a.id = d.attempt_id
+  where t.id in (select min(id) from tasks where retro_of is not null group by retro_of)
+  order by t.id;
+  update tasks set retro_id = (select r.id from retros r where r.of_task_id = tasks.retro_of)
+  where retro_of is not null;
+  `,
 ]
 
 // The tables as the migrations leave them, in camelCase; CamelCasePlugin maps names to snake_case.
@@ -320,6 +372,7 @@ type Tables = {
   triggerItems: { triggerId: number; key: string; taskId: number | null; seenAt: string }
   attempts: Omit<Attempt, 'id'> & { id: Generated<number>; pid: number | null }
   decisions: Omit<Decision, 'id'> & { id: Generated<number> }
+  retros: Omit<Retro, 'id'> & { id: Generated<number> }
 }
 
 // Kysely only builds and type-checks the queries; bun:sqlite runs them (runQuery), so the ledger
@@ -336,7 +389,26 @@ export const queryBuilder = <T>(): Kysely<T> =>
   })
 const q = queryBuilder<Tables>()
 
-// Trigger and Attempt leave out a column their table has.
+// Task, Trigger and Attempt leave out a column their table has.
+const TASK = [
+  'id',
+  'brief',
+  'repo',
+  'branch',
+  'checkCmd',
+  'model',
+  'triggerId',
+  'issue',
+  'retroId',
+  'todoId',
+  'workspace',
+  'collectedAt',
+  'head',
+  'status',
+  'error',
+  'createdAt',
+  'finishedAt',
+] as const
 const TRIGGER = [
   'id',
   'cron',
@@ -391,7 +463,12 @@ export class Ledger {
       this.db
         .transaction(() => {
           if (i < version()) return
-          this.db.exec(sql)
+          // One statement at a time: exec of several goes on past one that fails, without throwing
+          // (bun 1.3.14), which would leave a migration half run. ponytail: split on `;`, as no
+          // statement here has one inside it.
+          for (const statement of sql.split(';')) {
+            if (statement.trim() !== '') this.db.run(statement)
+          }
           this.db.exec(`pragma user_version = ${i + 1}`)
         })
         .immediate()
@@ -439,7 +516,7 @@ export class Ledger {
     return this.run(
       q
         .selectFrom('tasks')
-        .selectAll()
+        .select(TASK)
         .where('id', 'in', q.selectFrom('taskDeps').select('afterId').where('taskId', '=', id))
         .orderBy('id'),
     )
@@ -486,13 +563,13 @@ export class Ledger {
   }
 
   get(id: number): Task {
-    const task = this.first(q.selectFrom('tasks').selectAll().where('id', '=', id))
+    const task = this.first(q.selectFrom('tasks').select(TASK).where('id', '=', id))
     if (!task) throw new Error(`task ${id} not found`)
     return task
   }
 
   list(): Task[] {
-    return this.run(q.selectFrom('tasks').selectAll().orderBy('id'))
+    return this.run(q.selectFrom('tasks').select(TASK).orderBy('id'))
   }
 
   setRunning(id: number, workspace: string): void {
@@ -663,9 +740,13 @@ export class Ledger {
     })()
   }
 
-  // A task that looks back on `of`, in an empty folder with the same model.
+  // A retrospective of `of`, and the task it runs in: an empty folder with the same model. Returns
+  // the task.
   addRetro(of: Task, brief: string): number {
     return this.db.transaction(() => {
+      const retroId = this.insert(
+        q.insertInto('retros').values({ ofTaskId: of.id, createdAt: now() }).returning('id'),
+      )
       const id = this.add({
         brief,
         repo: null,
@@ -676,9 +757,24 @@ export class Ledger {
         triggerId: null,
         issue: of.issue,
       })
-      this.run(q.updateTable('tasks').set({ retroOf: of.id }).where('id', '=', id))
+      this.run(q.updateTable('tasks').set({ retroId }).where('id', '=', id))
       return id
     })()
+  }
+
+  retro(id: number): Retro {
+    const retro = this.first(q.selectFrom('retros').selectAll().where('id', '=', id))
+    if (!retro) throw new Error(`retrospective r${id} not found`)
+    return retro
+  }
+
+  // The rule a retrospective reports, before the person decides on it.
+  proposeRule(id: number, rule: string): void {
+    this.run(q.updateTable('retros').set({ rule }).where('id', '=', id))
+  }
+
+  endRetro(id: number, outcome: RetroOutcome): void {
+    this.run(q.updateTable('retros').set({ outcome, endedAt: now() }).where('id', '=', id))
   }
 
   // A task that does one of the person's todos (todos.ts delegate).
@@ -706,15 +802,12 @@ export class Ledger {
 
   // The tasks doing a todo, oldest first.
   tasksOf(todoId: number): Task[] {
-    return this.run(q.selectFrom('tasks').selectAll().where('todoId', '=', todoId).orderBy('id'))
+    return this.run(q.selectFrom('tasks').select(TASK).where('todoId', '=', todoId).orderBy('id'))
   }
 
   // The retrospective of a task, if one was started.
-  retroFor(taskId: number): number | null {
-    const row = this.first(
-      q.selectFrom('tasks').select('id').where('retroOf', '=', taskId).orderBy('id').limit(1),
-    )
-    return row === null ? null : row.id
+  retroFor(taskId: number): Retro | null {
+    return this.first(q.selectFrom('retros').selectAll().where('ofTaskId', '=', taskId))
   }
 
   // ── attempts ──

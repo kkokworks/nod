@@ -7,7 +7,8 @@ import { message, sessionName } from './worker'
 // the session's transcript and resume rebuilds the worktree (restore in worker.ts), so collecting
 // a repo task too early costs a rebuild, not the task, and the signals can be generous. A plain
 // workspace's files are the task's output, which resume cannot bring back, so only age lets one
-// go. Always held back: commits on the branch that no remote has, since collecting hides the only
+// go; a retrospective's output is its report and the answer to it, kept in the ledger, so it goes
+// once it ends. Always held back: commits on the branch that no remote has, since collecting hides the only
 // copy from ls; a queued task that starts from this one's branch; a person attached to the
 // session. An errored task waits for the human too.
 
@@ -79,6 +80,8 @@ async function signal(
   if (task.finishedAt !== null && Date.parse(task.finishedAt) <= now.getTime() - STALE_DAYS * DAY) {
     return `finished ${STALE_DAYS}+ days ago`
   }
+  // Its rule added, turned down (cancelled), or none proposed.
+  if (task.retroId !== null) return task.status === 'cancelled' ? 'dropped' : 'retrospective done'
   if (task.repo === null) return null
   if (task.status === 'cancelled') return 'dropped'
   const newer = tasks.find((t) => t.id > task.id && t.todoId !== null && t.todoId === task.todoId)
