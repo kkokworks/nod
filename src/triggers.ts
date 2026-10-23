@@ -113,8 +113,12 @@ export async function tick(
     return []
   })
   const passed = watches ? await checkWatches(ledger, home) : []
+  // Clean: one whose workspace was gone already, collected all the same.
   const collected = watches
-    ? (await sweep(ledger, home, pullRequests(home), now)).report.removed
+    ? await sweep(ledger, home, pullRequests(home), now).then(({ report }) => [
+        ...report.removed,
+        ...report.clean,
+      ])
     : []
   return { added, passed, collected, lost, restarted }
 }
