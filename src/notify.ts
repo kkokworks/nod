@@ -3,8 +3,8 @@ import { join } from 'node:path'
 import type { DecisionReason, Task } from './ledger'
 
 const NOTIFY_TIMEOUT_MS = 10_000
-// How long a run past its time waits, once its group is killed, for its output to close.
-const KILLED_GRACE_MS = 500
+// How long a run waits, once its process has ended, for its output to close.
+const OUTPUT_GRACE_MS = 500
 
 type TaskRef = { id: number; brief: string; issue: string | null }
 
@@ -55,9 +55,11 @@ export async function notify(
 }
 
 // Runs a command in a process group of its own, so the timeout ends all of a pipeline: killing only
-// the first process leaves the rest holding its output open, and the wait goes on (measured). One
-// that left the group (setsid) outlives the kill and may still hold it, so a short grace after, the
-// output is let go and the run returns without it. The sources and watches run here too (shell).
+// the first process leaves the rest holding its output open, and the wait goes on (measured). Once
+// the command has ended, killed or not, what still holds its output (one it put in the background,
+// one that left the group with setsid and outlived the kill) is not waited for past a short grace:
+// the run returns what it read by then, and what was left keeps running. The sources and watches
+// run here too (shell).
 export async function runGroup(
   cmd: string[],
   opts: {
@@ -76,34 +78,38 @@ export async function runGroup(
     detached: true,
   })
   // Readers, not Response.text(): a read that is let go must be cancelled, or Bun stays up until the
-  // process holding the pipe ends (measured).
-  const readers = [proc.stdout.getReader(), proc.stderr.getReader()]
+  // process holding the pipe ends (measured). What each has read is kept as it comes.
+  const read = { stdout: '', stderr: '' }
+  const readers = { stdout: proc.stdout.getReader(), stderr: proc.stderr.getReader() }
   const output = Promise.all(
-    readers.map(async (reader) => {
+    (['stdout', 'stderr'] as const).map(async (key) => {
       const decoder = new TextDecoder()
-      let text = ''
-      for (let r = await reader.read(); !r.done; r = await reader.read()) {
-        text += decoder.decode(r.value, { stream: true })
+      for (let r = await readers[key].read(); !r.done; r = await readers[key].read()) {
+        read[key] += decoder.decode(r.value, { stream: true })
       }
-      return text + decoder.decode()
+      read[key] += decoder.decode()
     }),
   )
-  let timer: ReturnType<typeof setTimeout> | undefined
-  const given = new Promise<null>((resolve) => {
-    timer = setTimeout(() => {
-      try {
-        process.kill(-proc.pid, 'SIGKILL')
-      } catch {
-        // The group has ended already.
-      }
-      timer = setTimeout(() => resolve(null), KILLED_GRACE_MS)
-    }, opts.timeoutMs)
-  })
+  const timer = setTimeout(() => {
+    try {
+      process.kill(-proc.pid, 'SIGKILL')
+    } catch {
+      // The group has ended already.
+    }
+  }, opts.timeoutMs)
+  let grace: ReturnType<typeof setTimeout> | undefined
   try {
-    const [stdout = '', stderr = ''] = (await Promise.race([output, given])) ?? []
-    return { code: await proc.exited, stdout, stderr }
+    const code = await proc.exited
+    await Promise.race([
+      output,
+      new Promise((resolve) => {
+        grace = setTimeout(resolve, OUTPUT_GRACE_MS)
+      }),
+    ])
+    return { code, ...read }
   } finally {
     clearTimeout(timer)
-    await Promise.all(readers.map((r) => r.cancel()))
+    clearTimeout(grace)
+    await Promise.all([readers.stdout.cancel(), readers.stderr.cancel()])
   }
 }
