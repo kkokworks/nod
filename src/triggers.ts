@@ -4,7 +4,7 @@ import { z } from 'zod'
 import { localTime } from './days'
 import { sweep } from './done'
 import { Ledger, type Trigger } from './ledger'
-import { notify, taskRef } from './notify'
+import { notify, runGroup, taskRef } from './notify'
 import { pullRequests } from './prs'
 import { homeId } from './tmux'
 import { type Todo, Todos } from './todos'
@@ -205,39 +205,15 @@ function carryOn(t: Todo & { watch: string }, output: string): string {
   ].join('\n')
 }
 
-// Runs a source or a watch in a process group of its own, so the timeout ends all of a pipeline.
-// Killing only `sh` leaves the rest holding its output open, and the wait goes on (measured).
-export async function shell(
+// Runs a source or a watch in a process group of its own, so the timeout ends all of a pipeline
+// and what it started (runGroup).
+export function shell(
   cmd: string,
   cwd: string,
   env: Record<string, string | undefined> = process.env,
   timeoutMs = SOURCE_TIMEOUT_MS,
 ): Promise<{ code: number; stdout: string; stderr: string }> {
-  const proc = Bun.spawn(['sh', '-c', cmd], {
-    cwd,
-    env,
-    stdin: 'ignore',
-    stdout: 'pipe',
-    stderr: 'pipe',
-    detached: true,
-  })
-  const timer = setTimeout(() => {
-    try {
-      process.kill(-proc.pid, 'SIGKILL')
-    } catch {
-      // The group has ended already.
-    }
-  }, timeoutMs)
-  try {
-    const [stdout, stderr, code] = await Promise.all([
-      new Response(proc.stdout).text(),
-      new Response(proc.stderr).text(),
-      proc.exited,
-    ])
-    return { code, stdout, stderr }
-  } finally {
-    clearTimeout(timer)
-  }
+  return runGroup(['sh', '-c', cmd], { cwd, env, timeoutMs })
 }
 
 async function addTasks(ledger: Ledger, home: string, t: Trigger): Promise<number[]> {

@@ -84,3 +84,11 @@ test('a timed-out command ends with all of its pipeline, not only the shell', as
   expect(code).not.toBe(0)
   expect(Date.now() - started).toBeLessThan(2000)
 })
+
+test('a timed-out command does not wait on what left its group holding its output', async () => {
+  const started = Date.now()
+  const left = `perl -e 'use POSIX; setsid(); sleep 4'; sleep 5`
+  const { code } = await shell(left, tmp.make('nod-shell-'), process.env, 300)
+  expect(code).not.toBe(0)
+  expect(Date.now() - started).toBeLessThan(2000)
+})
