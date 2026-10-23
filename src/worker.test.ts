@@ -329,6 +329,15 @@ test('tell continues the same session, and reopens it from the transcript once i
   expect(entries('review').at(-1)?.message).toContain('- second\n- third')
 })
 
+test('a brief or a message that starts with a dash reaches the worker as a message, not an option', async () => {
+  const id = await add('- fix the bug')
+  await reaches(id, 'succeeded')
+  Terminals.of(home).kill(sessionName(id))
+  await tell(ledger, home, id, '-v too')
+  await reaches(id, 'succeeded')
+  expect(entries('turn').map((t) => t.message)).toEqual(['- fix the bug', '-v too'])
+})
+
 test('a watch with --back-to passes into that task, brought back after gc, which carries on in its session; with no transcript left the person takes the todo', async () => {
   const todos = new Todos(ledger)
   const { todo } = todos.capture(

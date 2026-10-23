@@ -3,7 +3,7 @@
 // Code, and a hook that blocks the stop starts a continuation. Between turns it reads what is typed
 // into its terminal. Started with no message, it waits for one. Like Claude Code, it keeps a
 // transcript in $CLAUDE_CONFIG_DIR (only when that is set, so a test never writes to the real one),
-// and refuses a new session the ID of one it has a transcript of.
+// refuses a new session the ID of one it has a transcript of, and an option it does not know.
 // nod gives a worker a fixed environment, so the fake takes its switches from files in $NOD_HOME:
 // with `fake-untrusted`, a new session first shows the trust dialog, and with `fake-untrusted-again`
 // a resumed one does, as Claude Code asks about a repo once per account; with `fake-exit`, it exits
@@ -41,9 +41,13 @@ const VALUED = new Set([
 ])
 
 const args = process.argv.slice(2)
+// Like Claude Code (commander): before `--`, an argument that starts with `-` is an option; after
+// it, the prompt.
+const dashes = args.indexOf('--')
+const options = dashes === -1 ? args : args.slice(0, dashes)
 const flag = (name: string): string | null => {
-  const i = args.indexOf(name)
-  return i === -1 ? null : (args[i + 1] ?? null)
+  const i = options.indexOf(name)
+  return i === -1 ? null : (options[i + 1] ?? null)
 }
 const resumed = flag('--resume')
 const sessionId = resumed ?? flag('--session-id') ?? 'missing'
@@ -52,7 +56,10 @@ const home = process.env.NOD_HOME
 if (!home) throw new Error('NOD_HOME is not set')
 const log = (entry: object): void =>
   appendFileSync(join(home, 'agent.log'), `${JSON.stringify(entry)}\n`)
-const prompt = args.find((a, i) => !a.startsWith('--') && !VALUED.has(args[i - 1] ?? '')) ?? null
+const prompt =
+  dashes === -1
+    ? (options.find((a, i) => !a.startsWith('-') && !VALUED.has(options[i - 1] ?? '')) ?? null)
+    : (args[dashes + 1] ?? null)
 
 // Like `claude -p`, which nod runs as the reviewer: the prompt comes on stdin and the reply is
 // printed once. A brief with `review-strict` fails until ok.txt exists; `review-mute` gives no
@@ -223,6 +230,13 @@ log({
   config: process.env.CLAUDE_CONFIG_DIR ?? null,
   env: Object.keys(process.env),
 })
+const unknown = options.find(
+  (a, i) => a.startsWith('-') && !VALUED.has(a) && !VALUED.has(options[i - 1] ?? ''),
+)
+if (unknown !== undefined) {
+  console.log(`error: unknown option '${unknown}'`)
+  process.exit(1)
+}
 // Like Claude Code, a new session cannot take the ID of one it keeps a transcript of.
 const kept = transcript()
 if (flag('--session-id') !== null && kept !== null && existsSync(kept)) {

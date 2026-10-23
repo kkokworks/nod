@@ -760,7 +760,8 @@ function claudeArgs(
     '--append-system-prompt',
     workerPrompt(ledger, task),
     ...(task.model === null ? [] : ['--model', task.model]),
-    ...(prompt === null ? [] : [prompt]),
+    // After `--`, a message that starts with `-` is not read as an option.
+    ...(prompt === null ? [] : ['--', prompt]),
   ]
 }
 
