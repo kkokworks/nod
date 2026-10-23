@@ -42,7 +42,7 @@ export function parseItems(output: string): Item[] {
 // local wall-clock time goes in as if it were UTC and the result is shifted back by the offset at
 // the result, so a run across a daylight-saving change keeps its hour. A time that does not come
 // that day (02:30 when the clock skips to 03:00) keeps the offset at `from`, an hour later.
-// ponytail: each wall-clock time runs once, so a schedule more often than hourly skips the hour
+// ponytail: each wall-clock time runs once, so an hourly or more frequent schedule skips the hour
 // that comes twice; walk real time instead if that hour matters.
 export function nextRun(cron: string, from: Date): Date | null {
   const offsetAt = (t: number): number => new Date(t).getTimezoneOffset() * 60_000
