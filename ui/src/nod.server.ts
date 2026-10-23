@@ -30,6 +30,7 @@ export type TaskRow = {
   note: string
   issue: string | null
   todoId: number | null
+  retroId: number | null
   projectId: number | null
   links: string[]
 }
@@ -37,7 +38,12 @@ export type TaskRow = {
 // Where a task sits in the person's lists: the todo it does and that todo's project.
 export type Place = { todo: Todo | null; project: Project | null }
 
-export type OpenDecision = Decision & { brief: string; issue: string | null; todoId: number | null }
+export type OpenDecision = Decision & {
+  brief: string
+  issue: string | null
+  todoId: number | null
+  retroId: number | null
+}
 
 // The start of a list that only grows, and how long the whole list is.
 export type Shown<T> = { items: T[]; total: number }
@@ -80,7 +86,7 @@ export function overview(): Overview {
   return {
     decisions: ledger.openDecisions().map((d) => {
       const t = ledger.get(d.taskId)
-      return { ...d, brief: t.brief, issue: t.issue, todoId: t.todoId }
+      return { ...d, brief: t.brief, issue: t.issue, todoId: t.todoId, retroId: t.retroId }
     }),
     groups: [...Map.groupBy(rows, (t) => t.projectId)]
       .map(([id, ts]) => ({
@@ -194,6 +200,7 @@ function row(todos: Todos, t: Task): TaskRow {
     note: taskNote(ledger, t),
     issue: t.issue,
     todoId: todo?.id ?? null,
+    retroId: t.retroId,
     projectId: project?.id ?? null,
     links: ledger.links(t.id),
   }

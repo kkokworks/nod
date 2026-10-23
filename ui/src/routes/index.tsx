@@ -30,7 +30,7 @@ function Home() {
               d={d}
               head={
                 <Link to="/tasks/$id" params={{ id: String(d.taskId) }} className="decision-task">
-                  <TaskId id={d.taskId} todoId={d.todoId} />
+                  <TaskId id={d.taskId} todoId={d.todoId} retroId={d.retroId} />
                   {d.issue !== null && <span className="tag">{d.issue}</span>}
                   <span className="clamp">{d.brief.split('\n')[0]}</span>
                   <span className="go">Answer →</span>
@@ -171,7 +171,7 @@ function useFolded(key: string): [boolean, (folded: boolean) => void] {
 function TaskLine({ t }: { t: TaskRow }) {
   return (
     <Link to="/tasks/$id" params={{ id: String(t.id) }} className="task-line">
-      <TaskId id={t.id} todoId={t.todoId} />
+      <TaskId id={t.id} todoId={t.todoId} retroId={t.retroId} />
       <div className="task-line-main">
         <div className="clamp">{t.title}</div>
         <div className="task-line-sub">

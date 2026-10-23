@@ -219,8 +219,8 @@ function Sidebar() {
             >
               <span className="dot needs_decision" />
               <span className="side-text">
-                <TaskId id={d.taskId} todoId={d.todoId} /> {d.reason.replace('_', ' ')}:{' '}
-                {d.question}
+                <TaskId id={d.taskId} todoId={d.todoId} retroId={d.retroId} />{' '}
+                {d.reason.replace('_', ' ')}: {d.question}
               </span>
             </Link>
           ))}
