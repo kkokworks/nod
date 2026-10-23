@@ -908,6 +908,71 @@ test('a retrospective that finds no general rule just succeeds', async () => {
   await expect(tell(ledger, home, retro, 'look again')).rejects.toThrow('which ended (none)')
 })
 
+// A task that started and asked, as its hooks leave it in the ledger, with no terminal.
+function asked(reason: 'question' | 'permission'): { taskId: number; decisionId: number } {
+  const taskId = ledger.add({
+    brief: 'x',
+    repo: null,
+    branch: null,
+    checkCmd: null,
+    model: null,
+    after: [],
+    triggerId: null,
+    issue: null,
+  })
+  const workspace = join(home, 'work', String(taskId))
+  mkdirSync(workspace)
+  ledger.setRunning(taskId, workspace)
+  const attemptId = ledger.startAttempt({
+    taskId,
+    kind: 'start',
+    decisionId: null,
+    sessionId: `session-${taskId}`,
+    prompt: 'x',
+  })
+  if (reason === 'question') {
+    ledger.endAttempt(attemptId, { outcome: 'needs_decision', summary: 'ok?', report: 'ok?' })
+  }
+  return { taskId, decisionId: ledger.ask(taskId, attemptId, reason, 'ok?') }
+}
+
+// Where nod reopens a worker's terminal, a file, so any answer that has to reopen one fails.
+function noTerminals(): void {
+  rmSync(join(home, 'work'), { recursive: true })
+  writeFileSync(join(home, 'work'), '')
+}
+
+test('a decision answered already is not answered again, and nothing reaches its worker', async () => {
+  const { decisionId } = asked('permission')
+  ledger.answer(decisionId, 'no')
+  await expect(answer(ledger, home, decisionId, 'no again', 'human')).rejects.toThrow(
+    'already answered',
+  )
+})
+
+test('an answer whose worker cannot be reached is still heard of once its decision closes', async () => {
+  const events = listen()
+  const { taskId, decisionId } = asked('question')
+  noTerminals()
+  await expect(answer(ledger, home, decisionId, 'go on', 'human')).rejects.toThrow()
+  expect(ledger.decision(decisionId).answer).toBe('go on')
+  expect(status(taskId)).toBe('error')
+  expect(events().map((e) => e.event)).toEqual(['answered'])
+})
+
+test('an answer to a permission prompt a denial already ended goes to the worker as a message', async () => {
+  const { taskId, decisionId } = asked('permission')
+  // As a denial leaves it whose message could not reach the worker: Escape ended the turn.
+  const prompt = ledger.decision(decisionId).attemptId
+  ledger.endAttempt(prompt, { outcome: 'needs_decision', summary: 'denied', report: null })
+  noTerminals()
+  await expect(answer(ledger, home, decisionId, 'yes', 'human')).rejects.toThrow()
+  expect(ledger.attempts(taskId).map((a) => [a.kind, a.prompt])).toEqual([
+    ['start', 'x'],
+    ['answer', 'Human decision: yes'],
+  ])
+})
+
 test('yes to a rule closes its decision and adds the rule at once, before anyone hears of it', async () => {
   const of = ledger.add({
     brief: 'x',

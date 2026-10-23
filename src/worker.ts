@@ -276,6 +276,8 @@ export async function answer(
   actor: string,
 ): Promise<void> {
   const decision = ledger.decision(decisionId)
+  // Before anything reaches the worker, such as a key in the middle of its next turn.
+  if (decision.answer !== null) throw new Error(`decision ${decisionId} is already answered`)
   const yes = /^y(es)?$/i.test(text.trim())
   // Trust and rules are yes-or-nothing: anything but yes ends the task.
   if ((decision.reason === 'trust' || decision.reason === 'rule') && !yes) {
@@ -292,6 +294,14 @@ export async function answer(
       task: taskRef(ledger.get(decision.taskId)),
       decision: { id: decisionId, reason: decision.reason, answer: text },
     })
+  // Heard of once deliver closed the decision, even if the message then could not go in.
+  const reply = async (message: string): Promise<void> => {
+    try {
+      deliver(ledger, home, decision.taskId, 'answer', message, answered)
+    } finally {
+      if (ledger.decision(decisionId).answer !== null) await told()
+    }
+  }
   // The retrospective proposed the rule as its report; adding it is all that is left to do, with
   // the decision, so neither happens without the other.
   if (decision.reason === 'rule') {
@@ -317,30 +327,33 @@ export async function answer(
     return
   }
   if (decision.reason !== 'permission') {
-    const reply = `${decision.reason === 'interrupted' ? `${CUT_OFF_PROMPT}\n` : ''}Human decision: ${text}`
-    deliver(ledger, home, decision.taskId, 'answer', reply, answered)
-    await told()
+    await reply(
+      `${decision.reason === 'interrupted' ? `${CUT_OFF_PROMPT}\n` : ''}Human decision: ${text}`,
+    )
     return
   }
-  // The permission dialog has "Yes" selected first (measured on 2.1.290).
-  if (yes) {
+  // The permission dialog has "Yes" selected first (measured on 2.1.290). A denial whose message
+  // could not reach the worker has ended the dialog with its turn, so what comes after it goes to
+  // the worker as a message.
+  const dialog = ledger.attempt(decision.attemptId).finishedAt === null
+  if (yes && dialog) {
     ledger.answer(decisionId, text)
     await told()
     terminals.keys(name, 'Enter')
     return
   }
-  // Escape answers no, but also ends the turn without a Stop hook (measured on 2.1.290), so close
-  // the attempt here and tell the worker in a new turn.
-  terminals.keys(name, 'Escape')
-  await waitForScreen(terminals, name, 'Interrupted')
-  ledger.endAttempt(decision.attemptId, {
-    outcome: 'needs_decision',
-    summary: 'permission denied',
-    report: null,
-  })
-  const reply = `Human decision: permission denied. ${text}`
-  deliver(ledger, home, decision.taskId, 'answer', reply, answered)
-  await told()
+  if (dialog) {
+    // Escape answers no, but also ends the turn without a Stop hook (measured on 2.1.290), so
+    // close the attempt here and tell the worker in a new turn.
+    terminals.keys(name, 'Escape')
+    await waitForScreen(terminals, name, 'Interrupted')
+    ledger.endAttempt(decision.attemptId, {
+      outcome: 'needs_decision',
+      summary: 'permission denied',
+      report: null,
+    })
+  }
+  await reply(`Human decision: ${yes ? '' : 'permission denied. '}${text}`)
 }
 
 async function waitForScreen(terminals: Terminals, name: string, text: string): Promise<void> {
