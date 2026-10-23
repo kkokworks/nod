@@ -267,8 +267,8 @@ export function scheduleEnv(home: string): Record<string, string> | null {
 // Registers the every-minute tick with the OS scheduler. The scheduler starts it with a bare
 // environment, so it brings this shell's PATH (tmux, claude, git) and Claude config dir, which the
 // watches use, and the triggers' workers too unless an account rule names theirs (account.ts), and
-// what else a worker gets of it but secrets (savedEnv: proxies, locale, TMUX_TMPDIR so the tick finds
-// the same tmux server); turning it on again replaces them. It stays on, whether
+// what else a worker gets of it but secrets and the SSH agent (savedEnv: proxies, locale, TMUX_TMPDIR
+// so the tick finds the same tmux server); turning it on again replaces them. It stays on, whether
 // or not anything is due, until turned off: a tick with nothing to do ends at once, while one that
 // came and went with the triggers and watches took the environment of whichever shell added one.
 export async function scheduleOn(home: string): Promise<void> {
