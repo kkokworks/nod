@@ -1,5 +1,5 @@
 import { afterAll, expect, spyOn, test } from 'bun:test'
-import { existsSync, statSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tempDirs } from '../test/tmp'
 import { Ledger } from './ledger'
@@ -126,7 +126,8 @@ test('a tick with watches brings back the todo whose watch exits 0, or can no lo
 test('schedule on leaves its environment readable by the owner only, and is off again if the OS scheduler refuses it', async () => {
   const home = tmp.make('nod-schedule-')
   const env = join(home, 'schedule.json')
-  writeFileSync(env, '{}\n', { mode: 0o644 }) // as an earlier nod left it
+  writeFileSync(env, '{}\n')
+  chmodSync(env, 0o644) // as an earlier nod left it, whatever the umask
   // Not the real scheduler, which would register a tick with the OS.
   const cron = spyOn(Bun, 'cron')
   const removed: string[] = []
