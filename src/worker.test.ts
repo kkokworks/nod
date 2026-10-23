@@ -77,6 +77,18 @@ beforeEach(() => {
 
 const trust = (config: string | null): void => writeFileSync(trustedFile(home, config), '')
 
+// Account folders as a switcher keeps them: each trusts nod's work folder, and all share one
+// projects/ folder, where Claude Code keeps conversations, so any of them can go on with one.
+function accounts(...names: string[]): string[] {
+  const shared = tmp.make('nod-projects-')
+  return names.map((n) => {
+    const folder = tmp.make(`nod-account-${n}-`)
+    symlinkSync(shared, join(folder, 'projects'))
+    trust(folder)
+    return folder
+  })
+}
+
 type LogEntry = {
   event: string
   sessionId: string
@@ -107,6 +119,9 @@ async function until<T>(get: () => T | null | undefined | false): Promise<T> {
 }
 
 const status = (id: number): TaskStatus => ledger.get(id).status
+// Its Stop hook is done (onStop): restarts no longer wait on it.
+const settled = (id: number): Promise<true> =>
+  until(() => Terminals.of(home).option(sessionName(id), 'nod_settling') === '')
 // The task the retrospective of task `of` runs in.
 const retroTask = (of: number): Task | undefined => {
   const retro = ledger.retroFor(of)
@@ -864,12 +879,12 @@ test('a Claude Code that keeps exiting as it starts is not started again: the pe
 
 test('with an account rule, a worker starts again as the current account: at once between turns, after a turn in progress, and with the message that finds it on the old one', async () => {
   const current = join(home, 'account')
-  const [a, b, c, d] = ['a', 'b', 'c', 'd'].map((x) => tmp.make(`nod-account-${x}-`))
-  for (const x of [a, b, c, d]) trust(x ?? null)
+  const [a, b, c, d] = accounts('a', 'b', 'c', 'd')
   setAccountRule(home, { file: current })
   writeFileSync(current, `${a}\n`)
   const id = await add('first')
   await reaches(id, 'succeeded')
+  await settled(id)
   expect(ledger.get(id).account).toBe(a ?? '')
 
   writeFileSync(current, `${b}\n`)
@@ -882,6 +897,8 @@ test('with an account rule, a worker starts again as the current account: at onc
   expect(await restartDue(ledger, home)).toEqual([]) // in the middle of a turn
   await answer(ledger, home, permission.id, 'yes', 'human')
   await until(() => entries('launch')[2])
+  // Up as c: a message from now on finds it on an old account, not starting again.
+  await until(() => Terminals.of(home).option(sessionName(id), 'nod_restarting') === '')
 
   writeFileSync(current, `${d}\n`)
   await tell(ledger, home, id, 'go on')
@@ -900,11 +917,7 @@ test('with an account rule, a worker starts again as the current account: at onc
 
 test('a turn a usage limit ended does not hold up a restart: the new account continues it', async () => {
   const current = join(home, 'account')
-  const [a, b] = ['a', 'b'].map((x) => tmp.make(`nod-account-${x}-`))
-  for (const x of [a, b]) trust(x ?? null)
-  // The turn never ended, so the new account finds the conversation only in history they share.
-  mkdirSync(join(a ?? '', 'projects'))
-  symlinkSync(join(a ?? '', 'projects'), join(b ?? '', 'projects'))
+  const [a, b] = accounts('a', 'b')
   setAccountRule(home, { file: current })
   writeFileSync(current, `${a}\n`)
   const id = await add('stall at the limit')
@@ -925,8 +938,7 @@ test('a turn a usage limit ended does not hold up a restart: the new account con
 
 test('a restart waits while nod checks a turn it has closed, and comes once', async () => {
   const current = join(home, 'account')
-  const [a, b] = ['a', 'b'].map((x) => tmp.make(`nod-account-${x}-`))
-  for (const x of [a, b]) trust(x ?? null)
+  const [a, b] = accounts('a', 'b')
   setAccountRule(home, { file: current })
   writeFileSync(current, `${a}\n`)
   const id = await add('review-slow')
@@ -937,6 +949,90 @@ test('a restart waits while nod checks a turn it has closed, and comes once', as
   await until(() => entries('launch')[1])
   expect(await restartDue(ledger, home)).toEqual([])
   expect(entries('launch').map((l) => l.config)).toEqual([a, b])
+}, 30_000)
+
+test('a message sent while a worker starts again on request waits for the new start', async () => {
+  const id = await add('first')
+  await reaches(id, 'succeeded')
+  await settled(id)
+
+  expect(await restart(ledger, home, id, 'asked')).toBe('restarted')
+  await tell(ledger, home, id, 'go on') // the old Claude Code has not ended yet
+  await reaches(id, 'succeeded')
+  await until(() => entries('turn')[1])
+  expect(entries('launch').map((l) => l.prompt)).toEqual(['first', 'go on'])
+  expect(entries('turn').map((t) => t.message)).toEqual(['first', 'go on'])
+}, 30_000)
+
+test('a worker starting again as another account is not restarted twice, and a message waits for it', async () => {
+  const current = join(home, 'account')
+  const [a, b] = accounts('a', 'b')
+  setAccountRule(home, { file: current })
+  writeFileSync(current, `${a}\n`)
+  const id = await add('first')
+  await reaches(id, 'succeeded')
+  await settled(id)
+
+  writeFileSync(current, `${b}\n`)
+  expect(await restartDue(ledger, home)).toEqual([id])
+  expect(await restartDue(ledger, home)).toEqual([]) // already starting again
+  await tell(ledger, home, id, 'go on') // the old Claude Code has not ended yet
+  await reaches(id, 'succeeded')
+  await until(() => entries('turn')[1])
+  expect(entries('launch').map((l) => [l.config, l.prompt])).toEqual([
+    [a, 'first'],
+    [b, 'go on'],
+  ])
+  expect(entries('turn').map((t) => t.message)).toEqual(['first', 'go on'])
+}, 30_000)
+
+test('a repo worker started again as another account says yes to trusting the repo again, and stays as it was', async () => {
+  const current = join(home, 'account')
+  const [a, b] = accounts('a', 'b')
+  setAccountRule(home, { file: current })
+  writeFileSync(current, `${a}\n`)
+  const id = ledger.add({
+    brief: 'first',
+    repo: newRepo(),
+    branch: 'feat/again',
+    checkCmd: null,
+    model: null,
+    after: [],
+    triggerId: null,
+    issue: null,
+  })
+  await startTask(ledger, home, id)
+  await reaches(id, 'succeeded')
+  await settled(id)
+
+  writeFileSync(join(home, 'fake-untrusted-again'), '')
+  writeFileSync(current, `${b}\n`)
+  expect(await restartDue(ledger, home)).toEqual([id])
+  await until(() => entries('launch')[1])
+  await until(() => Terminals.of(home).option(sessionName(id), 'nod_restarting') === '')
+  expect(ledger.decisions(id)).toEqual([])
+  expect(status(id)).toBe('succeeded')
+  await tell(ledger, home, id, 'go on')
+  await reaches(id, 'succeeded')
+  expect(entries('turn').map((t) => t.message)).toEqual(['first', 'go on'])
+}, 30_000)
+
+test('a conversation kept only in the folder of the old account is not started over in the new one', async () => {
+  const events = listen()
+  const current = join(home, 'account')
+  const [a, b] = ['a', 'b'].map((x) => tmp.make(`nod-account-${x}-`))
+  for (const x of [a, b]) trust(x ?? null)
+  setAccountRule(home, { file: current })
+  writeFileSync(current, `${a}\n`)
+  const id = await add('first')
+  await reaches(id, 'succeeded')
+  await settled(id)
+
+  writeFileSync(current, `${b}\n`)
+  expect(await restartDue(ledger, home)).toEqual([id])
+  await until(() => !Terminals.of(home).alive(sessionName(id)))
+  expect(entries('launch')).toHaveLength(1)
+  expect(events().some((e) => e.error?.includes('must share their projects/ folder'))).toBe(true)
 }, 30_000)
 
 test('a restart waits for a person attached to the worker, who hears why once', async () => {

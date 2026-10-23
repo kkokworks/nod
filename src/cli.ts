@@ -432,7 +432,8 @@ async function restartCommand(refs: string[]): Promise<void> {
     restarted: 'restarted',
     'after its turn': 'restarts once its turn ends',
     attached: 'has a person attached; it restarts once they detach',
-    'no terminal': 'has no terminal that keeps its Claude Code running; nod tell starts one',
+    'no terminal':
+      'has no terminal that keeps its Claude Code running; once its terminal is gone, nod tell opens one that does',
   }
   const live = terminals.sessions()
   const ids =

@@ -48,6 +48,31 @@ const CUT_OFF_PROMPT =
 // applies itself.
 const PASS_ENV =
   /^(HOME|USER|LOGNAME|SHELL|TMPDIR|TZ|LANG|LC_[A-Z]+|XDG_(CONFIG|DATA|CACHE|STATE)_HOME|XDG_RUNTIME_DIR|SSH_AUTH_SOCK|(HTTPS?|ALL|NO)_PROXY|(https?|all|no)_proxy|NODE_EXTRA_CA_CERTS|SSL_CERT_(FILE|DIR)|ANTHROPIC_[A-Z0-9_]+|TMUX_TMPDIR)$/
+// Bun leaves proxy variables set while it runs out of process.env's keys (1.3.14), and the tick sets
+// the saved environment so, so these are looked up by name as well.
+const PROXY_ENV = ['HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY'].flatMap((n) => [
+  n,
+  n.toLowerCase(),
+])
+// Names that hold a secret, which a saved environment leaves out.
+const SECRET_ENV = /KEY|TOKEN|SECRET|PASSWORD/
+
+// What PASS_ENV keeps of nod's environment.
+function passedEnv(): Record<string, string> {
+  const env: Record<string, string> = {}
+  for (const key of new Set([...Object.keys(process.env), ...PROXY_ENV])) {
+    const value = process.env[key]
+    if (value !== undefined && PASS_ENV.test(key)) env[key] = value
+  }
+  return env
+}
+
+// What the OS scheduler and the UI server keep of the shell that sets them up, for the workers they
+// start (`nod schedule on`, desktop/launchd/ui.sh): what a worker gets, but secrets, which would
+// sit in a plain file there. A worker gets those from Claude Code's settings `env` instead.
+export function savedEnv(): Record<string, string> {
+  return Object.fromEntries(Object.entries(passedEnv()).filter(([key]) => !SECRET_ENV.test(key)))
+}
 
 // A Claude Code that exits sooner than this after it starts did not get going (a login it lacks, a
 // folder it cannot read); after this many such exits in a row its terminal stops starting it.
@@ -57,15 +82,19 @@ const MAX_QUICK_EXITS = 3
 const RELAUNCH_DELAY_MS = 1000
 // A restart asked for in a Stop hook waits for that hook to exit before it ends Claude Code.
 const RESTART_GRACE_MS = 1000
+const SETTLE_POLL_MS = 1000
 // A turn younger than this may still be launching, its terminal not yet there.
 const LAUNCH_GRACE_MS = 30_000
 // Kept on a worker's tmux session: the restart it waits to do once its turn ends, the reason the
 // person attached to it was last told about, so they hear it once, and the API error that ended its
-// turn (StopFailure) until a Stop says the turn went on.
+// turn (StopFailure). All three are about the Claude Code running, so each new start clears them.
 const RESTART_OPTION = 'nod_restart'
 const TOLD_OPTION = 'nod_told'
 const STALLED_OPTION = 'nod_stalled'
-// Set while the Stop hook checks a turn it has already closed.
+// Set from asking keepWorker to start Claude Code again until the new one is up: a message pasted
+// in between would be lost, so it waits in the prompt file.
+const RESTARTING_OPTION = 'nod_restarting'
+// The pid of the Stop hook while it checks a turn it has already closed (onStop).
 const SETTLING_OPTION = 'nod_settling'
 
 // The OS sandbox is the boundary, not a command allowlist: once a worker may run tests it can run
@@ -163,7 +192,9 @@ export async function startTask(ledger: Ledger, home: string, taskId: number): P
   const started = task.repo === null ? null : startedMarker(home, taskId)
   try {
     if (started !== null) rmSync(started, { force: true })
-    launch(ledger, home, taskId, cwd, ['--session-id', sessionId], prompt, task.model, started)
+    rmSync(promptFile(home, taskId), { force: true })
+    const first = claudeArgs(ledger, task.model, ['--session-id', sessionId], prompt, started)
+    launch(home, taskId, cwd, first)
     if (started !== null) await awaitStart(ledger, home, task, attemptId, started)
   } catch (error) {
     ledger.failAttempt(attemptId, message(error))
@@ -330,15 +361,15 @@ export async function onStop(
 ): Promise<string | null> {
   const taskId = ledger.taskOfSession(event.session_id)
   if (taskId === null) return null
-  // The turn went on after all (Claude Code continued it once the limit reset). While nod checks
-  // the turn, after it has closed it, a restart would end this hook with Claude Code, so restarts
-  // wait for the end of the hook (restartDue below). A retrospective has no terminal.
+  // The turn went on after all (Claude Code continued it once the limit reset). From here to the
+  // end, after nod has closed the turn, a restart would end this hook with Claude Code, so restarts
+  // wait for it (settling, restartDue below). Hooks a test runs itself have no terminal.
   const terminals = Terminals.of(home)
   const name = sessionName(taskId)
   const live = terminals.alive(name)
   if (live) {
     terminals.setOption(name, STALLED_OPTION, null)
-    terminals.setOption(name, SETTLING_OPTION, '1')
+    terminals.setOption(name, SETTLING_OPTION, String(process.pid))
   }
   const attemptId = currentAttempt(ledger, taskId, event.session_id)
   const out = await settle(ledger, home, ledger.get(taskId), attemptId, event).catch((error) => {
@@ -346,10 +377,10 @@ export async function onStop(
     ledger.error(taskId, message(error))
     return null
   })
-  if (live && terminals.alive(name)) terminals.setOption(name, SETTLING_OPTION, null)
   new Todos(ledger).followTasks(SELF)
   // A task that just succeeded may let others start.
   await startReady(ledger, home)
+  if (live && terminals.alive(name)) terminals.setOption(name, SETTLING_OPTION, null)
   // A restart that waited for this turn to end. One that cannot run must not change what the hook
   // answers; Claude Code keeps a hook's stderr in its debug log.
   await restartDue(ledger, home, taskId).catch((error) =>
@@ -359,7 +390,8 @@ export async function onStop(
 }
 
 // Called by the StopFailure hook. The turn stays open: Claude Code continues it by itself once a
-// usage limit resets. A restart it waits on, as another account, runs now and continues it.
+// usage limit resets. A restart it waits on, as another account, runs now and continues it. Other
+// errors (a login, the server) it does not go on from, so the person hears of them.
 export async function onStopFailure(
   ledger: Ledger,
   home: string,
@@ -367,7 +399,17 @@ export async function onStopFailure(
 ): Promise<void> {
   const taskId = ledger.taskOfSession(event.session_id)
   if (taskId === null) return
-  Terminals.of(home).setOption(sessionName(taskId), STALLED_OPTION, event.error)
+  const terminals = Terminals.of(home)
+  if (terminals.alive(sessionName(taskId))) {
+    terminals.setOption(sessionName(taskId), STALLED_OPTION, event.error)
+  }
+  if (event.error !== 'rate_limit') {
+    await notify(home, {
+      event: 'error',
+      task: taskRef(ledger.get(taskId)),
+      error: `Its turn stopped on an API error (${event.error}), which Claude Code does not go on from by itself.`,
+    })
+  }
   await restartDue(ledger, home, taskId).catch((error) =>
     console.error(`nod: could not restart task ${taskId}: ${message(error)}`),
   )
@@ -585,16 +627,26 @@ function deliver(
   const name = sessionName(taskId)
   const live = terminals.alive(name)
   const open = ledger.openAttempt(taskId)
+  // Claude Code is starting again: pasted now, the message would be lost, so it waits for the new
+  // start in the prompt file (keepWorker).
+  const restarting = live && terminals.option(name, RESTARTING_OPTION) !== ''
   // The worker is mid-turn: Claude Code queues the message into the turn in progress.
   if (open !== null && live) {
-    terminals.send(name, text)
+    if (restarting) leavePrompt(home, taskId, text)
+    else terminals.send(name, text)
     return
   }
   // A worker started as an account that is no longer the current one starts again as the current
   // one, with the message as its first (keepWorker); pasted, it would land while Claude Code
-  // restarts. A person attached keeps the screen they are in. Read before the ledger changes, so a
-  // rule that fails leaves the task as it was.
-  const restart = live && !terminals.attached(name) && accountChanged(home, task.account)
+  // restarts. A person attached keeps the screen they are in, and a Stop hook still checking the
+  // last turn would go with the restart, so those take the message where they are and restart
+  // after it. Read before the ledger changes, so a rule that fails leaves the task as it was.
+  const restart =
+    live &&
+    !restarting &&
+    !settling(terminals, name) &&
+    !terminals.attached(name) &&
+    accountChanged(home, task.account)
   if (open !== null) ledger.failAttempt(open.id, 'session ended')
 
   ledger.setRunning(taskId, task.workspace)
@@ -606,22 +658,17 @@ function deliver(
     prompt: text,
   })
   try {
-    if (restart) {
-      writeFileSync(promptFile(home, taskId), text, { mode: 0o600 })
-      terminals.signal(name, 'SIGUSR1')
+    if (restarting) {
+      leavePrompt(home, taskId, text)
+    } else if (restart) {
+      leavePrompt(home, taskId, text)
+      startAgain(terminals, name)
     } else if (live) {
       terminals.send(name, text)
     } else {
-      launch(
-        ledger,
-        home,
-        taskId,
-        task.workspace,
-        ['--resume', last.sessionId],
-        text,
-        task.model,
-        null,
-      )
+      // keepWorker starts it as any later start: the current account, trust, the message.
+      leavePrompt(home, taskId, text)
+      launch(home, taskId, task.workspace, [])
     }
   } catch (error) {
     ledger.failAttempt(attemptId, message(error))
@@ -630,25 +677,36 @@ function deliver(
   }
 }
 
-// Opens the task's terminal, which keeps its Claude Code running (`nod run`, keepWorker).
-function launch(
-  ledger: Ledger,
-  home: string,
-  taskId: number,
-  cwd: string,
-  session: string[],
-  prompt: string,
-  model: string | null,
-  started: string | null,
-): void {
-  rmSync(promptFile(home, taskId), { force: true })
-  const argv = claudeArgs(ledger, model, session, prompt, started)
+// Opens the task's terminal, which keeps its Claude Code running (`nod run`, keepWorker). `first`:
+// the arguments of a task's first Claude Code; reopening a terminal gives none, and keepWorker
+// starts it as it starts it again.
+function launch(home: string, taskId: number, cwd: string, first: string[]): void {
   Terminals.of(home).start(
     sessionName(taskId),
     cwd,
-    [process.execPath, CLI, 'run', String(taskId), ...argv],
+    [process.execPath, CLI, 'run', String(taskId), ...first],
     workerEnv(home, taskId),
   )
+}
+
+// Asks keepWorker to end Claude Code and start it again (its SIGUSR1).
+function startAgain(terminals: Terminals, name: string): void {
+  terminals.setOption(name, RESTARTING_OPTION, '1')
+  terminals.signal(name, 'SIGUSR1')
+}
+
+// Whether a Stop hook is still checking the worker's last turn. A hook that went without clearing
+// its pid (cut off with Claude Code, or timed out) no longer counts.
+function settling(terminals: Terminals, name: string): boolean {
+  const pid = Number(terminals.option(name, SETTLING_OPTION))
+  if (!pid) return false
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    // ESRCH: gone. EPERM: the pid is another user's process now, so not the hook either.
+    return false
+  }
 }
 
 function claudeArgs(
@@ -677,6 +735,13 @@ function claudeArgs(
 
 // A message deliver leaves for the worker's next start of Claude Code.
 const promptFile = (home: string, taskId: number): string => join(home, 'work', `.prompt-${taskId}`)
+
+// Messages that arrive before the next start each go in, in order.
+function leavePrompt(home: string, taskId: number, text: string): void {
+  const file = promptFile(home, taskId)
+  const before = existsSync(file) ? `${readFileSync(file, 'utf8')}\n\n` : ''
+  writeFileSync(file, `${before}${text}`, { mode: 0o600 })
+}
 
 function takePrompt(home: string, taskId: number): string | null {
   const file = promptFile(home, taskId)
@@ -731,25 +796,28 @@ export async function keepWorker(
   for (let run = 0; ; run++) {
     let exited: Promise<unknown> = Promise.resolve()
     try {
-      const next =
-        run === 0
-          ? { argv: first, env: process.env, fresh: false }
+      const next: Start =
+        run === 0 && first.length > 0
+          ? { argv: first, env: process.env, fresh: false, started: null }
           : await nextRun(ledger, home, taskId)
       // The session may have ended while this waited.
       if (stopping) return
       if (next.fresh) cut = null
       ledger.setAccount(taskId, next.env.CLAUDE_CONFIG_DIR ?? '')
-      // A Stop hook of the Claude Code that ended no longer holds up restarts.
-      terminals.setOption(name, SETTLING_OPTION, null)
+      // What waited on the Claude Code that ended is done with this start.
+      for (const option of [RESTART_OPTION, TOLD_OPTION, STALLED_OPTION]) {
+        terminals.setOption(name, option, null)
+      }
       child = Bun.spawn(next.argv, { env: next.env, stdio: ['inherit', 'inherit', 'inherit'] })
       exited = child.exited
       failure = ''
-      // Claude Code asks once per account whether to trust a repo; that question is the person's.
-      const task = ledger.get(taskId)
-      const attempt = ledger.openAttempt(taskId) ?? ledger.lastAttempt(taskId)
-      if (run > 0 && task.repo !== null && attempt !== null) {
-        void awaitStart(ledger, home, task, attempt.id, startedMarker(home, taskId)).catch(
-          (error) => notify(home, { event: 'error', task: taskRef(task), error: message(error) }),
+      if (next.started !== null) {
+        void trustOnStart(ledger, home, taskId, next.fresh, next.started).catch((error) =>
+          notify(home, {
+            event: 'error',
+            task: taskRef(ledger.get(taskId)),
+            error: message(error),
+          }),
         )
       }
     } catch (error) {
@@ -761,6 +829,10 @@ export async function keepWorker(
     ])
     if (up) {
       quick = 0
+      // The new Claude Code is up: messages paste again, and one left while it started goes in.
+      terminals.setOption(name, RESTARTING_OPTION, null)
+      const late = takePrompt(home, taskId)
+      if (late !== null) terminals.send(name, late)
       const turn = cut
       cut = null
       if (turn !== null) {
@@ -778,9 +850,17 @@ export async function keepWorker(
     const asked = restarting
     restarting = false
     if (stopping || terminals.stopped(name) || terminals.pane(name) !== pane) return
-    // A restart ends Claude Code between turns, or with deliver's message still to come.
+    if (terminals.option(name, SETTLING_OPTION) !== '') {
+      void watchSettling(ledger, home, taskId).catch((error) =>
+        notify(home, { event: 'error', task: taskRef(ledger.get(taskId)), error: message(error) }),
+      )
+    }
+    // A restart ends Claude Code between turns, or with deliver's message still to come; a turn
+    // open with no message left for the new start began in between, and was cut off.
     if (!asked) {
       if (!up) quick++
+      cut ??= ledger.openAttempt(taskId)
+    } else if (!existsSync(promptFile(home, taskId))) {
       cut ??= ledger.openAttempt(taskId)
     }
     if (quick >= MAX_QUICK_EXITS) {
@@ -795,36 +875,87 @@ const RESTARTED =
   'Claude Code ended in the middle of a turn, and nod started it again in the same terminal and conversation.'
 const LOST = 'Its terminal went in the middle of a turn: the machine restarted, or tmux stopped.'
 
+// A start of a worker's Claude Code. `started`: the file its SessionStart hook creates in a repo,
+// where Claude Code may ask about trust first (trustOnStart); null for the first start, whose trust
+// startTask awaits.
+type Start = {
+  argv: string[]
+  env: Record<string, string | undefined>
+  fresh: boolean
+  started: string | null
+}
+
 // The next start of a worker's Claude Code (keepWorker): as the account the rule gives now, which
 // trusts nod's work folder first, in the conversation of its last turn. A conversation with no
 // transcript and no turn that ended never began: Claude Code ended before it took the brief, so
-// it starts anew with the brief (`fresh`), and that turn was not cut off.
-async function nextRun(
-  ledger: Ledger,
-  home: string,
-  taskId: number,
-): Promise<{ argv: string[]; env: Record<string, string | undefined>; fresh: boolean }> {
+// it starts anew with the brief (`fresh`), and that turn was not cut off. One kept only in the
+// folder of the account it ran as before cannot go on in this one.
+async function nextRun(ledger: Ledger, home: string, taskId: number): Promise<Start> {
   const config = configDir(home)
   await ensureTrusted(home, config)
   const env = withConfig(process.env, config)
   const task = ledger.get(taskId)
   const attempts = ledger.attempts(taskId)
   const [first, last] = [attempts[0], attempts.at(-1)]
-  if (first === undefined || last === undefined || task.workspace === null) {
+  const workspace = task.workspace
+  if (first === undefined || last === undefined || workspace === null) {
     throw new Error(`task ${taskId} has not started`)
   }
   const marker = task.repo === null ? null : startedMarker(home, taskId)
   if (marker !== null) rmSync(marker, { force: true })
-  const transcript = join(sessionFolder(task.workspace, config), `${last.sessionId}.jsonl`)
+  const kept = (folder: string | null): boolean =>
+    existsSync(join(sessionFolder(workspace, folder), `${last.sessionId}.jsonl`))
+  const here = kept(config)
+  // '' is Claude Code's default folder, null an account nod never recorded.
+  const before = task.account === null ? undefined : task.account || null
+  if (!here && before !== undefined && before !== config && kept(before)) {
+    const named = (folder: string | null): string => folder ?? "Claude Code's default folder"
+    throw new Error(
+      `its conversation is in ${named(before)}, not in ${named(config)}: accounts nod switches between must share their projects/ folder`,
+    )
+  }
   const ended = attempts.some((a) => a.outcome !== null && a.outcome !== 'error')
-  if (!ended && !existsSync(transcript)) {
+  if (!ended && !here) {
     rmSync(promptFile(home, taskId), { force: true })
     const session = ['--session-id', first.sessionId]
-    return { argv: claudeArgs(ledger, task.model, session, first.prompt, marker), env, fresh: true }
+    const argv = claudeArgs(ledger, task.model, session, first.prompt, marker)
+    return { argv, env, fresh: true, started: marker }
   }
   const session = ['--resume', last.sessionId]
   const argv = claudeArgs(ledger, task.model, session, takePrompt(home, taskId), marker)
-  return { argv, env, fresh: false }
+  return { argv, env, fresh: false, started: marker }
+}
+
+// Claude Code asks once per account whether to trust a repo. The person answered for this repo
+// when the task got past its first start in it, so a later start, as another account, says yes
+// again; a start before that (`fresh`) leaves the question to the person (awaitStart).
+async function trustOnStart(
+  ledger: Ledger,
+  home: string,
+  taskId: number,
+  fresh: boolean,
+  started: string,
+): Promise<void> {
+  if (!fresh) return acceptTrust(Terminals.of(home), sessionName(taskId), started)
+  const attempt = ledger.openAttempt(taskId) ?? ledger.lastAttempt(taskId)
+  if (attempt !== null) await awaitStart(ledger, home, ledger.get(taskId), attempt.id, started)
+}
+
+// A Stop hook that was checking the turn of the Claude Code that ended. One that goes without
+// finishing (it clears its pid when it does) leaves the task running with nothing open, so the
+// task errors and the person hears why.
+async function watchSettling(ledger: Ledger, home: string, taskId: number): Promise<void> {
+  const terminals = Terminals.of(home)
+  const name = sessionName(taskId)
+  while (settling(terminals, name)) await Bun.sleep(SETTLE_POLL_MS)
+  if (!terminals.alive(name) || terminals.option(name, SETTLING_OPTION) === '') return
+  terminals.setOption(name, SETTLING_OPTION, null)
+  const task = ledger.get(taskId)
+  if (task.status !== 'running' || ledger.openAttempt(taskId) !== null) return
+  const why =
+    'Claude Code ended while nod checked its last turn, so the check did not finish. nod tell goes on.'
+  ledger.error(taskId, why)
+  await notify(home, { event: 'error', task: taskRef(task), error: why })
 }
 
 // Claude Code keeps ending as it starts, so its terminal closes and the person hears why, with its
@@ -927,19 +1058,16 @@ export async function restart(
     }
     return 'attached'
   }
+  if (terminals.option(name, RESTARTING_OPTION) !== '') return 'restarted'
   // A turn an API error ended waits for nothing but Claude Code: it goes on in the new start.
   const stalled = terminals.option(name, STALLED_OPTION)
   const busy = ledger.openAttempt(taskId) !== null && !stalled
-  if (busy || terminals.option(name, SETTLING_OPTION)) {
+  if (busy || settling(terminals, name)) {
     terminals.setOption(name, RESTART_OPTION, why)
     return 'after its turn'
   }
-  if (stalled) {
-    writeFileSync(promptFile(home, taskId), continueAfter(stalled), { mode: 0o600 })
-    terminals.setOption(name, STALLED_OPTION, null)
-  }
-  terminals.setOption(name, RESTART_OPTION, null)
-  terminals.signal(name, 'SIGUSR1')
+  if (stalled) leavePrompt(home, taskId, continueAfter(stalled))
+  startAgain(terminals, name)
   return 'restarted'
 }
 
@@ -959,15 +1087,13 @@ export async function restartDue(ledger: Ledger, home: string, only?: number): P
   const current = accountRule(home) === null ? null : (configDir(home) ?? '')
   const restarted: number[] = []
   for (const t of tasks) {
+    // Already starting again, as the account it records once it is up.
+    if (terminals.option(sessionName(t.id), RESTARTING_OPTION) !== '') continue
     const changed = current !== null && current !== t.account
     const why =
       terminals.option(sessionName(t.id), RESTART_OPTION) ||
       (changed ? `the account is now ${current || "Claude Code's default"}` : '')
-    if (why === '' || (await restart(ledger, home, t.id, why)) !== 'restarted') continue
-    restarted.push(t.id)
-    // Until Claude Code starts again and records the account it got, a check in between would see
-    // the old one and restart it a second time.
-    if (current !== null) ledger.setAccount(t.id, current)
+    if (why !== '' && (await restart(ledger, home, t.id, why)) === 'restarted') restarted.push(t.id)
   }
   return restarted
 }
@@ -1010,10 +1136,7 @@ export function workerEnv(
   taskId: number | null,
   config: string | null = configDir(home),
 ): Record<string, string> {
-  const env: Record<string, string> = {}
-  for (const [key, value] of Object.entries(process.env)) {
-    if (value !== undefined && PASS_ENV.test(key)) env[key] = value
-  }
+  const env = passedEnv()
   env.NOD_HOME = home
   env.PATH = process.env.PATH ?? ''
   if (taskId !== null) env.NOD_TASK = String(taskId)

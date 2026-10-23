@@ -9,7 +9,7 @@ import { pullRequests } from './prs'
 import { homeId } from './tmux'
 import { type Todo, Todos } from './todos'
 import { oneLine } from './view'
-import { lostTurns, message, restartDue, SELF, startTask, tell } from './worker'
+import { lostTurns, message, restartDue, SELF, savedEnv, startTask, tell } from './worker'
 
 // Triggers add tasks on a schedule, and watches tell when what a waiting todo waits on has
 // happened. Once `nod schedule on` registers it, the OS scheduler (launchd on macOS, crontab on
@@ -276,14 +276,19 @@ export function scheduleEnv(home: string): Record<string, string> | null {
 
 // Registers the every-minute tick with the OS scheduler. The scheduler starts it with a bare
 // environment, so it brings this shell's PATH (tmux, claude, git) and Claude config dir, which the
-// watches use, and the triggers' workers too unless an account rule names theirs (account.ts);
-// turning it on again replaces both. It stays on, whether
+// watches use, and the triggers' workers too unless an account rule names theirs (account.ts), and
+// what else a worker gets of it but secrets (savedEnv: proxies, locale, TMUX_TMPDIR so the tick finds
+// the same tmux server); turning it on again replaces them. It stays on, whether
 // or not anything is due, until turned off: a tick with nothing to do ends at once, while one that
 // came and went with the triggers and watches took the environment of whichever shell added one.
 export async function scheduleOn(home: string): Promise<void> {
-  const env: Record<string, string> = { NOD_HOME: home, PATH: process.env.PATH ?? '' }
+  const env: Record<string, string> = {
+    ...savedEnv(),
+    NOD_HOME: home,
+    PATH: process.env.PATH ?? '',
+  }
   if (process.env.CLAUDE_CONFIG_DIR) env.CLAUDE_CONFIG_DIR = process.env.CLAUDE_CONFIG_DIR
-  writeFileSync(envPath(home), `${JSON.stringify(env, null, 2)}\n`)
+  writeFileSync(envPath(home), `${JSON.stringify(env, null, 2)}\n`, { mode: 0o600 })
   writeFileSync(tickPath(home), tickModule(home))
   await Bun.cron(tickPath(home), '* * * * *', cronTitle(home))
 }

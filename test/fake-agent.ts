@@ -4,9 +4,10 @@
 // into its terminal. Started with no message, it waits for one. Like Claude Code, it keeps a
 // transcript in $CLAUDE_CONFIG_DIR (only when that is set, so a test never writes to the real one).
 // nod gives a worker a fixed environment, so the fake takes its switches from files in $NOD_HOME:
-// with `fake-untrusted`, a new session first shows the trust dialog; with `fake-exit`, it exits as
-// it starts, as Claude Code does without a login. Every launch, with its account and the names in
-// its environment, and every turn is logged to $NOD_HOME/agent.log.
+// with `fake-untrusted`, a new session first shows the trust dialog, and with `fake-untrusted-again`
+// a resumed one does, as Claude Code asks about a repo once per account; with `fake-exit`, it exits
+// as it starts, as Claude Code does without a login. Every launch, with its account and the names
+// in its environment, and every turn is logged to $NOD_HOME/agent.log.
 import { appendFileSync, existsSync, mkdirSync, realpathSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
@@ -220,7 +221,9 @@ if (existsSync(join(home, 'fake-exit'))) {
   console.log('Not logged in · Please run /login')
   process.exit(1)
 }
-if (existsSync(join(home, 'fake-untrusted')) && resumed === null) await trustDialog()
+if (existsSync(join(home, resumed === null ? 'fake-untrusted' : 'fake-untrusted-again'))) {
+  await trustDialog()
+}
 await runHooks('SessionStart', { session_id: sessionId })
 if (prompt !== null) await turn(prompt, false)
 while (true) await turn(await nextInput(), false)

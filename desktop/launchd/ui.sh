@@ -5,8 +5,9 @@
 #   sh desktop/launchd/ui.sh uninstall   stop the agent and remove it
 #
 # The agent serves ui/'s build, not the dev server, which fails for a moment whenever the repo
-# switches branches. Like `nod schedule on`, it runs with this shell's PATH (bun, tmux, git, claude)
-# and its NOD_HOME and CLAUDE_CONFIG_DIR when they are set.
+# switches branches. Like `nod schedule on`, it runs with this shell's PATH (bun, tmux, git, claude),
+# its NOD_HOME and CLAUDE_CONFIG_DIR when they are set, and what else nod passes to workers but
+# secrets.
 set -eu
 
 label=io.github.kkokworks.nod.ui
@@ -38,6 +39,14 @@ install)
       plutil -replace "EnvironmentVariables.$name" -string "$value" "$plist"
     fi
   done
+  # And what else a worker gets of this shell but secrets (savedEnv): proxies, locale, TMUX_TMPDIR.
+  src=$(cd "$here/../../src" && pwd)
+  "$bun" -e "import { savedEnv } from '$src/worker.ts'
+for (const [name, value] of Object.entries(savedEnv())) console.log(name + '\t' + value)" |
+    while IFS="$(printf '\t')" read -r name value; do
+      plutil -replace "EnvironmentVariables.$name" -string "$value" "$plist"
+    done
+  chmod 600 "$plist"
   launchctl bootout "$domain/$label" 2>/dev/null || true
   launchctl bootstrap "$domain" "$plist"
   echo "nod UI server: http://127.0.0.1:4800 (agent $plist, log $log)"
