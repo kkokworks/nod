@@ -18,7 +18,10 @@ domain="gui/$(id -u)"
 
 case "${1:-}" in
 install)
-  bun=$(command -v bun)
+  bun=$(command -v bun) || {
+    echo "bun is not on this shell's PATH; install it (https://bun.sh) or run this from a shell that has it" >&2
+    exit 1
+  }
   (cd "$ui" && "$bun" install && "$bun" run build)
   mkdir -p "$(dirname "$plist")" "$(dirname "$log")"
   cp "$here/nod-ui.plist" "$plist"

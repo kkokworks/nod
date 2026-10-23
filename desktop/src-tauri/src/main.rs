@@ -5,10 +5,10 @@
 
 use std::net::TcpStream;
 use std::process::{Command, Stdio};
-use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use serde_json::Value;
+use serde_json::{Map, Value};
 use tauri::menu::{IsMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::webview::NewWindowResponse;
 use tauri::{
@@ -19,6 +19,14 @@ use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
 // Where ui/package.json's `start` and `dev` serve the UI.
 const SERVER: &str = "127.0.0.1:4800";
+
+// The login agent desktop/launchd/ui.sh installs for the UI server, under the home folder, and
+// the variables of its environment that `nod in` takes too.
+const AGENT: &str = "Library/LaunchAgents/io.github.kkokworks.nod.ui.plist";
+const AGENT_ENV: [&str; 3] = ["PATH", "NOD_HOME", "CLAUDE_CONFIG_DIR"];
+
+// Whether the capture window was opened while another app had the keyboard, to hand it back.
+static CAPTURE_FROM_ELSEWHERE: AtomicBool = AtomicBool::new(false);
 
 // The 이동 menu, ⌘1 to ⌘6, in the UI sidebar's order.
 const PAGES: [(&str, &str); 6] = [
@@ -52,8 +60,6 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![capture, dismiss, retry])
         .setup(|app| {
-            // Read now, so the first capture does not wait on the shell.
-            std::thread::spawn(login_path);
             let handle = app.handle().clone();
             WebviewWindowBuilder::new(app, "main", WebviewUrl::External(page(&handle, "/")))
                 .title("nod")
@@ -87,17 +93,21 @@ fn main() {
         });
 }
 
-// Captures the text with `nod in`, the one way the ledger changes, and puts the window away. On
-// failure the window keeps the text and shows what went wrong.
+// Captures the text with `nod in`, the one way the ledger changes, and puts the window away. It
+// runs in the UI server's environment, so it writes to the ledger the server shows. On failure
+// the window keeps the text and shows what went wrong.
 #[tauri::command]
 async fn capture(app: AppHandle, text: String) -> Result<(), String> {
-    let out = Command::new("nod")
-        .args(["in", "--", text.trim()])
-        .env("PATH", login_path())
-        .env("NOD_ACTOR", "human:desktop")
-        .stdin(Stdio::null())
-        .output()
-        .map_err(|e| format!("nod 를 실행하지 못했습니다: {e}"))?;
+    let env = agent_env(&app)?;
+    let mut nod = Command::new("nod");
+    nod.args(["in", "--", text.trim()]).env("NOD_ACTOR", "human:desktop").stdin(Stdio::null());
+    for name in AGENT_ENV {
+        match env.get(name).and_then(Value::as_str) {
+            Some(value) => nod.env(name, value),
+            None => nod.env_remove(name),
+        };
+    }
+    let out = nod.output().map_err(|e| format!("nod 를 실행하지 못했습니다: {e}"))?;
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
         return Err(format!("nod in 이 실패했습니다({}): {}", out.status, stderr.trim()));
@@ -121,27 +131,28 @@ async fn retry(window: WebviewWindow, path: String) -> Result<(), String> {
     window.navigate(server_page(&path)).map_err(|e| e.to_string())
 }
 
-// The PATH to run `nod` with. An app opened from the Finder gets launchd's bare PATH, while `nod`
-// and the bun it runs on are on the login shell's. The shell is interactive as well, since bun's
-// installer adds itself in ~/.zshrc; markers fence the PATH off from what startup files print.
-fn login_path() -> &'static str {
-    static PATH: OnceLock<String> = OnceLock::new();
-    PATH.get_or_init(|| {
-        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into());
-        Command::new(shell)
-            .args(["-ilc", r#"printf '<path>%s</path>' "$PATH""#])
-            .stdin(Stdio::null())
-            .stderr(Stdio::null())
-            .output()
-            .ok()
-            .and_then(|out| {
-                let text = String::from_utf8_lossy(&out.stdout).into_owned();
-                let start = text.rfind("<path>")? + "<path>".len();
-                let end = start + text[start..].find("</path>")?;
-                Some(text[start..end].to_string())
-            })
-            .unwrap_or_else(|| std::env::var("PATH").unwrap_or_default())
-    })
+// The UI server's environment, as the login agent gives it. An app opened from the Finder has
+// launchd's bare PATH and no NOD_HOME, while the agent has those of the shell that installed it.
+// Read on each capture, so installing the agent again needs no restart.
+fn agent_env(app: &AppHandle) -> Result<Map<String, Value>, String> {
+    let plist = app.path().home_dir().map_err(|e| e.to_string())?.join(AGENT);
+    if !plist.exists() {
+        return Err(format!(
+            "화면 서버의 로그인 에이전트({})가 없습니다. nod 레포에서 `sh desktop/launchd/ui.sh install` 을 먼저 실행하세요",
+            plist.display()
+        ));
+    }
+    let out = Command::new("/usr/bin/plutil")
+        .args(["-extract", "EnvironmentVariables", "json", "-o", "-"])
+        .arg(&plist)
+        .output()
+        .map_err(|e| format!("plutil 을 실행하지 못했습니다: {e}"))?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        return Err(format!("{} 의 환경을 읽지 못했습니다: {}", plist.display(), stderr.trim()));
+    }
+    serde_json::from_slice(&out.stdout)
+        .map_err(|e| format!("{} 의 환경을 읽지 못했습니다: {e}", plist.display()))
 }
 
 fn server_up() -> bool {
@@ -184,13 +195,15 @@ fn bring(window: &WebviewWindow) {
     let _ = window.set_focus();
 }
 
-// Hides the window, and the app as well once none of its windows is showing, which hands the
-// keyboard back to the app the person came from.
+// Hides the window, and the app as well, which hands the keyboard back to the app the person came
+// from: once none of its windows is showing, or when the capture window was opened from another
+// app, though the main window stays open behind it.
 fn put_away(app: &AppHandle, label: &str) {
     if let Some(window) = app.get_webview_window(label) {
         let _ = window.hide();
     }
-    if !app.webview_windows().values().any(|w| w.is_visible().unwrap_or(false)) {
+    let from_elsewhere = label == "capture" && CAPTURE_FROM_ELSEWHERE.swap(false, Ordering::Relaxed);
+    if from_elsewhere || !app.webview_windows().values().any(|w| w.is_visible().unwrap_or(false)) {
         let _ = app.hide();
     }
 }
@@ -214,6 +227,11 @@ fn toggle_main(app: &AppHandle) {
 
 fn open_capture(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("capture") {
+        // Asked again while it is open, it keeps where it was first opened from.
+        if !window.is_visible().unwrap_or(false) {
+            let ours = app.webview_windows().values().any(|w| w.is_focused().unwrap_or(false));
+            CAPTURE_FROM_ELSEWHERE.store(!ours, Ordering::Relaxed);
+        }
         bring(&window);
     }
 }
@@ -223,6 +241,22 @@ fn go(app: &AppHandle, path: &str) {
         let _ = window.navigate(page(app, path));
         bring(&window);
     }
+}
+
+// Loads the main window's page again: after the server was rebuilt, or once it went away under
+// the page, when this shows the offline page instead.
+fn reload(app: &AppHandle) {
+    let Some(url) = app.get_webview_window("main").and_then(|w| w.url().ok()) else {
+        return;
+    };
+    let path = if url.path().ends_with("/offline.html") {
+        // The offline page stands for the page in its query.
+        let path = url.query_pairs().find(|(key, _)| key == "path").map(|(_, value)| value);
+        path.map_or_else(|| "/".to_string(), |value| value.into_owned())
+    } else {
+        format!("{}{}", url.path(), url.query().map(|q| format!("?{q}")).unwrap_or_default())
+    };
+    go(app, &path);
 }
 
 fn on_menu(app: &AppHandle, event: MenuEvent) {
@@ -235,6 +269,7 @@ fn on_menu(app: &AppHandle, event: MenuEvent) {
                 put_away(app, window.label());
             }
         }
+        "reload" => reload(app),
         "quit" => app.exit(0),
         path if path.starts_with('/') => go(app, path),
         _ => {}
@@ -289,6 +324,12 @@ fn app_menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
                     &PredefinedMenuItem::select_all(app, Some("모두 선택"))?,
                 ],
             )?,
+            &Submenu::with_items(
+                app,
+                "보기",
+                true,
+                &[&MenuItem::with_id(app, "reload", "다시 읽기", true, Some("CmdOrCtrl+R"))?],
+            )?,
             &Submenu::with_items(app, "이동", true, &pages)?,
         ],
     )
@@ -301,16 +342,25 @@ fn register_shortcuts(app: &AppHandle) -> (Vec<(&'static str, String)>, Vec<Stri
     let config = match app.path().app_config_dir().map(|dir| dir.join("shortcuts.json")) {
         Ok(path) if path.exists() => std::fs::read_to_string(&path)
             .map_err(|e| e.to_string())
-            .and_then(|text| serde_json::from_str::<Value>(&text).map_err(|e| e.to_string()))
+            .and_then(|text| serde_json::from_str::<Map<String, Value>>(&text).map_err(|e| e.to_string()))
             .unwrap_or_else(|e| {
                 problems.push(format!("{} 을 읽지 못해 기본 키를 씁니다: {e}", path.display()));
-                Value::Null
+                Map::new()
             }),
-        _ => Value::Null,
+        _ => Map::new(),
     };
     let mut taken = Vec::new();
     for (name, default, action) in SHORTCUTS {
-        let keys = config.get(name).and_then(Value::as_str).unwrap_or(default).to_string();
+        let keys = match config.get(name) {
+            None => default.to_string(),
+            Some(Value::String(keys)) => keys.clone(),
+            Some(other) => {
+                problems.push(format!(
+                    "shortcuts.json 의 {name} 은 \"{default}\" 같은 글자여야 해서 기본 키를 씁니다: {other}"
+                ));
+                default.to_string()
+            }
+        };
         let registered = keys.parse::<Shortcut>().map_err(|e| e.to_string()).and_then(|shortcut| {
             app.global_shortcut()
                 .on_shortcut(shortcut, move |app, _, event| {

@@ -121,7 +121,7 @@ cd ui && bun install && bun run dev   # http://127.0.0.1:4800
 
 `desktop/` 의 앱은 화면 서버를 창에 띄우고, 메뉴 막대 아이콘과 전역 단축키로 어디서든 nod 를 불러오거나 떠오른 일을 받아 적게 해 줍니다. 화면 서버는 앱이 띄우지 않고, 로그인할 때 launchd 가 띄웁니다.
 
-먼저 화면 서버를 로그인 에이전트로 둡니다. `ui/` 를 빌드하고 `~/Library/LaunchAgents/io.github.kkokworks.nod.ui.plist` 를 설치해 바로 띄웁니다. 개발 서버가 아니라 빌드한 서버(`bun run build` 뒤 `bun run start`)를 띄우므로, 레포를 받아 오거나 브랜치를 바꾼 뒤에는 같은 명령을 다시 돌려 빌드합니다. 실행한 셸의 `PATH`(bun·tmux·git·claude)와, 있으면 `NOD_HOME`·`CLAUDE_CONFIG_DIR` 로 돕니다. 로그는 `~/Library/Logs/nod-ui.log` 입니다. 4800 포트를 개발 서버가 쓰고 있으면 뜨지 못하니 개발 서버를 끄고 설치합니다.
+먼저 화면 서버를 로그인 에이전트로 둡니다. `ui/` 를 빌드하고 `~/Library/LaunchAgents/io.github.kkokworks.nod.ui.plist` 를 설치해 바로 띄웁니다. 개발 서버가 아니라 빌드한 서버(`bun run build` 뒤 `bun run start`)를 띄우므로, 레포를 받아 오거나 브랜치를 바꾼 뒤에는 같은 명령을 다시 돌려 빌드합니다. 실행한 셸의 `PATH`(bun·tmux·git·claude)와, 있으면 `NOD_HOME`·`CLAUDE_CONFIG_DIR` 로 돕니다. 데스크톱 앱의 받아 적기도 이 에이전트의 환경으로 `nod in` 을 돌립니다. 로그는 `~/Library/Logs/nod-ui.log` 입니다. 4800 포트를 개발 서버가 쓰고 있으면 뜨지 못하니 개발 서버를 끄고 설치합니다.
 
 ```sh
 sh desktop/launchd/ui.sh install     # 빌드하고 에이전트를 설치·재시작
@@ -136,6 +136,8 @@ cd desktop && bun install && bun run build
 cp -R src-tauri/target/release/bundle/macos/nod.app /Applications/
 ```
 
+전역 단축키는 앱이 떠 있어야 동작합니다. 로그인할 때 앱도 띄우려면 시스템 설정 › 일반 › 로그인 항목의 「로그인 시 열기」에 nod.app 을 더합니다.
+
 창을 닫으면(⌘W) 숨기기만 하고 앱은 메뉴 막대 아이콘으로 남습니다. 아이콘 메뉴에는 열기·받아 적기·종료가 있습니다. 서버가 떠 있지 않으면 창에 그렇다고 알리고, 서버가 뜨면 저절로 넘어갑니다. 화면 밖으로 나가는 링크(PR 등)는 브라우저에서 열립니다.
 
 | 키 | 하는 일 |
@@ -143,12 +145,15 @@ cp -R src-tauri/target/release/bundle/macos/nod.app /Applications/
 | ⌘1~6 | 메인 창을 Focus · Inbox · Projects · Someday/Maybe · Waiting For · Done 으로 (메뉴 막대의 「이동」) |
 | ⌘N | 받아 적기 창 열기 |
 | ⌘W | 창 닫기(숨기기) |
+| ⌘R | 메인 창 다시 읽기 (메뉴 막대의 「보기」). 서버가 꺼졌으면 안내 페이지로 |
 | ⌃⌥⌘O | 어디서든: nod 창 불러오기, 앞에 있으면 숨기기 |
 | ⌃⌥⌘N | 어디서든: 받아 적기 창 열기 |
 
-받아 적기 창에 쓰고 Enter 를 누르면 `nod in` 으로 Inbox 에 넣고 닫힙니다(누가는 `human:desktop`). Esc 는 그냥 닫습니다. 실패하면 쓴 글을 그대로 두고 오류를 보여 줍니다. 앱은 `nod` 를 로그인 셸의 `PATH` 로 찾으므로 `bun link` 로 등록해 둡니다.
+받아 적기 창에 쓰고 Enter 를 누르면 `nod in` 으로 Inbox 에 넣고 닫힙니다(누가는 `human:desktop`). Esc 는 그냥 닫습니다. 다른 앱에서 연 창이면 보내거나 닫은 뒤 그 앱으로 돌아갑니다. 실패하면 쓴 글을 그대로 두고 오류를 보여 줍니다.
 
-전역 단축키 두 개는 `~/Library/Application Support/io.github.kkokworks.nod/shortcuts.json` 에서 바꿉니다. 없는 키는 기본값을 쓰고, 앱을 다시 켜면 반영됩니다. 키는 `Ctrl`·`Alt`(⌥)·`Shift`·`Cmd` 와 키 이름(`O`, `Space`, `F1` 등)을 `+` 로 잇습니다. 다른 앱이 이미 쓰는 키라 등록하지 못하면 메뉴 막대 아이콘 메뉴에 ⚠︎ 줄로 알려 줍니다.
+`nod in` 은 화면 서버와 같은 환경으로 돕니다. 위의 `ui.sh install` 이 설치한 에이전트(plist)에서 `PATH` 와, 있으면 `NOD_HOME`·`CLAUDE_CONFIG_DIR` 를 받아 쓰므로, 받아 적은 일은 화면 서버가 보는 장부에 들어갑니다. 그래서 받아 적기 전에 에이전트를 설치해 두어야 하고(없으면 창에 그렇게 알립니다), 설치한 셸의 `PATH` 에 `bun link` 로 등록한 `nod` 가 있어야 합니다. 셸의 환경을 바꿨으면 `ui.sh install` 을 다시 돌립니다. 앱은 받아 적을 때마다 에이전트를 읽으므로 다시 켜지 않아도 됩니다.
+
+전역 단축키 두 개는 `~/Library/Application Support/io.github.kkokworks.nod/shortcuts.json` 에서 바꿉니다. 없는 키는 기본값을 쓰고, 앱을 다시 켜면 반영됩니다. 키는 `Ctrl`·`Alt`(⌥)·`Shift`·`Cmd` 와 키 이름(`O`, `Space`, `F1` 등)을 `+` 로 잇습니다. 파일을 읽지 못하거나 값이 글자가 아니어서 기본값을 쓸 때, 그리고 다른 앱이 이미 쓰는 키라 등록하지 못할 때는 메뉴 막대 아이콘 메뉴에 ⚠︎ 줄로 알려 줍니다.
 
 ```json
 { "window": "Ctrl+Alt+Cmd+O", "capture": "Ctrl+Alt+Cmd+N" }
