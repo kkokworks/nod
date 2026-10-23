@@ -163,11 +163,13 @@ async function checkWatches(ledger: Ledger, home: string): Promise<number[]> {
     todos.recordCheck(t.id, t.watch, code, output)
     if (code !== 0 && !cannotRun(code)) continue
     const outcome = code === 0 ? 'passed' : `cannot run (${oneLine(output, 200)})`
-    const back = code === 0 ? t.backTo : null
-    if (!todos.endWatch(t.id, t.watch, outcome, SELF, back)) continue
+    const ended = todos.endWatch(t.id, t.watch, outcome, SELF, code === 0)
+    if (ended === null) continue
+    const { back } = ended
     const todo = { id: t.id, title: t.title }
     if (code === 0) {
       passed.push(t.id)
+      // notify throws nothing, so the task is told even when the person cannot be.
       await notify(home, { event: 'watch_passed', todo, watch: t.watch })
       if (back === null) continue
       try {

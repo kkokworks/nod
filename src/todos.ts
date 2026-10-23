@@ -472,25 +472,27 @@ export class Todos {
   }
 
   // Makes a watched todo a next action again once its watch has ended, with a line in its notes
-  // saying when and how: `passed`, or `cannot run (<why>)`. Handed `back` to a task, it waits on
-  // that task instead, which moves it on when it ends (followTasks). A todo that left waiting or got
-  // another watch while the command ran is left as it is; false says so.
+  // saying when and how: `passed`, or `cannot run (<why>)`. One that passed with a task to go back
+  // to waits on that task instead, which moves it on when it ends (followTasks); the task is the
+  // one it names now, not when the command started, so it is returned for the caller to tell. A
+  // todo that left waiting or got another watch while the command ran is left as it is; null says so.
   endWatch(
     id: number,
     watch: string,
     outcome: string,
     actor: string,
-    back: number | null = null,
-  ): boolean {
+    passed = false,
+  ): { back: number | null } | null {
     return this.db.transaction(() => {
       const t = this.get(id)
-      if (t.status !== 'waiting' || t.watch !== watch) return false
+      if (t.status !== 'waiting' || t.watch !== watch) return null
+      const back = passed ? t.backTo : null
       const to = back === null ? '' : `, back to task #${back}`
       const line = `${localTime(new Date())} watch ${outcome}${to}: ${watch}`
       const notes = [t.notes, line].filter((x) => x !== null).join('\n')
       const edit: TodoEdit = back === null ? { status: 'next' } : { waitingOn: null, watch: null }
       this.set(id, { ...edit, notes }, actor)
-      return true
+      return { back }
     })()
   }
 

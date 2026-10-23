@@ -132,13 +132,13 @@ test('a watch is only for a waiting todo, and passing it makes the todo next aga
   expect(ids(todos.watched())).toEqual([t.id])
 
   // Its watch changed while the command ran: that result is not for this watch.
-  expect(todos.endWatch(t.id, 'test -f other', 'passed', 'nod')).toBe(false)
-  expect(todos.endWatch(t.id, 'test -f pushed', 'passed', 'nod')).toBe(true)
+  expect(todos.endWatch(t.id, 'test -f other', 'passed', 'nod')).toBeNull()
+  expect(todos.endWatch(t.id, 'test -f pushed', 'passed', 'nod', true)).toEqual({ back: null })
   const back = todos.get(t.id)
   expect([back.status, back.waitingOn, back.watch]).toEqual(['next', null, null])
   expect(back.notes).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2} watch passed: test -f pushed$/)
   expect(todos.changes(t.id).at(-1)?.actor).toBe('nod')
-  expect(todos.endWatch(t.id, 'test -f pushed', 'passed', 'nod')).toBe(false)
+  expect(todos.endWatch(t.id, 'test -f pushed', 'passed', 'nod')).toBeNull()
   expect(todos.watched()).toEqual([])
 
   // Leaving waiting any other way forgets the watch too.
@@ -202,10 +202,18 @@ test('--back-to names the task that did the todo; a passing watch hands the todo
   expect(todos.set(t.id, { watch: null }, 'human').backTo).toBeNull()
   todos.set(t.id, { watch, backTo: did }, 'human')
   expect(todos.set(t.id, { status: 'next' }, 'human').backTo).toBeNull()
+  // The task is the one named when the watch ends: none for a watch that cannot run, nor once the
+  // person took it back while the command ran.
+  todos.set(t.id, { status: 'waiting', watch, backTo: did }, 'human')
+  expect(todos.endWatch(t.id, watch, 'cannot run (gone)', 'nod')).toEqual({ back: null })
+  todos.set(t.id, { status: 'waiting', watch, backTo: did }, 'human')
+  todos.set(t.id, { backTo: null }, 'human')
+  expect(todos.endWatch(t.id, watch, 'passed', 'nod', true)).toEqual({ back: null })
+  expect(todos.get(t.id).status).toBe('next')
 
   Bun.sleepSync(2) // so it starts waiting after the task ended, on a millisecond clock
   todos.set(t.id, { status: 'waiting', waitingOn: 'Kim', watch, backTo: did }, 'human')
-  expect(todos.endWatch(t.id, watch, 'passed', 'nod', did)).toBe(true)
+  expect(todos.endWatch(t.id, watch, 'passed', 'nod', true)).toEqual({ back: did })
   const back = todos.get(t.id)
   expect([back.status, back.waitingOn, back.watch, back.backTo]).toEqual([
     'waiting',
@@ -246,7 +254,7 @@ test('--back-to takes only the latest task, the one whose end moves the todo', (
     `task #${earlier} is not the latest task of t${t.id}`,
   )
   todos.set(t.id, { status: 'waiting', watch, backTo: latest }, 'human')
-  todos.endWatch(t.id, watch, 'passed', 'nod', latest)
+  todos.endWatch(t.id, watch, 'passed', 'nod', true)
   ended(latest)
   expect(todos.get(t.id).status).toBe('done')
 })
