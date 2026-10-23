@@ -421,14 +421,16 @@ export class Todos {
 
   // Moves each todo waiting on nod along once none of its tasks can go on: done when the last one
   // succeeded, back to next when it was cancelled, so the person takes it back. Every such todo is
-  // looked at, so those of tasks a cancel cascaded to move too.
+  // looked at, so those of tasks a cancel cascaded to move too. One with a watch waits on its watch,
+  // even when its task is told more and ends again.
   followTasks(actor: string): void {
     const waiting = this.run(
       q
         .selectFrom('todos')
         .selectAll()
         .where('status', '=', 'waiting')
-        .where('waitingOn', 'is', null),
+        .where('waitingOn', 'is', null)
+        .where('watch', 'is', null),
     )
     for (const todo of waiting) {
       const tasks = this.ledger.tasksOf(todo.id)

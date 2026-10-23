@@ -259,6 +259,24 @@ test('--back-to takes only the latest task, the one whose end moves the todo', (
   expect(todos.get(t.id).status).toBe('done')
 })
 
+test('a watched todo waits on its watch, not on a task told more after it began waiting', () => {
+  const { ledger, todos } = books()
+  const t = captured(todos, 'Get the review answered')
+  const did = todos.delegate(t.id, task, 'human')
+  const ended = () => {
+    ledger.setRunning(did, `/work/${did}`)
+    ledger.succeed(did)
+    todos.followTasks('nod')
+  }
+  ended()
+  Bun.sleepSync(2) // so it starts waiting after the task ended, on a millisecond clock
+  const watch = 'test -f answered'
+  todos.set(t.id, { status: 'waiting', watch, backTo: did }, 'human')
+  Bun.sleepSync(2)
+  ended() // the person told the task something (nod tell), and it ended again
+  expect(todos.get(t.id)).toMatchObject({ status: 'waiting', watch, backTo: did })
+})
+
 test('an edit that fails changes nothing, links included', () => {
   const todos = fresh()
   const t = captured(todos, 'x')
