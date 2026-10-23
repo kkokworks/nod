@@ -29,7 +29,8 @@ nod add '로그인 버그 고치기' --repo ~/code/app --branch fix/login --chec
 nod add '로그인 화면 문구 정리' --repo ~/code/app --branch fix/login-copy --after 1    # 작업 1이 끝나면 그 브랜치에서 이어서
 nod add '결제 오류 원인 조사' --issue PROJ-12                      # 이슈에 딸린 작업
 nod                  # 결정할 것
-nod watch --issue PROJ-12,PROJ-13   # 이 이슈들의 결정만 열리는 대로 (루트 세션을 여럿 둘 때)
+nod watch --mine     # 이 Claude 세션이 맡긴 작업의 결정만 열리는 대로 (루트 세션을 여럿 둘 때)
+nod watch --issue PROJ-12,PROJ-13   # 이 이슈들의 결정만 열리는 대로
 nod 3 '그렇게 해'     # 결정 3에 답하기 (같은 세션에 들어감)
 nod tell 1 '테스트도 추가해 줘'   # 작업 1의 세션에 후속 지시
 nod attach 1         # 작업 1의 화면 열기
@@ -45,6 +46,8 @@ nod resume 1         # 정리한 작업도 되살림: 같은 경로에 worktree 
 작업이 `succeeded` 가 돼도 결과를 push·PR 로 내보내는 일은 따로 남습니다. 내보낸 뒤 `nod link` 로 주소를 남기면, `nod ls` 에서 링크가 없는 작업이 곧 아직 내보내지 않은 결과입니다. 머지까지 끝나면 `nod gc` 로 정리합니다. 이름 없이 부른 `nod gc` 와, 스케줄을 켰을 때 5분마다 도는 tick 은 완료 신호를 보고 스스로 정리합니다. 남의 PR 리뷰는 내가 승인했을 때, 내 PR 은 머지·닫혔을 때입니다. PR 상태는 `gh`(GitHub)·`tea`(Gitea·Forgejo)로 읽습니다. 레포 없는 작업은 끝난 지 7일이 지나야(회고 작업은 끝나면 바로), push 하지 않은 커밋이 있는 작업은 push 한 뒤에야 정리합니다. 정리한 작업도 대화 기록은 남아서 `nod resume`·`nod tell` 로 되살릴 수 있습니다.
 
 `--issue` 로 이슈를 주면 `nod ls` 는 그 작업을 이슈 아래에 묶어 보여 주고, 결정 목록과 알림에도 이슈가 붙습니다. 한 이슈를 여러 작업으로 나눠도 같은 키를 주면 함께 보입니다.
+
+Claude 세션에서 `nod add` 를 하면 작업에 그 세션(루트 세션)의 ID 가 남습니다. `nod show` 와 웹 화면의 작업 상세에 `root: <세션 ID>` 로 보이고, `claude --resume <세션 ID>` 로 그 세션을 다시 열 수 있습니다. 루트 세션은 `nod ls --mine`·`nod watch --mine` 으로 자기가 맡긴 작업만 보고 그 결정만 받습니다. 회고 작업은 돌아보는 작업의 루트 세션을 물려받습니다. 셸·트리거에서 맡긴 작업에는 루트 세션이 없고, Claude 세션 밖에서 `--mine` 을 쓰면 오류로 멈춥니다.
 
 정해진 때나 새 항목마다 할 일은 트리거로 맡깁니다. `nod schedule on` 으로 한 번 켜 두면 OS 스케줄러(macOS launchd, Linux crontab)가 매분 `nod tick` 을 돌립니다. 켠 셸의 `PATH`·`CLAUDE_CONFIG_DIR` 로 돌기 때문에, 워커가 쓸 Claude 설정이 있는 터미널에서 켭니다.
 

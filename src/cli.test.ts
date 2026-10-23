@@ -109,6 +109,88 @@ test('watch and the decision list with --issue keep to those issues, so roots sp
   expect(list).not.toContain('mine')
 }, 15_000)
 
+test('each root session sees in show the tasks it added, and with --mine lists and watches only those', async () => {
+  const home = tmp.make('nod-root-')
+  const ledger = new Ledger(home)
+  // Made-up session ids.
+  const [A, B] = ['aaaa1111-0000-4000-8000-00000000000a', 'bbbb2222-0000-4000-8000-00000000000b']
+  const {
+    CLAUDECODE: _,
+    CLAUDE_CODE_SESSION_ID: __,
+    NOD_TASK: ___,
+    NOD_ACTOR: ____,
+    ...shell
+  } = process.env
+  const envOf = (session: string | null) =>
+    session === null
+      ? { ...shell, NOD_HOME: home }
+      : { ...shell, NOD_HOME: home, CLAUDECODE: '1', CLAUDE_CODE_SESSION_ID: session }
+  const nod = (session: string | null, ...args: string[]) => {
+    const r = Bun.spawnSync(['bun', cli, ...args], { env: envOf(session) })
+    return { code: r.exitCode, out: r.stdout.toString(), err: r.stderr.toString() }
+  }
+  // Each comes after a task that never starts here, so no worker runs.
+  const never = ledger.add({
+    brief: 'never starts',
+    repo: null,
+    branch: null,
+    checkCmd: null,
+    model: null,
+    after: [],
+    triggerId: null,
+    issue: null,
+  })
+  const add = (session: string | null, brief: string): number =>
+    Number(nod(session, 'add', brief, '--after', String(never)).out.trim())
+  const ofA = add(A, 'from a')
+  const ofB = add(B, 'from b')
+  const ofShell = add(null, 'from the shell')
+
+  expect(nod(A, 'show', String(ofA)).out).toContain(`  root: ${A}\n`)
+  expect(nod(A, 'show', String(ofB)).out).toContain(`  root: ${B}\n`)
+  expect(nod(null, 'show', String(ofShell)).out).not.toContain('root:')
+  expect(ledger.get(ofShell).rootSession).toBeNull()
+  expect(nod(A, 'ls', '--mine').out).toContain('from a')
+  expect(nod(A, 'ls', '--mine').out).not.toContain('from b')
+  expect(nod(A, 'ls').out).toContain('from the shell')
+  for (const args of [
+    ['ls', '--mine'],
+    ['watch', '--mine'],
+  ]) {
+    const r = nod(null, ...args)
+    expect(r.code).not.toBe(0)
+    expect(r.err).toContain('--mine picks the tasks a Claude session added')
+  }
+
+  // The tasks wait on `never`; running, each counts for watch.
+  for (const id of [ofA, ofB, ofShell]) ledger.setRunning(id, home)
+  const ask = (taskId: number, question: string): void => {
+    const attemptId = ledger.startAttempt({
+      taskId,
+      kind: 'start',
+      decisionId: null,
+      sessionId: 's',
+      prompt: 'p',
+    })
+    ledger.ask(taskId, attemptId, 'question', question)
+  }
+  const watch = Bun.spawn(['bun', cli, 'watch', '--mine'], { env: envOf(A) })
+  await Bun.sleep(1500)
+  ask(ofA, 'for a')
+  ask(ofB, 'for b')
+  ask(ofShell, 'for the shell')
+  await Bun.sleep(1500)
+  // B's and the shell's tasks still wait on a decision; A's are done, so its watch ends.
+  ledger.answer(ledger.decisions(ofB)[0]?.id ?? 0, 'go on')
+  ledger.succeed(ofA)
+
+  expect(await watch.exited).toBe(0)
+  const out = await new Response(watch.stdout).text()
+  expect(out).toContain('for a')
+  expect(out).not.toContain('for b')
+  expect(out).not.toContain('for the shell')
+}, 30_000)
+
 test('ls hides tasks gc collected unless --all, and lists links under their task', async () => {
   const home = tmp.make('nod-ls-')
   const ledger = new Ledger(home)

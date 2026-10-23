@@ -24,7 +24,55 @@ test('reopening a ledger keeps its data and does not re-run migrations', () => {
   })
   const reopened = new Ledger(home)
   expect(reopened.get(id).brief).toBe('keep me')
-  expect(reopened.db.query('pragma user_version').get()).toEqual({ user_version: 17 })
+  expect(reopened.db.query('pragma user_version').get()).toEqual({ user_version: 18 })
+})
+
+test('v18 leaves the tasks before it without a root session', () => {
+  const home = freshHome()
+  const old = new Database(join(home, 'nod.db'), { create: true, strict: true })
+  for (const sql of MIGRATIONS.slice(0, 17)) old.exec(sql)
+  old.exec(
+    "pragma user_version = 17; insert into tasks (id, brief, created_at) values (1, 'x', 'at')",
+  )
+  old.close()
+
+  const ledger = new Ledger(home)
+  expect(ledger.get(1)).toMatchObject({ brief: 'x', rootSession: null })
+  expect(ledger.db.query('pragma user_version').get()).toEqual({ user_version: 18 })
+})
+
+test('a task keeps the session that added it, and its retrospective takes it; a trigger task has none', () => {
+  const ledger = new Ledger(freshHome())
+  const task = (rootSession?: string | null) =>
+    ledger.add({
+      brief: 't',
+      repo: null,
+      branch: null,
+      checkCmd: null,
+      model: null,
+      after: [],
+      triggerId: null,
+      issue: null,
+      rootSession,
+    })
+  const id = task('root-a')
+  expect(ledger.get(id).rootSession).toBe('root-a')
+  expect(ledger.get(ledger.addRetro(ledger.get(id), 'look back')).rootSession).toBe('root-a')
+  expect(ledger.get(task(null)).rootSession).toBeNull()
+  expect(ledger.get(task()).rootSession).toBeNull()
+
+  const triggerId = ledger.addTrigger({
+    cron: '* * * * *',
+    brief: 'look',
+    repo: null,
+    branch: null,
+    checkCmd: null,
+    model: null,
+    source: null,
+    seen: [],
+  })
+  const fromTrigger = ledger.addTriggerTask(ledger.trigger(triggerId), null, 'look')
+  expect(ledger.get(fromTrigger).rootSession).toBeNull()
 })
 
 // A ledger as v16 left it, with retrospectives (id, rule, outcome) of tasks of the same id.
