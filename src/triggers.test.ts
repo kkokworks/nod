@@ -1,5 +1,5 @@
 import { afterAll, expect, test } from 'bun:test'
-import { writeFileSync } from 'node:fs'
+import { existsSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tempDirs } from '../test/tmp'
 import { Ledger } from './ledger'
@@ -79,10 +79,17 @@ test('a tick with watches brings back the todo whose watch exits 0, or can no lo
 })
 
 test('a timed-out command ends with all of its pipeline, not only the shell', async () => {
+  const dir = tmp.make('nod-shell-')
+  const mark = join(dir, 'left')
   const started = Date.now()
-  const { code } = await shell('sleep 5 | cat', tmp.make('nod-shell-'), process.env, 200)
+  // A limit long enough for the pipeline to be running when it passes.
+  const pipeline = `(sleep 2; touch ${JSON.stringify(mark)}) | cat`
+  const { code } = await shell(pipeline, dir, process.env, 1000)
   expect(code).not.toBe(0)
   expect(Date.now() - started).toBeLessThan(2000)
+  // Killing only `sh` would leave the rest of the pipeline to run on, past the output it holds.
+  await Bun.sleep(3000 - (Date.now() - started))
+  expect(existsSync(mark)).toBe(false)
 })
 
 test('a command does not wait on what left its group holding its output, and keeps what it printed', async () => {

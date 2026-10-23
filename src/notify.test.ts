@@ -2,7 +2,7 @@ import { afterAll, expect, spyOn, test } from 'bun:test'
 import { chmodSync, existsSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tempDirs } from '../test/tmp'
-import { notify } from './notify'
+import { notify, runGroup } from './notify'
 
 const tmp = tempDirs()
 afterAll(tmp.removeAll)
@@ -45,21 +45,24 @@ test('a notify script past its time ends with what it started, which holds its s
 })
 
 test('a notify script that ends leaves what it put in the background running, unwaited', async () => {
-  // Ending at once, and just before its limit, which passes while nod waits on the output.
-  for (const [ends, limit] of [
-    [0, 10_000],
-    [0.7, 1000],
-  ] as const) {
-    const home = tmp.make('nod-notify-')
-    const mark = join(home, 'sent')
-    const sent = `(sleep 2; touch ${JSON.stringify(mark)}) &`
-    writeFileSync(join(home, 'notify'), `#!/bin/sh\nsleep ${ends}\n${sent}\n`)
-    chmodSync(join(home, 'notify'), 0o755)
-    const started = Date.now()
-    await notify(home, event, limit)
-    expect(Date.now() - started).toBeLessThan(ends * 1000 + 1500)
-    const deadline = Date.now() + 4000
-    while (!existsSync(mark) && Date.now() < deadline) await Bun.sleep(50)
-    expect(existsSync(mark)).toBe(true)
-  }
+  const home = tmp.make('nod-notify-')
+  const mark = join(home, 'sent')
+  writeFileSync(join(home, 'notify'), `#!/bin/sh\n(sleep 2; touch ${JSON.stringify(mark)}) &\n`)
+  chmodSync(join(home, 'notify'), 0o755)
+  const started = Date.now()
+  await notify(home, event)
+  expect(Date.now() - started).toBeLessThan(1500)
+  const deadline = Date.now() + 4000
+  while (!existsSync(mark) && Date.now() < deadline) await Bun.sleep(50)
+  expect(existsSync(mark)).toBe(true)
+})
+
+test('a command that ended in time is not killed while its output is waited on', async () => {
+  // The limit passes during the wait, however slow the start: the wait is longer than the limit
+  // and ends only when what was left in the background, holding the output, has done its work.
+  const mark = join(tmp.make('nod-group-'), 'sent')
+  const left = ['sh', '-c', `(sleep 3; touch ${JSON.stringify(mark)}) &`]
+  const run = await runGroup(left, { env: process.env, timeoutMs: 1500, graceMs: 10_000 })
+  expect(run.code).toBe(0)
+  expect(existsSync(mark)).toBe(true)
 }, 15_000)

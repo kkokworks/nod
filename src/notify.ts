@@ -67,6 +67,8 @@ export async function runGroup(
     env: Record<string, string | undefined>
     stdin?: string
     timeoutMs: number
+    // How long output is waited on once the command has ended; a test sets it.
+    graceMs?: number
   },
 ): Promise<{ code: number; stdout: string; stderr: string }> {
   const proc = Bun.spawn(cmd, {
@@ -105,7 +107,7 @@ export async function runGroup(
     await Promise.race([
       output,
       new Promise((resolve) => {
-        grace = setTimeout(resolve, OUTPUT_GRACE_MS)
+        grace = setTimeout(resolve, opts.graceMs ?? OUTPUT_GRACE_MS)
       }),
     ])
     return { code, ...read }
