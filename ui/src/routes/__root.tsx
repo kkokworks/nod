@@ -7,12 +7,13 @@ import {
   useRouter,
 } from '@tanstack/react-router'
 import { createServerFn } from '@tanstack/react-start'
-import { type ReactNode, useEffect } from 'react'
+import { type ReactNode, type Ref, useEffect, useRef } from 'react'
+import { bindKeys, ignoreOnPage, KEYS } from '../keys'
 import type { TaskRow } from '../nod.server'
 import { overview } from '../nod.server'
 import { statusClass, TaskId } from '../parts'
 import css from '../styles.css?url'
-import { UndoBar } from '../todo-parts'
+import { focusRow, UndoBar } from '../todo-parts'
 
 // Workers change the ledger while the page is open, so it reloads its data this often.
 const REFRESH_MS = 5000
@@ -53,6 +54,16 @@ function Root() {
     const timer = setInterval(() => router.invalidate(), REFRESH_MS)
     return () => clearInterval(timer)
   }, [router])
+  const help = useRef<HTMLDivElement>(null)
+  useEffect(
+    () =>
+      bindKeys(
+        window,
+        { list: () => focusRow(null, 0), help: () => help.current?.togglePopover() },
+        ignoreOnPage,
+      ),
+    [],
+  )
   return (
     <div className="app">
       <Sidebar />
@@ -61,6 +72,32 @@ function Root() {
           <Outlet />
         </UndoBar>
       </main>
+      <KeysHelp ref={help} />
+    </div>
+  )
+}
+
+// Every shortcut, from the list the keys are bound from. `?` or the sidebar's button opens it;
+// Escape or a click outside closes it.
+function KeysHelp({ ref }: { ref: Ref<HTMLDivElement> }) {
+  return (
+    <div id="keys-help" ref={ref} popover="auto" className="keys-help">
+      <h2 className="section">Keyboard shortcuts</h2>
+      <table>
+        <tbody>
+          {Object.values(KEYS).map((k) => (
+            <tr key={k.does}>
+              <td>
+                {k.show.map((s) => (
+                  <kbd key={s}>{s}</kbd>
+                ))}
+              </td>
+              <td>{k.does}</td>
+              <td className="muted">{k.where}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   )
 }
@@ -200,7 +237,17 @@ function Sidebar() {
         </details>
       )}
 
-      <div className="side-foot">refreshes every {REFRESH_MS / 1000}s</div>
+      <div className="side-foot">
+        <button
+          type="button"
+          className="keys-button"
+          popoverTarget="keys-help"
+          aria-keyshortcuts={KEYS.help.aria}
+        >
+          Keyboard shortcuts <kbd>{KEYS.help.show}</kbd>
+        </button>
+        refreshes every {REFRESH_MS / 1000}s
+      </div>
     </aside>
   )
 }
