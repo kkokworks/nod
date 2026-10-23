@@ -21,6 +21,7 @@ import { addTrigger, tick } from './triggers'
 import {
   answer,
   drop,
+  firstMessage,
   lostTurns,
   onStop,
   parseCaptures,
@@ -34,6 +35,7 @@ import {
   tell,
   trustedFile,
   workerEnv,
+  workerPrompt,
   workspaceOf,
 } from './worker'
 
@@ -551,6 +553,8 @@ test('in a repo, done needs the work committed, and the next task starts from th
   // A task's changes start where the earlier task's branch ended, so here there are none.
   const base = Bun.spawnSync(['git', 'rev-parse', 'feat/ok'], { cwd: repo }).stdout.toString()
   expect(review('build on it')).toContain(`since ${base.trim()}. There are none.`)
+  // The worker hears the same start, for its subagent review.
+  expect(message).toContain(`Your branch starts at commit ${base.trim()}.`)
 }, 30_000)
 
 test('a diff too long for the review brief is cut, and the reviewer is told where', () => {
@@ -575,6 +579,32 @@ test('a diff too long for the review brief is cut, and the reviewer is told wher
   )
   expect(brief).toContain(`> ${diff.slice(0, DIFF_LIMIT)}\n`)
   expect(brief).not.toContain(diff)
+})
+
+test('a repo worker is told to have a subagent review its branch from where it starts, and a worker without a repo is not', () => {
+  const task = (repo: string | null): Task =>
+    ledger.get(
+      ledger.add({
+        brief: 'fix it',
+        repo,
+        branch: repo === null ? null : 'feat/fix',
+        checkCmd: null,
+        model: null,
+        after: [],
+        triggerId: null,
+        issue: null,
+      }),
+    )
+  const [inRepo, alone] = [task('/repo'), task(null)]
+  const prompt = workerPrompt(ledger, inRepo)
+  expect(prompt).toContain('have a subagent (Agent tool) review `git diff <start>..HEAD`')
+  expect(prompt).toContain('file:line')
+  expect(prompt).toContain('its confidence')
+  expect(firstMessage(ledger, inRepo, 'abc123')).toBe(
+    'fix it\n\nYour branch starts at commit abc123.',
+  )
+  expect(workerPrompt(ledger, alone)).not.toContain('subagent')
+  expect(firstMessage(ledger, alone, null)).toBe('fix it')
 })
 
 test('a repo task gets its submodules filled from the repo checkout, and gc still removes it', async () => {
@@ -661,7 +691,7 @@ test('a repo Claude Code does not trust yet becomes a decision: yes trusts and s
   if (!yes || !no) throw new Error('no trust decision')
   await answer(ledger, home, yes.id, 'yes', 'human')
   await reaches(trusted, 'succeeded')
-  expect(entries('turn').map((t) => t.message)).toEqual(['work here'])
+  expect(entries('turn').map((t) => t.message?.split('\n')[0])).toEqual(['work here'])
 
   await answer(ledger, home, no.id, 'not this one', 'human')
   expect(status(refused)).toBe('cancelled')
@@ -1145,7 +1175,7 @@ test('a repo worker started again as another account says yes to trusting the re
   expect(status(id)).toBe('succeeded')
   await tell(ledger, home, id, 'go on')
   await reaches(id, 'succeeded')
-  expect(entries('turn').map((t) => t.message)).toEqual(['first', 'go on'])
+  expect(entries('turn').map((t) => t.message?.split('\n')[0])).toEqual(['first', 'go on'])
 }, 30_000)
 
 test('a conversation kept only in the folder of the old account is not started over in the new one', async () => {
