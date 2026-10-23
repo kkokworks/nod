@@ -18,4 +18,10 @@ test('an image in Markdown shows as a link, and the page loads nothing', () => {
   expect(renderToString(<Markdown text="![](https://example.com/p.png)" />)).toContain(
     '>https://example.com/p.png</a>',
   )
+  // In a link, as a badge is, it is the link's text: an anchor in an anchor would split the link.
+  const badge = renderToString(
+    <Markdown text="[![CI](https://example.com/b.svg)](https://example.com/ci)" />,
+  )
+  expect(badge).toContain('<a href="https://example.com/ci">CI</a>')
+  expect(badge.match(/<a /g)).toHaveLength(1)
 })
