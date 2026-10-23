@@ -275,6 +275,86 @@ details > summary.side-label {
   font-size: 11.5px;
 }
 
+.keys-button {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-bottom: 0.4rem;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.keys-button:hover {
+  color: var(--fg);
+}
+
+/* ── keys ── */
+
+kbd {
+  display: inline-block;
+  min-width: 1.35em;
+  padding: 0.05rem 0.3rem;
+  border: 1px solid var(--line);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  background: var(--card);
+  color: var(--muted);
+  font:
+    500 11px / 1.3 ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    monospace;
+  text-align: center;
+  text-transform: none;
+}
+
+kbd + kbd {
+  margin-left: 0.25rem;
+}
+
+.status-option kbd {
+  margin-left: auto;
+}
+
+/* A row's own key on its badge shows while the row has the keyboard's focus. */
+.status-pill kbd {
+  display: none;
+}
+
+.todo-item:has(> .todo-main > .todo-title:focus-visible) > .status-pill kbd {
+  display: inline-block;
+}
+
+/* Centred, as a popover is by default. */
+.keys-help {
+  width: min(30rem, calc(100vw - 2rem));
+  padding: 0.4rem 1.2rem 1rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--card);
+  color: var(--fg);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 12%);
+}
+
+.keys-help table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.keys-help td {
+  padding: 0.35rem 0.5rem 0.35rem 0;
+  vertical-align: baseline;
+}
+
+.keys-help td:first-child {
+  white-space: nowrap;
+}
+
 /* ── status ── */
 
 .dot {
@@ -1200,6 +1280,16 @@ details summary {
 
 .todo-item.focused {
   box-shadow: inset 3px 0 0 var(--star);
+}
+
+/* The keyboard's focus on a title rings the whole row, the one the row's keys work on. */
+.todo-item:has(> .todo-main > .todo-title:focus-visible) {
+  outline: 2px solid var(--link);
+  outline-offset: -2px;
+}
+
+.todo-main .todo-title:focus-visible {
+  outline: none;
 }
 
 .card > .todo-item {

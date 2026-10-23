@@ -7,10 +7,12 @@ import {
   useContext,
   useEffect,
   useId,
+  useLayoutEffect,
   useRef,
   useState,
 } from 'react'
 import { dayOf, daysBetween, localDay } from '../../src/days'
+import { bindKeys, KEYS, ROW_KEYS } from './keys'
 import { localTime, Markdown } from './parts'
 import { changeTodo } from './todo-fns'
 import type { TodoItem } from './todos.server'
@@ -238,20 +240,33 @@ function StatusIcon({ status }: { status: string }) {
 
 // The status menu, as Mindwtr has at the end of each row: every list, done and dropped too, each
 // in its colour and glyph. A popover, as the "…" menu is, since a native select's list cannot be
-// styled. In a list of its own status the badge stays plain, as it says nothing new there.
+// styled. In a list of its own status the badge stays plain, as it says nothing new there. On a
+// todo row (`keyed`) it shows the row's keys for it. In the menu, ↑ ↓ (j k) go between the
+// statuses as they go between rows.
 export function StatusSelect({
   status,
   quiet = false,
+  keyed = false,
   disabled,
   onChange,
 }: {
   status: string
   quiet?: boolean
+  keyed?: boolean
   disabled: boolean
   onChange: (status: string) => void
 }) {
   const id = useId()
   const menu = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    const el = menu.current
+    if (el === null) return
+    const options = () => [...el.querySelectorAll<HTMLElement>('.status-option')]
+    return bindKeys(el, {
+      down: () => focusStep(options(), document.activeElement, 1),
+      up: () => focusStep(options(), document.activeElement, -1),
+    })
+  }, [])
   return (
     <>
       <button
@@ -265,6 +280,7 @@ export function StatusSelect({
       >
         <StatusIcon status={status} />
         {status}
+        {keyed && <kbd>{KEYS.status.show}</kbd>}
       </button>
       <div id={id} ref={menu} popover="auto" className="status-menu" role="listbox">
         {STATUSES.map((s) => (
@@ -282,6 +298,7 @@ export function StatusSelect({
             <StatusIcon status={s} />
             {s}
             {s === status && <span className="tick">✓</span>}
+            {keyed && s === 'done' && s !== status && <kbd>{KEYS.done.show}</kbd>}
           </button>
         ))}
       </div>
@@ -359,9 +376,28 @@ export function TodoFacts({ t }: { t: TodoItem }) {
   )
 }
 
+// A row takes the keyboard's focus on its title, the row's own button.
+const ROW_TITLE = '.todo-item .todo-title'
+
+// The rows' titles the person can see, in page order; those in a folded section are left out.
+const shownRows = () =>
+  [...document.querySelectorAll<HTMLElement>(ROW_TITLE)].filter((r) => r.checkVisibility())
+
+// Focuses the one `step` on from `from` among `items`, or the first with no `from`; past either end
+// it stays put.
+function focusStep(items: HTMLElement[], from: Element | null, step: number) {
+  const i = from === null ? 0 : items.indexOf(from as HTMLElement) + step
+  items[Math.min(Math.max(i, 0), items.length - 1)]?.focus()
+}
+
+// Focuses the row `step` rows on from the one whose title is `from`, or the first row with none.
+export const focusRow = (from: HTMLElement | null, step: number) =>
+  focusStep(shownRows(), from, step)
+
 // A todo on one line, as in Mindwtr: the title unfolds its notes and details, the status menu moves
 // it to another list or finishes it, the star picks it for the day's focus, and the "…" menu has
-// the rest. There is no one-click circle, so a stray click finishes nothing.
+// the rest. There is no one-click circle, so a stray click finishes nothing. The row's keys
+// (keys.ts) work while its title has focus: the browser's focus is the only "current row".
 export function TodoRow({
   t,
   today,
@@ -375,13 +411,46 @@ export function TodoRow({
 }) {
   const { busy, error, items, focused, pickable, focus, move } = useTodoActions(t, today, full)
   const [open, setOpen] = useState(false)
+  const row = useRef<HTMLDivElement>(null)
+  const title = useRef<HTMLButtonElement>(null)
+  // A row leaving the page, its todo moved here or the refresh taking it away, hands the focus in it
+  // on to the next row (or the one before). React runs this before it takes the row out, so the
+  // rows are still there to count; a move that keeps the row, or fails, leaves the focus be.
+  useLayoutEffect(() => {
+    const el = row.current
+    const own = title.current
+    return () => {
+      if (el === null || own === null || !el.contains(document.activeElement)) return
+      const rows = shownRows()
+      const i = rows.indexOf(own)
+      rows[i + 1 < rows.length ? i + 1 : i - 1]?.focus()
+    }
+  }, [])
+  useEffect(() => {
+    const el = title.current
+    if (el === null) return
+    return bindKeys(el, {
+      down: () => focusRow(el, 1),
+      up: () => focusRow(el, -1),
+      done: () => {
+        if (t.status !== 'done') move('done')
+      },
+      // As a click on the badge does, with focus on the current status.
+      status: () => {
+        row.current?.querySelector<HTMLButtonElement>('.status-pill')?.click()
+        row.current?.querySelector<HTMLElement>('.status-option[aria-selected="true"]')?.focus()
+      },
+    })
+  })
   return (
-    <div className={`todo-item${focused ? ' focused' : ''}${open ? ' open' : ''}`}>
+    <div ref={row} className={`todo-item${focused ? ' focused' : ''}${open ? ' open' : ''}`}>
       <div className="todo-main">
         <button
+          ref={title}
           type="button"
           className="todo-title"
           aria-expanded={open}
+          aria-keyshortcuts={ROW_KEYS}
           onClick={() => setOpen(!open)}
         >
           {t.title}
@@ -404,7 +473,13 @@ export function TodoRow({
         )}
         {error !== null && <div className="banner">{error}</div>}
       </div>
-      <StatusSelect status={t.status} quiet={t.status === usual} disabled={busy} onChange={move} />
+      <StatusSelect
+        status={t.status}
+        quiet={t.status === usual}
+        keyed
+        disabled={busy}
+        onChange={move}
+      />
       {focused || pickable ? (
         <button
           type="button"
