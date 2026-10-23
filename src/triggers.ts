@@ -39,12 +39,19 @@ export function parseItems(output: string): Item[] {
 }
 
 // Bun 1.3.14's Bun.cron.parse reads every schedule as UTC whatever `tz` says (measured), so the
-// local wall-clock time goes in as if it were UTC and the result is shifted back.
-// ponytail: the offset is taken at `from`, so a run across a daylight-saving change is an hour off.
+// local wall-clock time goes in as if it were UTC and the result is shifted back by the offset at
+// the result, so a run across a daylight-saving change keeps its hour. A time that does not come
+// that day (02:30 when the clock skips to 03:00) keeps the offset at `from`, an hour later.
+// ponytail: each wall-clock time runs once, so a schedule more often than hourly skips the hour
+// that comes twice; walk real time instead if that hour matters.
 export function nextRun(cron: string, from: Date): Date | null {
-  const offset = from.getTimezoneOffset() * 60_000
-  const next = Bun.cron.parse(cron, from.getTime() - offset)
-  return next === null ? null : new Date(next.getTime() + offset)
+  const offsetAt = (t: number): number => new Date(t).getTimezoneOffset() * 60_000
+  const before = offsetAt(from.getTime())
+  const next = Bun.cron.parse(cron, from.getTime() - before)
+  if (next === null) return null
+  const guess = next.getTime() + before
+  const after = next.getTime() + offsetAt(guess)
+  return new Date(offsetAt(after) === offsetAt(guess) && after > from.getTime() ? after : guess)
 }
 
 // For a source, what it lists now is recorded as seen, so only items that appear later become

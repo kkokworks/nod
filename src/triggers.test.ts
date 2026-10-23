@@ -26,6 +26,51 @@ test('schedules are read in local time', () => {
   expect(() => nextRun('every day', at(6, 8))).toThrow('Invalid cron expression')
 })
 
+test('a daily schedule runs once a day at its hour across a daylight-saving change', () => {
+  const tz = process.env.TZ
+  process.env.TZ = 'America/New_York'
+  try {
+    // Each run from `from` until `until`, as the ticks would run them.
+    const runs = (cron: string, from: string, until: string): string[] => {
+      const out: string[] = []
+      let next = nextRun(cron, new Date(from))
+      while (next !== null && next < new Date(until)) {
+        out.push(next.toISOString())
+        next = nextRun(cron, next)
+      }
+      return out
+    }
+    // Daylight saving ends on 2026-11-01: 09:00 is 13:00Z before, 14:00Z after.
+    expect(runs('0 9 * * *', '2026-10-31T13:00:00Z', '2026-11-03T00:00:00Z')).toEqual([
+      '2026-11-01T14:00:00.000Z',
+      '2026-11-02T14:00:00.000Z',
+    ])
+    // 01:30 comes twice that day, and runs once.
+    expect(runs('30 1 * * *', '2026-10-31T05:30:00Z', '2026-11-03T00:00:00Z')).toEqual([
+      '2026-11-01T05:30:00.000Z',
+      '2026-11-02T06:30:00.000Z',
+    ])
+    // So does each hour, so an hourly schedule skips the second 01:00.
+    expect(runs('0 * * * *', '2026-11-01T04:00:00Z', '2026-11-01T08:00:00Z')).toEqual([
+      '2026-11-01T05:00:00.000Z',
+      '2026-11-01T07:00:00.000Z',
+    ])
+    // It starts on 2026-03-08: 09:00 is 14:00Z before, 13:00Z after.
+    expect(runs('0 9 * * *', '2026-03-07T14:00:00Z', '2026-03-10T00:00:00Z')).toEqual([
+      '2026-03-08T13:00:00.000Z',
+      '2026-03-09T13:00:00.000Z',
+    ])
+    // 02:30 does not come that day, so it runs once, at 03:30.
+    expect(runs('30 2 * * *', '2026-03-07T07:30:00Z', '2026-03-10T00:00:00Z')).toEqual([
+      '2026-03-08T07:30:00.000Z',
+      '2026-03-09T06:30:00.000Z',
+    ])
+  } finally {
+    if (tz === undefined) delete process.env.TZ
+    else process.env.TZ = tz
+  }
+})
+
 test('adding a trigger with a source records what it lists now, and a failing source adds none', async () => {
   const home = tmp.make('nod-triggers-')
   const ledger = new Ledger(home)
