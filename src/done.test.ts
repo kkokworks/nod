@@ -117,6 +117,10 @@ test('done signals: dropped, taken over, merged into the default branch, every p
   const errored = add('errored')
   finish(errored, OLD)
   ledger.error(errored, 'crashed')
+  // A retrospective's report and the answer to it are in the ledger, not its folder.
+  const ruled = finish(ledger.addRetro(ledger.get(recent), 'retro, rule added or none'), RECENT)
+  const turnedDown = finish(ledger.addRetro(ledger.get(old), 'retro, rule turned down'), RECENT)
+  drop(turnedDown)
 
   const prs: Record<string, PullRequest> = {
     [`${PR}1#issuecomment-9`]: { state: 'open', approvedAt: '2026-03-09T01:00:00Z' },
@@ -141,6 +145,8 @@ test('done signals: dropped, taken over, merged into the default branch, every p
     { id: landed, reason: 'its changes are in the default branch' },
     { id: old, reason: 'finished 7+ days ago' },
     { id: brokenOld, reason: 'finished 7+ days ago' },
+    { id: ruled, reason: 'retrospective done' },
+    { id: turnedDown, reason: 'dropped' },
   ])
   // Not done: a plain workspace not yet old, the newer round, an approval from before the task,
   // changes asked for, a pull request still open, the only copy of commits, a branch a queued task

@@ -1,6 +1,8 @@
+import { Database } from 'bun:sqlite'
 import { afterAll, expect, test } from 'bun:test'
+import { join } from 'node:path'
 import { tempDirs } from '../test/tmp'
-import { Ledger } from './ledger'
+import { Ledger, MIGRATIONS } from './ledger'
 
 const tmp = tempDirs()
 afterAll(tmp.removeAll)
@@ -21,7 +23,65 @@ test('reopening a ledger keeps its data and does not re-run migrations', () => {
   })
   const reopened = new Ledger(home)
   expect(reopened.get(id).brief).toBe('keep me')
-  expect(reopened.db.query('pragma user_version').get()).toEqual({ user_version: 15 })
+  expect(reopened.db.query('pragma user_version').get()).toEqual({ user_version: 16 })
+})
+
+test('v16 moves the retrospectives so far into their own table, with what became of each', () => {
+  const home = freshHome()
+  const old = new Database(join(home, 'nod.db'), { create: true, strict: true })
+  for (const sql of MIGRATIONS.slice(0, 15)) old.exec(sql)
+  old.exec('pragma user_version = 15')
+  const at = '2026-01-01T00:00:00.000Z'
+  const task = (id: number, retroOf: number | null, status: string): void => {
+    old
+      .query(
+        `insert into tasks (id, brief, status, created_at, finished_at, retro_of)
+         values ($id, 'x', $status, $at, $at, $retroOf)`,
+      )
+      .run({ id, status, at, retroOf })
+  }
+  const rule = (taskId: number, summary: string, answer: string): void => {
+    const attempt = old
+      .query<{ id: number }, { taskId: number; summary: string; at: string }>(
+        `insert into attempts (task_id, kind, session_id, prompt, summary, started_at)
+         values ($taskId, 'start', 's', 'p', $summary, $at) returning id`,
+      )
+      .get({ taskId, summary, at })
+    if (attempt === null) throw new Error('no attempt')
+    const { id } = attempt
+    old
+      .query(
+        `insert into decisions (task_id, attempt_id, reason, question, answer, created_at, answered_at)
+         values ($taskId, $id, 'rule', 'q', $answer, $at, $at)`,
+      )
+      .run({ taskId, id, answer, at })
+  }
+  for (const id of [1, 2, 3, 4, 5]) task(id, null, 'succeeded')
+  task(6, 1, 'succeeded')
+  rule(6, 'do A', 'yes')
+  task(7, 2, 'cancelled')
+  rule(7, 'do B', '(dropped)')
+  task(8, 3, 'succeeded')
+  task(9, 4, 'cancelled')
+  task(10, 5, 'error')
+  old.close()
+
+  const ledger = new Ledger(home)
+  const moved = [6, 7, 8, 9, 10].map((id) => {
+    const { retroId } = ledger.get(id)
+    if (retroId === null) throw new Error(`task ${id} lost its retrospective`)
+    const r = ledger.retro(retroId)
+    return [r.ofTaskId, r.rule, r.outcome]
+  })
+  expect(moved).toEqual([
+    [1, 'do A', 'added'],
+    [2, 'do B', 'declined'],
+    [3, null, 'none'],
+    [4, null, 'dropped'],
+    [5, null, null],
+  ])
+  expect(ledger.get(1).retroId).toBeNull()
+  expect(ledger.retroFor(1)?.outcome).toBe('added')
 })
 
 test('links are kept once each, and only for a task that exists', () => {

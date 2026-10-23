@@ -11,7 +11,7 @@ import {
 import { basename, join, resolve } from 'node:path'
 import { tempDirs } from '../test/tmp'
 import { collect } from './gc'
-import { Ledger, type TaskStatus } from './ledger'
+import { Ledger, type Task, type TaskStatus } from './ledger'
 import { DIFF_LIMIT, reviewBrief } from './review'
 import { Terminals } from './tmux'
 import { Todos } from './todos'
@@ -96,6 +96,11 @@ async function until<T>(get: () => T | null | undefined | false): Promise<T> {
 }
 
 const status = (id: number): TaskStatus => ledger.get(id).status
+// The task the retrospective of task `of` runs in.
+const retroTask = (of: number): Task | undefined => {
+  const retro = ledger.retroFor(of)
+  return retro === null ? undefined : ledger.list().find((t) => t.retroId === retro.id)
+}
 const reaches = (id: number, want: TaskStatus): Promise<true> =>
   until(() => status(id) === want || (status(id) === 'error' && fail(id)))
 const fail = (id: number): never => {
@@ -569,19 +574,22 @@ test('due triggers add tasks, a source only for lines it has not printed before,
 test('a task that needed a retry gets a retrospective, and an approved rule reaches later workers', async () => {
   const id = await add('make ok', 'test -f ok.txt')
   await reaches(id, 'succeeded')
-  const retro = await until(() => ledger.list().find((t) => t.retroOf === id))
+  const retro = await until(() => retroTask(id))
   expect(retro.brief).toContain('Check failed')
   const decision = await until(() => ledger.decisions(retro.id)[0])
   expect(decision.reason).toBe('rule')
+  expect(decision.question).toContain(`its retrospective r${retro.retroId}`)
+  expect(ledger.retroFor(id)).toMatchObject({ rule: 'did it', outcome: null })
 
   await answer(ledger, home, decision.id, 'yes')
   expect(status(retro.id)).toBe('succeeded')
+  expect(ledger.retroFor(id)?.outcome).toBe('added')
   expect(readFileSync(join(home, 'rules.md'), 'utf8')).toBe('- did it\n')
   const next = await add('plain')
   await reaches(next, 'succeeded')
   expect(entries('launch').at(-1)?.system).toContain('- did it')
   // The smooth task and the retrospective get none of their own.
-  expect(ledger.list().filter((t) => t.retroOf !== null)).toHaveLength(1)
+  expect(ledger.list().filter((t) => t.retroId !== null)).toHaveLength(1)
 })
 
 test('dropping a task that gave up starts a retrospective, and declining its rule cancels it', async () => {
@@ -589,14 +597,15 @@ test('dropping a task that gave up starts a retrospective, and declining its rul
   const decision = await until(() => ledger.decisions(id)[0])
   expect(decision.reason).toBe('failed')
   await drop(ledger, home, decision.id)
-  const retro = ledger.list().find((t) => t.retroOf === id)
+  const retro = retroTask(id)
   if (retro === undefined) throw new Error('no retrospective')
 
   const rule = await until(() => ledger.decisions(retro.id)[0])
   await answer(ledger, home, rule.id, 'not this one')
   expect(status(retro.id)).toBe('cancelled')
+  expect(ledger.retroFor(id)?.outcome).toBe('declined')
   expect(existsSync(join(home, 'rules.md'))).toBe(false)
-  expect(ledger.list().filter((t) => t.retroOf !== null)).toHaveLength(1)
+  expect(ledger.list().filter((t) => t.retroId !== null)).toHaveLength(1)
 })
 
 test('a retrospective that finds no general rule just succeeds', async () => {
@@ -625,6 +634,7 @@ test('a retrospective that finds no general rule just succeeds', async () => {
   })
   expect(status(retro)).toBe('succeeded')
   expect(ledger.decisions(retro)).toEqual([])
+  expect(ledger.retroFor(of)).toMatchObject({ rule: null, outcome: 'none' })
 })
 
 test('a worker learns its task through NOD_TASK, so the todos it changes name it', () => {

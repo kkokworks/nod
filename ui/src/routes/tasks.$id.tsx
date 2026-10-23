@@ -35,7 +35,7 @@ const TITLE_CHARS = 120
 const KIND_ICON = { start: '▶', retry: '↻', answer: '↩', resume: '⏵', followup: '✎' } as const
 
 function TaskPage() {
-  const { task, status, links, after, attempts, decisions, report, place, screen } =
+  const { task, status, links, after, attempts, decisions, report, place, retro, screen } =
     Route.useLoaderData()
   // The brief's first line is the title; the whole brief folds away, as it can run to pages.
   const nl = task.brief.indexOf('\n')
@@ -88,12 +88,13 @@ function TaskPage() {
             </span>
           )}
           {task.triggerId !== null && <span className="tag">trigger #{task.triggerId}</span>}
-          {task.retroOf !== null && (
+          {retro !== null && (
             <span className="tag">
-              retro of{' '}
-              <Link to="/tasks/$id" params={{ id: String(task.retroOf) }}>
-                #{task.retroOf}
+              r{retro.id} of{' '}
+              <Link to="/tasks/$id" params={{ id: String(retro.ofTaskId) }}>
+                #{retro.ofTaskId}
               </Link>
+              {retro.outcome !== null && `, ${retro.outcome}`}
             </span>
           )}
           {after.map((a) => (

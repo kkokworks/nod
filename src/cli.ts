@@ -451,7 +451,10 @@ function show(id: number): void {
   if (task.workspace) console.log(`  workspace: ${task.workspace}`)
   if (task.checkCmd) console.log(`  check: ${task.checkCmd}`)
   if (task.triggerId !== null) console.log(`  added by trigger #${task.triggerId}`)
-  if (task.retroOf !== null) console.log(`  retrospective of #${task.retroOf}`)
+  if (task.retroId !== null) {
+    const r = ledger.retro(task.retroId)
+    console.log(`  retrospective: r${r.id} of #${r.ofTaskId}${r.outcome ? `, ${r.outcome}` : ''}`)
+  }
   if (task.todoId !== null) console.log(`  todo: t${task.todoId}`)
   for (const url of ledger.links(id)) console.log(`  link: ${url}`)
   for (const ref of unlinkedPushes(task)) console.log(`  pushed: ${ref}`)
@@ -484,10 +487,16 @@ function printDecisions(decisions: Decision[]): void {
   console.log('answer: nod <decision> <answer>   end the task: nod drop <decision>')
 }
 
+// What a task works for: the person's todo (t<n>) or nod's retrospective (r<n>).
+function owner(t: Task): string {
+  if (t.retroId !== null) return `r${t.retroId}`
+  return t.todoId === null ? '' : `t${t.todoId}`
+}
+
 function printDecision(d: Decision): void {
   const task = ledger.get(d.taskId)
-  const issue = task.issue === null ? '' : ` ${task.issue}`
-  console.log(`#${d.id}  ${d.reason}  (task #${task.id}${issue}: ${oneLine(task.brief, 60)})`)
+  const of = [owner(task), task.issue ?? ''].map((x) => (x === '' ? '' : ` ${x}`)).join('')
+  console.log(`#${d.id}  ${d.reason}  (task #${task.id}${of}: ${oneLine(task.brief, 60)})`)
   console.log(`${indent(d.question)}\n`)
 }
 
@@ -507,7 +516,7 @@ function printTask(t: Task, prefix = ''): void {
   const turns = ledger.attempts(t.id).length
   const status = taskStatus(t, terminals)
   console.log(
-    `${prefix}#${String(t.id).padEnd(4)} ${(t.todoId === null ? '' : `t${t.todoId}`).padEnd(5)} ${status.padEnd(14)} ${String(turns).padStart(2)} turns  ${oneLine(taskNote(ledger, t), 80)}`,
+    `${prefix}#${String(t.id).padEnd(4)} ${owner(t).padEnd(5)} ${status.padEnd(14)} ${String(turns).padStart(2)} turns  ${oneLine(taskNote(ledger, t), 80)}`,
   )
   for (const url of ledger.links(t.id)) console.log(`${prefix}      link ${url}`)
   for (const ref of unlinkedPushes(t)) console.log(`${prefix}      pushed ${ref}`)
