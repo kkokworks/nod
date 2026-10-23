@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 const EXIT_TIMEOUT_MS = 10_000
@@ -18,15 +18,23 @@ export class Terminals {
     return new Terminals(`nod-${homeId(home)}`, join(home, 'work'))
   }
 
-  // tmux starts commands with its server's environment, so pass what the worker needs in `env`.
+  // `argv` runs with `env` and nothing else of the environment but the TERM, TMUX and TMUX_PANE
+  // tmux sets for the pane. tmux would start it with its server's environment, which is whatever
+  // first started the server, a terminal's or an agent host's markers for its own pane among it.
   // tmux refuses a command over about 16KB (measured on 3.6a), less than a long brief or a
-  // retrospective's history, so `argv` goes in a script that removes itself once sh has it open.
+  // retrospective's history, so `argv` goes in a script that removes itself once sh has it open,
+  // readable only by its owner since `env` may hold credentials (a proxy's, an API key).
   // ponytail: the OS limit on arguments (1MB on macOS) still applies.
   start(name: string, cwd: string, argv: string[], env: Record<string, string>): void {
-    const vars = Object.entries(env).flatMap(([key, value]) => ['-e', `${key}=${value}`])
+    const vars = Object.entries(env).map(([key, value]) => quote(`${key}=${value}`))
     mkdirSync(this.dir, { recursive: true })
+    rmSync(this.stopFile(name), { force: true })
     const script = join(this.dir, `.launch-${name}`)
-    writeFileSync(script, `rm -f -- "$0"\nexec ${argv.map(quote).join(' ')}\n`)
+    writeFileSync(
+      script,
+      `rm -f -- "$0"\nexec env -i TERM="$TERM" TMUX="$TMUX" TMUX_PANE="$TMUX_PANE" ${[...vars, ...argv.map(quote)].join(' ')}\n`,
+      { mode: 0o600 },
+    )
     this.tmux([
       'new-session',
       '-d',
@@ -38,7 +46,6 @@ export class Terminals {
       '50',
       '-c',
       cwd,
-      ...vars,
       '--',
       'sh',
       script,
@@ -47,6 +54,33 @@ export class Terminals {
 
   alive(name: string): boolean {
     return this.run(['has-session', '-t', `=${name}`]).exitCode === 0
+  }
+
+  // The sessions there are, in one call; none when the server is not running.
+  sessions(): Set<string> {
+    const list = this.run(['list-sessions', '-F', '#{session_name}'])
+    if (list.exitCode !== 0) return new Set()
+    return new Set(list.stdout.toString().split('\n').filter(Boolean))
+  }
+
+  // A value nod keeps on a session, gone with it; '' when unset.
+  option(name: string, key: string): string {
+    return this.tmux(['show-options', '-qv', '-t', `=${name}:`, `@${key}`]).trim()
+  }
+
+  setOption(name: string, key: string, value: string | null): void {
+    const set = value === null ? ['-u', `@${key}`] : [`@${key}`, value]
+    this.tmux(['set-option', '-q', '-t', `=${name}:`, ...set])
+  }
+
+  signal(name: string, signal: NodeJS.Signals): void {
+    process.kill(this.panePid(name), signal)
+  }
+
+  // Whether nod ended the session on purpose (kill, close), for what runs in it to tell from Claude
+  // Code ending on its own.
+  stopped(name: string): boolean {
+    return existsSync(this.stopFile(name))
   }
 
   // Whether a person has the session open (nod attach).
@@ -71,20 +105,23 @@ export class Terminals {
   }
 
   kill(name: string): void {
-    if (this.alive(name)) this.tmux(['kill-session', '-t', `=${name}`])
+    if (!this.alive(name)) return
+    writeFileSync(this.stopFile(name), '')
+    this.tmux(['kill-session', '-t', `=${name}`])
   }
 
   // Also waits for the process in it to exit: Claude Code still writes its session files while it
   // shuts down, which would recreate a session folder deleted right after.
   async close(name: string): Promise<void> {
     if (!this.alive(name)) return
-    const pid = Number(this.tmux(['display-message', '-p', '-t', `=${name}:`, '#{pane_pid}']))
+    const pid = this.panePid(name)
     this.kill(name)
     const deadline = Date.now() + EXIT_TIMEOUT_MS
     while (isRunning(pid)) {
       if (Date.now() > deadline) throw new Error(`${name} did not exit (pid ${pid})`)
       await Bun.sleep(100)
     }
+    rmSync(this.stopFile(name), { force: true })
   }
 
   killServer(): void {
@@ -93,6 +130,22 @@ export class Terminals {
 
   attachCommand(name: string): string[] {
     return ['tmux', '-L', this.socket, 'attach', '-t', `=${name}`]
+  }
+
+  // The process the session started with (`argv` of start).
+  panePid(name: string): number {
+    return Number(this.tmux(['display-message', '-p', '-t', `=${name}:`, '#{pane_pid}']))
+  }
+
+  // The session's pane (TMUX_PANE inside it), or null without the session; a session of the same
+  // name started again has another.
+  pane(name: string): string | null {
+    const shown = this.run(['display-message', '-p', '-t', `=${name}:`, '#{pane_id}'])
+    return shown.exitCode === 0 ? shown.stdout.toString().trim() : null
+  }
+
+  private stopFile(name: string): string {
+    return join(this.dir, `.stop-${name}`)
   }
 
   private tmux(args: string[], stdin?: string): string {

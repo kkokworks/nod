@@ -9,7 +9,7 @@ import { pullRequests } from './prs'
 import { homeId } from './tmux'
 import { type Todo, Todos } from './todos'
 import { oneLine } from './view'
-import { message, SELF, startTask, tell } from './worker'
+import { lostTurns, message, restartDue, SELF, startTask, tell } from './worker'
 
 // Triggers add tasks on a schedule, and watches tell when what a waiting todo waits on has
 // happened. Once `nod schedule on` registers it, the OS scheduler (launchd on macOS, crontab on
@@ -68,15 +68,22 @@ export async function addTrigger(
   return { id, seen: items.length }
 }
 
-// Runs the triggers due at `now` and starts the tasks they add, then, with `watches`, the watches
-// and gc of the finished tasks a signal says are done with (done.ts). A run missed while the machine
+// Runs the triggers due at `now` and starts the tasks they add, asks about the turns whose terminal
+// is gone and restarts the workers due a restart (worker.ts), then, with `watches`, the watches and
+// gc of the finished tasks a signal says are done with (done.ts). A run missed while the machine
 // slept happens once, on the first tick after.
 export async function tick(
   ledger: Ledger,
   home: string,
   now: Date,
   watches: boolean,
-): Promise<{ added: number[]; passed: number[]; collected: number[] }> {
+): Promise<{
+  added: number[]
+  passed: number[]
+  collected: number[]
+  lost: number[]
+  restarted: number[]
+}> {
   const added: number[] = []
   for (const t of ledger.triggers()) {
     const next = nextRun(t.cron, new Date(t.lastRunAt ?? t.createdAt))
@@ -99,11 +106,17 @@ export async function tick(
       ),
     ),
   )
+  const lost = await lostTurns(ledger, home, now)
+  // An account rule that cannot be read must not stop the watches.
+  const restarted = await restartDue(ledger, home).catch((error) => {
+    console.error(`nod: could not restart workers: ${message(error)}`)
+    return []
+  })
   const passed = watches ? await checkWatches(ledger, home) : []
   const collected = watches
     ? (await sweep(ledger, home, pullRequests(home), now)).report.removed
     : []
-  return { added, passed, collected }
+  return { added, passed, collected, lost, restarted }
 }
 
 // A watch passes when it exits 0. A command the shell cannot run (126, 127) never will; anything
@@ -263,7 +276,8 @@ export function scheduleEnv(home: string): Record<string, string> | null {
 
 // Registers the every-minute tick with the OS scheduler. The scheduler starts it with a bare
 // environment, so it brings this shell's PATH (tmux, claude, git) and Claude config dir, which the
-// triggers' workers and the watches use; turning it on again replaces both. It stays on, whether
+// watches use, and the triggers' workers too unless an account rule names theirs (account.ts);
+// turning it on again replaces both. It stays on, whether
 // or not anything is due, until turned off: a tick with nothing to do ends at once, while one that
 // came and went with the triggers and watches took the environment of whichever shell added one.
 export async function scheduleOn(home: string): Promise<void> {
@@ -298,10 +312,12 @@ export async function tickHome(home: string): Promise<void> {
   const ledger = new Ledger(home)
   const now = new Date()
   const watches = now.getMinutes() % WATCH_EVERY_MINUTES === 0
-  const { added, passed, collected } = await tick(ledger, home, now, watches)
+  const { added, passed, collected, lost, restarted } = await tick(ledger, home, now, watches)
   const at = new Date().toISOString()
   if (added.length > 0) console.log(`${at} added task(s) ${added.join(', ')}`)
   if (passed.length > 0)
     console.log(`${at} watch passed: ${passed.map((id) => `t${id}`).join(', ')}`)
   if (collected.length > 0) console.log(`${at} collected task(s) ${collected.join(', ')}`)
+  if (lost.length > 0) console.log(`${at} turn(s) lost with their terminal: ${lost.join(', ')}`)
+  if (restarted.length > 0) console.log(`${at} restarted task(s) ${restarted.join(', ')}`)
 }

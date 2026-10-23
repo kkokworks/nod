@@ -1,9 +1,14 @@
 // Stands in for interactive `claude` in tests. Each message is a turn: words in its first line pick
 // the reply, so context nod adds below cannot, then the hooks from --settings run as in Claude
 // Code, and a hook that blocks the stop starts a continuation. Between turns it reads what is typed
-// into its terminal. With $FAKE_AGENT_UNTRUSTED set, a new session first shows the trust dialog.
-// Every launch and turn is logged to $FAKE_AGENT_LOG.
-import { appendFileSync, existsSync, writeFileSync } from 'node:fs'
+// into its terminal. Started with no message, it waits for one. Like Claude Code, it keeps a
+// transcript in $CLAUDE_CONFIG_DIR (only when that is set, so a test never writes to the real one).
+// nod gives a worker a fixed environment, so the fake takes its switches from files in $NOD_HOME:
+// with `fake-untrusted`, a new session first shows the trust dialog; with `fake-exit`, it exits as
+// it starts, as Claude Code does without a login. Every launch, with its account and the names in
+// its environment, and every turn is logged to $NOD_HOME/agent.log.
+import { appendFileSync, existsSync, mkdirSync, realpathSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
 
 type Hooks = Record<string, { hooks: { command: string }[] }[]>
 
@@ -22,6 +27,15 @@ const GIT = [
   '-c',
   'commit.gpgsign=false',
 ]
+// The options of claude nod passes a value with.
+const VALUED = new Set([
+  '--resume',
+  '--session-id',
+  '--settings',
+  '--append-system-prompt',
+  '--model',
+  '--permission-mode',
+])
 
 const args = process.argv.slice(2)
 const flag = (name: string): string | null => {
@@ -31,20 +45,22 @@ const flag = (name: string): string | null => {
 const resumed = flag('--resume')
 const sessionId = resumed ?? flag('--session-id') ?? 'missing'
 const hooks: Hooks = JSON.parse(flag('--settings') ?? '{}').hooks ?? {}
-const logPath = process.env.FAKE_AGENT_LOG
-if (!logPath) throw new Error('FAKE_AGENT_LOG is not set')
-const log = (entry: object): void => appendFileSync(logPath, `${JSON.stringify(entry)}\n`)
+const home = process.env.NOD_HOME
+if (!home) throw new Error('NOD_HOME is not set')
+const log = (entry: object): void =>
+  appendFileSync(join(home, 'agent.log'), `${JSON.stringify(entry)}\n`)
+const prompt = args.find((a, i) => !a.startsWith('--') && !VALUED.has(args[i - 1] ?? '')) ?? null
 
 // Like `claude -p`, which nod runs as the reviewer: the prompt comes on stdin and the reply is
 // printed once. A brief with `review-strict` fails until ok.txt exists; `review-mute` gives no
 // verdict.
 if (args.includes('-p')) {
-  const prompt = await Bun.stdin.text()
-  log({ event: 'review', sessionId, message: prompt })
+  const stdin = await Bun.stdin.text()
+  log({ event: 'review', sessionId, message: stdin })
   let reply = 'NOD: done | looks right'
-  if (prompt.includes('review-strict') && !existsSync('ok.txt')) {
+  if (stdin.includes('review-strict') && !existsSync('ok.txt')) {
     reply = 'ok.txt is missing.\nNOD: failed | ok.txt is missing'
-  } else if (prompt.includes('review-mute')) {
+  } else if (stdin.includes('review-mute')) {
     reply = 'Looks fine.'
   }
   console.log(reply)
@@ -99,11 +115,24 @@ async function runHooks(event: string, payload: object): Promise<string> {
   return out
 }
 
+// Where Claude Code keeps a session's transcript (sessionFolder in worker.ts).
+function keepTranscript(): void {
+  const config = process.env.CLAUDE_CONFIG_DIR
+  if (!config) return
+  const folder = join(config, 'projects', realpathSync(process.cwd()).replace(/[/.]/g, '-'))
+  mkdirSync(folder, { recursive: true })
+  appendFileSync(join(folder, `${sessionId}.jsonl`), '{}\n')
+}
+
 async function turn(message: string, continuing: boolean): Promise<void> {
   log({ event: 'turn', sessionId, message })
+  keepTranscript()
   const head = message.split('\n')[0] ?? ''
   let reply = 'NOD: done | did it'
-  if (head.includes('need-permission')) {
+  if (head.includes('hang')) {
+    // A turn that goes on until something ends Claude Code.
+    await new Promise(() => {})
+  } else if (head.includes('need-permission')) {
     await runHooks('Notification', {
       session_id: sessionId,
       notification_type: 'permission_prompt',
@@ -177,9 +206,16 @@ log({
   event: 'launch',
   sessionId,
   resumed: resumed !== null,
+  prompt,
   system: flag('--append-system-prompt'),
+  config: process.env.CLAUDE_CONFIG_DIR ?? null,
+  env: Object.keys(process.env),
 })
-if (process.env.FAKE_AGENT_UNTRUSTED && resumed === null) await trustDialog()
+if (existsSync(join(home, 'fake-exit'))) {
+  console.log('Not logged in · Please run /login')
+  process.exit(1)
+}
+if (existsSync(join(home, 'fake-untrusted')) && resumed === null) await trustDialog()
 await runHooks('SessionStart', { session_id: sessionId })
-await turn(args.at(-1) ?? '', false)
+if (prompt !== null) await turn(prompt, false)
 while (true) await turn(await nextInput(), false)

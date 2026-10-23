@@ -30,6 +30,8 @@ export type DecisionReason =
   | 'permission'
   | 'trust'
   | 'rule'
+  // The worker's Claude Code ended in the middle of a turn, or kept exiting as it started.
+  | 'interrupted'
 
 export type Task = {
   id: number
@@ -57,6 +59,9 @@ export type Task = {
   collectedAt: string | null
   // Set by gc on a repo task: the commit its branch pointed at, to rebuild the worktree from.
   head: string | null
+  // The CLAUDE_CONFIG_DIR its Claude Code last started with, '' for none. Set by the terminal that
+  // keeps Claude Code running (keepWorker in worker.ts), so null means no such terminal started it.
+  account: string | null
   status: TaskStatus
   error: string | null
   createdAt: string
@@ -408,6 +413,9 @@ export const MIGRATIONS = [
   // v18: the Claude session that added a task. Tasks before this keep it empty: their history has
   // only the first 8 characters of the id (`claude:<session>`), too few to reopen the session.
   'alter table tasks add column root_session text;',
+  // v19: the account (Claude config dir) a worker's Claude Code started with, so nod can tell when
+  // the current account is another one.
+  'alter table tasks add column account text;',
 ]
 // The migration that moves <home>/rules.md into the ledger, numbered as user_version counts.
 const RULES_FILE_MIGRATION = 17
@@ -457,6 +465,7 @@ const TASK = [
   'workspace',
   'collectedAt',
   'head',
+  'account',
   'status',
   'error',
   'createdAt',
@@ -648,6 +657,10 @@ export class Ledger {
   // resume brought the task back after gc, so ls lists it again.
   uncollected(id: number): void {
     this.run(q.updateTable('tasks').set({ collectedAt: null }).where('id', '=', id))
+  }
+
+  setAccount(id: number, account: string): void {
+    this.run(q.updateTable('tasks').set({ account }).where('id', '=', id))
   }
 
   // Records where the task's result went. The same address twice is kept once.

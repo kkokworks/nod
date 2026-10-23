@@ -3,8 +3,9 @@ import type { Terminals } from './tmux'
 import type { Change } from './todos'
 import { sessionName } from './worker'
 
-// How ls and the UI name a task's state. A running task without a session was cut off (exit,
-// restart); `nod resume` reopens it.
+// How ls and the UI name a task's state. A running task without a session lost its terminal (a
+// restart of the machine or of tmux): the tick asks about the turn it was in (lostTurns), and
+// `nod resume` reopens it.
 export function taskStatus(t: Task, terminals: Terminals): string {
   return t.status === 'running' && !terminals.alive(sessionName(t.id)) ? 'session ended' : t.status
 }

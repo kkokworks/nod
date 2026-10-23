@@ -10,6 +10,7 @@ import {
 } from 'node:fs'
 import { basename, join, resolve } from 'node:path'
 import { tempDirs } from '../test/tmp'
+import { setAccountRule } from './account'
 import { collect } from './gc'
 import { Ledger, type Task, type TaskStatus } from './ledger'
 import { DIFF_LIMIT, reviewBrief } from './review'
@@ -19,14 +20,18 @@ import { addTrigger, tick } from './triggers'
 import {
   answer,
   drop,
+  lostTurns,
   onStop,
   parseCaptures,
   parseReport,
+  restart,
+  restartDue,
   sessionFolder,
   sessionName,
   startReady,
   startTask,
   tell,
+  trustedFile,
   workerEnv,
   workspaceOf,
 } from './worker'
@@ -53,6 +58,8 @@ process.env.PATH = `${bin}:${process.env.PATH}`
 if (Bun.which('claude', { PATH: process.env.PATH }) !== join(bin, 'claude')) {
   throw new Error('fake claude is not first on PATH')
 }
+// Workers get the account in the environment; the fake keeps its transcripts there.
+process.env.CLAUDE_CONFIG_DIR = tmp.make('nod-claude-')
 
 let home: string
 let ledger: Ledger
@@ -62,19 +69,22 @@ beforeEach(() => {
   home = tmp.make('nod-worker-')
   homes.push(home)
   mkdirSync(join(home, 'work'))
-  writeFileSync(join(home, 'work', '.trusted'), '') // nod's own work folder counts as trusted
-  log = join(home, 'agent.log')
-  process.env.FAKE_AGENT_LOG = log // a new tmux server per home starts with this environment
-  delete process.env.FAKE_AGENT_UNTRUSTED
+  trust(process.env.CLAUDE_CONFIG_DIR ?? null) // nod's own work folder counts as trusted
+  log = join(home, 'agent.log') // where the fake logs (fake-agent.ts)
   ledger = new Ledger(home)
 })
+
+const trust = (config: string | null): void => writeFileSync(trustedFile(home, config), '')
 
 type LogEntry = {
   event: string
   sessionId: string
   resumed?: boolean
+  prompt?: string | null
   message?: string
   system?: string | null
+  config?: string | null
+  env?: string[]
 }
 const entries = (event: string): LogEntry[] =>
   existsSync(log)
@@ -289,8 +299,10 @@ test('a watch with --back-to passes into that task, brought back after gc, which
   const watch = `cat ${JSON.stringify(reply)}`
   todos.set(todo.id, { status: 'waiting', waitingOn: 'the author', watch, backTo: id }, 'human')
   // gc collects it before the answer comes, keeping the transcript, so tell brings it back.
-  process.env.CLAUDE_CONFIG_DIR = tmp.make('nod-worker-claude-')
-  const sessions = sessionFolder(workspaceOf(home, ledger.get(id)))
+  const sessions = sessionFolder(
+    workspaceOf(home, ledger.get(id)),
+    process.env.CLAUDE_CONFIG_DIR ?? null,
+  )
   mkdirSync(sessions, { recursive: true })
   writeFileSync(join(sessions, `${ledger.lastAttempt(id)?.sessionId}.jsonl`), '{}\n')
   ledger.collected(id, null)
@@ -490,7 +502,7 @@ function newRepo(): string {
 }
 
 test('a repo Claude Code does not trust yet becomes a decision: yes trusts and starts, no cancels', async () => {
-  process.env.FAKE_AGENT_UNTRUSTED = '1'
+  writeFileSync(join(home, 'fake-untrusted'), '')
   const addIn = (repo: string): number =>
     ledger.add({
       brief: 'work here',
@@ -520,8 +532,11 @@ test('a repo Claude Code does not trust yet becomes a decision: yes trusts and s
   expect(Terminals.of(home).alive(sessionName(refused))).toBe(false)
 })
 
-test('due triggers add tasks, a source only for lines it has not printed before, and notify hears every turn of a task', async () => {
-  // One file per event, renamed into place, so a read never sees half an event.
+type Heard = { event: string; task?: { id: number }; error?: string; reason?: string }
+
+// Makes <home>/notify keep each event, and returns what it has kept so far. One file per event,
+// renamed into place, so a read never sees half an event.
+function listen(): () => Heard[] {
   const events = join(home, 'events')
   mkdirSync(events)
   writeFileSync(
@@ -529,6 +544,14 @@ test('due triggers add tasks, a source only for lines it has not printed before,
     `#!/bin/sh\nf=${JSON.stringify(events)}/$$\ncat > "$f.tmp" && mv "$f.tmp" "$f.json"\n`,
   )
   chmodSync(join(home, 'notify'), 0o755)
+  return () =>
+    readdirSync(events)
+      .filter((f) => f.endsWith('.json'))
+      .map((f): Heard => JSON.parse(readFileSync(join(events, f), 'utf8')))
+}
+
+test('due triggers add tasks, a source only for lines it has not printed before, and notify hears every turn of a task', async () => {
+  const events = listen()
   const items = join(home, 'items.txt')
   writeFileSync(items, 'a\told item\n')
   const base = { cron: '* * * * *', repo: null, branch: null, checkCmd: null, model: null }
@@ -548,11 +571,7 @@ test('due triggers add tasks, a source only for lines it has not printed before,
 
   await reaches(fromSource, 'succeeded')
   await reaches(scheduled, 'needs_decision')
-  const heard = (): [string, number][] =>
-    readdirSync(events)
-      .filter((f) => f.endsWith('.json'))
-      .map((f) => JSON.parse(readFileSync(join(events, f), 'utf8')))
-      .map((e) => [e.event, e.task.id])
+  const heard = (): [string, number | undefined][] => events().map((e) => [e.event, e.task?.id])
   await until(() => heard().length === 2)
   expect(heard()).toContainEqual(['succeeded', fromSource])
   expect(heard()).toContainEqual(['decision', scheduled])
@@ -663,6 +682,213 @@ test('a worker learns its task through NOD_TASK, so the todos it changes name it
   expect(workerEnv('/h', 5)).toMatchObject({ NOD_HOME: '/h', NOD_TASK: '5' })
   expect(workerEnv('/h', null)).not.toHaveProperty('NOD_TASK')
 })
+
+test('a worker keeps only what it needs of the environment it starts from, and the account it is given', () => {
+  const outer = {
+    // What a terminal, an agent host and a person's shell put there for themselves.
+    TERM_SESSION_ID: 'w0t0p0:example',
+    CLAUDE_CODE_SSE_PORT: '12345',
+    NOD_ACTOR: 'human',
+    // What the worker needs.
+    HTTPS_PROXY: 'http://proxy.example.com:3128',
+    NODE_EXTRA_CA_CERTS: '/certs/example.pem',
+    LC_ALL: 'ko_KR.UTF-8',
+    ANTHROPIC_BASE_URL: 'https://llm.example.com',
+  }
+  Object.assign(process.env, outer)
+  try {
+    const env = workerEnv('/h', 5, '/accounts/a')
+    expect(env).toMatchObject({
+      HOME: process.env.HOME,
+      PATH: process.env.PATH,
+      HTTPS_PROXY: outer.HTTPS_PROXY,
+      NODE_EXTRA_CA_CERTS: outer.NODE_EXTRA_CA_CERTS,
+      LC_ALL: outer.LC_ALL,
+      ANTHROPIC_BASE_URL: outer.ANTHROPIC_BASE_URL,
+      NOD_HOME: '/h',
+      NOD_TASK: '5',
+      CLAUDE_CONFIG_DIR: '/accounts/a',
+    })
+    for (const marker of ['TERM_SESSION_ID', 'CLAUDE_CODE_SSE_PORT', 'NOD_ACTOR']) {
+      expect(env).not.toHaveProperty(marker)
+    }
+    expect(workerEnv('/h', 5, null)).not.toHaveProperty('CLAUDE_CONFIG_DIR')
+  } finally {
+    for (const key of Object.keys(outer)) delete process.env[key]
+  }
+})
+
+test("a worker's terminal passes on none of the tmux server's environment", async () => {
+  // As a terminal marks its panes; the home's tmux server starts with it.
+  process.env.NOD_TEST_PANE_ID = 'outer'
+  try {
+    const id = await add('first')
+    await reaches(id, 'succeeded')
+  } finally {
+    delete process.env.NOD_TEST_PANE_ID
+  }
+  const server = Terminals.of(home).attachCommand('x').slice(0, 3)
+  const global = Bun.spawnSync([...server, 'show-environment', '-g', 'NOD_TEST_PANE_ID'])
+  expect(global.stdout.toString().trim()).toBe('NOD_TEST_PANE_ID=outer')
+  const env = entries('launch')[0]?.env ?? []
+  expect(env).not.toContain('NOD_TEST_PANE_ID')
+  // TMUX_TMPDIR: where the tests keep nod's tmux sockets, which its hooks need too.
+  expect(env).toEqual(
+    expect.arrayContaining([
+      'HOME',
+      'PATH',
+      'NOD_HOME',
+      'NOD_TASK',
+      'CLAUDE_CONFIG_DIR',
+      'TERM',
+      'TMUX_TMPDIR',
+    ]),
+  )
+})
+
+// Ends a worker's Claude Code and not its terminal, as a tool that switches accounts does.
+function endClaude(id: number): void {
+  const terminal = Terminals.of(home).panePid(sessionName(id))
+  Bun.spawnSync(['pkill', '-TERM', '-P', String(terminal)])
+}
+
+test('whatever ends its Claude Code, a worker starts again in the same terminal and conversation, without the brief', async () => {
+  const id = await add('first')
+  await reaches(id, 'succeeded')
+  const name = sessionName(id)
+  const pane = Terminals.of(home).pane(name)
+  endClaude(id)
+  await until(() => entries('launch')[1])
+  const session = ledger.attempts(id)[0]?.sessionId
+  expect(entries('launch').map((l) => [l.sessionId, l.resumed, l.prompt])).toEqual([
+    [session, false, 'first'],
+    [session, true, null],
+  ])
+  expect(Terminals.of(home).pane(name)).toBe(pane)
+
+  await tell(ledger, home, id, 'second')
+  await reaches(id, 'succeeded')
+  expect(entries('turn').map((t) => t.message)).toEqual(['first', 'second'])
+  expect(entries('launch')).toHaveLength(2)
+  expect(ledger.decisions(id)).toEqual([])
+}, 30_000)
+
+test('a turn its Claude Code ended becomes a decision once it is up again, and the answer goes on in the same conversation', async () => {
+  const id = await add('hang until ended')
+  await until(() => entries('turn')[0])
+  endClaude(id)
+  const decision = await until(() => ledger.decisions(id)[0])
+  expect(decision.reason).toBe('interrupted')
+  expect(decision.question).toContain('ended in the middle of a turn')
+  expect(decision.question).toContain('> hang until ended')
+  expect(ledger.attempts(id).map((a) => a.outcome)).toEqual(['error'])
+
+  await answer(ledger, home, decision.id, 'check and carry on', 'human')
+  await reaches(id, 'succeeded')
+  expect(entries('launch').map((l) => l.resumed)).toEqual([false, true])
+  expect(entries('turn').map((t) => t.message)).toEqual([
+    'hang until ended',
+    expect.stringMatching(/^Your last turn was cut off.*\nHuman decision: check and carry on$/s),
+  ])
+}, 30_000)
+
+test('a Claude Code that keeps exiting as it starts is not started again: the person hears why, and the next message starts it', async () => {
+  const events = listen()
+  const id = await add('first')
+  await reaches(id, 'succeeded')
+  writeFileSync(join(home, 'fake-exit'), '')
+  endClaude(id)
+  await until(() => !Terminals.of(home).alive(sessionName(id)))
+  const error = events().find((e) => e.event === 'error')
+  expect(error?.error).toContain('exited 3 times as it started')
+  expect(error?.error).toContain('Not logged in')
+  // Between turns there was nothing to decide.
+  expect(status(id)).toBe('succeeded')
+
+  rmSync(join(home, 'fake-exit'))
+  await tell(ledger, home, id, 'again')
+  await reaches(id, 'succeeded')
+  expect(entries('turn').map((t) => t.message)).toEqual(['first', 'again'])
+}, 30_000)
+
+test('with an account rule, a worker starts again as the current account: at once between turns, after a turn in progress, and with the message that finds it on the old one', async () => {
+  const current = join(home, 'account')
+  const [a, b, c, d] = ['a', 'b', 'c', 'd'].map((x) => tmp.make(`nod-account-${x}-`))
+  for (const x of [a, b, c, d]) trust(x ?? null)
+  setAccountRule(home, { file: current })
+  writeFileSync(current, `${a}\n`)
+  const id = await add('first')
+  await reaches(id, 'succeeded')
+  expect(ledger.get(id).account).toBe(a ?? '')
+
+  writeFileSync(current, `${b}\n`)
+  expect(await restartDue(ledger, home)).toEqual([id])
+  await until(() => entries('launch')[1])
+
+  await tell(ledger, home, id, 'need-permission')
+  const permission = await until(() => ledger.decisions(id)[0])
+  writeFileSync(current, `${c}\n`)
+  expect(await restartDue(ledger, home)).toEqual([]) // in the middle of a turn
+  await answer(ledger, home, permission.id, 'yes', 'human')
+  await until(() => entries('launch')[2])
+
+  writeFileSync(current, `${d}\n`)
+  await tell(ledger, home, id, 'go on')
+  await reaches(id, 'succeeded')
+  await until(() => entries('turn')[2])
+  const session = ledger.attempts(id)[0]?.sessionId
+  expect(entries('launch').map((l) => [l.sessionId, l.config, l.prompt])).toEqual([
+    [session, a, 'first'],
+    [session, b, null],
+    [session, c, null],
+    [session, d, 'go on'],
+  ])
+  expect(entries('turn').map((t) => t.message)).toEqual(['first', 'need-permission', 'go on'])
+  expect(ledger.get(id).account).toBe(d ?? '')
+}, 30_000)
+
+test('a restart waits for a person attached to the worker, who hears why once', async () => {
+  const events = listen()
+  const id = await add('first')
+  await reaches(id, 'succeeded')
+  const name = sessionName(id)
+  const terminals = Terminals.of(home)
+  // A control-mode client is attached as a person's terminal is, without needing one.
+  const [tmux = 'tmux', ...attach] = terminals.attachCommand(name)
+  const person = Bun.spawn([tmux, '-C', ...attach], { stdin: 'pipe', stdout: 'ignore' })
+  await until(() => terminals.attached(name))
+  expect(await restart(ledger, home, id, 'nod restart')).toBe('attached')
+  expect(await restartDue(ledger, home)).toEqual([])
+  expect(events().filter((e) => e.event === 'restart_held')).toEqual([
+    expect.objectContaining({ reason: 'nod restart' }),
+  ])
+
+  person.kill()
+  await person.exited
+  await until(() => !terminals.attached(name))
+  expect(await restartDue(ledger, home)).toEqual([id])
+  await until(() => entries('launch')[1])
+}, 30_000)
+
+test('a turn whose terminal went (the machine or tmux restarted) becomes a decision, and the answer reopens its conversation', async () => {
+  const id = await add('hang until ended')
+  await until(() => entries('turn')[0])
+  Terminals.of(home).killServer()
+  // A turn just started may still be opening its terminal.
+  expect(await lostTurns(ledger, home, new Date())).toEqual([])
+  const later = new Date(Date.now() + 60_000)
+  expect(await lostTurns(ledger, home, later)).toEqual([id])
+  expect(await lostTurns(ledger, home, later)).toEqual([])
+  const decision = ledger.decisions(id)[0]
+  if (decision === undefined) throw new Error('no decision')
+  expect(decision.reason).toBe('interrupted')
+  expect(decision.question).toContain('Its terminal went in the middle of a turn')
+
+  await answer(ledger, home, decision.id, 'carry on', 'human')
+  await reaches(id, 'succeeded')
+  expect(entries('launch').map((l) => l.resumed)).toEqual([false, true])
+  expect(entries('turn').at(-1)?.message).toContain('Human decision: carry on')
+}, 30_000)
 
 test("a delegated todo waits through its task's decision, is done when it succeeds, and comes back when dropped", async () => {
   const todos = new Todos(ledger)

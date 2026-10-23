@@ -20,6 +20,8 @@ export type NotifyEvent =
   | { event: 'succeeded'; task: TaskRef; summary: string }
   | { event: 'cancelled'; task: TaskRef }
   | { event: 'error'; task: TaskRef; error: string }
+  // A worker's Claude Code is due to start again, but a person is attached to its terminal.
+  | { event: 'restart_held'; task: TaskRef; reason: string }
   | { event: 'trigger_failed'; trigger: { id: number; cron: string }; error: string }
   | { event: 'watch_passed'; todo: { id: number; title: string }; watch: string }
   | { event: 'watch_failed'; todo: { id: number; title: string }; watch: string; error: string }
