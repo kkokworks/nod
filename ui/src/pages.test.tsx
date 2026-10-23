@@ -1,4 +1,4 @@
-import { afterAll, beforeEach, expect, mock, setSystemTime, test } from 'bun:test'
+import { afterAll, afterEach, beforeEach, expect, mock, setSystemTime, test } from 'bun:test'
 import { GlobalRegistrator } from '@happy-dom/global-registrator'
 import type { AnyRoute } from '@tanstack/react-router'
 import { tempDirs } from '../../test/tmp'
@@ -80,9 +80,12 @@ beforeEach(() => {
   posted.length = 0
   onPost = () => {}
 })
+// A test that moved the clock puts it back, even when it fails.
+afterEach(() => setSystemTime())
 afterAll(async () => {
   act(() => view.unmount())
   await GlobalRegistrator.unregister()
+  Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: undefined })
 })
 
 // Lets the sends and reloads a click started finish.
@@ -229,9 +232,28 @@ test('answering with a button keeps what was being written', async () => {
     open[5] = undefined
   }
   await reload()
+  setSystemTime(new Date(Date.now() + 1500))
   await click('Yes')
   expect(posted.splice(0)).toEqual([{ taskId: 5, decisionId: 8, text: 'yes' }])
   expect(field<HTMLTextAreaElement>('textarea').value).toBe('half a thought')
+})
+
+test('a button does not answer a decision that just took the place of another', async () => {
+  answer = (id) => detail(id as number)
+  open[6] = { id: 10, reason: 'permission' }
+  await go('/tasks/6')
+  // The answer is taken, and the worker asks the next just as the person clicks again.
+  onPost = () => {
+    open[6] = { id: 11, reason: 'permission' }
+  }
+  await click('Yes')
+  await click('Yes')
+  expect(posted.splice(0)).toEqual([{ taskId: 6, decisionId: 10, text: 'yes' }])
+  expect(banners().join()).toContain('#11')
+  // A moment on, the person has seen it.
+  setSystemTime(new Date(Date.now() + 1500))
+  await click('Yes')
+  expect(posted.splice(0)).toEqual([{ taskId: 6, decisionId: 11, text: 'yes' }])
 })
 
 test('a change to the todo keeps what is being typed in the form and says so', async () => {
@@ -297,5 +319,4 @@ test('a key pressed as the refresh takes its row away does not act on the next r
   expect(focused()).toBe('three')
   await press('KeyX', 'x')
   expect(posted.splice(0)).toEqual([{ id: 3, edit: { status: 'done' } }])
-  setSystemTime()
 })
