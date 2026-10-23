@@ -239,6 +239,22 @@ test('answering with a button keeps what was being written', async () => {
   expect(field<HTMLTextAreaElement>('textarea').value).toBe('half a thought')
 })
 
+test('⌘↵ pressed again before the message is through sends it once', async () => {
+  answer = (id) => detail(id as number)
+  await go('/tasks/7')
+  type(field('textarea'), 'hi')
+  const send = () =>
+    act(() => {
+      field('textarea').dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Enter', metaKey: true, bubbles: true }),
+      )
+    })
+  send()
+  send()
+  await settle()
+  expect(posted.splice(0)).toEqual([{ taskId: 7, decisionId: null, text: 'hi' }])
+})
+
 test('a button does not answer a decision that just took the place of another', async () => {
   answer = (id) => detail(id as number)
   open[6] = { id: 10, reason: 'permission' }

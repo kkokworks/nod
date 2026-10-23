@@ -267,7 +267,8 @@ function Composer({ taskId, open }: { taskId: number; open: Decision | undefined
   // Sends the text to what it was begun for; when that changed, says so, and sends to what is open
   // now only when asked again.
   const sendText = () => {
-    if (text.trim() === '') return
+    // ⌘↵ is not a disabled button: pressed again while the message is on its way, it waits.
+    if (busy || text.trim() === '') return
     if (aim !== now) {
       setAim(now)
       setError(
