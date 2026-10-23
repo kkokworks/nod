@@ -1,17 +1,17 @@
 import { afterAll, expect, test } from 'bun:test'
-import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tempDirs } from '../test/tmp'
-import { collect, sessionFolder } from './gc'
+import { collect } from './gc'
 import { Ledger } from './ledger'
-import { branchOf, workspaceOf } from './worker'
+import { branchOf, restore, sessionFolder, workspaceOf } from './worker'
 
 const tmp = tempDirs()
 afterAll(tmp.removeAll)
 
 const OLD = '2026-01-01T00:00:00.000Z'
 
-test('gc removes old finished workspaces and their session folders, and keeps the rest', async () => {
+test('gc removes old finished workspaces, keeps their session transcripts, and keeps the rest', async () => {
   const home = tmp.make('nod-gc-')
   process.env.CLAUDE_CONFIG_DIR = tmp.make('nod-gc-claude-')
   const ledger = new Ledger(home)
@@ -70,7 +70,8 @@ test('gc removes old finished workspaces and their session folders, and keeps th
     skipped: [{ id: dirty, reason: 'uncommitted changes in worktree' }],
   })
   expect(existsSync(workspaceOf(home, ledger.get(oldPlain)))).toBe(false)
-  expect(existsSync(oldPlainSessions)).toBe(false)
+  // The transcript stays, so resume can bring the task back.
+  expect(existsSync(oldPlainSessions)).toBe(true)
   expect(existsSync(workspaceOf(home, ledger.get(oldRepo)))).toBe(false)
   // Not pushed and no default branch to compare with: the branch is the only copy, so it stays.
   expect(sh(['git', 'branch', '--list', 'feat/old-repo'], repo)).toContain('feat/old-repo')
@@ -107,6 +108,13 @@ test('gc collects the tasks the human names, however recent, and leaves unfinish
     ledger.setRunning(id, workspaceOf(home, ledger.get(id)))
     return id
   }
+  // A folder gc may not delete from; it must not stop gc from getting through the tasks after it.
+  const locked = task('locked')
+  ledger.succeed(locked)
+  const lockedDir = join(workspaceOf(home, ledger.get(locked)), 'locked')
+  mkdirSync(lockedDir)
+  writeFileSync(join(lockedDir, 'file'), '')
+  chmodSync(lockedDir, 0o555)
   const named = task('named')
   ledger.succeed(named)
   const other = task('other')
@@ -116,13 +124,18 @@ test('gc collects the tasks the human names, however recent, and leaves unfinish
   ledger.succeed(gone)
   rmSync(workspaceOf(home, ledger.get(gone)), { recursive: true })
 
-  const report = await collect(ledger, home, { ids: [named, running, gone] })
+  const report = await collect(ledger, home, { ids: [locked, named, running, gone] })
+  chmodSync(lockedDir, 0o755)
 
   expect(report).toEqual({
     removed: [named],
     clean: [gone],
-    skipped: [{ id: running, reason: 'still running' }],
+    skipped: [
+      { id: locked, reason: expect.stringContaining('EACCES') },
+      { id: running, reason: 'still running' },
+    ],
   })
+  expect(ledger.get(locked).collectedAt).toBeNull()
   expect(ledger.get(gone).collectedAt).not.toBeNull()
   expect(ledger.get(running).collectedAt).toBeNull()
   expect(await collect(ledger, home, { ids: [named] })).toEqual({
@@ -185,6 +198,81 @@ test('gc deletes a branch once a remote branch holds it or the default branch ha
   ])
   // The folders named after the repo and branch prefix went with the last worktree in them.
   expect(existsSync(join(home, 'work', 'repo'))).toBe(false)
+})
+
+test('resume brings a collected task back: the worktree returns at the same path from the commit gc recorded', async () => {
+  const home = tmp.make('nod-gc-')
+  process.env.CLAUDE_CONFIG_DIR = tmp.make('nod-gc-claude-')
+  const ledger = new Ledger(home)
+  const repo = join(home, 'repo')
+  mkdirSync(repo)
+  const git = (cwd: string, ...args: string[]): string =>
+    sh(['git', '-c', 'user.email=t@t', '-c', 'user.name=t', ...args], cwd)
+  git(repo, 'init', '-q')
+  git(repo, 'commit', '-q', '--allow-empty', '-m', 'init')
+  const task = (brief: string, branch: string | null): number => {
+    const id = ledger.add({
+      brief,
+      repo: branch === null ? null : repo,
+      branch,
+      checkCmd: null,
+      model: null,
+      after: [],
+      triggerId: null,
+      issue: null,
+    })
+    const cwd = workspaceOf(home, ledger.get(id))
+    if (branch === null) mkdirSync(cwd, { recursive: true })
+    else git(repo, 'worktree', 'add', '-q', '-b', branch, cwd)
+    ledger.setRunning(id, cwd)
+    const sessionId = `session-${id}`
+    ledger.startAttempt({ taskId: id, kind: 'start', decisionId: null, sessionId, prompt: brief })
+    ledger.succeed(id)
+    mkdirSync(sessionFolder(cwd), { recursive: true })
+    writeFileSync(join(sessionFolder(cwd), `${sessionId}.jsonl`), '{}\n')
+    return id
+  }
+  const id = task('feature', 'feat/x')
+  const cwd = workspaceOf(home, ledger.get(id))
+  writeFileSync(join(cwd, 'x.txt'), 'x')
+  git(cwd, 'add', '.')
+  git(cwd, 'commit', '-q', '-m', 'x')
+  // Pushed, so gc deletes the branch; then the remote branch goes too, as after a merge.
+  git(repo, 'update-ref', 'refs/remotes/origin/feat/x', 'feat/x')
+  const head = git(repo, 'rev-parse', 'feat/x').trim()
+  await collect(ledger, home, { ids: [id] })
+  expect(ledger.get(id).head).toBe(head)
+  expect(git(repo, 'branch', '--list', 'feat/x')).toBe('')
+  // A second gc that finds the branch gone keeps the commit the first one recorded.
+  ledger.collected(id, null)
+  expect(ledger.get(id).head).toBe(head)
+  git(repo, 'update-ref', '-d', 'refs/remotes/origin/feat/x')
+
+  await restore(ledger, id)
+
+  expect(readFileSync(join(cwd, 'x.txt'), 'utf8')).toBe('x')
+  expect(git(repo, 'rev-parse', 'feat/x').trim()).toBe(head)
+  expect(ledger.get(id).collectedAt).toBeNull()
+
+  // A worktree folder deleted by hand stays registered with git; it still comes back.
+  const byHand = task('deleted by hand', 'feat/y')
+  const byHandCwd = workspaceOf(home, ledger.get(byHand))
+  writeFileSync(join(byHandCwd, 'y.txt'), 'y')
+  git(byHandCwd, 'add', '.')
+  git(byHandCwd, 'commit', '-q', '-m', 'y')
+  rmSync(byHandCwd, { recursive: true })
+  await collect(ledger, home, { ids: [byHand] })
+  await restore(ledger, byHand)
+  expect(readFileSync(join(byHandCwd, 'y.txt'), 'utf8')).toBe('y')
+
+  // A task collected before gc kept transcripts cannot come back, and says so.
+  const plain = task('plain', null)
+  await collect(ledger, home, { ids: [plain] })
+  const plainCwd = workspaceOf(home, ledger.get(plain))
+  rmSync(sessionFolder(plainCwd), { recursive: true })
+  await expect(restore(ledger, plain)).rejects.toThrow('transcript is gone')
+  expect(existsSync(plainCwd)).toBe(false)
+  expect(ledger.get(plain).collectedAt).not.toBeNull()
 })
 
 function sh(cmd: string[], cwd: string): string {

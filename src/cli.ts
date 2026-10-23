@@ -2,8 +2,10 @@
 import { existsSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { parseArgs } from 'node:util'
-import { collect, type GcPick, remotesHolding } from './gc'
+import { sweep } from './done'
+import { collect, type GcPick, type GcReport, remotesHolding } from './gc'
 import { type Attempt, type Decision, Ledger, nodHome, type Task, type Trigger } from './ledger'
+import { pullRequests } from './prs'
 import { Terminals } from './tmux'
 import {
   actorFromEnv,
@@ -71,12 +73,17 @@ const USAGE = `usage:
   nod show <task>                  history, links, then the worker's last full report
   nod stats
   nod gc [<task...> | --older-than <days>]
-                                   close sessions and delete workspaces, worktrees and session
-                                   folders of the named finished tasks, or of tasks finished that
-                                   long ago (default 7), and their branches once a remote branch
-                                   holds the commits or the remote's default branch has the
-                                   changes; ledger rows stay, and ls stops listing the tasks.
-                                   Session folders go too, so a collected task cannot be resumed
+                                   close sessions and delete workspaces and worktrees of the named
+                                   finished tasks, or of tasks finished that long ago, or, with
+                                   neither, of the finished tasks a signal says are done with:
+                                   dropped, taken over by a newer task on the same todo, merged
+                                   into the default branch, a linked pull request merged, closed or
+                                   approved by you, or finished 7+ days ago (never one with commits
+                                   no remote has). Branches go once a remote branch holds the
+                                   commits or the remote's default branch has the changes; ledger
+                                   rows and session transcripts stay, ls stops listing the tasks,
+                                   and resume or tell brings one back. The schedule runs the
+                                   signal check every 5 minutes
   nod trigger add <cron> <brief...> [--source <command>] [--repo <path> --branch <prefix>]
                   [--check <command>] [--model <model>]
                                    add a task on a schedule (5-field cron, local time); with
@@ -118,11 +125,11 @@ switch (command) {
     await add(rest)
     break
   case 'tell':
-    tell(ledger, home, taskRef(rest[0]), words(rest.slice(1)))
+    await tell(ledger, home, taskRef(rest[0]), words(rest.slice(1)))
     console.log('sent')
     break
   case 'resume':
-    resume(ledger, home, taskRef(rest[0]))
+    await resume(ledger, home, taskRef(rest[0]))
     console.log('reopened')
     break
   case 'attach':
@@ -408,16 +415,27 @@ async function gc(args: string[]): Promise<void> {
     options: { 'older-than': { type: 'string' } },
     allowPositionals: true,
   })
-  if (positionals.length > 0 && values['older-than'] !== undefined) {
+  const olderThan = values['older-than']
+  if (positionals.length > 0 && olderThan !== undefined) {
     throw new Error('name tasks or give --older-than, not both')
   }
-  const report = await collect(ledger, home, gcPick(positionals, values['older-than'] ?? '7'))
+  if (positionals.length === 0 && olderThan === undefined) {
+    const { report, done, unchecked } = await sweep(ledger, home, pullRequests(home), new Date())
+    printGc(report)
+    for (const d of done) if (report.removed.includes(d.id)) console.log(`  #${d.id}: ${d.reason}`)
+    for (const u of unchecked) console.log(`unchecked #${u.id}: ${u.error}`)
+    return
+  }
+  printGc(await collect(ledger, home, gcPick(positionals, olderThan)))
+}
+
+function printGc(report: GcReport): void {
   console.log(`removed ${report.removed.length} task(s): ${report.removed.join(', ') || '-'}`)
   if (report.clean.length > 0) console.log(`already clean: ${report.clean.join(', ')}`)
   for (const s of report.skipped) console.log(`skipped #${s.id}: ${s.reason}`)
 }
 
-function gcPick(tasks: string[], olderThan: string): GcPick {
+function gcPick(tasks: string[], olderThan: string | undefined): GcPick {
   if (tasks.length > 0) return { ids: tasks.map((t) => ledger.get(taskRef(t)).id) }
   const days = Number(olderThan)
   if (!(days >= 0)) throw new Error(`--older-than must be a number of days: ${olderThan}`)

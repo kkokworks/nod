@@ -1,8 +1,10 @@
 import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { z } from 'zod'
+import { sweep } from './done'
 import { Ledger, type Trigger } from './ledger'
 import { notify, taskRef } from './notify'
+import { pullRequests } from './prs'
 import { homeId } from './tmux'
 import { Todos } from './todos'
 import { oneLine } from './view'
@@ -65,14 +67,15 @@ export async function addTrigger(
   return { id, seen: items.length }
 }
 
-// Runs the triggers due at `now` and starts the tasks they add, then, with `watches`, the watches.
-// A run missed while the machine slept happens once, on the first tick after.
+// Runs the triggers due at `now` and starts the tasks they add, then, with `watches`, the watches
+// and gc of the finished tasks a signal says are done with (done.ts). A run missed while the machine
+// slept happens once, on the first tick after.
 export async function tick(
   ledger: Ledger,
   home: string,
   now: Date,
   watches: boolean,
-): Promise<{ added: number[]; passed: number[] }> {
+): Promise<{ added: number[]; passed: number[]; collected: number[] }> {
   const added: number[] = []
   for (const t of ledger.triggers()) {
     const next = nextRun(t.cron, new Date(t.lastRunAt ?? t.createdAt))
@@ -96,7 +99,10 @@ export async function tick(
     ),
   )
   const passed = watches ? await checkWatches(ledger, home) : []
-  return { added, passed }
+  const collected = watches
+    ? (await sweep(ledger, home, pullRequests(home), now)).report.removed
+    : []
+  return { added, passed, collected }
 }
 
 // A watch passes when it exits 0. A command the shell cannot run (126, 127) never will; anything
@@ -261,9 +267,10 @@ export async function tickHome(home: string): Promise<void> {
   const ledger = new Ledger(home)
   const now = new Date()
   const watches = now.getMinutes() % WATCH_EVERY_MINUTES === 0
-  const { added, passed } = await tick(ledger, home, now, watches)
+  const { added, passed, collected } = await tick(ledger, home, now, watches)
   const at = new Date().toISOString()
   if (added.length > 0) console.log(`${at} added task(s) ${added.join(', ')}`)
   if (passed.length > 0)
     console.log(`${at} watch passed: ${passed.map((id) => `t${id}`).join(', ')}`)
+  if (collected.length > 0) console.log(`${at} collected task(s) ${collected.join(', ')}`)
 }

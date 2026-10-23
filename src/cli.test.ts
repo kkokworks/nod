@@ -124,7 +124,7 @@ test('ls hides tasks gc collected unless --all, and lists links under their task
       issue: null,
     })
   const done = add('done')
-  ledger.collected(done)
+  ledger.collected(done, null)
   const shipped = add('shipped')
   ledger.link(shipped, ['https://example.com/pr/7'])
   const ls = async (...args: string[]): Promise<string[]> => {

@@ -1,9 +1,8 @@
-import { existsSync, readdirSync, realpathSync, rmdirSync, rmSync } from 'node:fs'
-import { homedir } from 'node:os'
+import { existsSync, readdirSync, rmdirSync, rmSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import type { Ledger, Task, TaskStatus } from './ledger'
 import { Terminals } from './tmux'
-import { sessionName, spawn } from './worker'
+import { message, sessionName, spawn } from './worker'
 
 const FINISHED: ReadonlySet<TaskStatus> = new Set(['succeeded', 'cancelled', 'error'])
 
@@ -18,10 +17,11 @@ export type GcReport = {
 export type GcPick = { before: Date } | { ids: number[] }
 
 // Removes what the picked finished tasks left behind: the worker's tmux session, the workspace or
-// worktree, Claude Code's session folder for it, and the task's branch once its work is safe
-// elsewhere (see dropBranch). Ledger rows stay, so stats survive. A plain workspace's files are the task's output, hence the age cutoff
-// unless the human names the task. Every task gc gets through is marked collected, so ls stops
-// listing it: gc is how the human says they have dealt with the task's result.
+// worktree, and the task's branch once its work is safe elsewhere (see dropBranch). Ledger rows
+// stay, so stats survive, and so does Claude Code's session folder, so resume can bring the task
+// back (restore in worker.ts). A plain workspace's files are the task's output, hence the age
+// cutoff unless the human names the task. Every task gc gets through is marked collected, so ls
+// stops listing it: gc is how the human says they have dealt with the task's result.
 export async function collect(ledger: Ledger, home: string, pick: GcPick): Promise<GcReport> {
   const report: GcReport = { removed: [], clean: [], skipped: [] }
   const workRoot = `${join(home, 'work')}/`
@@ -33,55 +33,63 @@ export async function collect(ledger: Ledger, home: string, pick: GcPick): Promi
         Date.parse(task.finishedAt) <= pick.before.getTime()
   for (const task of ledger.list()) {
     if (!picked(task)) continue
-    if (!FINISHED.has(task.status)) {
-      report.skipped.push({ id: task.id, reason: `still ${task.status}` })
-      continue
-    }
-    if (task.workspace === null || !existsSync(task.workspace)) {
-      dropBranch(task)
-      if (task.collectedAt === null) ledger.collected(task.id)
-      report.clean.push(task.id)
-      continue
-    }
-    if (!task.workspace.startsWith(workRoot)) {
-      report.skipped.push({ id: task.id, reason: `workspace outside ${workRoot}` })
-      continue
-    }
-    const sessions = sessionFolder(task.workspace) // needs the workspace to exist for realpath
-    await Terminals.of(home).close(sessionName(task.id))
-
-    if (task.repo !== null) {
-      const status = await spawn(['git', '-C', task.workspace, 'status', '--porcelain'], undefined)
-      if (status.code !== 0 || status.stdout.trim()) {
-        report.skipped.push({ id: task.id, reason: 'uncommitted changes in worktree' })
+    // One task gc cannot get through, a file it may not delete say, must not stop the rest.
+    try {
+      if (!FINISHED.has(task.status)) {
+        report.skipped.push({ id: task.id, reason: `still ${task.status}` })
         continue
       }
-      // --force only because git refuses any worktree with submodules; the status check above
-      // already made sure nothing uncommitted is lost.
-      const removed = await spawn(
-        ['git', '-C', task.repo, 'worktree', 'remove', '--force', task.workspace],
-        undefined,
-      )
-      if (removed.code !== 0) {
-        report.skipped.push({ id: task.id, reason: removed.output.trim() })
+      if (task.workspace === null || !existsSync(task.workspace)) {
+        const head = headOf(task)
+        dropBranch(task)
+        if (task.collectedAt === null) ledger.collected(task.id, head)
+        report.clean.push(task.id)
         continue
       }
-      dropBranch(task)
-    } else {
-      rmSync(task.workspace, { recursive: true })
-    }
-    // A worktree sits in folders named after its repo and branch; drop the ones it leaves empty.
-    for (
-      let dir = dirname(task.workspace);
-      dir.startsWith(workRoot) && readdirSync(dir).length === 0;
-      dir = dirname(dir)
-    ) {
-      rmdirSync(dir)
-    }
+      if (!task.workspace.startsWith(workRoot)) {
+        report.skipped.push({ id: task.id, reason: `workspace outside ${workRoot}` })
+        continue
+      }
+      await Terminals.of(home).close(sessionName(task.id))
+      const head = headOf(task)
 
-    if (existsSync(sessions)) rmSync(sessions, { recursive: true })
-    ledger.collected(task.id)
-    report.removed.push(task.id)
+      if (task.repo !== null) {
+        const status = await spawn(
+          ['git', '-C', task.workspace, 'status', '--porcelain'],
+          undefined,
+        )
+        if (status.code !== 0 || status.stdout.trim()) {
+          report.skipped.push({ id: task.id, reason: 'uncommitted changes in worktree' })
+          continue
+        }
+        // --force only because git refuses any worktree with submodules; the status check above
+        // already made sure nothing uncommitted is lost.
+        const removed = await spawn(
+          ['git', '-C', task.repo, 'worktree', 'remove', '--force', task.workspace],
+          undefined,
+        )
+        if (removed.code !== 0) {
+          report.skipped.push({ id: task.id, reason: removed.output.trim() })
+          continue
+        }
+        dropBranch(task)
+      } else {
+        rmSync(task.workspace, { recursive: true })
+      }
+      // A worktree sits in folders named after its repo and branch; drop the ones it leaves empty.
+      for (
+        let dir = dirname(task.workspace);
+        dir.startsWith(workRoot) && readdirSync(dir).length === 0;
+        dir = dirname(dir)
+      ) {
+        rmdirSync(dir)
+      }
+
+      ledger.collected(task.id, head)
+      report.removed.push(task.id)
+    } catch (error) {
+      report.skipped.push({ id: task.id, reason: message(error) })
+    }
   }
   return report
 }
@@ -100,10 +108,25 @@ function dropBranch(task: Task): void {
   if (remotesHolding(repo, ref).length > 0 || landed(repo, ref)) git('branch', '-D', branch)
 }
 
+// The commit a repo task's branch points at, or null without a repo or once the branch is gone.
+function headOf(task: Task): string | null {
+  if (task.repo === null || task.branch === null) return null
+  const head = Bun.spawnSync([
+    'git',
+    '-C',
+    task.repo,
+    'rev-parse',
+    '--verify',
+    '-q',
+    `refs/heads/${task.branch}`,
+  ])
+  return head.exitCode === 0 ? head.stdout.toString().trim() : null
+}
+
 // Whether the remote's default branch has every file the branch changed, as the branch has it.
 // ponytail: compares files, not commits; a file changed again on the default branch after the
 // merge makes the branch look unmerged, which only keeps it.
-function landed(repo: string, ref: string): boolean {
+export function landed(repo: string, ref: string): boolean {
   const git = (...args: string[]) => Bun.spawnSync(['git', '-C', repo, ...args])
   const main = 'refs/remotes/origin/HEAD'
   const base = git('merge-base', main, ref)
@@ -132,12 +155,4 @@ export function remotesHolding(repo: string, ref: string): string[] {
     .toString()
     .split('\n')
     .filter((r) => r !== '' && !r.endsWith('/HEAD'))
-}
-
-// Claude Code keeps one session folder per working directory, named after its real path with `/`
-// and `.` turned into `-` (observed on 2.1.289). That is Claude Code's internal layout, so the rule
-// lives only here.
-export function sessionFolder(workspace: string): string {
-  const configDir = process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude')
-  return join(configDir, 'projects', realpathSync(workspace).replace(/[/.]/g, '-'))
 }

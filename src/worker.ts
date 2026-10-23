@@ -1,5 +1,6 @@
-import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
-import { basename, join } from 'node:path'
+import { existsSync, mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { basename, dirname, join } from 'node:path'
 import { z } from 'zod'
 import type { AttemptKind, DecisionReason, Ledger, Task } from './ledger'
 import { notify, taskRef } from './notify'
@@ -253,14 +254,21 @@ async function startRetro(ledger: Ledger, home: string, task: Task): Promise<voi
   )
 }
 
-export function tell(ledger: Ledger, home: string, taskId: number, text: string): void {
+export async function tell(
+  ledger: Ledger,
+  home: string,
+  taskId: number,
+  text: string,
+): Promise<void> {
+  await restore(ledger, taskId)
   deliver(ledger, home, taskId, 'followup', text, null)
 }
 
-export function resume(ledger: Ledger, home: string, taskId: number): void {
+export async function resume(ledger: Ledger, home: string, taskId: number): Promise<void> {
   if (Terminals.of(home).alive(sessionName(taskId))) {
     throw new Error(`task ${taskId}'s session is still open; send it a message with \`nod tell\``)
   }
+  await restore(ledger, taskId)
   deliver(ledger, home, taskId, 'resume', RESUME_PROMPT, null)
 }
 
@@ -687,6 +695,72 @@ async function prepareWorkspace(ledger: Ledger, home: string, task: Task): Promi
   if (code !== 0) throw new Error(`git worktree add failed: ${output.trim()}`)
   await initSubmodules(task.repo, cwd)
   return cwd
+}
+
+// Brings back a task gc collected, so its Claude Code session can go on: gc leaves the session's
+// transcript, and the worktree comes back at the same path, since Claude Code looks a session up by
+// its folder. The worktree is rebuilt from the branch, or, once gc deleted the branch, from the
+// commit gc recorded, then the remote branch, then the remote's default branch, which has a merged
+// branch's changes.
+export async function restore(ledger: Ledger, taskId: number): Promise<void> {
+  const task = ledger.get(taskId)
+  if (task.collectedAt === null) return
+  const last = ledger.lastAttempt(taskId)
+  if (last === null || task.workspace === null) throw new Error(`task ${taskId} has not started`)
+  const transcript = join(sessionFolder(task.workspace), `${last.sessionId}.jsonl`)
+  if (!existsSync(transcript)) {
+    throw new Error(
+      `task ${taskId}'s session transcript is gone (gc deleted transcripts before nod kept them): ${transcript}`,
+    )
+  }
+  if (!existsSync(task.workspace)) {
+    if (task.repo === null) mkdirSync(task.workspace, { recursive: true })
+    else await rebuildWorktree(task.repo, branchOf(task), task.workspace, task.head)
+  }
+  ledger.uncollected(taskId)
+}
+
+async function rebuildWorktree(
+  repo: string,
+  branch: string,
+  cwd: string,
+  head: string | null,
+): Promise<void> {
+  const has = (ref: string): boolean =>
+    Bun.spawnSync(['git', '-C', repo, 'rev-parse', '--verify', '-q', `${ref}^{commit}`])
+      .exitCode === 0
+  const from = (): string => {
+    const ref = [head, `refs/remotes/origin/${branch}`, 'refs/remotes/origin/HEAD'].find(
+      (r): r is string => r !== null && has(r),
+    )
+    if (ref === undefined) {
+      throw new Error(`nothing to rebuild ${branch} from in ${repo}: no branch, commit or remote`)
+    }
+    return ref
+  }
+  // A worktree folder deleted by hand stays registered, which keeps git from adding it again and
+  // its branch checked out.
+  await spawn(['git', '-C', repo, 'worktree', 'prune'], undefined)
+  const args = has(`refs/heads/${branch}`) ? [cwd, branch] : ['-b', branch, cwd, from()]
+  const { code, output } = await spawn(['git', '-C', repo, 'worktree', 'add', ...args], undefined)
+  if (code !== 0) throw new Error(`git worktree add failed: ${output.trim()}`)
+  await initSubmodules(repo, cwd)
+}
+
+// Claude Code keeps one session folder per working directory, named after its real path with `/`
+// and `.` turned into `-` (observed on 2.1.289). That is Claude Code's internal layout, so the rule
+// lives only here.
+export function sessionFolder(workspace: string): string {
+  const configDir = process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude')
+  return join(configDir, 'projects', realPath(workspace).replace(/[/.]/g, '-'))
+}
+
+// The real path of a folder that may be gone (a collected task's): its nearest existing parent's
+// real path, then the rest.
+function realPath(path: string): string {
+  if (existsSync(path)) return realpathSync(path)
+  const parent = dirname(path)
+  return parent === path ? path : join(realPath(parent), basename(path))
 }
 
 // A new worktree has empty submodules, and the worker's sandbox cannot fetch them, so each one is

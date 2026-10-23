@@ -51,6 +51,8 @@ export type Task = {
   workspace: string | null
   // Set by gc: the human has dealt with what the task produced, so ls stops listing it.
   collectedAt: string | null
+  // Set by gc on a repo task: the commit its branch pointed at, to rebuild the worktree from.
+  head: string | null
   status: TaskStatus
   error: string | null
   createdAt: string
@@ -301,6 +303,9 @@ const MIGRATIONS = [
     output text not null
   );
   `,
+  // v14: the commit a repo task's branch pointed at when gc removed its worktree, so resume can
+  // rebuild the worktree after gc deleted the branch.
+  'alter table tasks add column head text;',
 ]
 
 // The tables as the migrations leave them, in camelCase; CamelCasePlugin maps names to snake_case.
@@ -438,6 +443,18 @@ export class Ledger {
     )
   }
 
+  // The queued tasks that come after this one.
+  waiting(id: number): number[] {
+    return this.run(
+      q
+        .selectFrom('taskDeps as d')
+        .innerJoin('tasks as t', 't.id', 'd.taskId')
+        .select('t.id')
+        .where('d.afterId', '=', id)
+        .where('t.status', '=', 'queued'),
+    ).map((t) => t.id)
+  }
+
   // Marks running the waiting tasks whose earlier tasks have all succeeded, and returns them. One
   // statement, so two workers finishing at once cannot both start the same task.
   claimReady(): number[] {
@@ -488,8 +505,15 @@ export class Ledger {
     this.setStatus(id, 'error', message)
   }
 
-  collected(id: number): void {
-    this.run(q.updateTable('tasks').set({ collectedAt: now() }).where('id', '=', id))
+  // A gc that finds the branch already gone has no head to record and keeps the one recorded.
+  collected(id: number, head: string | null): void {
+    const set = head === null ? { collectedAt: now() } : { collectedAt: now(), head }
+    this.run(q.updateTable('tasks').set(set).where('id', '=', id))
+  }
+
+  // resume brought the task back after gc, so ls lists it again.
+  uncollected(id: number): void {
+    this.run(q.updateTable('tasks').set({ collectedAt: null }).where('id', '=', id))
   }
 
   // Records where the task's result went. The same address twice is kept once.
@@ -876,16 +900,8 @@ export class Ledger {
     // A task that waits for a cancelled one can never start. An error is left alone: the task can
     // still be resumed and succeed.
     if (status !== 'cancelled') return
-    const waiting = this.run(
-      q
-        .selectFrom('taskDeps as d')
-        .innerJoin('tasks as t', 't.id', 'd.taskId')
-        .select('t.id')
-        .where('d.afterId', '=', id)
-        .where('t.status', '=', 'queued'),
-    )
-    for (const w of waiting) {
-      this.setStatus(w.id, 'cancelled', `task #${id} it waits for was cancelled`)
+    for (const w of this.waiting(id)) {
+      this.setStatus(w, 'cancelled', `task #${id} it waits for was cancelled`)
     }
   }
 
