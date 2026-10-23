@@ -7,11 +7,21 @@ import type { TaskRow } from './nod.server'
 
 // Briefs, reports and questions are Markdown that workers and people wrote. react-markdown leaves
 // raw HTML out and drops unsafe link protocols by default, so this text cannot run in the page.
+// An image would load as the page opens, its address carrying whatever a worker put there past
+// its sandbox, so it shows as a link to follow by hand.
+const img = ({ src, alt }: { src?: string; alt?: string }) => (
+  <a href={src} target="_blank" rel="noreferrer">
+    {alt || src}
+  </a>
+)
+
 export function Markdown({ text, inline = false }: { text: string; inline?: boolean }) {
   const md = (
     <ReactMarkdown
       remarkPlugins={[remarkGfm]}
-      components={inline ? { p: ({ children }: { children?: ReactNode }) => children } : {}}
+      components={
+        inline ? { img, p: ({ children }: { children?: ReactNode }) => children } : { img }
+      }
     >
       {text}
     </ReactMarkdown>
