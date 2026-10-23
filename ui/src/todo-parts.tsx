@@ -7,6 +7,7 @@ import {
   useContext,
   useEffect,
   useId,
+  useLayoutEffect,
   useRef,
   useState,
 } from 'react'
@@ -240,7 +241,8 @@ function StatusIcon({ status }: { status: string }) {
 // The status menu, as Mindwtr has at the end of each row: every list, done and dropped too, each
 // in its colour and glyph. A popover, as the "…" menu is, since a native select's list cannot be
 // styled. In a list of its own status the badge stays plain, as it says nothing new there. On a
-// todo row (`keyed`) it shows the row's keys for it.
+// todo row (`keyed`) it shows the row's keys for it. In the menu, ↑ ↓ (j k) go between the
+// statuses as they go between rows.
 export function StatusSelect({
   status,
   quiet = false,
@@ -256,6 +258,15 @@ export function StatusSelect({
 }) {
   const id = useId()
   const menu = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    const el = menu.current
+    if (el === null) return
+    const options = () => [...el.querySelectorAll<HTMLElement>('.status-option')]
+    return bindKeys(el, {
+      down: () => focusStep(options(), document.activeElement, 1),
+      up: () => focusStep(options(), document.activeElement, -1),
+    })
+  }, [])
   return (
     <>
       <button
@@ -264,7 +275,6 @@ export function StatusSelect({
         popoverTarget={id}
         aria-haspopup="listbox"
         aria-label={`Status: ${status}`}
-        aria-keyshortcuts={keyed ? KEYS.status.aria : undefined}
         title="Status"
         disabled={disabled}
       >
@@ -279,7 +289,6 @@ export function StatusSelect({
             type="button"
             role="option"
             aria-selected={s === status}
-            aria-keyshortcuts={keyed && s === 'done' ? KEYS.done.aria : undefined}
             className={`status-option ${s}`}
             onClick={() => {
               menu.current?.hidePopover()
@@ -374,13 +383,16 @@ const ROW_TITLE = '.todo-item .todo-title'
 const shownRows = () =>
   [...document.querySelectorAll<HTMLElement>(ROW_TITLE)].filter((r) => r.checkVisibility())
 
-// Focuses the row `step` rows on from the one whose title is `from`, or the first row with none;
-// past either end it stays put.
-export function focusRow(from: HTMLElement | null, step: number) {
-  const rows = shownRows()
-  const i = from === null ? 0 : rows.indexOf(from) + step
-  rows[Math.min(Math.max(i, 0), rows.length - 1)]?.focus()
+// Focuses the one `step` on from `from` among `items`, or the first with no `from`; past either end
+// it stays put.
+function focusStep(items: HTMLElement[], from: Element | null, step: number) {
+  const i = from === null ? 0 : items.indexOf(from as HTMLElement) + step
+  items[Math.min(Math.max(i, 0), items.length - 1)]?.focus()
 }
+
+// Focuses the row `step` rows on from the one whose title is `from`, or the first row with none.
+export const focusRow = (from: HTMLElement | null, step: number) =>
+  focusStep(shownRows(), from, step)
 
 // A todo on one line, as in Mindwtr: the title unfolds its notes and details, the status menu moves
 // it to another list or finishes it, the star picks it for the day's focus, and the "…" menu has
@@ -401,15 +413,19 @@ export function TodoRow({
   const [open, setOpen] = useState(false)
   const row = useRef<HTMLDivElement>(null)
   const title = useRef<HTMLButtonElement>(null)
-  // A moved todo takes its row off the list, so focus in it goes on to the next row first.
-  const moveOn = (status: string) => {
-    if (row.current?.contains(document.activeElement) && title.current !== null) {
+  // A row leaving the page, its todo moved here or the refresh taking it away, hands the focus in it
+  // on to the next row (or the one before). React runs this before it takes the row out, so the
+  // rows are still there to count; a move that keeps the row, or fails, leaves the focus be.
+  useLayoutEffect(() => {
+    const el = row.current
+    const own = title.current
+    return () => {
+      if (el === null || own === null || !el.contains(document.activeElement)) return
       const rows = shownRows()
-      const i = rows.indexOf(title.current)
+      const i = rows.indexOf(own)
       rows[i + 1 < rows.length ? i + 1 : i - 1]?.focus()
     }
-    move(status)
-  }
+  }, [])
   useEffect(() => {
     const el = title.current
     if (el === null) return
@@ -417,7 +433,7 @@ export function TodoRow({
       down: () => focusRow(el, 1),
       up: () => focusRow(el, -1),
       done: () => {
-        if (t.status !== 'done') moveOn('done')
+        if (t.status !== 'done') move('done')
       },
       // As a click on the badge does, with focus on the current status.
       status: () => {
@@ -462,7 +478,7 @@ export function TodoRow({
         quiet={t.status === usual}
         keyed
         disabled={busy}
-        onChange={moveOn}
+        onChange={move}
       />
       {focused || pickable ? (
         <button

@@ -81,8 +81,17 @@ function Root() {
 // Escape or a click outside closes it.
 function KeysHelp({ ref }: { ref: Ref<HTMLDivElement> }) {
   return (
-    <div id="keys-help" ref={ref} popover="auto" className="keys-help">
-      <h2 className="section">Keyboard shortcuts</h2>
+    <div
+      id="keys-help"
+      ref={ref}
+      popover="auto"
+      role="dialog"
+      aria-labelledby="keys-help-title"
+      className="keys-help"
+    >
+      <h2 id="keys-help-title" className="section">
+        Keyboard shortcuts
+      </h2>
       <table>
         <tbody>
           {Object.values(KEYS).map((k) => (

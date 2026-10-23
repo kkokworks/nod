@@ -1,6 +1,18 @@
-import { defaultKeybindingsHandlerIgnore, tinykeys } from 'tinykeys'
+import { tinykeys } from 'tinykeys'
 
 const ON_ROW = 'On a todo row'
+const ON_ROW_OR_MENU = 'On a todo row or in its status menu'
+
+type Key = {
+  bind: string[]
+  show: string[]
+  does: string
+  where: string
+  // Keeps going while held, so a held ↓ walks down the list instead of scrolling the page.
+  repeat?: boolean
+  // For aria-keyshortcuts, on the element that takes the key.
+  aria?: string
+}
 
 // Every keyboard shortcut, in one place: the handlers bind them and the help lists them. A key is
 // matched by where it sits on the keyboard (`event.code`), not by the letter it types, since with a
@@ -11,28 +23,27 @@ export const KEYS = {
   list: {
     bind: ['$mod+Shift+Digit0'],
     show: ['⌘⇧0'],
-    aria: 'Meta+Shift+0',
     does: 'Go to the first todo',
     where: 'Anywhere, in a field too',
   },
   down: {
     bind: ['ArrowDown', 'KeyJ'],
     show: ['↓', 'j'],
-    aria: 'ArrowDown J',
-    does: 'Next todo',
-    where: ON_ROW,
+    repeat: true,
+    does: 'Next todo, or next status',
+    where: ON_ROW_OR_MENU,
   },
   up: {
     bind: ['ArrowUp', 'KeyK'],
     show: ['↑', 'k'],
-    aria: 'ArrowUp K',
-    does: 'Previous todo',
-    where: ON_ROW,
+    repeat: true,
+    does: 'Previous todo, or previous status',
+    where: ON_ROW_OR_MENU,
   },
   done: { bind: ['KeyX'], show: ['x'], aria: 'X', does: 'Finish it', where: ON_ROW },
   status: { bind: ['KeyS'], show: ['s'], aria: 'S', does: 'Open its status menu', where: ON_ROW },
   // A row's focus is on its title, a button, so Enter clicks it: the todo opens where it is.
-  open: { bind: [], show: ['↵'], aria: 'Enter', does: 'Open or fold it', where: ON_ROW },
+  open: { bind: [], show: ['↵'], does: 'Open or fold it', where: ON_ROW },
   help: {
     bind: ['Shift+Slash'],
     show: ['?'],
@@ -41,39 +52,40 @@ export const KEYS = {
     where: 'Outside a field',
   },
   // Menus and the help are popovers, which the browser closes on Escape itself.
-  close: {
-    bind: [],
-    show: ['Esc'],
-    aria: 'Escape',
-    does: 'Close a menu or this help',
-    where: 'Anywhere',
-  },
-}
+  close: { bind: [], show: ['Esc'], does: 'Close a menu or this help', where: 'Anywhere' },
+} satisfies Record<string, Key>
 
 type Name = keyof typeof KEYS
 
-// What a todo row answers to, for its aria-keyshortcuts.
-export const ROW_KEYS = Object.values(KEYS)
-  .filter((k) => k.where === ON_ROW)
-  .map((k) => k.aria)
-  .join(' ')
+// What a row's title takes that acts on its todo, for its aria-keyshortcuts. ↑ ↓ j k go to another
+// row and Enter is the button's own, so they are not this element's shortcuts.
+export const ROW_KEYS = `${KEYS.done.aria} ${KEYS.status.aria}`
 
-// What the page's keys skip: as tinykeys does, a key typed in a field, one held down, and one
-// pressed mid-composition (Korean input), but a ⌘/Ctrl key comes through from a field too.
+// What tinykeys skips by default, less a key held down (`repeat` decides that): a key typed in a
+// field, and one pressed mid-composition (Korean input).
+const typing = (e: KeyboardEvent): boolean =>
+  e.isComposing ||
+  (e.target !== e.currentTarget &&
+    e.target instanceof Element &&
+    e.target.matches('[contenteditable],input,select,textarea'))
+
+// The page's keys skip the same, but a ⌘/Ctrl key comes through from a field too.
 export const ignoreOnPage = (e: KeyboardEvent): boolean =>
-  e.metaKey || e.ctrlKey ? e.repeat || e.isComposing : defaultKeybindingsHandlerIgnore(e)
+  e.metaKey || e.ctrlKey ? e.isComposing : typing(e)
 
-// Binds the named shortcuts on `target`, skipping what `ignore` says to (tinykeys's own by
-// default); a key handled does nothing else. Returns the unbinding, for an effect's cleanup.
+// Binds the named shortcuts on `target`, skipping what `ignore` says to; a key handled does nothing
+// else. A held key repeats only if its entry says so. Returns the unbinding, for an effect's cleanup.
 export function bindKeys(
   target: Window | HTMLElement,
   handlers: Partial<Record<Name, () => void>>,
-  ignore = defaultKeybindingsHandlerIgnore,
+  ignore = typing,
 ): () => void {
   const map: Record<string, (e: KeyboardEvent) => void> = {}
   for (const [name, handler] of Object.entries(handlers)) {
-    for (const bind of KEYS[name as Name].bind) {
+    const key: Key = KEYS[name as Name]
+    for (const bind of key.bind) {
       map[bind] = (e) => {
+        if (e.repeat && key.repeat !== true) return
         e.preventDefault()
         handler()
       }
