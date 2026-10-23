@@ -11,11 +11,14 @@ afterAll(tmp.removeAll)
 const cli = resolve(import.meta.dir, 'cli.ts')
 
 // Runs nod as a person at a terminal would, so changes record `human`. Times become `<time>`.
+// It gets the test's time zone: bun test runs in UTC without setting TZ, so nod would otherwise
+// see another day than the test does between local midnight and the UTC one.
 function nod(home: string) {
   const { CLAUDECODE: _, NOD_TASK: __, NOD_ACTOR: ___, ...env } = process.env
+  const TZ = Intl.DateTimeFormat().resolvedOptions().timeZone
   return async (...args: string[]): Promise<{ code: number; out: string[]; err: string }> => {
     const p = Bun.spawn(['bun', cli, ...args], {
-      env: { ...env, NOD_HOME: home },
+      env: { ...env, NOD_HOME: home, TZ },
       stdout: 'pipe',
       stderr: 'pipe',
     })
