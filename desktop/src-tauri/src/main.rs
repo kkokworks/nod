@@ -61,17 +61,17 @@ fn main() {
         .invoke_handler(tauri::generate_handler![capture, dismiss, retry])
         .setup(|app| {
             let handle = app.handle().clone();
+            let dev_url = handle.config().build.dev_url.clone();
             WebviewWindowBuilder::new(app, "main", WebviewUrl::External(page(&handle, "/")))
                 .title("nod")
                 .inner_size(1200.0, 800.0)
-                .on_navigation(|url| {
+                .on_navigation(move |url| {
                     // Links out of the UI (a pull request, a doc) open in the browser instead.
-                    let out = matches!(url.scheme(), "http" | "https")
-                        && !matches!(url.host_str(), Some("127.0.0.1" | "localhost"));
-                    if out {
+                    let shown = in_window(url, dev_url.as_ref());
+                    if !shown {
                         open_in_browser(url);
                     }
-                    !out
+                    shown
                 })
                 .on_new_window(|url, _| {
                     open_in_browser(&url);
@@ -177,6 +177,15 @@ fn page(app: &AppHandle, path: &str) -> Url {
     let mut url = base.join("offline.html").unwrap();
     url.query_pairs_mut().append_pair("path", path);
     url
+}
+
+// Whether the main window goes to url itself: the UI server's pages and the app's own, on tauri://
+// or, under `tauri dev`, at dev_url. Any other web address opens in the browser, another server
+// on this computer too.
+fn in_window(url: &Url, dev_url: Option<&Url>) -> bool {
+    !matches!(url.scheme(), "http" | "https")
+        || url.origin() == server_page("/").origin()
+        || dev_url.is_some_and(|dev| url.origin() == dev.origin())
 }
 
 fn open_in_browser(url: &Url) {
@@ -402,4 +411,22 @@ fn tray_menu(
     }
     menu.append(&MenuItem::with_id(app, "quit", "종료", true, None::<&str>)?)?;
     Ok(menu)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_the_ui_server_and_the_apps_pages_stay_in_the_window() {
+        let url = |s: &str| s.parse::<Url>().unwrap();
+        let dev = url("http://localhost:1430/");
+        assert!(in_window(&url("http://127.0.0.1:4800/tasks/1"), None));
+        assert!(in_window(&url("tauri://localhost/offline.html?path=%2F"), None));
+        assert!(in_window(&url("http://localhost:1430/offline.html?path=%2F"), Some(&dev)));
+        assert!(!in_window(&url("http://127.0.0.1:5173/"), None));
+        assert!(!in_window(&url("http://localhost:3000/"), Some(&dev)));
+        assert!(!in_window(&url("http://localhost:1430/"), None));
+        assert!(!in_window(&url("https://example.com/pull/1"), None));
+    }
 }
