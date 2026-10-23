@@ -2,14 +2,16 @@
 // the reply, so context nod adds below cannot, then the hooks from --settings run as in Claude
 // Code, and a hook that blocks the stop starts a continuation. Between turns it reads what is typed
 // into its terminal. Started with no message, it waits for one. Like Claude Code, it keeps a
-// transcript in $CLAUDE_CONFIG_DIR (only when that is set, so a test never writes to the real one).
+// transcript in $CLAUDE_CONFIG_DIR (only when that is set, so a test never writes to the real one),
+// and refuses a new session the ID of one it has a transcript of.
 // nod gives a worker a fixed environment, so the fake takes its switches from files in $NOD_HOME:
 // with `fake-untrusted`, a new session first shows the trust dialog, and with `fake-untrusted-again`
 // a resumed one does, as Claude Code asks about a repo once per account; with `fake-exit`, it exits
 // as it starts, as Claude Code does without a login. Every launch, with its account and the names
 // in its environment, and every turn is logged to $NOD_HOME/agent.log.
-import { appendFileSync, existsSync, mkdirSync, realpathSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { appendFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { projectFolder } from './projects'
 
 type Hooks = Record<string, { hooks: { command: string }[] }[]>
 
@@ -117,13 +119,17 @@ async function runHooks(event: string, payload: object): Promise<string> {
   return out
 }
 
-// Where Claude Code keeps a session's transcript (sessionFolder in worker.ts).
-function keepTranscript(): void {
+// Where Claude Code keeps this session's transcript; null without a config dir.
+function transcript(): string | null {
   const config = process.env.CLAUDE_CONFIG_DIR
-  if (!config) return
-  const folder = join(config, 'projects', realpathSync(process.cwd()).replace(/[/.]/g, '-'))
-  mkdirSync(folder, { recursive: true })
-  appendFileSync(join(folder, `${sessionId}.jsonl`), '{}\n')
+  return config ? join(projectFolder(config, process.cwd()), `${sessionId}.jsonl`) : null
+}
+
+function keepTranscript(): void {
+  const file = transcript()
+  if (file === null) return
+  mkdirSync(dirname(file), { recursive: true })
+  appendFileSync(file, '{}\n')
 }
 
 async function turn(message: string, continuing: boolean): Promise<void> {
@@ -217,6 +223,12 @@ log({
   config: process.env.CLAUDE_CONFIG_DIR ?? null,
   env: Object.keys(process.env),
 })
+// Like Claude Code, a new session cannot take the ID of one it keeps a transcript of.
+const kept = transcript()
+if (flag('--session-id') !== null && kept !== null && existsSync(kept)) {
+  console.log(`Error: Session ID ${sessionId} is already in use.`)
+  process.exit(1)
+}
 if (existsSync(join(home, 'fake-exit'))) {
   console.log('Not logged in · Please run /login')
   process.exit(1)

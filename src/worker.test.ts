@@ -10,6 +10,7 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { basename, join, resolve } from 'node:path'
+import { projectFolder } from '../test/projects'
 import { tempDirs } from '../test/tmp'
 import { setAccountRule } from './account'
 import { collect } from './gc'
@@ -28,7 +29,6 @@ import {
   parseReport,
   restart,
   restartDue,
-  sessionFolder,
   sessionName,
   startReady,
   startTask,
@@ -68,14 +68,16 @@ let home: string
 let ledger: Ledger
 let log: string
 
-beforeEach(() => {
-  home = tmp.make('nod-worker-')
+beforeEach(() => useHome('nod-worker-'))
+
+function useHome(prefix: string): void {
+  home = tmp.make(prefix)
   homes.push(home)
   mkdirSync(join(home, 'work'))
   trust(process.env.CLAUDE_CONFIG_DIR ?? null) // nod's own work folder counts as trusted
   log = join(home, 'agent.log') // where the fake logs (fake-agent.ts)
   ledger = new Ledger(home)
-})
+}
 
 const trust = (config: string | null): void => writeFileSync(trustedFile(home, config), '')
 
@@ -354,9 +356,9 @@ test('a watch with --back-to passes into that task, brought back after gc, which
   const watch = `cat ${JSON.stringify(reply)}`
   todos.set(todo.id, { status: 'waiting', waitingOn: 'the author', watch, backTo: id }, 'human')
   // gc collects it before the answer comes, keeping the transcript, so tell brings it back.
-  const sessions = sessionFolder(
+  const sessions = projectFolder(
+    process.env.CLAUDE_CONFIG_DIR ?? '',
     workspaceOf(home, ledger.get(id)),
-    process.env.CLAUDE_CONFIG_DIR ?? null,
   )
   mkdirSync(sessions, { recursive: true })
   writeFileSync(join(sessions, `${ledger.lastAttempt(id)?.sessionId}.jsonl`), '{}\n')
@@ -1037,6 +1039,16 @@ test('a turn its Claude Code ended becomes a decision once it is up again, and t
     'hang until ended',
     expect.stringMatching(/^Your last turn was cut off.*\nHuman decision: check and carry on$/s),
   ])
+}, 30_000)
+
+test('a worker in a folder whose path Claude Code changes more of for its transcripts goes on in its conversation', async () => {
+  useHome('nod_worker-') // Claude Code names the transcripts' folder with `_` turned into `-`
+  const id = await add('hang until ended')
+  await until(() => entries('turn')[0])
+  endClaude(id)
+  const decision = await until(() => ledger.decisions(id)[0])
+  expect(decision.question).toContain('ended in the middle of a turn')
+  expect(entries('launch').map((l) => l.resumed)).toEqual([false, true])
 }, 30_000)
 
 test('a Claude Code that keeps exiting as it starts is not started again: the person hears why, and the next message starts it', async () => {

@@ -1,10 +1,11 @@
 import { afterAll, expect, spyOn, test } from 'bun:test'
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { projectFolder } from '../test/projects'
 import { tempDirs } from '../test/tmp'
 import { collect, landed } from './gc'
 import { Ledger } from './ledger'
-import { branchOf, restore, sessionFolder, workspaceOf } from './worker'
+import { branchOf, restore, workspaceOf } from './worker'
 
 const tmp = tempDirs()
 afterAll(tmp.removeAll)
@@ -13,7 +14,8 @@ const OLD = '2026-01-01T00:00:00.000Z'
 
 test('gc removes old finished workspaces, keeps their session transcripts, and keeps the rest', async () => {
   const home = tmp.make('nod-gc-')
-  process.env.CLAUDE_CONFIG_DIR = tmp.make('nod-gc-claude-')
+  const claude = tmp.make('nod-gc-claude-')
+  process.env.CLAUDE_CONFIG_DIR = claude
   const ledger = new Ledger(home)
   const repo = join(home, 'repo')
   mkdirSync(repo)
@@ -48,7 +50,7 @@ test('gc removes old finished workspaces, keeps their session transcripts, and k
     const cwd = workspaceOf(home, ledger.get(id))
     if (withRepo) sh(['git', 'worktree', 'add', '-q', '-b', branchOf(ledger.get(id)), cwd], repo)
     else mkdirSync(cwd, { recursive: true })
-    mkdirSync(sessionFolder(cwd, process.env.CLAUDE_CONFIG_DIR ?? null), { recursive: true })
+    mkdirSync(projectFolder(claude, cwd), { recursive: true })
     ledger.setRunning(id, cwd)
     ledger.succeed(id)
     ledger.db.query('update tasks set finished_at = $at where id = $id').run({ id, at: finishedAt })
@@ -59,14 +61,8 @@ test('gc removes old finished workspaces, keeps their session transcripts, and k
   const dirty = task('old dirty repo', true, OLD)
   writeFileSync(join(workspaceOf(home, ledger.get(dirty)), 'uncommitted.txt'), 'x')
   const recent = task('recent', false, new Date().toISOString())
-  const recentSessions = sessionFolder(
-    workspaceOf(home, ledger.get(recent)),
-    process.env.CLAUDE_CONFIG_DIR ?? null,
-  )
-  const oldPlainSessions = sessionFolder(
-    workspaceOf(home, ledger.get(oldPlain)),
-    process.env.CLAUDE_CONFIG_DIR ?? null,
-  )
+  const recentSessions = projectFolder(claude, workspaceOf(home, ledger.get(recent)))
+  const oldPlainSessions = projectFolder(claude, workspaceOf(home, ledger.get(oldPlain)))
 
   const report = await collect(ledger, home, { before: new Date(Date.now() - 7 * 86_400_000) })
 
@@ -207,8 +203,10 @@ test('gc deletes a branch once a remote branch holds it or the default branch ha
 })
 
 test('resume brings a collected task back: the worktree returns at the same path from the commit gc recorded', async () => {
-  const home = tmp.make('nod-gc-')
-  process.env.CLAUDE_CONFIG_DIR = tmp.make('nod-gc-claude-')
+  // Characters Claude Code turns into `-` in the name of a transcript's folder, as `/` and `.`.
+  const home = tmp.make('nod_gc 복원-')
+  const claude = tmp.make('nod-gc-claude-')
+  process.env.CLAUDE_CONFIG_DIR = claude
   const ledger = new Ledger(home)
   const repo = join(home, 'repo')
   mkdirSync(repo)
@@ -234,11 +232,8 @@ test('resume brings a collected task back: the worktree returns at the same path
     const sessionId = `session-${id}`
     ledger.startAttempt({ taskId: id, kind: 'start', decisionId: null, sessionId, prompt: brief })
     ledger.succeed(id)
-    mkdirSync(sessionFolder(cwd, process.env.CLAUDE_CONFIG_DIR ?? null), { recursive: true })
-    writeFileSync(
-      join(sessionFolder(cwd, process.env.CLAUDE_CONFIG_DIR ?? null), `${sessionId}.jsonl`),
-      '{}\n',
-    )
+    mkdirSync(projectFolder(claude, cwd), { recursive: true })
+    writeFileSync(join(projectFolder(claude, cwd), `${sessionId}.jsonl`), '{}\n')
     return id
   }
   const id = task('feature', 'feat/x')
@@ -276,9 +271,10 @@ test('resume brings a collected task back: the worktree returns at the same path
 
   // A task collected before gc kept transcripts cannot come back, and says so.
   const plain = task('plain', null)
-  await collect(ledger, home, { ids: [plain] })
   const plainCwd = workspaceOf(home, ledger.get(plain))
-  rmSync(sessionFolder(plainCwd, process.env.CLAUDE_CONFIG_DIR ?? null), { recursive: true })
+  const plainSessions = projectFolder(claude, plainCwd)
+  await collect(ledger, home, { ids: [plain] })
+  rmSync(plainSessions, { recursive: true })
   await expect(restore(ledger, home, plain)).rejects.toThrow('transcript is gone')
   expect(existsSync(plainCwd)).toBe(false)
   expect(ledger.get(plain).collectedAt).not.toBeNull()

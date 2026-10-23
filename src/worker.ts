@@ -1,6 +1,6 @@
-import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { basename, dirname, join } from 'node:path'
+import { basename, join } from 'node:path'
 import { z } from 'zod'
 import { accountChanged, accountRule, configDir } from './account'
 import type { Attempt, AttemptKind, DecisionReason, Ledger, Task } from './ledger'
@@ -928,14 +928,12 @@ async function nextRun(ledger: Ledger, home: string, taskId: number): Promise<St
   const task = ledger.get(taskId)
   const attempts = ledger.attempts(taskId)
   const [first, last] = [attempts[0], attempts.at(-1)]
-  const workspace = task.workspace
-  if (first === undefined || last === undefined || workspace === null) {
+  if (first === undefined || last === undefined || task.workspace === null) {
     throw new Error(`task ${taskId} has not started`)
   }
   const marker = task.repo === null ? null : startedMarker(home, taskId)
   if (marker !== null) rmSync(marker, { force: true })
-  const kept = (folder: string | null): boolean =>
-    existsSync(join(sessionFolder(workspace, folder), `${last.sessionId}.jsonl`))
+  const kept = (folder: string | null): boolean => hasTranscript(folder, last.sessionId)
   const here = kept(config)
   // '' is Claude Code's default folder, null an account nod never recorded.
   const before = task.account === null ? undefined : task.account || null
@@ -1324,10 +1322,9 @@ export async function restore(ledger: Ledger, home: string, taskId: number): Pro
   if (task.collectedAt === null) return
   const last = ledger.lastAttempt(taskId)
   if (last === null || task.workspace === null) throw new Error(`task ${taskId} has not started`)
-  const transcript = join(sessionFolder(task.workspace, configDir(home)), `${last.sessionId}.jsonl`)
-  if (!existsSync(transcript)) {
+  if (!hasTranscript(configDir(home), last.sessionId)) {
     throw new Error(
-      `task ${taskId}'s session transcript is gone (gc deleted transcripts before nod kept them): ${transcript}`,
+      `task ${taskId}'s session transcript is gone (gc deleted transcripts before nod kept them): ${last.sessionId}.jsonl`,
     )
   }
   if (!existsSync(task.workspace)) {
@@ -1364,23 +1361,16 @@ async function rebuildWorktree(
   await initSubmodules(repo, cwd)
 }
 
-// Claude Code keeps one session folder per working directory, named after its real path with `/`
-// and `.` turned into `-` (observed on 2.1.289), in the config dir `config`. That is Claude Code's
-// internal layout, so the rule lives only here.
-export function sessionFolder(workspace: string, config: string | null): string {
-  return join(
-    config ?? join(homedir(), '.claude'),
-    'projects',
-    realPath(workspace).replace(/[/.]/g, '-'),
+// Whether Claude Code keeps a transcript of session `sessionId` in the config dir `config`. It keeps
+// one folder per working directory in projects/, named by a rule of its own (2.1.309: each
+// character but a letter or digit turned into `-`, and a hash past 200 characters), so nod looks
+// for the session's ID, which is in no other folder, in all of them.
+function hasTranscript(config: string | null, sessionId: string): boolean {
+  const projects = join(config ?? join(homedir(), '.claude'), 'projects')
+  if (!existsSync(projects)) return false
+  return readdirSync(projects).some((folder) =>
+    existsSync(join(projects, folder, `${sessionId}.jsonl`)),
   )
-}
-
-// The real path of a folder that may be gone (a collected task's): its nearest existing parent's
-// real path, then the rest.
-function realPath(path: string): string {
-  if (existsSync(path)) return realpathSync(path)
-  const parent = dirname(path)
-  return parent === path ? path : join(realPath(parent), basename(path))
 }
 
 // A new worktree has empty submodules, and the worker's sandbox cannot fetch them, so each one is
