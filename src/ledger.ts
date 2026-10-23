@@ -87,6 +87,9 @@ export type Rule = {
   changedAt: string
 }
 export type RuleEdit = Partial<Pick<Rule, 'text' | 'state'>>
+// A rule as it stands now, edited once its words differ from what its retrospective proposed. One
+// the person wrote has no proposal, so it is never edited.
+export type RuleNow = Rule & { edited: boolean }
 // Each field a change set, as [before, after], the way todo_changes keeps it (todos.ts).
 type Changed = Record<string, [unknown, unknown]>
 
@@ -879,6 +882,13 @@ export class Ledger {
 
   rules(): Rule[] {
     return this.run(q.selectFrom('rules').selectAll().orderBy('id'))
+  }
+
+  rulesNow(): RuleNow[] {
+    return this.rules().map((r) => ({
+      ...r,
+      edited: r.retroId !== null && r.text !== this.retro(r.retroId).rule,
+    }))
   }
 
   // Changes what the edit names and records who changed what; a field set to the value it has is

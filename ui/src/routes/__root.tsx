@@ -142,6 +142,13 @@ const ICONS = {
       <path d="M5.4 8.2l1.8 1.8 3.4-3.6" />
     </>
   ),
+  settings: (
+    <>
+      <circle cx="8" cy="8" r="4.25" />
+      <circle cx="8" cy="8" r="1.75" />
+      <path d="M8 1.75v2M8 12.25v2M1.75 8h2M12.25 8h2M3.6 3.6L5 5M11 11l1.4 1.4M12.4 3.6L11 5M5 11l-1.4 1.4" />
+    </>
+  ),
 }
 
 function NavIcon({ name }: { name: keyof typeof ICONS }) {
@@ -250,6 +257,13 @@ function Sidebar() {
         </details>
       )}
 
+      {/* Settings, apart from the lists, at the foot. */}
+      <nav className="side-nav side-settings">
+        <Link to="/settings" className="side-item" activeProps={{ className: 'active' }}>
+          <NavIcon name="settings" />
+          Settings
+        </Link>
+      </nav>
       <div className="side-foot">
         <button
           type="button"

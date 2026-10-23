@@ -100,6 +100,31 @@ test('a rule changes only when told something new, records who changed what, and
   expect(() => ledger.setRule(9, { state: 'off' }, 'human')).toThrow('rule 9 not found')
 })
 
+test("a rule is edited once its words differ from its retrospective's proposal; one written by hand never is", () => {
+  const ledger = new Ledger(freshHome())
+  const of = ledger.add({
+    brief: 'x',
+    repo: null,
+    branch: null,
+    checkCmd: null,
+    model: null,
+    after: [],
+    triggerId: null,
+    issue: null,
+  })
+  const retroId = ledger.get(ledger.addRetro(ledger.get(of), 'look back')).retroId ?? 0
+  ledger.proposeRule(retroId, 'check first')
+  const proposed = ledger.addRule('check first', retroId, 'human')
+  const byHand = ledger.addRule('keep it short', null, 'human')
+  ledger.setRule(byHand.id, { text: 'keep it shorter' }, 'human')
+  const edited = (): boolean[] => ledger.rulesNow().map((r) => r.edited)
+  expect(edited()).toEqual([false, false])
+  ledger.setRule(proposed.id, { text: 'check first, always' }, 'human')
+  expect(edited()).toEqual([true, false])
+  ledger.setRule(proposed.id, { text: 'check first', state: 'off' }, 'human')
+  expect(ledger.rulesNow()[0]).toMatchObject({ state: 'off', edited: false })
+})
+
 test('v16 moves the retrospectives so far into their own table, with what became of each', () => {
   const home = freshHome()
   const old = new Database(join(home, 'nod.db'), { create: true, strict: true })

@@ -14,6 +14,7 @@ import { Route as DoneRouteImport } from './routes/done'
 import { Route as FocusRouteImport } from './routes/focus'
 import { Route as InboxRouteImport } from './routes/inbox'
 import { Route as ProjectsRouteImport } from './routes/projects'
+import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as SomedayRouteImport } from './routes/someday'
 import { Route as WaitingRouteImport } from './routes/waiting'
 import { Route as TasksIdRouteImport } from './routes/tasks.$id'
@@ -44,6 +45,11 @@ const ProjectsRoute = ProjectsRouteImport.update({
   path: '/projects',
   getParentRoute: () => rootRouteImport,
 } as any)
+const SettingsRoute = SettingsRouteImport.update({
+  id: '/settings',
+  path: '/settings',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const SomedayRoute = SomedayRouteImport.update({
   id: '/someday',
   path: '/someday',
@@ -71,6 +77,7 @@ export interface FileRoutesByFullPath {
   '/focus': typeof FocusRoute
   '/inbox': typeof InboxRoute
   '/projects': typeof ProjectsRoute
+  '/settings': typeof SettingsRoute
   '/someday': typeof SomedayRoute
   '/waiting': typeof WaitingRoute
   '/tasks/$id': typeof TasksIdRoute
@@ -82,6 +89,7 @@ export interface FileRoutesByTo {
   '/focus': typeof FocusRoute
   '/inbox': typeof InboxRoute
   '/projects': typeof ProjectsRoute
+  '/settings': typeof SettingsRoute
   '/someday': typeof SomedayRoute
   '/waiting': typeof WaitingRoute
   '/tasks/$id': typeof TasksIdRoute
@@ -94,6 +102,7 @@ export interface FileRoutesById {
   '/focus': typeof FocusRoute
   '/inbox': typeof InboxRoute
   '/projects': typeof ProjectsRoute
+  '/settings': typeof SettingsRoute
   '/someday': typeof SomedayRoute
   '/waiting': typeof WaitingRoute
   '/tasks/$id': typeof TasksIdRoute
@@ -107,6 +116,7 @@ export interface FileRouteTypes {
     | '/focus'
     | '/inbox'
     | '/projects'
+    | '/settings'
     | '/someday'
     | '/waiting'
     | '/tasks/$id'
@@ -118,6 +128,7 @@ export interface FileRouteTypes {
     | '/focus'
     | '/inbox'
     | '/projects'
+    | '/settings'
     | '/someday'
     | '/waiting'
     | '/tasks/$id'
@@ -129,6 +140,7 @@ export interface FileRouteTypes {
     | '/focus'
     | '/inbox'
     | '/projects'
+    | '/settings'
     | '/someday'
     | '/waiting'
     | '/tasks/$id'
@@ -141,6 +153,7 @@ export interface RootRouteChildren {
   FocusRoute: typeof FocusRoute
   InboxRoute: typeof InboxRoute
   ProjectsRoute: typeof ProjectsRoute
+  SettingsRoute: typeof SettingsRoute
   SomedayRoute: typeof SomedayRoute
   WaitingRoute: typeof WaitingRoute
   TasksIdRoute: typeof TasksIdRoute
@@ -184,6 +197,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ProjectsRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/settings': {
+      id: '/settings'
+      path: '/settings'
+      fullPath: '/settings'
+      preLoaderRoute: typeof SettingsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/someday': {
       id: '/someday'
       path: '/someday'
@@ -221,6 +241,7 @@ const rootRouteChildren: RootRouteChildren = {
   FocusRoute: FocusRoute,
   InboxRoute: InboxRoute,
   ProjectsRoute: ProjectsRoute,
+  SettingsRoute: SettingsRoute,
   SomedayRoute: SomedayRoute,
   WaitingRoute: WaitingRoute,
   TasksIdRoute: TasksIdRoute,
