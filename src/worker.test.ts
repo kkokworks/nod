@@ -1272,6 +1272,27 @@ test('a conversation kept only in the folder of the old account is not started o
   expect(events().some((e) => e.error?.includes('must share their projects/ folder'))).toBe(true)
 }, 30_000)
 
+test('an answer the account rule cannot be read for leaves its decision open, to answer again', async () => {
+  const current = join(home, 'account')
+  const [a] = accounts('a')
+  setAccountRule(home, { file: current })
+  writeFileSync(current, `${a}\n`)
+  const id = await add('ask-first')
+  const decision = await until(() => ledger.decisions(id)[0])
+  await settled(id)
+
+  rmSync(current)
+  await expect(answer(ledger, home, decision.id, 'yes', 'human')).rejects.toThrow('ENOENT')
+  expect(ledger.decision(decision.id).answer).toBeNull()
+  expect(status(id)).toBe('needs_decision')
+  expect(ledger.attempts(id)).toHaveLength(1)
+
+  writeFileSync(current, `${a}\n`)
+  await answer(ledger, home, decision.id, 'yes', 'human')
+  await reaches(id, 'succeeded')
+  expect(entries('turn').map((t) => t.message)).toEqual(['ask-first', 'Human decision: yes'])
+}, 30_000)
+
 test('a restart waits for a person attached to the worker, who hears why once', async () => {
   const events = listen()
   const id = await add('first')

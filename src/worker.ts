@@ -282,15 +282,20 @@ export async function answer(
     await drop(ledger, home, decisionId)
     return
   }
-  ledger.answer(decisionId, text)
-  // A to-do list that mirrors open decisions can close this one.
-  await notify(home, {
-    event: 'answered',
-    task: taskRef(ledger.get(decision.taskId)),
-    decision: { id: decisionId, reason: decision.reason, answer: text },
-  })
+  // The decision closes as its answer takes effect, so an answer that fails before (an account rule
+  // that cannot be read) leaves it open to answer again. A to-do list that mirrors open decisions
+  // hears of it after.
+  const answered = { id: decisionId, answer: text }
+  const told = (): Promise<void> =>
+    notify(home, {
+      event: 'answered',
+      task: taskRef(ledger.get(decision.taskId)),
+      decision: { id: decisionId, reason: decision.reason, answer: text },
+    })
   // The retrospective proposed the rule as its report; adding it is all that is left to do.
   if (decision.reason === 'rule') {
+    ledger.answer(decisionId, text)
+    await told()
     const { retroId } = ledger.get(decision.taskId)
     if (retroId === null) throw new Error(`decision ${decisionId} is on no retrospective`)
     const { rule } = ledger.retro(retroId)
@@ -305,16 +310,21 @@ export async function answer(
   const terminals = Terminals.of(home)
   const name = sessionName(decision.taskId)
   if (decision.reason === 'trust') {
+    ledger.answer(decisionId, text)
+    await told()
     await acceptTrust(terminals, name, startedMarker(home, decision.taskId))
     return
   }
   if (decision.reason !== 'permission') {
     const reply = `${decision.reason === 'interrupted' ? `${CUT_OFF_PROMPT}\n` : ''}Human decision: ${text}`
-    deliver(ledger, home, decision.taskId, 'answer', reply, decisionId)
+    deliver(ledger, home, decision.taskId, 'answer', reply, answered)
+    await told()
     return
   }
   // The permission dialog has "Yes" selected first (measured on 2.1.290).
   if (yes) {
+    ledger.answer(decisionId, text)
+    await told()
     terminals.keys(name, 'Enter')
     return
   }
@@ -328,7 +338,8 @@ export async function answer(
     report: null,
   })
   const reply = `Human decision: permission denied. ${text}`
-  deliver(ledger, home, decision.taskId, 'answer', reply, decisionId)
+  deliver(ledger, home, decision.taskId, 'answer', reply, answered)
+  await told()
 }
 
 async function waitForScreen(terminals: Terminals, name: string, text: string): Promise<void> {
@@ -642,14 +653,15 @@ function trailingRetries(ledger: Ledger, taskId: number): number {
 }
 
 // Sends a message into the task's session so the worker keeps its context. A session that has ended
-// (exited, machine restarted) is reopened from Claude Code's transcript first.
+// (exited, machine restarted) is reopened from Claude Code's transcript first. `answered`: the
+// decision the message answers, which closes with the ledger's other changes.
 function deliver(
   ledger: Ledger,
   home: string,
   taskId: number,
   kind: AttemptKind,
   text: string,
-  decisionId: number | null,
+  answered: { id: number; answer: string } | null,
 ): void {
   const task = ledger.get(taskId)
   const last = ledger.lastAttempt(taskId)
@@ -663,6 +675,7 @@ function deliver(
   const restarting = live && terminals.option(name, RESTARTING_OPTION) !== ''
   // The worker is mid-turn: Claude Code queues the message into the turn in progress.
   if (open !== null && live) {
+    if (answered !== null) ledger.answer(answered.id, answered.answer)
     if (restarting) leavePrompt(home, taskId, text)
     else terminals.send(name, text)
     return
@@ -678,13 +691,14 @@ function deliver(
     !settling(terminals, name) &&
     !terminals.attached(name) &&
     accountChanged(home, task.account)
+  if (answered !== null) ledger.answer(answered.id, answered.answer)
   if (open !== null) ledger.failAttempt(open.id, 'session ended')
 
   ledger.setRunning(taskId, task.workspace)
   const attemptId = ledger.startAttempt({
     taskId,
     kind,
-    decisionId,
+    decisionId: answered?.id ?? null,
     sessionId: last.sessionId,
     prompt: text,
   })
