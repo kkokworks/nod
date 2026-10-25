@@ -141,7 +141,7 @@ function Toast({ undo, close }: { undo: Undo; close: () => void }) {
 const movedTo = (status: string): string =>
   status === 'done' ? 'Done' : status === 'dropped' ? 'Dropped' : `Moved to ${status}`
 
-type MenuItem = { label: string; onSelect: () => void; danger?: boolean }
+type MenuItem = { label: string; onSelect: () => void }
 
 // What a todo's row does besides its status menu: the "…" menu edits it and picks it for today or
 // lets it go. A next action that has started can be picked unless the focus is `full`; one
@@ -329,7 +329,6 @@ export function MoreMenu({ items, disabled }: { items: MenuItem[]; disabled: boo
             key={item.label}
             type="button"
             role="menuitem"
-            className={item.danger ? 'danger' : undefined}
             onClick={() => {
               menu.current?.hidePopover()
               item.onSelect()

@@ -1566,10 +1566,6 @@ details summary {
   background: var(--row-hover);
 }
 
-.more-menu button.danger {
-  color: var(--bad);
-}
-
 .todo-page-menu {
   margin-left: auto;
 }
