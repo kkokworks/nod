@@ -777,7 +777,8 @@ test("tasks that start at once trust nod's work folder once, together", async ()
       issue: null,
     }),
   )
-  expect(await startReady(ledger, home)).toEqual(ids)
+  // As a tick starts the tasks its triggers added.
+  await Promise.all(ids.map((id) => startTask(ledger, home, id)))
   for (const id of ids) await reaches(id, 'succeeded')
   // The fake gives a session nod starts without an ID (the trust check's) the ID `missing`.
   expect(entries('launch').filter((l) => l.sessionId === 'missing')).toHaveLength(1)
