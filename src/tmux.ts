@@ -37,21 +37,7 @@ export class Terminals {
       `rm -f -- "$0"\nexec env -i TERM="$TERM" TMUX="$TMUX" TMUX_PANE="$TMUX_PANE" ${[...vars, ...argv.map(quote)].join(' ')}\n`,
       { mode: 0o600 },
     )
-    this.tmux([
-      'new-session',
-      '-d',
-      '-s',
-      name,
-      '-x',
-      '200',
-      '-y',
-      '50',
-      '-c',
-      cwd,
-      '--',
-      'sh',
-      script,
-    ])
+    this.tmux(['new-session', '-d', '-s', name, '-x200', '-y50', '-c', cwd, '--', 'sh', script])
   }
 
   alive(name: string): boolean {
