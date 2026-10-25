@@ -1668,6 +1668,105 @@ test("a permission answered in the worker's terminal does not stay open once its
   ])
 })
 
+// Makes <home>/notify take a while, so a hook that tells it something does too.
+function slowNotify(): void {
+  writeFileSync(join(home, 'notify'), '#!/bin/sh\nsleep 1\n')
+  chmodSync(join(home, 'notify'), 0o755)
+}
+
+test('a turn that asks as a message opens the next one leaves its question to that turn', async () => {
+  slowNotify()
+  const id = started('fetch it', 'asked-told')
+  const attempt = ledger.openAttempt(id)
+  if (attempt === null) throw new Error('no turn')
+  ledger.ask(id, attempt.id, 'permission', 'Claude needs your permission')
+  // As `nod tell` opens a turn while the hook tells notify the dialog closed (deliver).
+  const tellWhileHeard = async (): Promise<void> => {
+    await until(() => ledger.attempt(attempt.id).finishedAt !== null)
+    ledger.startAttempt({
+      taskId: id,
+      kind: 'followup',
+      decisionId: null,
+      sessionId: 'asked-told',
+      prompt: 'do Y',
+    })
+  }
+  await Promise.all([stopped('asked-told', 'NOD: question | Shall I?'), tellWhileHeard()])
+  expect(ledger.decisions(id).map((d) => d.reason)).toEqual(['permission'])
+  expect(status(id)).toBe('running')
+})
+
+test('a task that succeeds leaves no decision open', async () => {
+  const id = started('fetch it', 'all-closed')
+  const first = ledger.openAttempt(id)
+  if (first === null) throw new Error('no turn')
+  // An older nod left a turn's permission decision open when the turn ended.
+  ledger.ask(id, first.id, 'permission', 'Claude needs your permission')
+  ledger.endAttempt(first.id, { outcome: 'needs_decision', summary: 'stopped', report: null })
+  ledger.startAttempt({
+    taskId: id,
+    kind: 'followup',
+    decisionId: null,
+    sessionId: 'all-closed',
+    prompt: 'go on',
+  })
+  await stopped('all-closed', 'NOD: done | fetched')
+  expect(status(id)).toBe('succeeded')
+  expect(ledger.openDecisions()).toEqual([])
+})
+
+test('a dropped retrospective ends before what it closes is heard of, so no message goes on in it', async () => {
+  slowNotify()
+  const of = ledger.add({
+    brief: 'x',
+    repo: null,
+    branch: null,
+    checkCmd: null,
+    model: null,
+    after: [],
+    triggerId: null,
+    issue: null,
+  })
+  const retro = ledger.addRetro(ledger.get(of), 'look back')
+  const cwd = workspaceOf(home, ledger.get(retro))
+  mkdirSync(cwd, { recursive: true })
+  ledger.setRunning(retro, cwd)
+  const turn = ledger.startAttempt({
+    taskId: retro,
+    kind: 'start',
+    decisionId: null,
+    sessionId: 'dropped-retro',
+    prompt: 'look back',
+  })
+  ledger.endAttempt(turn, { outcome: 'needs_decision', summary: 'rule A', report: null })
+  ledger.ask(retro, turn, 'question', 'Which task?')
+  const rule = ledger.ask(retro, turn, 'rule', 'Add it?')
+  const dropping = drop(ledger, home, rule)
+  await expect(tell(ledger, home, retro, 'look again')).rejects.toThrow('which ended (declined)')
+  await dropping
+  expect(ledger.attempts(retro)).toHaveLength(1)
+  expect(status(retro)).toBe('cancelled')
+})
+
+test('an answer to a decision already answered on a task gc collected brings nothing back', async () => {
+  const id = started('first', 'answered-collected')
+  await stopped('answered-collected', 'NOD: question | Which one?')
+  const decision = ledger.decisions(id)[0]
+  if (decision === undefined) throw new Error('no decision')
+  ledger.answer(decision.id, 'the first')
+  ledger.succeed(id)
+  const cwd = workspaceOf(home, ledger.get(id))
+  const sessions = projectFolder(process.env.CLAUDE_CONFIG_DIR ?? '', cwd)
+  mkdirSync(sessions, { recursive: true })
+  writeFileSync(join(sessions, 'answered-collected.jsonl'), '{}\n')
+  await collect(ledger, home, { ids: [id] })
+  await expect(answer(ledger, home, decision.id, 'the second', 'human')).rejects.toThrow(
+    'already answered',
+  )
+  expect(existsSync(cwd)).toBe(false)
+  expect(ledger.get(id).collectedAt).not.toBeNull()
+})
+
 test('a retrospective that proposes again replaces its open rule decision', async () => {
   const of = ledger.add({
     brief: 'x',
@@ -1942,3 +2041,16 @@ test('a message that comes once the Stop hook has started on a turn goes on in a
     ['followup', 'also this'],
   ])
 }, 40_000)
+
+test('a message sent while a worker cut off in a turn starts again goes on in that turn, with nothing to decide', async () => {
+  const id = await add('hang until ended')
+  await until(() => entries('turn')[0])
+  endClaude(id)
+  await until(() => Terminals.of(home).option(sessionName(id), 'nod_restarting') !== '')
+  await tell(ledger, home, id, 'hang on')
+  await until(() => entries('turn')[1])
+  await Bun.sleep(6000) // past the moment the new Claude Code counts as up
+  expect(entries('turn').map((t) => t.message)).toEqual(['hang until ended', 'hang on'])
+  expect(ledger.decisions(id)).toEqual([])
+  expect(ledger.attempts(id).map((a) => [a.kind, a.outcome])).toEqual([['start', null]])
+}, 30_000)
