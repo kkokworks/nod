@@ -724,16 +724,9 @@ export class Ledger {
   // ── triggers ──
 
   // `seen`: keys the source lists already, which never become tasks.
-  addTrigger(t: {
-    cron: string
-    brief: string
-    repo: string | null
-    branch: string | null
-    checkCmd: string | null
-    model: string | null
-    source: string | null
-    seen: string[]
-  }): number {
+  addTrigger(
+    t: Omit<Trigger, 'id' | 'lastRunAt' | 'lastError' | 'createdAt'> & { seen: string[] },
+  ): number {
     return this.db.transaction(() => {
       const id = this.insert(
         q
