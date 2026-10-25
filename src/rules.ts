@@ -45,7 +45,7 @@ export function retroBrief(ledger: Ledger, task: Task, rules: string): string {
     ...quote(task.brief),
     '',
     `Repository: ${task.repo ?? 'none'}`,
-    `Acceptance check: ${task.checkCmd === null ? 'none' : `\`${task.checkCmd}\``}`,
+    `Acceptance check: ${task.checkCmd === null ? 'none' : `\`${task.checkCmd.replaceAll('\n', ' ')}\``}`,
     '',
     'Turns:',
     ...turns,
@@ -58,7 +58,7 @@ export function retroBrief(ledger: Ledger, task: Task, rules: string): string {
     '',
     "After a worker reports done, nod runs the acceptance check outside the worker's sandbox, and " +
       'then an independent reviewer reads the work; a failure goes back to the worker as a retry. A ' +
-      'rule you propose goes into the prompt of every future worker, on every task.',
+      'rule the human approves goes into the prompt of every future worker, on every task.',
     '',
     'First find the turn or decision where the trouble shows. Then decide where the fix belongs, ' +
       'and propose at most one:',
@@ -70,6 +70,7 @@ export function retroBrief(ledger: Ledger, task: Task, rules: string): string {
       "around it. Put it in the person's inbox with one `NOD: in` line saying what to change and " +
       'why, and end with `NOD: done | none`.',
     '- Neither: end with `NOD: done | none`.',
-    'Do not change any files. Write in the language of the brief.',
+    'Do not change any files. Write the rule or the todo in the language of the brief, but keep ' +
+      '`none` in English.',
   ].join('\n')
 }
