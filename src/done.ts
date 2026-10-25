@@ -110,7 +110,8 @@ async function signal(
 // A repo task's branch: how many commits the task made that the remote's default branch lacks,
 // whether the default branch has its changes, and whether some of its commits are on no remote and
 // not merged either. Null without a repo, once the branch is gone, or for a task that never started
-// and so made no branch: one by its name is someone else's. Only as fresh as the repo's last fetch.
+// and so keeps no branch of its own (dropBranch in gc.ts): one by its name is someone else's. Only
+// as fresh as the repo's last fetch.
 function branchState(task: Task): { own: number; landed: boolean; unpushed: boolean } | null {
   const { repo, branch } = task
   if (repo === null || branch === null || task.workspace === null) return null

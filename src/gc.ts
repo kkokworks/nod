@@ -225,7 +225,8 @@ function submoduleNames(dir: string, name = ''): string[] {
 // commits, or the remote's default branch already has what it changed (a squash merge whose remote
 // branch was deleted leaves no remote branch holding them). Otherwise the branch stays, as the only
 // copy of the work. So does a branch still checked out somewhere, which git refuses to delete.
-// A task that never started made no branch: one by its name is someone else's.
+// A task that never started keeps no branch of its own, since a start that fails after making one
+// takes it back (prepareWorkspace in worker.ts): one by its name is someone else's.
 function dropBranch(task: Task): void {
   const { repo, branch } = task
   if (repo === null || branch === null || task.workspace === null) return
