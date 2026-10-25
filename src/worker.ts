@@ -651,9 +651,11 @@ async function settle(
   if (check !== null) ledger.recordCheck(attemptId, check.passed, check.output)
   if (newer()) return null
   if (check === null || check.passed) {
+    const captures = 'error' in captured ? [] : captured.captures
     if (task.retroId !== null && !isNoRule(summary)) {
       const retro = ledger.retro(task.retroId)
-      // One rule decision at a time: a newer proposal replaces one still open (decide).
+      // One rule decision at a time: a newer proposal replaces one still open (decide). A
+      // retrospective's todos go in with it, so a rule the person turns down does not take them along.
       await decide(
         ledger,
         home,
@@ -661,18 +663,21 @@ async function settle(
         attemptId,
         'rule',
         `Task #${retro.ofTaskId} ran into trouble, and its retrospective r${retro.id} proposes this rule for every future worker:\n${summary}\nAnswer yes to add it to the rules every worker gets (nod rule ls); anything else drops it.`,
-        () => ledger.proposeRule(retro.id, summary),
+        () => {
+          captureFor(ledger, task, captures)
+          ledger.proposeRule(retro.id, summary)
+        },
       )
       return null
     }
-    const captures = 'error' in captured ? [] : captured.captures
     // Nothing the task asked before waits on anything once it succeeds with no turn left running.
     const without = '(the task succeeded without it)'
     const closed = ledger.db
       .transaction((): Decision[] | null => {
         if (newer() || ended(ledger, task.id)) return null
         captureFor(ledger, task, captures)
-        if (task.retroId !== null) ledger.endRetro(task.retroId, 'none')
+        if (task.retroId !== null)
+          ledger.endRetro(task.retroId, captures.length > 0 ? 'todo' : 'none')
         const left = closeDecisions(ledger, task.id, () => true, without)
         ledger.succeed(task.id)
         return left

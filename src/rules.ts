@@ -25,6 +25,9 @@ const NOTE_LIMIT = 400
 
 // All the retrospective worker gets: the task's history, as data, and what to answer.
 // `rules`: everything a worker is told, built-in and approved, so a proposal does not repeat one.
+// A rule reaches every worker on every task, so the retrospective first decides where the fix
+// belongs: a fix for nod or for the task's repo or check goes to the person's inbox instead, since
+// a rule could only work around it (two declined rules did, for a nod bug and a sandbox limit).
 export function retroBrief(ledger: Ledger, task: Task, rules: string): string {
   const note = (s: string | null): string => (s ?? '').replaceAll('\n', ' ').slice(0, NOTE_LIMIT)
   const quote = (s: string): string[] => s.split('\n').map((line) => `> ${line}`)
@@ -41,6 +44,9 @@ export function retroBrief(ledger: Ledger, task: Task, rules: string): string {
     'Brief:',
     ...quote(task.brief),
     '',
+    `Repository: ${task.repo ?? 'none'}`,
+    `Acceptance check: ${task.checkCmd === null ? 'none' : `\`${task.checkCmd}\``}`,
+    '',
     'Turns:',
     ...turns,
     '',
@@ -50,9 +56,20 @@ export function retroBrief(ledger: Ledger, task: Task, rules: string): string {
     'Rules every worker already gets:',
     ...quote(rules),
     '',
-    'Propose at most one rule for future nod workers that would have avoided this trouble: general ' +
-      'enough to help other tasks, one short line, not covered already. Do not change any files. ' +
-      'Write the rule in the language of the brief, and end with `NOD: done | <the rule>`, or ' +
-      '`NOD: done | none` when no general rule fits.',
+    "After a worker reports done, nod runs the acceptance check outside the worker's sandbox, and " +
+      'then an independent reviewer reads the work; a failure goes back to the worker as a retry. A ' +
+      'rule you propose goes into the prompt of every future worker, on every task.',
+    '',
+    'First find the turn or decision where the trouble shows. Then decide where the fix belongs, ' +
+      'and propose at most one:',
+    '- A judgment the worker should have made differently while working, with nod as it is: a rule ' +
+      'for future nod workers that would have avoided this trouble, general enough to help other ' +
+      'tasks, one short line, not covered already. End with `NOD: done | <the rule>`.',
+    "- A change to nod itself (a bug, or something it does not tell workers), or to the task's " +
+      'repository or acceptance check (a check that would catch the mistake): no rule that works ' +
+      "around it. Put it in the person's inbox with one `NOD: in` line saying what to change and " +
+      'why, and end with `NOD: done | none`.',
+    '- Neither: end with `NOD: done | none`.',
+    'Do not change any files. Write in the language of the brief.',
   ].join('\n')
 }

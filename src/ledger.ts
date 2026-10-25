@@ -71,8 +71,9 @@ export type Task = {
 // A look back at a task that ran into trouble (startRetro in worker.ts). It is nod's own record, so
 // it is kept apart from the person's todos: the rule it proposed, null until it reports one, and
 // what became of it, null while it runs or after it errored. `declined` is a rule the person turned
-// down; `dropped`, a retrospective ended before it proposed one.
-export type RetroOutcome = 'added' | 'declined' | 'none' | 'dropped'
+// down; `dropped`, a retrospective ended before it proposed one; `todo`, one that put a fix for nod
+// or the task's repo or check in the person's inbox instead of proposing a rule.
+export type RetroOutcome = 'added' | 'declined' | 'none' | 'dropped' | 'todo'
 export type Retro = {
   id: number
   ofTaskId: number
