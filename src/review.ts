@@ -16,11 +16,16 @@ export function reviewBrief(
   report: string,
   changes: Changes | null,
 ): string {
-  // The human's later words, which may change the brief, and so the check written before them.
+  // The human's later words, which may change the brief, and so the check written before them: what
+  // started their turns, each followed by what they said while it ran.
+  const messages = ledger.messages(task.id)
   const later = ledger
     .attempts(task.id)
-    .filter((a) => a.kind === 'followup' || a.kind === 'answer')
-    .map((a) => `- ${a.prompt.replaceAll('\n', ' ')}`)
+    .flatMap((a) => [
+      ...(a.kind === 'followup' || a.kind === 'answer' ? [a.prompt] : []),
+      ...messages.filter((m) => m.attemptId === a.id).map((m) => m.text),
+    ])
+    .map((text) => `- ${text.replaceAll('\n', ' ')}`)
   const check =
     task.checkCmd === null
       ? 'There is no acceptance check.'
