@@ -202,10 +202,13 @@ export const StopEvent = z.object({
   last_assistant_message: z.string(),
   stop_hook_active: z.boolean(),
   // The session's background work still running or about to as the turn ends: agents (`subagent`),
-  // shells, monitors (measured on 2.1.309; older versions leave it out).
+  // shells, monitors (measured on 2.1.309; older versions leave it out). Only how much there is
+  // counts, so an entry nod cannot read still counts, and a list it cannot read is none: it must
+  // not fail the hook.
   background_tasks: z
-    .array(z.object({ type: z.string(), description: z.string() }).partial())
-    .optional(),
+    .array(z.object({ type: z.string(), description: z.string() }).partial().catch({}))
+    .optional()
+    .catch(undefined),
 })
 export const NotificationEvent = z.object({
   session_id: z.string(),
@@ -782,11 +785,11 @@ export function parseReport(text: string): Report | null {
   return null
 }
 
-// A report's `NOD: <word>` lines, without code ticks around them.
+// A report's `NOD: <word>` lines, without code ticks or Markdown emphasis around them.
 const nodLines = (text: string, word: string): string[] =>
   text
     .split('\n')
-    .map((l) => l.trim().replace(/^`+|`+$/g, ''))
+    .map((l) => l.trim().replace(/^[`*]+|[`*]+$/g, ''))
     .filter((l) => new RegExp(`^NOD:\\s*${word}\\b`, 'i').test(l))
 
 // The `NOD: in {…}` lines of a report, or what is wrong with them, to send back to the worker.
@@ -847,26 +850,27 @@ export function parseTells(text: string): { tells: Tell[] } | { error: string } 
   return { tells }
 }
 
-// Why nod cannot send one of `tells`, to send back to the worker; null when it can send them all.
-// Only to another task one Claude session added along with this one: that session gave both their
-// work, so a worker cannot steer the tasks of other sessions, or a trigger's (which work on what
-// anyone could write in an issue) steer any. A task that ended or never started has no worker.
+// Why nod cannot send what `from`'s worker tells task `to`; null when it can. Only to another task
+// one Claude session added along with this one: that session gave both their work, so a worker
+// cannot steer the tasks of other sessions, or a trigger's (which work on what anyone could write
+// in an issue) steer any. A task that ended or never started has no worker to hear it.
+function cannotTell(ledger: Ledger, from: Task, to: number): string | null {
+  const task = ledger.list().find((t) => t.id === to)
+  if (task === undefined) return `There is no task #${to}.`
+  if (to === from.id) return `#${to} is this task.`
+  if (from.rootSession === null || task.rootSession !== from.rootSession) {
+    return `#${to} was not added from the session that added this task, and nod passes messages only between those.`
+  }
+  if (task.status === 'cancelled' || ended(ledger, to)) return `#${to} has ended.`
+  if (task.workspace === null || ledger.lastAttempt(to) === null) return `#${to} has not started.`
+  return null
+}
+
+// What is wrong with the first of `tells` nod cannot send, to send back to the worker; null when
+// it can send them all.
 function unsendable(ledger: Ledger, from: Task, tells: Tell[]): string | null {
-  const tasks = new Map(ledger.list().map((t) => [t.id, t]))
   for (const { to, text } of tells) {
-    const task = tasks.get(to)
-    const why =
-      task === undefined
-        ? `There is no task #${to}.`
-        : to === from.id
-          ? `#${to} is this task.`
-          : from.rootSession === null || task.rootSession !== from.rootSession
-            ? `#${to} was not added from the session that added this task, and nod passes messages only between those.`
-            : task.status === 'cancelled' || ended(ledger, to)
-              ? `#${to} has ended.`
-              : task.workspace === null || ledger.lastAttempt(to) === null
-                ? `#${to} has not started.`
-                : null
+    const why = cannotTell(ledger, from, to)
     if (why !== null) {
       return `A \`NOD: tell\` line nod cannot send: NOD: tell #${to} ${text}\n${why} Leave it out, or ask the human.`
     }
@@ -874,20 +878,21 @@ function unsendable(ledger: Ledger, from: Task, tells: Tell[]): string | null {
   return null
 }
 
-// What the person is asked when one of `tells` would take two tasks past MAX_TELLS messages between
-// them; null when none would.
+// What the person is asked when `tells` would take two tasks past MAX_TELLS messages between them;
+// null when they would not. Then none of them goes, so the question shows them all.
 // ponytail: counted before the checks run and sent after them, so two tasks telling each other at
 // once may each send one past the limit.
 function overTold(ledger: Ledger, from: Task, tells: Tell[]): string | null {
-  const sent = new Map<number, number>()
-  for (const { to, text } of tells) {
-    const n = sent.get(to) ?? ledger.tellsBetween(from.id, to)
-    if (n >= MAX_TELLS) {
-      return `Task #${from.id}'s worker reported done and asks nod to tell task #${to}:\n> ${text}\n#${from.id} and #${to} have sent each other ${n} messages, nod's limit, so nod did not send it and has not taken the done. Answer with how #${from.id} should go on, such as to finish without it; to let them talk on, pass it on yourself first (nod tell ${to} '<message>').`
-    }
-    sent.set(to, n + 1)
+  const before = new Map<number, number>()
+  const after = new Map<number, number>()
+  for (const { to } of tells) {
+    if (!before.has(to)) before.set(to, ledger.tellsBetween(from.id, to))
+    after.set(to, (after.get(to) ?? before.get(to) ?? 0) + 1)
   }
-  return null
+  const over = [...after].find(([, n]) => n > MAX_TELLS)?.[0]
+  if (over === undefined) return null
+  const asked = tells.map(({ to, text }) => `> to #${to}: ${text}`).join('\n')
+  return `Task #${from.id}'s worker reported done and asks nod to pass on:\n${asked}\n#${from.id} and #${over} have sent each other ${before.get(over)} messages already, and nod passes on at most ${MAX_TELLS} between two tasks, so it sent none of these and has not taken the done. Answer with how #${from.id} should go on, such as to finish without them; to let them talk on, pass them on yourself first (nod tell <task> '<message>').`
 }
 
 // How a message from another task's worker reaches a worker: marked as a peer's, so it never passes
@@ -898,9 +903,12 @@ const peerMessage = (from: number, text: string): string =>
 // Sends what a worker told other tasks once nod has taken its done, as `nod tell` does: into the
 // worker's live session, or one brought back, a finished task's too. One that cannot go in (a
 // permission dialog open there, say) is the person's to pass on, so they hear it with the message.
+// Each is checked again first: the person may have dropped its task while the checks ran.
 async function sendTells(ledger: Ledger, home: string, from: Task, tells: Tell[]): Promise<void> {
   for (const { to, text } of tells) {
     try {
+      const why = cannotTell(ledger, from, to)
+      if (why !== null) throw new Error(why)
       await restore(ledger, home, to)
       await deliver(ledger, home, to, 'followup', peerMessage(from.id, text), null, from.id)
     } catch (error) {
@@ -1064,6 +1072,10 @@ async function deliver(
   const turn = ledger.db
     .transaction((): Turn => {
       refuseEnded(ledger, ledger.get(taskId))
+      // A worker's message never brings back a task the person dropped (sendTells).
+      if (from !== null && ledger.get(taskId).status === 'cancelled') {
+        throw new Error(`task ${taskId} was dropped`)
+      }
       const open = ledger.openAttempt(taskId)
       // `checked` is NaN while the hook has yet to read which turn it checks: the one that ended.
       const hookTurn = checking && (open?.id === checked || Number.isNaN(checked))

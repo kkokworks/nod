@@ -33,6 +33,7 @@ import {
   parseTells,
   restart,
   restartDue,
+  StopEvent,
   sessionName,
   startReady,
   startTask,
@@ -1644,6 +1645,19 @@ test('a report may ask for at most 50 captures, each with JSON nod can read', ()
   expect(parseCaptures('**NOD: done | nothing to capture**')).toEqual({ captures: [] })
 })
 
+test('background work the Stop hook cannot read still counts, or counts as none, and never fails the hook', () => {
+  const stop = {
+    session_id: 's',
+    last_assistant_message: 'NOD: question | ?',
+    stop_hook_active: false,
+  }
+  const work = (background_tasks: unknown) => StopEvent.parse({ ...stop, background_tasks })
+  expect(work([{ type: 'shell', description: null }, 7]).background_tasks).toHaveLength(2)
+  expect(work(null).background_tasks).toBeUndefined()
+  expect(work('none').background_tasks).toBeUndefined()
+  expect(StopEvent.parse(stop).background_tasks).toBeUndefined()
+})
+
 test('a report says what to tell other tasks in NOD: tell lines, which nod reads or sends back', () => {
   const report = [
     'Found two.',
@@ -1658,6 +1672,10 @@ test('a report says what to tell other tasks in NOD: tell lines, which nod reads
     ],
   })
   expect(parseTells('Telling nobody.\nNOD: done | nothing to tell')).toEqual({ tells: [] })
+  // Workers often bold their report lines.
+  expect(parseTells('**NOD: tell #5 look again**\n**NOD: done | ok**')).toEqual({
+    tells: [{ to: 5, text: 'look again' }],
+  })
   for (const bad of ['NOD: tell 85 no hash', 'NOD: tell #85', 'NOD: tell #x hi']) {
     expect(parseTells(`${bad}\nNOD: done | ok`)).toMatchObject({
       error: expect.stringContaining(bad),
@@ -1938,11 +1956,49 @@ test('two tasks whose workers have sent each other four messages ask the person 
   const [asked] = ledger.decisions(review)
   expect(asked?.reason).toBe('question')
   expect(asked?.question).toContain(
-    `> one more thing\n#${review} and #${fix} have sent each other 4`,
+    `> to #${fix}: one more thing\n#${review} and #${fix} have sent each other 4 messages already, and nod passes on at most 4`,
   )
   expect(ledger.attempts(fix)).toHaveLength(1)
   expect(entries('review')).toEqual([])
+
+  // Three so far, and two more in one report: neither goes, and the person sees both.
+  const other = started('review', 'reviewing-two', 'root-1')
+  const done = started('fix', 'fixing-two', 'root-1')
+  for (const text of ['findings', 'fixed', 'more findings']) {
+    ledger.addMessage(done, turnOf(done), text, other)
+  }
+  await stopped(
+    'reviewing-two',
+    `NOD: tell #${done} first\nNOD: tell #${done} second\nNOD: done | reviewed`,
+  )
+  const [both] = ledger.decisions(other)
+  expect(both?.question).toContain(`> to #${done}: first\n> to #${done}: second\n`)
+  expect(both?.question).toContain('have sent each other 3 messages already')
+  expect(ledger.attempts(done)).toHaveLength(1)
 })
+
+test('a message a worker told a task the person drops while nod checks it does not bring that task back', async () => {
+  const events = listen()
+  const target = started('fix', 'drop-target', 'root-1')
+  await stopped('drop-target', 'NOD: done | fixed')
+  const from = started('review-slow: review it', 'drop-sender', 'root-1')
+  // The person drops the target while the sender's review runs.
+  const dropWhileChecked = async (): Promise<void> => {
+    await until(() => entries('review').some((r) => r.message?.includes(`nod task #${from}.`)))
+    ledger.db.query("update tasks set status = 'cancelled' where id = $id").run({ id: target })
+  }
+  await Promise.all([
+    stopped('drop-sender', `NOD: tell #${target} a.ts:3 is off by one\nNOD: done | reviewed`),
+    dropWhileChecked(),
+  ])
+  expect(status(from)).toBe('succeeded')
+  expect(status(target)).toBe('cancelled')
+  expect(ledger.attempts(target)).toHaveLength(1)
+  const heard = events().filter((e) => e.event === 'error')
+  expect(heard.map((e) => [e.task?.id, e.error])).toEqual([
+    [target, expect.stringContaining(`#${target} has ended.): a.ts:3 is off by one`)],
+  ])
+}, 30_000)
 
 test('a review tells the fixer its findings, and the fixer tells it back once fixed, through nod alone', async () => {
   const rooted = async (brief: string): Promise<number> => {

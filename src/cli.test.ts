@@ -396,7 +396,7 @@ test('hook stop waits on the background work Claude Code says still runs, and ti
     last_assistant_message: 'The review runs.\nNOD: question | Waiting for the review',
     background_tasks: [
       {
-        id: 'a6b0d3f27fde1110d',
+        id: 'a0123456789abcdef',
         type: 'subagent',
         status: 'running',
         description: 'review',
