@@ -1,7 +1,9 @@
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
-const EXIT_TIMEOUT_MS = 10_000
+// Longer than an account command (account.ts, 10s), which runs synchronously, so the process that
+// keeps a worker's Claude Code running may not hear the session end until it is done.
+const EXIT_TIMEOUT_MS = 15_000
 
 // Names what nod keeps per home outside it: the tmux socket and the OS scheduler job.
 export const homeId = (home: string): string => Bun.hash(home).toString(36)

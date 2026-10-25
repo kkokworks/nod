@@ -1725,6 +1725,62 @@ test('a yes to a rule decision adds the rule that decision proposed, and an ende
   expect(status(retro)).not.toBe('cancelled')
 })
 
+test('a rule decision takes no yes while its retrospective proposes again, and a yes closes what else is open', async () => {
+  const of = ledger.add({
+    brief: 'x',
+    repo: null,
+    branch: null,
+    checkCmd: null,
+    model: null,
+    after: [],
+    triggerId: null,
+    issue: null,
+  })
+  const retro = ledger.addRetro(ledger.get(of), 'look back')
+  const turn = (kind: 'start' | 'followup', prompt: string): number =>
+    ledger.startAttempt({
+      taskId: retro,
+      kind,
+      decisionId: null,
+      sessionId: 'busy-session',
+      prompt,
+    })
+  turn('start', 'look back')
+  await stopped('busy-session', 'NOD: done | rule A')
+  const first = ledger.decisions(retro)[0]
+  if (first === undefined) throw new Error('no rule decision')
+  // Told to propose another (deliver opens its turn): the first proposal waits for what it says.
+  turn('followup', 'propose another')
+  await expect(answer(ledger, home, first.id, 'yes', 'human')).rejects.toThrow('proposing again')
+  expect(ledger.rules()).toEqual([])
+  expect(ledger.retroFor(of)?.outcome).toBeNull()
+  // It asks something instead; a yes to the first proposal ends the retrospective, and the
+  // question with it.
+  await stopped('busy-session', 'NOD: question | Which task?')
+  await answer(ledger, home, first.id, 'yes', 'human')
+  expect(ledger.rules().map((r) => r.text)).toEqual(['rule A'])
+  expect(ledger.decisions(retro).map((d) => [d.reason, d.answer])).toEqual([
+    ['rule', 'yes'],
+    ['question', '(the task succeeded without it)'],
+  ])
+})
+
+test("a message that finds a turn gone with its terminal closes that turn's decisions", async () => {
+  const id = started('fetch it', 'gone-dialog')
+  const attempt = ledger.openAttempt(id)
+  if (attempt === null) throw new Error('no turn')
+  ledger.ask(id, attempt.id, 'permission', 'Claude needs your permission')
+  // The machine restarted with the dialog up, and a message comes before a tick finds the turn.
+  await tell(ledger, home, id, 'do Y instead')
+  expect(ledger.decisions(id).map((d) => [d.reason, d.answer])).toEqual([
+    ['permission', '(the turn was cut off)'],
+  ])
+  expect(ledger.attempts(id).map((a) => [a.kind, a.outcome])).toEqual([
+    ['start', 'error'],
+    ['followup', null],
+  ])
+})
+
 test('two ticks that find the same lost turn at once raise one decision for it', async () => {
   const id = started('fetch it', 'lost-twice')
   const attempt = ledger.openAttempt(id)
@@ -1851,3 +1907,22 @@ test('a message told to a worker in the middle of a turn goes into that turn, an
   expect(ledger.attempts(id).map((a) => a.kind)).toEqual(['start'])
   expect(entries('review')[0]?.message).toContain('later words win:\n- use tabs\n')
 }, 30_000)
+
+test('a message that comes once the Stop hook has started on a turn goes on in a turn of its own', async () => {
+  // A notify that takes a while, so the hook does before it closes the turn.
+  writeFileSync(join(home, 'notify'), '#!/bin/sh\nsleep 3\n')
+  chmodSync(join(home, 'notify'), 0o755)
+  const id = await add('need-permission')
+  await until(() => ledger.decisions(id)[0])
+  // A person attached to the worker answers the dialog there.
+  const terminals = Terminals.of(home)
+  const name = sessionName(id)
+  terminals.keys(name, 'Enter')
+  await until(() => terminals.option(name, 'nod_settling') !== '')
+  await tell(ledger, home, id, 'also this')
+  await until(() => ledger.attempts(id).length === 2 && status(id) === 'succeeded')
+  expect(ledger.attempts(id).map((a) => [a.kind, a.prompt])).toEqual([
+    ['start', 'need-permission'],
+    ['followup', 'also this'],
+  ])
+}, 40_000)
