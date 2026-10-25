@@ -13,16 +13,15 @@ const GITEA = /^(https?:\/\/[^/]+)\/([^/]+)\/([^/]+)\/pulls\/(\d+)/
 const TIMEOUT_MS = 30_000
 
 type Review = { login: string | null; state: string; at: string | null }
-const APPROVED = new Set(['APPROVED'])
 const CHANGES = new Set(['CHANGES_REQUESTED', 'REQUEST_CHANGES'])
 
 // When the person approved, if their last review that approved or asked for changes approved; a
 // comment changes neither. Reviews come oldest first.
 export function approvedAt(reviews: Review[], me: string): string | null {
-  const last = reviews
-    .filter((r) => r.login === me && (APPROVED.has(r.state) || CHANGES.has(r.state)))
-    .at(-1)
-  return last !== undefined && APPROVED.has(last.state) ? last.at : null
+  const last = reviews.findLast(
+    (r) => r.login === me && (r.state === 'APPROVED' || CHANGES.has(r.state)),
+  )
+  return last?.state === 'APPROVED' ? last.at : null
 }
 
 // One lookup per sweep: links to the same pull request (several comments on it) ask once.
