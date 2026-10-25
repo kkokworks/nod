@@ -75,10 +75,6 @@ export class Terminals {
     this.tmux(['set-option', '-q', '-t', `=${name}:`, ...set])
   }
 
-  signal(name: string, signal: NodeJS.Signals): void {
-    process.kill(this.panePid(name), signal)
-  }
-
   // Whether nod ended the session on purpose (kill, close), for what runs in it to tell from Claude
   // Code ending on its own.
   stopped(name: string): boolean {

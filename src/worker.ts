@@ -1005,7 +1005,7 @@ function launch(home: string, taskId: number, cwd: string, first: string[]): voi
 // Asks keepWorker to end Claude Code and start it again (its SIGUSR1).
 function startAgain(terminals: Terminals, name: string): void {
   terminals.setOption(name, RESTARTING_OPTION, '1')
-  terminals.signal(name, 'SIGUSR1')
+  process.kill(terminals.panePid(name), 'SIGUSR1')
 }
 
 // Whether a Stop hook is still checking the worker's last turn. A hook that went without clearing
