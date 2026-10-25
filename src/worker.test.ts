@@ -1854,10 +1854,11 @@ test('a decision left open on a task that ended only closes, answered or dropped
   if (asked === undefined) throw new Error('no decision')
   // The task succeeded with the question left open, as an older nod left such questions.
   ledger.succeed(id)
-  await answer(ledger, home, asked.id, 'never mind', 'human')
+  // What each returns tells the person their words went nowhere (`nod` prints it).
+  expect(await answer(ledger, home, asked.id, 'never mind', 'human')).toBe(false)
   const again = ledger.ask(id, asked.attemptId, 'question', 'Still there?')
   ledger.succeed(id)
-  await drop(ledger, home, again)
+  expect(await drop(ledger, home, again)).toBe(false)
   expect([ledger.decision(asked.id).answer, ledger.decision(again).answer]).toEqual([
     'never mind',
     '(dropped)',
@@ -1875,6 +1876,29 @@ test('a decision left open on a task that ended only closes, answered or dropped
   expect(ledger.decision(left).answer).toBe('here')
   expect(status(id)).toBe('cancelled')
   expect(ledger.attempts(id)).toHaveLength(1)
+})
+
+test("a trust decision answered in the worker's terminal closes once its first turn ends", async () => {
+  const id = started('work here', 'trusted-there')
+  const attempt = ledger.openAttempt(id)
+  if (attempt === null) throw new Error('no turn')
+  ledger.ask(id, attempt.id, 'trust', 'Trust the repo?') // as awaitStart does
+  await stopped('trusted-there', 'NOD: done | did it')
+  expect(status(id)).toBe('succeeded')
+  expect(ledger.decisions(id).map((d) => [d.reason, d.answer])).toEqual([
+    ['trust', '(it got past the trust dialog)'],
+  ])
+})
+
+test('a review that fails on a task dropped while its Stop hook checked leaves it dropped', async () => {
+  const id = started('review-mute: write it', 'mute-dropped')
+  const attempt = ledger.openAttempt(id)
+  if (attempt === null) throw new Error('no turn')
+  // Dropped as its turn ends: the hook still checks that turn, and its review gives no verdict.
+  ledger.drop(ledger.ask(id, attempt.id, 'question', 'Go on?'))
+  await stopped('mute-dropped', 'NOD: done | did it')
+  expect(status(id)).toBe('cancelled')
+  expect(ledger.attempts(id).map((a) => a.outcome)).toEqual(['error'])
 })
 
 test("a permission answered in the worker's terminal leaves the task running into the retry its turn gets", async () => {
@@ -2200,4 +2224,39 @@ test('a message for a worker waiting on its trust decision waits for that decisi
   await answer(ledger, home, trust.id, 'yes', 'human')
   await reaches(id, 'succeeded')
   expect(entries('turn').map((t) => t.message)).toEqual(['work here'])
+}, 30_000)
+
+test('a message for a worker whose trust dialog is up waits for that decision, even with no turn open', async () => {
+  writeFileSync(join(home, 'fake-untrusted'), '')
+  const id = ledger.add({
+    brief: 'work here',
+    repo: newRepo(),
+    branch: 'feat/later',
+    checkCmd: null,
+    model: null,
+    after: [],
+    triggerId: null,
+    issue: null,
+  })
+  await startTask(ledger, home, id)
+  const trust = ledger.decisions(id)[0]
+  if (trust?.reason !== 'trust') throw new Error('no trust decision')
+  // As when a first start gave up on the dialog and a later one shows it again: its turn closed.
+  ledger.failAttempt(trust.attemptId, 'Claude Code did not start')
+  await expect(tell(ledger, home, id, 'also this')).rejects.toThrow(
+    `answer trust decision #${trust.id} first`,
+  )
+  expect(Terminals.of(home).screen(sessionName(id))).toContain('Yes, I trust this folder')
+}, 30_000)
+
+test('a Claude Code this process may not signal counts as running, so a message goes in', async () => {
+  const id = await add('first')
+  await reaches(id, 'succeeded')
+  await settled(id)
+  // pid 1 runs as root: signalling it fails with EPERM, as for any process outside a sandbox.
+  Terminals.of(home).setOption(sessionName(id), 'nod_claude', '1')
+  await tell(ledger, home, id, 'second')
+  await reaches(id, 'succeeded')
+  await until(() => entries('turn')[1])
+  expect(entries('turn').map((t) => t.message)).toEqual(['first', 'second'])
 }, 30_000)

@@ -222,8 +222,9 @@ switch (command) {
     show(taskRef(rest[0]))
     break
   case 'drop':
-    await drop(ledger, home, Number(rest[0]))
-    console.log('dropped')
+    console.log(
+      (await drop(ledger, home, Number(rest[0]))) ? 'dropped' : 'closed; its task had ended',
+    )
     break
   case 'gc':
     await gc(rest)
@@ -287,8 +288,12 @@ switch (command) {
     if (process.env.NOD_TASK !== undefined && ledger.decision(id).reason === 'rule') {
       throw new Error('a worker cannot change the rules')
     }
-    await answer(ledger, home, id, words(rest), actorFromEnv())
-    console.log(`answered; sent to task #${ledger.decision(id).taskId}`)
+    const taskId = ledger.decision(id).taskId
+    console.log(
+      (await answer(ledger, home, id, words(rest), actorFromEnv()))
+        ? `answered; sent to task #${taskId}`
+        : `closed; task #${taskId} had ended`,
+    )
   }
 }
 
