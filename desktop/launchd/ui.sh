@@ -7,7 +7,7 @@
 # The agent serves ui/'s build, not the dev server, which fails for a moment whenever the repo
 # switches branches. Like `nod schedule on`, it runs with this shell's PATH (bun, tmux, git, claude),
 # its NOD_HOME and CLAUDE_CONFIG_DIR when they are set, and what else nod passes to workers but
-# secrets.
+# secrets and the SSH agent.
 set -eu
 
 label=io.github.kkokworks.nod.ui
@@ -44,7 +44,8 @@ install)
       plutil -replace "EnvironmentVariables.$name" -string "$value" "$new"
     fi
   done
-  # And what else a worker gets of this shell but secrets (savedEnv): proxies, locale, TMUX_TMPDIR.
+  # And what else a worker gets of this shell but secrets and the SSH agent (savedEnv): proxies,
+  # locale, TMUX_TMPDIR.
   # Through a file, not a pipe: sh has no pipefail, so a pipe would hide bun failing.
   src=$(cd "$here/../../src" && pwd)
   "$bun" -e "import { savedEnv } from '$src/worker.ts'

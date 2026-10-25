@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { z } from 'zod'
 import { localTime } from './days'
@@ -39,12 +39,20 @@ export function parseItems(output: string): Item[] {
 }
 
 // Bun 1.3.14's Bun.cron.parse reads every schedule as UTC whatever `tz` says (measured), so the
-// local wall-clock time goes in as if it were UTC and the result is shifted back.
-// ponytail: the offset is taken at `from`, so a run across a daylight-saving change is an hour off.
+// local wall-clock time goes in as if it were UTC and the result is shifted back by the offset at
+// the result, so a run across a daylight-saving change keeps its hour. A time that does not come
+// that day (02:30 when the clock skips to 03:00) keeps the offset at `from`, as late as the clock
+// skipped (an hour in most places).
+// ponytail: each wall-clock time runs once, so an hourly or more frequent schedule skips the hour
+// that comes twice; walk real time instead if that hour matters.
 export function nextRun(cron: string, from: Date): Date | null {
-  const offset = from.getTimezoneOffset() * 60_000
-  const next = Bun.cron.parse(cron, from.getTime() - offset)
-  return next === null ? null : new Date(next.getTime() + offset)
+  const offsetAt = (t: number): number => new Date(t).getTimezoneOffset() * 60_000
+  const before = offsetAt(from.getTime())
+  const next = Bun.cron.parse(cron, from.getTime() - before)
+  if (next === null) return null
+  const guess = next.getTime() + before
+  const after = next.getTime() + offsetAt(guess)
+  return new Date(offsetAt(after) === offsetAt(guess) && after > from.getTime() ? after : guess)
 }
 
 // For a source, what it lists now is recorded as seen, so only items that appear later become
@@ -113,8 +121,12 @@ export async function tick(
     return []
   })
   const passed = watches ? await checkWatches(ledger, home) : []
+  // Clean: one whose workspace was gone already, collected all the same.
   const collected = watches
-    ? (await sweep(ledger, home, pullRequests(home), now)).report.removed
+    ? await sweep(ledger, home, pullRequests(home), now).then(({ report }) => [
+        ...report.removed,
+        ...report.clean,
+      ])
     : []
   return { added, passed, collected, lost, restarted }
 }
@@ -256,8 +268,8 @@ export function scheduleEnv(home: string): Record<string, string> | null {
 // Registers the every-minute tick with the OS scheduler. The scheduler starts it with a bare
 // environment, so it brings this shell's PATH (tmux, claude, git) and Claude config dir, which the
 // watches use, and the triggers' workers too unless an account rule names theirs (account.ts), and
-// what else a worker gets of it but secrets (savedEnv: proxies, locale, TMUX_TMPDIR so the tick finds
-// the same tmux server); turning it on again replaces them. It stays on, whether
+// what else a worker gets of it but secrets and the SSH agent (savedEnv: proxies, locale, TMUX_TMPDIR
+// so the tick finds the same tmux server); turning it on again replaces them. It stays on, whether
 // or not anything is due, until turned off: a tick with nothing to do ends at once, while one that
 // came and went with the triggers and watches took the environment of whichever shell added one.
 export async function scheduleOn(home: string): Promise<void> {
@@ -268,8 +280,19 @@ export async function scheduleOn(home: string): Promise<void> {
   }
   if (process.env.CLAUDE_CONFIG_DIR) env.CLAUDE_CONFIG_DIR = process.env.CLAUDE_CONFIG_DIR
   writeFileSync(envPath(home), `${JSON.stringify(env, null, 2)}\n`, { mode: 0o600 })
+  // The mode applies only to a new file, and an earlier nod wrote this one readable by all.
+  chmodSync(envPath(home), 0o600)
   writeFileSync(tickPath(home), tickModule(home))
-  await Bun.cron(tickPath(home), '* * * * *', cronTitle(home))
+  try {
+    await Bun.cron(tickPath(home), '* * * * *', cronTitle(home))
+  } catch (error) {
+    // The files are what says the schedule is on, and a tick registered before would run the
+    // missing tick.ts every minute, so it goes too; the error to show is the registration's.
+    rmSync(tickPath(home), { force: true })
+    rmSync(envPath(home), { force: true })
+    await Bun.cron.remove(cronTitle(home)).catch(() => {})
+    throw error
+  }
 }
 
 export async function scheduleOff(home: string): Promise<void> {

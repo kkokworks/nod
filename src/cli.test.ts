@@ -1,8 +1,9 @@
 import { afterAll, expect, test } from 'bun:test'
-import { writeFileSync } from 'node:fs'
+import { mkdirSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { tempDirs } from '../test/tmp'
 import { Ledger } from './ledger'
+import { workspaceOf } from './worker'
 
 const tmp = tempDirs()
 afterAll(tmp.removeAll)
@@ -322,12 +323,50 @@ test('account sets which account workers run as and shows the one current now; r
     'env: CLAUDE_CONFIG_DIR of the shell that starts each worker\n  now /from/env',
   )
   expect(out('account', 'file', current)).toBe(`file ${current}\n  now /accounts/a`)
-  expect(out('account', 'command', 'echo', '/accounts/b')).toBe(
+  expect(out('account', 'command', 'echo /accounts/b')).toBe(
     'command echo /accounts/b\n  now /accounts/b',
   )
+  // One shell command, quotes and all; words given apart would lose theirs.
+  const spaced = join(home, 'a b')
+  mkdirSync(spaced)
+  writeFileSync(join(spaced, 'current'), '/accounts/c\n')
+  expect(out('account', 'command', `cat "${spaced}/current"`)).toEndWith('  now /accounts/c')
+  expect(nod('account', 'command', 'cat', `${spaced}/current`).exitCode).not.toBe(0)
+  expect(out('account')).toStartWith(`command cat "${spaced}/current"`)
   expect(nod('account', 'nonsense').exitCode).not.toBe(0)
   expect(out('account', 'env')).toStartWith('env:')
   expect(out('restart')).toBe('no worker to restart')
+})
+
+test('tick by hand says which finished tasks it collected', () => {
+  const home = tmp.make('nod-tick-')
+  const ledger = new Ledger(home)
+  // Finished 7+ days ago: one with its workspace, one whose workspace is gone already.
+  const old = (workspace: boolean): number => {
+    const id = ledger.add({
+      brief: 'old',
+      repo: null,
+      branch: null,
+      checkCmd: null,
+      model: null,
+      after: [],
+      triggerId: null,
+      issue: null,
+    })
+    const cwd = workspaceOf(home, ledger.get(id))
+    if (workspace) mkdirSync(cwd, { recursive: true })
+    ledger.setRunning(id, cwd)
+    ledger.succeed(id)
+    ledger.db
+      .query("update tasks set finished_at = '2026-01-01T00:00:00.000Z' where id = $id")
+      .run({ id })
+    return id
+  }
+  const ids = [old(true), old(false)]
+  const tick = Bun.spawnSync(['bun', cli, 'tick'], { env: { ...process.env, NOD_HOME: home } })
+
+  expect(tick.stdout.toString()).toBe(`collected task(s) ${ids.join(', ')}\n`)
+  expect(ledger.list().map((t) => t.collectedAt !== null)).toEqual([true, true])
 })
 
 test('add refuses repo work without a valid branch, before adding anything', async () => {

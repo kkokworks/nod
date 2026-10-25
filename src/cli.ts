@@ -125,18 +125,20 @@ const USAGE = `usage:
   nod schedule [on | off]          whether the OS scheduler runs the tick every minute; on, it
                                    runs with this shell's PATH and Claude config dir, which the
                                    triggers' workers and the watches use. It stays on until off
-  nod tick                         run the triggers that are due and the watches; the scheduled
-                                   tick runs the watches every fifth minute. It also asks about
-                                   turns whose terminal is gone (a restart of the machine or tmux)
-                                   and restarts the workers due a restart
+  nod tick                         run the triggers that are due and the watches, and gc the
+                                   finished tasks a signal says are done with (as nod gc does);
+                                   the scheduled tick does the watches and gc every fifth minute.
+                                   It also asks about turns whose terminal is gone (a restart of
+                                   the machine or tmux) and restarts the workers due a restart
   nod restart [<task...>]          start the Claude Code of these workers, or of every worker,
                                    again in the same terminal and conversation: at once between
                                    turns, after its turn otherwise, and only once nobody is
                                    attached. For a tool that switches accounts to run after a switch
-  nod account [env | file <path> | command <command...>]
+  nod account [env | file <path> | command <command>]
                                    which Claude account (config dir) workers run as: the
                                    CLAUDE_CONFIG_DIR of the shell that starts one (env, the
-                                   default), the path a file holds, or what a command prints;
+                                   default), the path a file holds, or what a command prints
+                                   (one quoted argument, run with sh -c);
                                    empty means Claude Code's default. With a file or a command,
                                    every nod command and tick restarts the workers that run as
                                    another account than the current one, as nod restart does
@@ -240,12 +242,13 @@ switch (command) {
     break
   case 'tick': {
     // Run by hand, it checks the watches now too, not only on their every fifth minute.
-    const { added, passed, lost, restarted } = await tick(ledger, home, new Date(), true)
+    const { added, passed, collected, lost, restarted } = await tick(ledger, home, new Date(), true)
     if (added.length > 0) console.log(`added task(s) ${added.join(', ')}`)
     if (passed.length > 0) console.log(`watch passed: ${passed.map((id) => `t${id}`).join(', ')}`)
+    if (collected.length > 0) console.log(`collected task(s) ${collected.join(', ')}`)
     if (lost.length > 0) console.log(`turn(s) lost with their terminal: ${lost.join(', ')}`)
     if (restarted.length > 0) console.log(`restarted task(s) ${restarted.join(', ')}`)
-    if ([added, passed, lost, restarted].every((ids) => ids.length === 0))
+    if ([added, passed, collected, lost, restarted].every((ids) => ids.length === 0))
       console.log('nothing due')
     break
   }
@@ -454,8 +457,10 @@ function accountCommand([how, ...args]: string[]): void {
   if (how === 'env' && args.length === 0) setAccountRule(home, null)
   else if (how === 'file' && path !== undefined && args.length === 1) {
     setAccountRule(home, { file: resolve(path) })
-  } else if (how === 'command' && args.length > 0) setAccountRule(home, { command: words(args) })
-  else if (how !== undefined) throw new Error(USAGE)
+  } else if (how === 'command' && args.length === 1) {
+    // One shell command, as a source or a watch is: words joined back would lose their quotes.
+    setAccountRule(home, { command: words(args) })
+  } else if (how !== undefined) throw new Error(USAGE)
   console.log(describeRule(accountRule(home)))
   console.log(`  now ${configDir(home) ?? "(none: Claude Code's default)"}`)
 }

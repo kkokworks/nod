@@ -1,10 +1,10 @@
-import { afterAll, expect, test } from 'bun:test'
-import { existsSync, writeFileSync } from 'node:fs'
+import { afterAll, expect, spyOn, test } from 'bun:test'
+import { chmodSync, existsSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tempDirs } from '../test/tmp'
 import { Ledger } from './ledger'
 import { Todos } from './todos'
-import { addTrigger, nextRun, parseItems, shell, tick } from './triggers'
+import { addTrigger, nextRun, parseItems, scheduleEnv, scheduleOn, shell, tick } from './triggers'
 
 // Only what runs without workers; the tick's triggers start tasks, so they are tested with the
 // fake agent in worker.test.ts. Its watches start none and are tested here.
@@ -24,6 +24,51 @@ test('schedules are read in local time', () => {
   expect(nextRun('0 9 * * *', at(6, 10))).toEqual(at(7, 9))
   expect(nextRun('0 9 * * MON-FRI', at(9, 10))).toEqual(at(12, 9)) // Friday to Monday
   expect(() => nextRun('every day', at(6, 8))).toThrow('Invalid cron expression')
+})
+
+test('a daily schedule runs once a day at its hour across a daylight-saving change', () => {
+  const tz = process.env.TZ
+  process.env.TZ = 'America/New_York'
+  try {
+    // Each run from `from` until `until`, as the ticks would run them.
+    const runs = (cron: string, from: string, until: string): string[] => {
+      const out: string[] = []
+      let next = nextRun(cron, new Date(from))
+      while (next !== null && next < new Date(until)) {
+        out.push(next.toISOString())
+        next = nextRun(cron, next)
+      }
+      return out
+    }
+    // Daylight saving ends on 2026-11-01: 09:00 is 13:00Z before, 14:00Z after.
+    expect(runs('0 9 * * *', '2026-10-31T13:00:00Z', '2026-11-03T00:00:00Z')).toEqual([
+      '2026-11-01T14:00:00.000Z',
+      '2026-11-02T14:00:00.000Z',
+    ])
+    // 01:30 comes twice that day, and runs once.
+    expect(runs('30 1 * * *', '2026-10-31T05:30:00Z', '2026-11-03T00:00:00Z')).toEqual([
+      '2026-11-01T05:30:00.000Z',
+      '2026-11-02T06:30:00.000Z',
+    ])
+    // So does each hour, so an hourly schedule skips the second 01:00.
+    expect(runs('0 * * * *', '2026-11-01T04:00:00Z', '2026-11-01T08:00:00Z')).toEqual([
+      '2026-11-01T05:00:00.000Z',
+      '2026-11-01T07:00:00.000Z',
+    ])
+    // It starts on 2026-03-08: 09:00 is 14:00Z before, 13:00Z after.
+    expect(runs('0 9 * * *', '2026-03-07T14:00:00Z', '2026-03-10T00:00:00Z')).toEqual([
+      '2026-03-08T13:00:00.000Z',
+      '2026-03-09T13:00:00.000Z',
+    ])
+    // 02:30 does not come that day, so it runs once, at 03:30.
+    expect(runs('30 2 * * *', '2026-03-07T07:30:00Z', '2026-03-10T00:00:00Z')).toEqual([
+      '2026-03-08T07:30:00.000Z',
+      '2026-03-09T06:30:00.000Z',
+    ])
+  } finally {
+    if (tz === undefined) delete process.env.TZ
+    else process.env.TZ = tz
+  }
 })
 
 test('adding a trigger with a source records what it lists now, and a failing source adds none', async () => {
@@ -76,6 +121,36 @@ test('a tick with watches brings back the todo whose watch exits 0, or can no lo
   // Each run is kept, for the watch it ran.
   expect(todos.lastCheck(todos.get(never))).toMatchObject({ watch: 'exit 2', code: 2, output: '' })
   expect(todos.watched().map((t) => t.id)).toEqual([never])
+})
+
+test('schedule on leaves its environment readable by the owner only, and is off again if the OS scheduler refuses it', async () => {
+  const home = tmp.make('nod-schedule-')
+  const env = join(home, 'schedule.json')
+  writeFileSync(env, '{}\n')
+  chmodSync(env, 0o644) // as an earlier nod left it, whatever the umask
+  // Not the real scheduler, which would register a tick with the OS.
+  const cron = spyOn(Bun, 'cron')
+  const removed: string[] = []
+  Object.assign(Bun.cron, {
+    remove: (title: string) => {
+      removed.push(title)
+      return Promise.resolve()
+    },
+  })
+  try {
+    cron.mockImplementation((() => Promise.resolve()) as never)
+    await scheduleOn(home)
+    expect(statSync(env).mode & 0o777).toBe(0o600)
+
+    // Turned on again, the tick registered before would go on running a tick.ts that is gone.
+    cron.mockImplementation((() => Promise.reject(new Error('no scheduler here'))) as never)
+    await expect(scheduleOn(home)).rejects.toThrow('no scheduler here')
+    expect(scheduleEnv(home)).toBeNull()
+    expect(existsSync(join(home, 'tick.ts'))).toBe(false)
+    expect(removed).toHaveLength(1)
+  } finally {
+    cron.mockRestore()
+  }
 })
 
 test('a timed-out command ends with all of its pipeline, not only the shell', async () => {

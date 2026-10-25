@@ -49,11 +49,11 @@ nod resume 1         # 정리한 작업도 되살림: 같은 경로에 worktree 
 
 Claude 세션에서 `nod add` 를 하면 작업에 그 세션(루트 세션)의 ID 가 남습니다. `nod show` 와 웹 화면의 작업 상세에 `root: <세션 ID>` 로 보이고, `claude --resume <세션 ID>` 로 그 세션을 다시 열 수 있습니다. 루트 세션은 `nod ls --mine`·`nod watch --mine` 으로 자기가 맡긴 작업만 보고 그 결정만 받습니다. 회고 작업은 돌아보는 작업의 루트 세션을 물려받습니다. 셸·트리거에서 맡긴 작업에는 루트 세션이 없고, Claude 세션 밖에서 `--mine` 을 쓰면 오류로 멈춥니다.
 
-정해진 때나 새 항목마다 할 일은 트리거로 맡깁니다. `nod schedule on` 으로 한 번 켜 두면 OS 스케줄러(macOS launchd, Linux crontab)가 매분 `nod tick` 을 돌립니다. 켠 셸의 `PATH`·`CLAUDE_CONFIG_DIR` 와, 워커가 받는 변수 가운데 비밀이 아닌 것(프록시·언어·`TMUX_TMPDIR` 등, 아래 「워커가 끊기지 않게」)을 `<홈>/schedule.json` 에 남겨 그 환경으로 돌기 때문에, 워커가 쓸 Claude 설정이 있는 터미널에서 켭니다(`nod account` 로 계정 규칙을 정했으면 트리거 워커는 그 규칙의 계정으로 뜹니다). 이름에 `KEY`·`TOKEN`·`SECRET`·`PASSWORD` 가 든 변수는 파일에 남기지 않으니, API 키는 Claude Code 설정의 `env` 에 둡니다. 웹 화면(`desktop/launchd/ui.sh`)도 같습니다.
+정해진 때나 새 항목마다 할 일은 트리거로 맡깁니다. `nod schedule on` 으로 한 번 켜 두면 OS 스케줄러(macOS launchd, Linux crontab)가 매분 `nod tick` 을 돌립니다. 켠 셸의 `PATH`·`CLAUDE_CONFIG_DIR` 와, 워커가 받는 변수 가운데 비밀이 아닌 것(계정이 들지 않은 프록시·언어·`TMUX_TMPDIR` 등, 아래 「워커가 끊기지 않게」)을 `<홈>/schedule.json` 에 남겨 그 환경으로 돌기 때문에, 워커가 쓸 Claude 설정이 있는 터미널에서 켭니다(`nod account` 로 계정 규칙을 정했으면 트리거 워커는 그 규칙의 계정으로 뜹니다). 이름에 `KEY`·`TOKEN`·`SECRET`·`PASSWORD`·`HEADER` 가 든 변수와, `http://user:pass@proxy:8080`·`user:pass@proxy:8080` 처럼 주소에 계정이 든 값은 파일에 남기지 않으니, API 키와 그런 프록시·`ANTHROPIC_BASE_URL` 은 Claude Code 설정의 `env` 에 둡니다. 부팅마다 바뀌는 `SSH_AUTH_SOCK` 도 남기지 않습니다. 스케줄러의 환경에 있으면 그 값을 워커가 받습니다. 트리거 워커가 스케줄러의 것과 다른, 경로가 바뀌지 않는 SSH 에이전트를 써야 하면(Linux crontab 의 환경에는 `SSH_AUTH_SOCK` 가 아예 없습니다) 그것도 Claude Code 설정의 `env` 에 둡니다. 웹 화면(`desktop/launchd/ui.sh`)도 같습니다. 예전 버전으로 켰다면 `nod schedule on`(웹 화면은 `ui.sh install`)을 다시 해야 파일에 남은 값이 지워집니다.
 
 ```sh
 nod schedule on
-nod trigger add '0 9 * * MON-FRI' '어제 머지된 PR 을 요약해 줘' --repo ~/code/app
+nod trigger add '0 9 * * MON-FRI' '어제 머지된 PR 을 요약해 줘' --repo ~/code/app --branch pr-digest
 nod trigger add '*/10 * * * *' '이 이슈의 원인을 조사해 줘' \
   --source "gh issue list --assignee @me --json number,title --jq '.[] | \"\(.number)\t\(.title)\"'"
 nod trigger ls
@@ -72,7 +72,7 @@ source 가 탭으로 앞에 붙인 키(위에서는 이슈 번호)는 그 항목
 ```sh
 nod account                                   # 지금 규칙과 지금 계정 보기
 nod account file ~/.config/switcher/current   # 파일에 적힌 경로 (앞뒤 공백 제거, 비어 있으면 Claude Code 기본 폴더)
-nod account command 'switcher current'        # 명령이 출력한 경로
+nod account command 'switcher current'        # 명령이 출력한 경로 (명령은 따옴표로 묶어 인자 하나로)
 nod account env                               # 기본: 워커를 띄우는 셸의 CLAUDE_CONFIG_DIR
 nod restart                                   # 모든 워커의 Claude Code 를 같은 칸·같은 대화로 다시 띄우기
 nod restart 3 t5                              # 이 작업들만

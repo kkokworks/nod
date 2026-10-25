@@ -54,8 +54,15 @@ const PROXY_ENV = ['HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY'].flatMap
   n,
   n.toLowerCase(),
 ])
-// Names that hold a secret, which a saved environment leaves out.
-const SECRET_ENV = /KEY|TOKEN|SECRET|PASSWORD/
+// What a saved environment leaves out: names that hold a secret (a header carries a token), values
+// that are a URL with a user in it (a proxy's password), proxies with a user and no scheme, which
+// curl and git take too, and the SSH agent's socket, a new path at each boot, so a saved one would
+// break the workers' SSH git after a restart.
+const SECRET_ENV = /KEY|TOKEN|SECRET|PASSWORD|HEADER/
+const USER_IN_URL = /:\/\/[^/?#\s]*@/
+const UNSAVED_ENV = new Set(['SSH_AUTH_SOCK'])
+const hasUser = (key: string, value: string): boolean =>
+  USER_IN_URL.test(value) || (/_PROXY$/i.test(key) && value.includes('@'))
 
 // What PASS_ENV keeps of nod's environment.
 function passedEnv(): Record<string, string> {
@@ -69,9 +76,14 @@ function passedEnv(): Record<string, string> {
 
 // What the OS scheduler and the UI server keep of the shell that sets them up, for the workers they
 // start (`nod schedule on`, desktop/launchd/ui.sh): what a worker gets, but secrets, which would
-// sit in a plain file there. A worker gets those from Claude Code's settings `env` instead.
+// sit in a plain file there, and SSH_AUTH_SOCK. A worker gets those from Claude Code's settings
+// `env` instead, and the SSH agent from the environment it is started in.
 export function savedEnv(): Record<string, string> {
-  return Object.fromEntries(Object.entries(passedEnv()).filter(([key]) => !SECRET_ENV.test(key)))
+  return Object.fromEntries(
+    Object.entries(passedEnv()).filter(
+      ([key, value]) => !SECRET_ENV.test(key) && !hasUser(key, value) && !UNSAVED_ENV.has(key),
+    ),
+  )
 }
 
 // A Claude Code that exits sooner than this after it starts did not get going (a login it lacks, a
