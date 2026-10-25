@@ -242,17 +242,10 @@ function dropBranch(task: Task): void {
 }
 
 // The commit a repo task's branch points at, or null without a repo or once the branch is gone.
-function headOf(task: Task): string | null {
-  if (task.repo === null || task.branch === null) return null
-  const head = Bun.spawnSync([
-    'git',
-    '-C',
-    task.repo,
-    'rev-parse',
-    '--verify',
-    '-q',
-    `refs/heads/${task.branch}`,
-  ])
+function headOf({ repo, branch }: Task): string | null {
+  if (repo === null || branch === null) return null
+  const ref = `refs/heads/${branch}`
+  const head = Bun.spawnSync(['git', '-C', repo, 'rev-parse', '--verify', '-q', ref])
   return head.exitCode === 0 ? head.stdout.toString().trim() : null
 }
 
