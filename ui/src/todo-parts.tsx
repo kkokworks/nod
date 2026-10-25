@@ -182,7 +182,7 @@ export function useTodoActions(t: TodoItem, today: string, full: boolean) {
 // Each status's glyph, drawn as the sidebar draws its lists: a tray for the inbox, an arrow for the
 // next actions, pause for waiting, a clock for someday, a book for reference, a check for done and
 // a slash for dropped.
-const STATUS_ICONS: Record<string, ReactNode> = {
+export const STATUS_ICONS: Record<string, ReactNode> = {
   inbox: (
     <path d="M2.5 9h3l1 1.75h3l1-1.75h3M4.1 3.5h7.8l1.6 5.5v3a1.25 1.25 0 0 1-1.25 1.25h-8.5A1.25 1.25 0 0 1 2.5 12V9z" />
   ),
