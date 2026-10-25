@@ -1237,7 +1237,9 @@ type Start = {
 async function nextRun(ledger: Ledger, home: string, taskId: number): Promise<Start> {
   const config = configDir(home)
   await ensureTrusted(home, config)
-  const env = withConfig(process.env, config)
+  // nod's environment with the account `config` in place of the one it has.
+  const { CLAUDE_CONFIG_DIR: _, ...rest } = process.env
+  const env = config === null ? rest : { ...rest, CLAUDE_CONFIG_DIR: config }
   const task = ledger.get(taskId)
   const attempts = ledger.attempts(taskId)
   const [first, last] = [attempts[0], attempts.at(-1)]
@@ -1481,15 +1483,6 @@ export function workerEnv(
   if (taskId !== null) env.NOD_TASK = String(taskId)
   if (config !== null) env.CLAUDE_CONFIG_DIR = config
   return env
-}
-
-// `env` with the account `config` in place of the one it has.
-function withConfig(
-  env: Record<string, string | undefined>,
-  config: string | null,
-): Record<string, string | undefined> {
-  const { CLAUDE_CONFIG_DIR: _, ...rest } = env
-  return config === null ? rest : { ...rest, CLAUDE_CONFIG_DIR: config }
 }
 
 // Claude Code asks whether to trust each new folder, and trusting a folder covers its subfolders
