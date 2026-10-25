@@ -30,6 +30,18 @@ A human answers questions later in this same conversation.
 To put something in the person's to-do inbox, add one line per item above that last line:
 NOD: in {"title": "<what to do>", "notes": "<optional>", "link": "<optional URL>", "source": "<optional channel>", "key": "<that channel's id for it>"}
 nod puts them in once it accepts your done. With a source and key, an item goes in only once.`
+// A repo worker also has its change reviewed before it reports done, by a subagent that knows what
+// was asked but not the worker's reasons. nod's independent review after done stays the last word.
+const SUBAGENT_REVIEW_PROMPT = `Before you report done, commit, then have a subagent (Agent tool) review \`git diff <start>..HEAD\`
+(start: the commit in your first message); skip it if that diff is empty. Wait for its result in
+this same turn: run it in the foreground, not in the background, and if it can only run in the
+background, do not end your turn until it reports. Give it only the brief, the human's later
+words and that range, not your reasons. It changes no files here and checks that the asked work
+is done, that each new test fails on the code before the change (run in a temp \`git worktree add\`
+or copied files, never via stash or checkout), and for new bugs (boundaries, swallowed errors, races,
+lost data, injection, leaked secrets), reporting each as file:line, a scenario that reproduces it,
+and its confidence. Fix the findings that have a scenario, commit, and have it review again. In
+your final report, list each finding and what you did (fixed, or why not).`
 
 const RESUME_PROMPT =
   'Your session was interrupted. Check the current state of this directory and continue the task.'
@@ -186,11 +198,14 @@ export const sessionName = (taskId: number): string => `task-${taskId}`
 
 export async function startTask(ledger: Ledger, home: string, taskId: number): Promise<void> {
   const task = ledger.get(taskId)
-  const cwd = await prepareWorkspace(ledger, home, task).catch((error: unknown) => {
+  const failed = (error: unknown): never => {
     ledger.error(taskId, message(error))
     throw error
-  })
-  const prompt = firstMessage(ledger, task)
+  }
+  const cwd = await prepareWorkspace(ledger, home, task).catch(failed)
+  // A new worktree's HEAD is where its branch starts, the start the independent review diffs from.
+  const start = task.repo === null ? null : await headOf(cwd).catch(failed)
+  const prompt = firstMessage(ledger, task, start)
   ledger.setRunning(taskId, cwd)
   const sessionId = crypto.randomUUID()
   const attemptId = ledger.startAttempt({
@@ -205,7 +220,7 @@ export async function startTask(ledger: Ledger, home: string, taskId: number): P
   try {
     if (started !== null) rmSync(started, { force: true })
     rmSync(promptFile(home, taskId), { force: true })
-    const first = claudeArgs(ledger, task.model, ['--session-id', sessionId], prompt, started)
+    const first = claudeArgs(ledger, task, ['--session-id', sessionId], prompt, started)
     launch(home, taskId, cwd, first)
     if (started !== null) await awaitStart(ledger, home, task, attemptId, started)
   } catch (error) {
@@ -227,20 +242,24 @@ export async function startReady(ledger: Ledger, home: string): Promise<number[]
 // reported.
 // The worker hears the acceptance check up front: a retrospective found workers could not follow
 // a brief that disagreed with a check they only saw after failing it.
-function firstMessage(ledger: Ledger, task: Task): string {
+// `start`: the commit a repo task's branch starts at, for the subagent review (SUBAGENT_REVIEW_PROMPT).
+// ponytail: only here, so a conversation Claude Code compacts may lose it, and a worktree restore
+// rebuilds on a new branch keeps the old start; tell the worker again if that bites.
+export function firstMessage(ledger: Ledger, task: Task, start: string | null): string {
+  const since = start === null ? '' : `\n\nYour branch starts at commit ${start}.`
   const check =
     task.checkCmd === null
       ? ''
       : `\n\nWhen you stop, nod runs this acceptance check in this directory and sends any failure back: \`${task.checkCmd}\``
   const after = ledger.after(task.id)
-  if (after.length === 0) return `${task.brief}${check}`
+  if (after.length === 0) return `${task.brief}${since}${check}`
   const reports = after.map(
     (a) => `- #${a.id} ${oneLine(a.brief)}: ${ledger.lastAttempt(a.id)?.summary || '(no summary)'}`,
   )
   const base = baseOf(ledger, task)
   const branch =
     base === null ? '' : `\nThis worktree starts from task #${base.id}'s branch, with its commits.`
-  return `${task.brief}\n\nThis task comes after these, which reported:\n${reports.join('\n')}${branch}${check}`
+  return `${task.brief}\n\nThis task comes after these, which reported:\n${reports.join('\n')}${branch}${since}${check}`
 }
 
 // The task whose branch this task's worktree starts from: the one it comes after in the same repo.
@@ -340,7 +359,7 @@ export async function drop(ledger: Ledger, home: string, decisionId: number): Pr
 async function startRetro(ledger: Ledger, home: string, task: Task): Promise<void> {
   if (task.retroId !== null || ledger.retroFor(task.id) !== null) return
   if (!hadTrouble(ledger, task.id)) return
-  const id = ledger.addRetro(task, retroBrief(ledger, task, workerPrompt(ledger)))
+  const id = ledger.addRetro(task, retroBrief(ledger, task, workerPrompt(ledger, null)))
   await startTask(ledger, home, id).catch((error) =>
     notify(home, { event: 'error', task: taskRef(ledger.get(id)), error: message(error) }),
   )
@@ -723,7 +742,7 @@ function settling(terminals: Terminals, name: string): boolean {
 
 function claudeArgs(
   ledger: Ledger,
-  model: string | null,
+  task: Task,
   session: string[],
   prompt: string | null,
   started: string | null,
@@ -739,8 +758,8 @@ function claudeArgs(
     '--settings',
     workerSettings(started),
     '--append-system-prompt',
-    workerPrompt(ledger),
-    ...(model === null ? [] : ['--model', model]),
+    workerPrompt(ledger, task),
+    ...(task.model === null ? [] : ['--model', task.model]),
     ...(prompt === null ? [] : [prompt]),
   ]
 }
@@ -930,11 +949,11 @@ async function nextRun(ledger: Ledger, home: string, taskId: number): Promise<St
   if (!ended && !here) {
     rmSync(promptFile(home, taskId), { force: true })
     const session = ['--session-id', first.sessionId]
-    const argv = claudeArgs(ledger, task.model, session, first.prompt, marker)
+    const argv = claudeArgs(ledger, task, session, first.prompt, marker)
     return { argv, env, fresh: true, started: marker }
   }
   const session = ['--resume', last.sessionId]
-  const argv = claudeArgs(ledger, task.model, session, takePrompt(home, taskId), marker)
+  const argv = claudeArgs(ledger, task, session, takePrompt(home, taskId), marker)
   return { argv, env, fresh: false, started: marker }
 }
 
@@ -1110,11 +1129,13 @@ export async function restartDue(ledger: Ledger, home: string, only?: number): P
   return restarted
 }
 
-// The built-in rules, then the ledger's rules that are on.
-function workerPrompt(ledger: Ledger): string {
+// The built-in rules, then the ledger's rules that are on. `task`: null for what every worker gets,
+// which leaves out a repo worker's subagent review.
+export function workerPrompt(ledger: Ledger, task: Task | null): string {
+  const built = task?.repo == null ? WORKER_PROMPT : `${WORKER_PROMPT}\n${SUBAGENT_REVIEW_PROMPT}`
   const rules = activeRules(ledger)
-  if (rules === '') return WORKER_PROMPT
-  return `${WORKER_PROMPT}\nRules the human approved for every task:\n${rules}`
+  if (rules === '') return built
+  return `${built}\nRules the human approved for every task:\n${rules}`
 }
 
 // `started`: a file the SessionStart hook creates, so nod knows the session got past the trust
