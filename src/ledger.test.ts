@@ -432,6 +432,32 @@ test('in one repo a task can come after only one task, and after only tasks that
   expect(ledger.list().map((t) => t.id)).toEqual([a, b, elsewhere, c]) // failed adds left nothing
 })
 
+test('a transaction that reads before it writes waits while another process writes, instead of failing', async () => {
+  const home = freshHome()
+  const ledger = new Ledger(home)
+  const a = task(ledger)
+  // Another process (a Stop hook, say) holds the write lock, then commits a change.
+  const writer = Bun.spawn(
+    [
+      'bun',
+      '-e',
+      `const db = new (require('bun:sqlite').Database)(${JSON.stringify(join(home, 'nod.db'))})
+      db.exec('begin immediate')
+      db.run("update tasks set brief = 'edited'")
+      console.log('locked')
+      await Bun.sleep(300)
+      db.exec('commit')`,
+    ],
+    { stdout: 'pipe' },
+  )
+  await writer.stdout.getReader().read()
+  // add reads the task it comes after before it inserts.
+  const b = task(ledger, { after: [a] })
+  expect(await writer.exited).toBe(0)
+  expect(ledger.after(b).map((t) => t.id)).toEqual([a])
+  expect(ledger.get(a).brief).toBe('edited')
+})
+
 test('a trigger run is claimed once, a source item adds a task once, and removal hides it', () => {
   const ledger = new Ledger(freshHome())
   const id = ledger.addTrigger({
