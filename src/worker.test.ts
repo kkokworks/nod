@@ -1682,6 +1682,19 @@ test('a report says what to tell other tasks in NOD: tell lines, which nod reads
   expect(said('`NOD: tell #5 rename it to `foo``')).toEqual({
     tells: [{ to: 5, text: 'rename it to `foo`' }],
   })
+  const kept = (line: string, text: string) =>
+    expect(said(line)).toEqual({ tells: [{ to: 5, text }] })
+  kept('**NOD:** tell #5 this is **important**', 'this is **important**')
+  kept('*NOD:* tell #5 look at *this*', 'look at *this*')
+  kept('`NOD:` tell #5 hi', 'hi')
+  kept('**NOD: tell #5 look at *this***', 'look at *this*')
+  // A capture with unmatched ticks around it still goes in, as it did before tells.
+  expect(parseCaptures('``NOD: in {"title": "x"}`\nNOD: done | ok')).toEqual({
+    captures: [{ title: 'x' }],
+  })
+  // A long line of marks reads at once: a pattern that backtracks took minutes on it.
+  expect(said(`${'`'.repeat(100_000)}x`)).toEqual({ tells: [] })
+  kept(`${'`'.repeat(50_000)}NOD: tell #5 hi${'`'.repeat(50_000)}`, 'hi')
   for (const bad of ['NOD: tell 85 no hash', 'NOD: tell #85', 'NOD: tell #x hi']) {
     expect(parseTells(`${bad}\nNOD: done | ok`)).toMatchObject({
       error: expect.stringContaining(bad),

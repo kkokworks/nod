@@ -785,17 +785,26 @@ export function parseReport(text: string): Report | null {
   return null
 }
 
-// A report's `NOD: <word>` lines, without the code ticks or Markdown emphasis a line or its `NOD:`
-// is wrapped in. Only a pair goes, so a message that ends in `*` or a tick keeps it.
+// A report's `NOD: <word>` lines, without the code ticks or Markdown emphasis around them.
 const nodLines = (text: string, word: string): string[] =>
   text
     .split('\n')
-    .map((l) => unwrap(l.trim()).replace(/^(\*\*|\*)NOD:\1/, 'NOD:'))
-    .filter((l) => new RegExp(`^NOD:\\s*${word}\\b`, 'i').test(l))
+    .map(nodLine)
+    .filter((l): l is string => l !== null && new RegExp(`^NOD:\\s*${word}\\b`, 'i').test(l))
 
-const unwrap = (line: string): string => {
-  const [, , inner] = /^(\*\*|\*|`+)(.*)\1$/.exec(line) ?? []
-  return inner === undefined ? line : unwrap(inner)
+// A report line as `NOD:…`, or null for one that is not. The ticks or emphasis it opens with close
+// right after its `NOD:` (`**NOD:** tell …`) or at its end (`**NOD: tell …**`), and no more of
+// them goes than opened, so a message that ends in `*` or a tick keeps it. Counted, not matched by
+// a pattern that backtracks: a worker's line may be long.
+function nodLine(raw: string): string | null {
+  const line = raw.trim()
+  const [opened, marks = ''] = /^([`*]*)NOD:/i.exec(line) ?? []
+  if (opened === undefined) return null
+  const rest = line.slice(opened.length)
+  if (marks !== '' && rest.startsWith(marks)) return `NOD:${rest.slice(marks.length)}`
+  let end = rest.length
+  while (end > 0 && rest.length - end < marks.length && '`*'.includes(rest.charAt(end - 1))) end--
+  return `NOD:${rest.slice(0, end)}`
 }
 
 // The `NOD: in {…}` lines of a report, or what is wrong with them, to send back to the worker.
