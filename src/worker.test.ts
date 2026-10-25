@@ -761,7 +761,9 @@ test('an answer for a repo worker whose first start waits on trust goes with the
   await answer(ledger, home, trust.id, 'yes', 'human')
   await reaches(id, 'succeeded')
   expect(entries('turn').map((t) => t.message)).toEqual([
-    expect.stringMatching(/^work here\n\nYour last turn was cut off.*\nHuman decision: go on$/s),
+    expect.stringMatching(
+      /^work here\n\nYour branch starts at commit [0-9a-f]{40}\.\n\nYour last turn was cut off.*\nHuman decision: go on$/s,
+    ),
   ])
 }, 40_000)
 
@@ -2223,7 +2225,9 @@ test('a message for a worker waiting on its trust decision waits for that decisi
   )
   await answer(ledger, home, trust.id, 'yes', 'human')
   await reaches(id, 'succeeded')
-  expect(entries('turn').map((t) => t.message)).toEqual(['work here'])
+  expect(entries('turn').map((t) => t.message)).toEqual([
+    expect.stringMatching(/^work here\n\nYour branch starts at commit [0-9a-f]{40}\.$/),
+  ])
 }, 30_000)
 
 test('a message for a worker whose trust dialog is up waits for that decision, even with no turn open', async () => {
