@@ -525,6 +525,10 @@ test('in a repo, done needs the work committed, and the next task starts from th
   expect(brief).toContain(
     'acceptance check in this directory and sends any failure back: `test -f ok.txt`',
   )
+  // A repo worker starts with the subagent review in its system prompt.
+  expect(entries('launch').find((l) => l.prompt?.startsWith('make ok'))?.system).toContain(
+    'subagent',
+  )
 
   const next = ledger.add({
     brief: 'build on it',
