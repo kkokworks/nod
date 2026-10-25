@@ -532,12 +532,24 @@ export const nodHome = (): string => process.env.NOD_HOME ?? join(homedir(), '.n
 
 const now = (): string => new Date().toISOString()
 
+// Every ledger transaction writes, so each begins immediate and waits busy_timeout for the write
+// lock. A deferred one that reads first fails at its first write, at once and without the wait,
+// when another process holds the lock or committed since that read (WAL). Readers outside a
+// transaction never wait on a writer, so only writers queue.
+class LedgerDatabase extends Database {
+  override transaction<A extends unknown[], T>(fn: (...args: A) => T) {
+    const t = super.transaction(fn)
+    // bun:sqlite gives each variant the others too, so `.immediate()` and the rest still work.
+    return t.immediate as typeof t
+  }
+}
+
 export class Ledger {
   readonly db: Database
 
   constructor(home: string = nodHome()) {
     mkdirSync(home, { recursive: true })
-    this.db = new Database(join(home, 'nod.db'), { create: true, strict: true })
+    this.db = new LedgerDatabase(join(home, 'nod.db'), { create: true, strict: true })
     // busy_timeout first: switching to WAL takes a lock, and without the timeout a ledger opened
     // by several processes at once fails with `database is locked` (1 in 30 measured).
     this.db.exec('pragma busy_timeout = 5000; pragma journal_mode = wal; pragma foreign_keys = on;')
