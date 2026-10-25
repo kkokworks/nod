@@ -233,10 +233,6 @@ pre {
   cursor: default;
 }
 
-details > summary.side-label {
-  cursor: pointer;
-}
-
 .side-item {
   display: flex;
   gap: 0.55rem;
@@ -377,13 +373,15 @@ kbd + kbd {
 
 /* ── status ── */
 
+/* ponytail: a dot takes the tone of the nearest status class, its own or its chip's; give it
+   `--tone: initial` if one ever sits inside another toned element it should not follow. */
 .dot {
   flex: none;
   display: inline-block;
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: var(--idle);
+  background: var(--tone, var(--idle));
 }
 
 .chip {
@@ -419,17 +417,6 @@ kbd + kbd {
 .failed,
 .session_ended {
   --tone: var(--bad);
-}
-
-.dot.succeeded,
-.dot.needs_decision,
-.dot.running,
-.dot.queued,
-.dot.error,
-.dot.failed,
-.dot.session_ended,
-.chip .dot {
-  background: var(--tone, var(--idle));
 }
 
 .chip.succeeded,
@@ -860,23 +847,6 @@ details summary {
   font-size: 13px;
 }
 
-.window-empty {
-  display: flex;
-  flex-direction: column;
-  gap: 0.6rem;
-  align-items: center;
-  justify-content: center;
-  text-align: center;
-  min-height: 220px;
-  padding: 2rem;
-  color: color-mix(in srgb, var(--term-fg) 55%, transparent);
-}
-
-.window-empty code {
-  background: color-mix(in srgb, var(--term-fg) 10%, transparent);
-  color: var(--term-fg);
-}
-
 .computer > p {
   margin: 0.6rem 0.25rem 0;
 }
@@ -1116,8 +1086,7 @@ details summary {
 }
 
 .todo-actions button,
-.filters button,
-.filters a {
+.filters button {
   padding: 0.15rem 0.6rem;
   border: 1px solid var(--line);
   border-radius: 999px;
@@ -1129,8 +1098,7 @@ details summary {
 }
 
 .todo-actions button:hover,
-.filters button:hover,
-.filters a:hover {
+.filters button:hover {
   background: var(--hover);
 }
 
@@ -1337,10 +1305,18 @@ details summary {
   min-width: 0;
 }
 
+/* A button: the title unfolds the todo where it is, as in Mindwtr. */
 .todo-main .todo-title {
   display: block;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  font-family: inherit;
   font-size: 14.5px;
   line-height: 1.45;
+  text-align: left;
+  cursor: pointer;
 }
 
 .todo-main .todo-title:hover {
@@ -1483,18 +1459,6 @@ details summary {
   font-size: 12px;
 }
 
-/* The title unfolds the todo where it is, as in Mindwtr. */
-.todo-main button.todo-title {
-  width: 100%;
-  padding: 0;
-  border: 0;
-  background: none;
-  color: var(--fg);
-  font-family: inherit;
-  text-align: left;
-  cursor: pointer;
-}
-
 .todo-item.open .todo-title {
   font-weight: 600;
 }
@@ -1583,10 +1547,6 @@ details summary {
 
 .more-menu button:hover {
   background: var(--row-hover);
-}
-
-.more-menu button.danger {
-  color: var(--bad);
 }
 
 .todo-page-menu {
@@ -1746,6 +1706,7 @@ details summary {
   gap: 0.45rem;
   margin-top: 0.75rem;
   list-style: none;
+  cursor: pointer;
 }
 
 :is(.side-lists, .side-group) > summary.side-label::-webkit-details-marker {
@@ -1830,7 +1791,7 @@ a.task-line:hover {
 
 .task-line .side-id {
   flex: none;
-  min-width: 2rem;
+  min-width: 2.6rem;
   font-variant-numeric: tabular-nums;
 }
 
@@ -1884,10 +1845,6 @@ a.task-line:hover {
 }
 
 /* On the home page's lines the task's number sits under its todo's, so the titles line up. */
-.task-line .side-id {
-  min-width: 2.6rem;
-}
-
 .task-line .side-id .task-no {
   display: block;
   margin-left: 0;

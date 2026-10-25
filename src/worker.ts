@@ -1005,7 +1005,7 @@ function launch(home: string, taskId: number, cwd: string, first: string[]): voi
 // Asks keepWorker to end Claude Code and start it again (its SIGUSR1).
 function startAgain(terminals: Terminals, name: string): void {
   terminals.setOption(name, RESTARTING_OPTION, '1')
-  terminals.signal(name, 'SIGUSR1')
+  process.kill(terminals.panePid(name), 'SIGUSR1')
 }
 
 // Whether a Stop hook is still checking the worker's last turn. A hook that went without clearing
@@ -1196,12 +1196,8 @@ export async function keepWorker(
     }
     // A restart ends Claude Code between turns, or with deliver's message still to come; a turn
     // open with no message left for the new start began in between, and was cut off.
-    if (!asked) {
-      if (!up) quick++
-      cut ??= open
-    } else if (!existsSync(promptFile(home, taskId))) {
-      cut ??= open
-    }
+    if (!asked && !up) quick++
+    if (!asked || !existsSync(promptFile(home, taskId))) cut ??= open
     if (quick >= MAX_QUICK_EXITS) {
       await giveUp(ledger, home, taskId, cut, failure)
       return
@@ -1237,7 +1233,9 @@ type Start = {
 async function nextRun(ledger: Ledger, home: string, taskId: number): Promise<Start> {
   const config = configDir(home)
   await ensureTrusted(home, config)
-  const env = withConfig(process.env, config)
+  // nod's environment with the account `config` in place of the one it has.
+  const { CLAUDE_CONFIG_DIR: _, ...rest } = process.env
+  const env = config === null ? rest : { ...rest, CLAUDE_CONFIG_DIR: config }
   const task = ledger.get(taskId)
   const attempts = ledger.attempts(taskId)
   const [first, last] = [attempts[0], attempts.at(-1)]
@@ -1256,20 +1254,15 @@ async function nextRun(ledger: Ledger, home: string, taskId: number): Promise<St
       `its conversation is in ${named(before)}, not in ${named(config)}: accounts nod switches between must share their projects/ folder`,
     )
   }
-  const ended = attempts.some((a) => a.outcome !== null && a.outcome !== 'error')
-  if (!ended && !here) {
-    // A message left since (an answer, a tell) goes after the brief, not pasted once Claude Code
-    // is up: by then a trust dialog may be on the screen, and Enter there picks "No, exit".
-    const left = takePrompt(home, taskId)
-    const prompt = left === null ? first.prompt : `${first.prompt}\n\n${left}`
-    const session = ['--session-id', first.sessionId]
-    const argv = claudeArgs(ledger, task, session, prompt, marker)
-    return { argv, env, fresh: true, started: marker, left }
-  }
-  const session = ['--resume', last.sessionId]
+  const fresh = !here && !attempts.some((a) => a.outcome !== null && a.outcome !== 'error')
   const left = takePrompt(home, taskId)
-  const argv = claudeArgs(ledger, task, session, left, marker)
-  return { argv, env, fresh: false, started: marker, left }
+  // On a fresh start, a message left since (an answer, a tell) goes after the brief, not pasted
+  // once Claude Code is up: by then a trust dialog may be on the screen, and Enter there picks
+  // "No, exit".
+  const brief = left === null ? first.prompt : `${first.prompt}\n\n${left}`
+  const session = fresh ? ['--session-id', first.sessionId] : ['--resume', last.sessionId]
+  const argv = claudeArgs(ledger, task, session, fresh ? brief : left, marker)
+  return { argv, env, fresh, started: marker, left }
 }
 
 // Claude Code asks once per account whether to trust a repo. The person answered for this repo
@@ -1483,15 +1476,6 @@ export function workerEnv(
   return env
 }
 
-// `env` with the account `config` in place of the one it has.
-function withConfig(
-  env: Record<string, string | undefined>,
-  config: string | null,
-): Record<string, string | undefined> {
-  const { CLAUDE_CONFIG_DIR: _, ...rest } = env
-  return config === null ? rest : { ...rest, CLAUDE_CONFIG_DIR: config }
-}
-
 // Claude Code asks whether to trust each new folder, and trusting a folder covers its subfolders
 // (measured on 2.1.290). nod trusts its own work folder once per account, since Claude Code keeps
 // what it trusts in its config dir, so workers start unattended. A worktree is the exception:
@@ -1602,20 +1586,17 @@ async function prepareWorkspace(ledger: Ledger, home: string, task: Task): Promi
   // conflict.
   const base = baseOf(ledger, task)
   // 32 concurrent `worktree add` on one repo all succeeded when measured, so no lock here.
-  const { code, output } = await spawn(
-    [
-      'git',
-      '-C',
-      task.repo,
-      'worktree',
-      'add',
-      '-b',
-      branchOf(task),
-      cwd,
-      ...(base === null ? [] : [branchOf(base)]),
-    ],
-    undefined,
-  )
+  const { code, output } = await spawn([
+    'git',
+    '-C',
+    task.repo,
+    'worktree',
+    'add',
+    '-b',
+    branchOf(task),
+    cwd,
+    ...(base === null ? [] : [branchOf(base)]),
+  ])
   if (code !== 0) throw new Error(`git worktree add failed: ${output.trim()}`)
   try {
     await initSubmodules(task.repo, cwd)
@@ -1672,9 +1653,9 @@ async function rebuildWorktree(
   }
   // A worktree folder deleted by hand stays registered, which keeps git from adding it again and
   // its branch checked out.
-  await spawn(['git', '-C', repo, 'worktree', 'prune'], undefined)
+  await spawn(['git', '-C', repo, 'worktree', 'prune'])
   const args = has(`refs/heads/${branch}`) ? [cwd, branch] : ['-b', branch, cwd, from()]
-  const { code, output } = await spawn(['git', '-C', repo, 'worktree', 'add', ...args], undefined)
+  const { code, output } = await spawn(['git', '-C', repo, 'worktree', 'add', ...args])
   if (code !== 0) throw new Error(`git worktree add failed: ${output.trim()}`)
   await initSubmodules(repo, cwd)
 }
@@ -1704,23 +1685,20 @@ async function initSubmodules(repo: string, worktree: string): Promise<void> {
     const [key, path] = line.split(' ')
     if (key === undefined || path === undefined) throw new Error(`unexpected .gitmodules: ${line}`)
     const name = key.slice('submodule.'.length, -'.path'.length)
-    const { code, output } = await spawn(
-      [
-        'git',
-        '-C',
-        worktree,
-        '-c',
-        'protocol.file.allow=always',
-        '-c',
-        `submodule.${name}.url=${join(repo, path)}`,
-        'submodule',
-        'update',
-        '--init',
-        '--',
-        path,
-      ],
-      undefined,
-    )
+    const { code, output } = await spawn([
+      'git',
+      '-C',
+      worktree,
+      '-c',
+      'protocol.file.allow=always',
+      '-c',
+      `submodule.${name}.url=${join(repo, path)}`,
+      'submodule',
+      'update',
+      '--init',
+      '--',
+      path,
+    ])
     if (code !== 0) throw new Error(`submodule ${path} from ${repo} failed: ${output.trim()}`)
   }
 }
@@ -1845,7 +1823,7 @@ async function uncommittedChanges(worktree: string): Promise<string> {
 // `timeoutMs` is killed and exits nonzero.
 export async function spawn(
   cmd: string[],
-  cwd: string | undefined,
+  cwd?: string,
   opts: { stdin?: string; timeoutMs?: number } = {},
 ): Promise<{ code: number; stdout: string; output: string }> {
   const proc = Bun.spawn(cmd, {

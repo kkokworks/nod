@@ -12,7 +12,7 @@ import { bindKeys, ignoreOnPage, KEYS } from '../keys'
 import { overview } from '../nod.server'
 import { TaskId, TaskItem } from '../parts'
 import css from '../styles.css?url'
-import { focusRow, UndoBar } from '../todo-parts'
+import { focusRow, STATUS_ICONS, UndoBar } from '../todo-parts'
 
 // Workers change the ledger while the page is open, so it reloads its data this often.
 const REFRESH_MS = 5000
@@ -124,24 +124,10 @@ const ICONS = {
   projects: (
     <path d="M2 4.5A1.5 1.5 0 0 1 3.5 3h3L8 4.5h4.5A1.5 1.5 0 0 1 14 6v5.5a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 2 11.5z" />
   ),
-  someday: (
-    <>
-      <circle cx="8" cy="8" r="6.25" />
-      <path d="M8 4.75V8l2.25 1.5" />
-    </>
-  ),
-  waiting: (
-    <>
-      <circle cx="8" cy="8" r="6.25" />
-      <path d="M6.6 5.75v4.5M9.4 5.75v4.5" />
-    </>
-  ),
-  done: (
-    <>
-      <circle cx="8" cy="8" r="6.25" />
-      <path d="M5.4 8.2l1.8 1.8 3.4-3.6" />
-    </>
-  ),
+  // As the status menu draws these lists.
+  someday: STATUS_ICONS.someday,
+  waiting: STATUS_ICONS.waiting,
+  done: STATUS_ICONS.done,
   settings: (
     <>
       <circle cx="8" cy="8" r="4.25" />

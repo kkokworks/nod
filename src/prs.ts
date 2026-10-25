@@ -13,25 +13,24 @@ const GITEA = /^(https?:\/\/[^/]+)\/([^/]+)\/([^/]+)\/pulls\/(\d+)/
 const TIMEOUT_MS = 30_000
 
 type Review = { login: string | null; state: string; at: string | null }
-const APPROVED = new Set(['APPROVED'])
 const CHANGES = new Set(['CHANGES_REQUESTED', 'REQUEST_CHANGES'])
 
 // When the person approved, if their last review that approved or asked for changes approved; a
 // comment changes neither. Reviews come oldest first.
 export function approvedAt(reviews: Review[], me: string): string | null {
-  const last = reviews
-    .filter((r) => r.login === me && (APPROVED.has(r.state) || CHANGES.has(r.state)))
-    .at(-1)
-  return last !== undefined && APPROVED.has(last.state) ? last.at : null
+  const last = reviews.findLast(
+    (r) => r.login === me && (r.state === 'APPROVED' || CHANGES.has(r.state)),
+  )
+  return last?.state === 'APPROVED' ? last.at : null
 }
 
 // One lookup per sweep: links to the same pull request (several comments on it) ask once.
 export function pullRequests(cwd: string): PrLookup {
   const seen = new Map<string, Promise<PullRequest>>()
   const logins = new Map<string, Promise<string>>()
-  const login = (key: string, read: () => Promise<string>): Promise<string> => {
-    const known = logins.get(key) ?? read()
-    logins.set(key, known)
+  const once = <T>(cache: Map<string, Promise<T>>, key: string, read: () => Promise<T>) => {
+    const known = cache.get(key) ?? read()
+    cache.set(key, known)
     return known
   }
   const run = async (cmd: string[]): Promise<string> => {
@@ -45,7 +44,7 @@ export function pullRequests(cwd: string): PrLookup {
     const pr = GH_PR.parse(
       await json(['gh', 'pr', 'view', n, '--repo', repo, '--json', 'state,reviews']),
     )
-    const me = await login('github', async () =>
+    const me = await once(logins, 'github', async () =>
       (await run(['gh', 'api', 'user', '--jq', '.login'])).trim(),
     )
     const reviews = pr.reviews.map((r) => ({
@@ -62,7 +61,8 @@ export function pullRequests(cwd: string): PrLookup {
     const reviews = GITEA_REVIEWS.parse(
       await json(['tea', 'api', `${api}/repos/${repo}/pulls/${n}/reviews?page=1&limit=50`]),
     )
-    const me = await login(
+    const me = await once(
+      logins,
       base,
       async () => GITEA_USER.parse(await json(['tea', 'api', `${api}/user`])).login,
     )
@@ -73,21 +73,16 @@ export function pullRequests(cwd: string): PrLookup {
   }
 
   return async (url) => {
+    // The whole match is the pull request's address, without what follows it (`/files`).
     const gh = url.match(GITHUB)
-    const ge = gh === null ? url.match(GITEA) : null
     if (gh !== null) {
-      const [, owner, repo, n] = gh
-      const key = `https://github.com/${owner}/${repo}/pull/${n}`
-      const read = seen.get(key) ?? github(`${owner}/${repo}`, String(n))
-      seen.set(key, read)
-      return read
+      const [key, owner, repo, n] = gh
+      return once(seen, key, () => github(`${owner}/${repo}`, String(n)))
     }
+    const ge = url.match(GITEA)
     if (ge !== null) {
-      const [, base, owner, repo, n] = ge
-      const key = `${base}/${owner}/${repo}/pulls/${n}`
-      const read = seen.get(key) ?? gitea(String(base), `${owner}/${repo}`, String(n))
-      seen.set(key, read)
-      return read
+      const [key, base, owner, repo, n] = ge
+      return once(seen, key, () => gitea(String(base), `${owner}/${repo}`, String(n)))
     }
     return null
   }

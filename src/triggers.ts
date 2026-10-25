@@ -60,15 +60,7 @@ export function nextRun(cron: string, from: Date): Date | null {
 export async function addTrigger(
   ledger: Ledger,
   home: string,
-  t: {
-    cron: string
-    brief: string
-    repo: string | null
-    branch: string | null
-    checkCmd: string | null
-    model: string | null
-    source: string | null
-  },
+  t: Omit<Trigger, 'id' | 'lastRunAt' | 'lastError' | 'createdAt'>,
 ): Promise<{ id: number; seen: number }> {
   if (nextRun(t.cron, new Date()) === null) throw new Error(`schedule \`${t.cron}\` never runs`)
   const items = t.source === null ? [] : await readSource(t.source, t.repo ?? home)
