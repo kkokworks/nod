@@ -67,12 +67,10 @@ export function TaskId({
   retroId: number | null
 }) {
   const name = retroId !== null ? `r${retroId}` : todoId !== null ? `t${todoId}` : null
-  return name === null ? (
-    <span className="side-id">#{id}</span>
-  ) : (
+  return (
     <span className="side-id">
-      {name}
-      <small className="task-no">#{id}</small>
+      {name ?? `#${id}`}
+      {name !== null && <small className="task-no">#{id}</small>}
     </span>
   )
 }
