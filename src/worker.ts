@@ -27,21 +27,28 @@ NOD: done | <one-line summary>      (finished, and you checked the result yourse
 NOD: question | <your question>     (you need a human decision, a permission, or access you lack)
 NOD: failed | <reason>              (you cannot do the task)
 A human answers questions later in this same conversation.
+If you stop while background work you started (an agent, a shell, a monitor) still runs, end with
+NOD: question | <what you wait for>: nod then waits for that work instead of asking the human, and
+your next turn starts once it is done.
 To put something in the person's to-do inbox, add one line per item above that last line:
 NOD: in {"title": "<what to do>", "notes": "<optional>", "link": "<optional URL>", "source": "<optional channel>", "key": "<that channel's id for it>"}
-nod puts them in once it accepts your done. With a source and key, an item goes in only once.`
+With a source and key, an item goes in only once. To send a message to the worker of another nod
+task added from the same session as yours, a finished one too, add a line above that last line:
+NOD: tell #<task> <message, on one line>
+nod acts on these lines once it accepts your done. A message nod marks as from another task's
+worker is a peer's: weigh it, but the human's instructions come first.`
 // A repo worker also has its change reviewed before it reports done, by a subagent that knows what
 // was asked but not the worker's reasons. nod's independent review after done stays the last word.
 const SUBAGENT_REVIEW_PROMPT = `Before you report done, commit, then have a subagent (Agent tool) review \`git diff <start>..HEAD\`
-(start: the commit in your first message); skip it if that diff is empty. Wait for its result in
-this same turn: run it in the foreground, not in the background, and if it can only run in the
-background, do not end your turn until it reports. Give it only the brief, the human's later
-words and that range, not your reasons. It changes no files here and checks that the asked work
-is done, that each new test fails on the code before the change (run in a temp \`git worktree add\`
-or copied files, never via stash or checkout), and for new bugs (boundaries, swallowed errors, races,
-lost data, injection, leaked secrets), reporting each as file:line, a scenario that reproduces it,
-and its confidence. Fix the findings that have a scenario, commit, and have it review again. In
-your final report, list each finding and what you did (fixed, or why not).`
+(start: the commit in your first message); skip it if that diff is empty. Report done only once it
+has reported: if it runs in the background, you may stop while it works, as above, and its result
+starts your next turn. Give it only the brief, the human's later words and that range, not your
+reasons. It changes no files here and checks that the asked work is done, that each new test fails
+on the code before the change (run in a temp \`git worktree add\` or copied files, never via stash
+or checkout), and for new bugs (boundaries, swallowed errors, races, lost data, injection, leaked
+secrets), reporting each as file:line, a scenario that reproduces it, and its confidence. Fix the
+findings that have a scenario, commit, and have it review again. In your final report, list each
+finding and what you did (fixed, or why not).`
 
 const RESUME_PROMPT =
   'Your session was interrupted. Check the current state of this directory and continue the task.'
@@ -149,6 +156,14 @@ const OUTPUT_LIMIT = 4000
 const QUESTION_LIMIT = 2000
 // More than this in one report is more than a person can clarify, or a worker gone wrong.
 const MAX_CAPTURES = 50
+// A task waits on background work this long in a row at most; past it, its next stop or the tick
+// asks the person what it last asked. Work that never ends (a server left running) or that went
+// with its Claude Code would keep it waiting for good.
+// ponytail: one fixed limit; make it per task if real background work takes longer.
+const WAIT_LIMIT_MS = 60 * 60_000
+// What two tasks' workers may send each other (`NOD: tell`), both ways, before nod asks the person
+// instead: two round trips, a review's findings and the fixes, then a second look.
+const MAX_TELLS = 4
 // The check and the review both run inside the Stop hook, so the hook outlasts them.
 const REVIEW_TIMEOUT_MS = 600_000
 const STOP_HOOK_TIMEOUT_SECS = 1800
@@ -177,11 +192,23 @@ const Capture = z
   .refine((c) => c.key === undefined || c.source !== undefined, 'a key needs its source')
 type Capture = z.infer<typeof Capture>
 
+// A message a worker asks nod to send another task's worker (`NOD: tell`). Its sandbox keeps it off
+// the ledger and that worker's terminal, so its Stop hook sends it, the way `nod tell` does.
+type Tell = { to: number; text: string }
+
 // What Claude Code's hooks pass on stdin (measured on 2.1.290); only the fields nod reads.
 export const StopEvent = z.object({
   session_id: z.string(),
   last_assistant_message: z.string(),
   stop_hook_active: z.boolean(),
+  // The session's background work still running or about to as the turn ends: agents (`subagent`),
+  // shells, monitors (measured on 2.1.309; older versions leave it out). Only how much there is
+  // counts, so an entry nod cannot read still counts, and a list it cannot read is none: it must
+  // not fail the hook.
+  background_tasks: z
+    .array(z.object({ type: z.string(), description: z.string() }).partial().catch({}))
+    .optional()
+    .catch(undefined),
 })
 export const NotificationEvent = z.object({
   session_id: z.string(),
@@ -566,7 +593,8 @@ export async function onNotification(
   )
 }
 
-// Every decision opens here, so the human hears about each one.
+// Every decision opens here, so the human hears about each one. Returns whether it opened; a task
+// that ended takes none.
 async function decide(
   ledger: Ledger,
   home: string,
@@ -576,7 +604,7 @@ async function decide(
   question: string,
   // What goes into the ledger with the decision, in its transaction.
   along: () => void = () => {},
-): Promise<void> {
+): Promise<boolean> {
   // What the worker asks as a turn ends replaces what it asked as an earlier one ended, and a
   // retrospective's proposal the one before it. A task that ended takes none (ended).
   const rule = reason === 'rule'
@@ -591,11 +619,12 @@ async function decide(
       return { id: ledger.ask(taskId, attemptId, reason, question), replaced }
     })
     .immediate()
-  if (made === null) return
+  if (made === null) return false
   const { id, replaced } = made
   const task = ledger.get(taskId)
   await announce(home, task, replaced, why)
   await notify(home, { event: 'decision', task: taskRef(task), decision: { id, reason, question } })
+  return true
 }
 
 async function settle(
@@ -629,25 +658,47 @@ async function settle(
   }
   if (!done) {
     const failed = report?.status === 'failed'
+    // Background work the worker started still runs, and Claude Code starts its next turn once that
+    // is done (2.1.309), so what it asks now waits on nothing the person can give yet. Not past
+    // WAIT_LIMIT_MS of waiting in a row, though (overdueWaits does it between turns).
+    const work = event.background_tasks ?? []
+    const since = waitingSince(ledger, task.id) ?? Date.now()
+    const overdue = Date.now() - since >= WAIT_LIMIT_MS
+    const waiting = work.length > 0 && !overdue
     ledger.endAttempt(attemptId, {
-      outcome: failed ? 'failed' : 'needs_decision',
+      outcome: waiting ? 'waiting' : failed ? 'failed' : 'needs_decision',
       summary,
       report: text,
     })
     await dialogs()
-    if (newer()) return null
+    if (waiting || newer()) return null
+    const still = work.map((w) => w.description ?? w.type ?? '?').join(', ')
+    const note = work.length > 0 ? `${waitedNote(since)} Still running: ${still}.\n` : ''
     const reason = failed ? 'failed' : 'question'
-    await decide(ledger, home, task.id, attemptId, reason, text.slice(-QUESTION_LIMIT))
+    await decide(ledger, home, task.id, attemptId, reason, note + text.slice(-QUESTION_LIMIT))
     return null
   }
   ledger.endAttempt(attemptId, { outcome: 'succeeded', summary, report: text })
   await dialogs()
-  // Lines nod cannot read go back like a failed check, before the slower checks run.
+  // Lines nod cannot read or send go back like a failed check, before the slower checks run.
   const captured = parseCaptures(text)
-  const check =
+  const told = parseTells(text)
+  const unread =
     'error' in captured
-      ? { passed: false, output: captured.error }
-      : await verify(ledger, task, text)
+      ? captured.error
+      : 'error' in told
+        ? told.error
+        : unsendable(ledger, task, told.tells)
+  const tells = 'error' in told ? [] : told.tells
+  // Two tasks that keep telling each other go to the person, before any check runs on it.
+  const over = unread === null ? overTold(ledger, task, tells) : null
+  if (over !== null) {
+    if (newer()) return null
+    await decide(ledger, home, task.id, attemptId, 'question', over)
+    return null
+  }
+  const check =
+    unread !== null ? { passed: false, output: unread } : await verify(ledger, task, text)
   if (check !== null) ledger.recordCheck(attemptId, check.passed, check.output)
   if (newer()) return null
   if (check === null || check.passed) {
@@ -656,7 +707,7 @@ async function settle(
       const retro = ledger.retro(task.retroId)
       // One rule decision at a time: a newer proposal replaces one still open (decide). A
       // retrospective's todos go in with it, so a rule the person turns down does not take them along.
-      await decide(
+      const proposed = await decide(
         ledger,
         home,
         task.id,
@@ -668,6 +719,7 @@ async function settle(
           ledger.proposeRule(retro.id, summary)
         },
       )
+      if (proposed) await sendTells(ledger, home, task, tells)
       return null
     }
     // Nothing the task asked before waits on anything once it succeeds with no turn left running.
@@ -686,6 +738,7 @@ async function settle(
     if (closed === null) return null
     await announce(home, task, closed, without)
     await notify(home, { event: 'succeeded', task: taskRef(task), summary })
+    await sendTells(ledger, home, task, tells)
     await startRetro(ledger, home, task)
     return null
   }
@@ -732,12 +785,31 @@ export function parseReport(text: string): Report | null {
   return null
 }
 
+// A report's `NOD: <word>` lines, without the code ticks or Markdown emphasis around them.
+const nodLines = (text: string, word: string): string[] =>
+  text
+    .split('\n')
+    .map(nodLine)
+    .filter((l): l is string => l !== null && new RegExp(`^NOD:\\s*${word}\\b`, 'i').test(l))
+
+// A report line as `NOD:…`, or null for one that is not. The ticks or emphasis it opens with close
+// right after its `NOD:` (`**NOD:** tell …`) or at its end (`**NOD: tell …**`), and no more of
+// them goes than opened, so a message that ends in `*` or a tick keeps it. Counted, not matched by
+// a pattern that backtracks: a worker's line may be long.
+function nodLine(raw: string): string | null {
+  const line = raw.trim()
+  const [opened, marks = ''] = /^([`*]*)NOD:/i.exec(line) ?? []
+  if (opened === undefined) return null
+  const rest = line.slice(opened.length)
+  if (marks !== '' && rest.startsWith(marks)) return `NOD:${rest.slice(marks.length)}`
+  let end = rest.length
+  while (end > 0 && rest.length - end < marks.length && '`*'.includes(rest.charAt(end - 1))) end--
+  return `NOD:${rest.slice(0, end)}`
+}
+
 // The `NOD: in {…}` lines of a report, or what is wrong with them, to send back to the worker.
 export function parseCaptures(text: string): { captures: Capture[] } | { error: string } {
-  const lines = text
-    .split('\n')
-    .map((l) => l.trim().replace(/^`+|`+$/g, ''))
-    .filter((l) => /^NOD:\s*in\b/i.test(l))
+  const lines = nodLines(text, 'in')
   if (lines.length > MAX_CAPTURES) {
     return { error: `${lines.length} \`NOD: in\` lines; report at most ${MAX_CAPTURES}` }
   }
@@ -774,6 +846,95 @@ function captureFor(ledger: Ledger, task: Task, captures: Capture[]): void {
       url: c.link ?? null,
     }
     todos.capture(todo, `worker:${task.id}`)
+  }
+}
+
+// The `NOD: tell #<task> <message>` lines of a report, or what is wrong with one, to send back to
+// the worker.
+export function parseTells(text: string): { tells: Tell[] } | { error: string } {
+  const tells: Tell[] = []
+  for (const line of nodLines(text, 'tell')) {
+    const [, to, said] = /^NOD:\s*tell\s+#(\d+)\s+(\S.*)$/i.exec(line) ?? []
+    if (to === undefined || said === undefined) {
+      return {
+        error: `A \`NOD: tell\` line nod cannot read: ${line}\nWrite it as NOD: tell #<task> <message>, on one line, or leave it out.`,
+      }
+    }
+    tells.push({ to: Number(to), text: said.trim() })
+  }
+  return { tells }
+}
+
+// Why nod cannot send what `from`'s worker tells task `to`; null when it can. Only to another task
+// one Claude session added along with this one: that session gave both their work, so a worker
+// cannot steer the tasks of other sessions, or a trigger's (which work on what anyone could write
+// in an issue) steer any. A task that ended or never started has no worker to hear it.
+function cannotTell(ledger: Ledger, from: Task, to: number): string | null {
+  const task = ledger.list().find((t) => t.id === to)
+  if (task === undefined) return `There is no task #${to}.`
+  if (to === from.id) return `#${to} is this task.`
+  if (from.rootSession === null || task.rootSession !== from.rootSession) {
+    return `#${to} was not added from the session that added this task, and nod passes messages only between those.`
+  }
+  if (task.status === 'cancelled' || ended(ledger, to)) return `#${to} has ended.`
+  if (task.workspace === null || ledger.lastAttempt(to) === null) return `#${to} has not started.`
+  return null
+}
+
+// What is wrong with the first of `tells` nod cannot send, to send back to the worker; null when
+// it can send them all.
+function unsendable(ledger: Ledger, from: Task, tells: Tell[]): string | null {
+  for (const { to, text } of tells) {
+    const why = cannotTell(ledger, from, to)
+    if (why !== null) {
+      return `A \`NOD: tell\` line nod cannot send: NOD: tell #${to} ${text}\n${why} Leave it out, or ask the human.`
+    }
+  }
+  return null
+}
+
+// What the person is asked when `tells` would take two tasks past MAX_TELLS messages between them;
+// null when they would not. Then none of them goes, so the question shows them all.
+// ponytail: counted before the checks run and sent after them, so two tasks telling each other at
+// once may each send one past the limit.
+function overTold(ledger: Ledger, from: Task, tells: Tell[]): string | null {
+  const before = new Map<number, number>()
+  const after = new Map<number, number>()
+  for (const { to } of tells) {
+    if (!before.has(to)) before.set(to, ledger.tellsBetween(from.id, to))
+    after.set(to, (after.get(to) ?? before.get(to) ?? 0) + 1)
+  }
+  const over = [...after].find(([, n]) => n > MAX_TELLS)?.[0]
+  if (over === undefined) return null
+  const asked = tells.map(({ to, text }) => `> to #${to}: ${text}`).join('\n')
+  return `Task #${from.id}'s worker reported done and asks nod to pass on:\n${asked}\n#${from.id} and #${over} have sent each other ${before.get(over)} messages already, and nod passes on at most ${MAX_TELLS} between two tasks, so it sent none of these and has not taken the done. Answer with how #${from.id} should go on, such as to finish without them; to let them talk on, pass them on yourself first (nod tell <task> '<message>').`
+}
+
+// How a message from another task's worker reaches a worker: marked as a peer's, so it never passes
+// for the human's, with how to answer it.
+const peerMessage = (from: number, text: string): string =>
+  `Message from the worker of nod task #${from}, a peer, not the human: weigh it, but the human's instructions come first. To answer it, report a line NOD: tell #${from} <answer>.\n${text}`
+
+// Sends what a worker told other tasks once nod has taken its done, as `nod tell` does: into the
+// worker's live session, or one brought back, a finished task's too. One that cannot go in (a
+// permission dialog open there, say) is the person's to pass on, so they hear it with the message.
+// Each is checked again first: the person may have dropped its task while the checks ran.
+// ponytail: one dropped while restore rebuilds its folder is not started again (deliver refuses
+// it), but shows in ls with its folder until the next gc.
+async function sendTells(ledger: Ledger, home: string, from: Task, tells: Tell[]): Promise<void> {
+  for (const { to, text } of tells) {
+    try {
+      const why = cannotTell(ledger, from, to)
+      if (why !== null) throw new Error(why)
+      await restore(ledger, home, to)
+      await deliver(ledger, home, to, 'followup', peerMessage(from.id, text), null, from.id)
+    } catch (error) {
+      await notify(home, {
+        event: 'error',
+        task: taskRef(ledger.get(to)),
+        error: `nod could not pass on what task #${from.id}'s worker told it (${message(error)}): ${text}`,
+      })
+    }
   }
 }
 
@@ -872,7 +1033,8 @@ function trailingRetries(ledger: Ledger, taskId: number): number {
 }
 
 // Sends a message into the task's session so the worker keeps its context. A session that has ended
-// (exited, machine restarted) is reopened from Claude Code's transcript first.
+// (exited, machine restarted) is reopened from Claude Code's transcript first. `from`: the task
+// whose worker sent it (sendTells), null for the person's or nod's.
 async function deliver(
   ledger: Ledger,
   home: string,
@@ -880,6 +1042,7 @@ async function deliver(
   kind: AttemptKind,
   text: string,
   decisionId: number | null,
+  from: number | null = null,
 ): Promise<void> {
   const task = ledger.get(taskId)
   const last = ledger.lastAttempt(taskId)
@@ -926,6 +1089,10 @@ async function deliver(
   const turn = ledger.db
     .transaction((): Turn => {
       refuseEnded(ledger, ledger.get(taskId))
+      // A worker's message never brings back a task the person dropped (sendTells).
+      if (from !== null && ledger.get(taskId).status === 'cancelled') {
+        throw new Error(`task ${taskId} was dropped`)
+      }
       const open = ledger.openAttempt(taskId)
       // `checked` is NaN while the hook has yet to read which turn it checks: the one that ended.
       const hookTurn = checking && (open?.id === checked || Number.isNaN(checked))
@@ -945,6 +1112,7 @@ async function deliver(
         decisionId,
         sessionId: last.sessionId,
         prompt: text,
+        fromTask: from,
       })
       // A new turn: what the worker asked before it waits on nothing.
       const closed = closeDecisions(ledger, taskId, (d) => ASKED.includes(d.reason), WENT_ON)
@@ -965,7 +1133,7 @@ async function deliver(
     }
     if (restarting) leavePrompt(home, taskId, text)
     else terminals.send(name, text)
-    ledger.addMessage(taskId, turn.attemptId, text)
+    ledger.addMessage(taskId, turn.attemptId, text, from)
     return
   }
   await announce(home, task, turn.cut, CUT)
@@ -1361,6 +1529,43 @@ export async function lostTurns(ledger: Ledger, home: string, now: Date): Promis
     if (await cutOff(ledger, home, t.id, open, LOST)) lost.push(t.id)
   }
   return lost
+}
+
+// When the task began to wait on background work: the end of the first of its finished turns that
+// waited, in a row up to the last one; null when its last finished turn did not wait.
+function waitingSince(ledger: Ledger, taskId: number): number | null {
+  const ended = ledger.attempts(taskId).filter((a) => a.finishedAt !== null)
+  const first = ended.slice(ended.findLastIndex((a) => a.outcome !== 'waiting') + 1)[0]
+  return first?.finishedAt ? Date.parse(first.finishedAt) : null
+}
+
+const waitedNote = (since: number, now = Date.now()): string =>
+  `It has waited on background work it started for ${Math.round((now - since) / 60_000)} minutes, past nod's limit of ${WAIT_LIMIT_MS / 60_000}.`
+
+// Asks the person what a task last asked once it has waited on background work past WAIT_LIMIT_MS
+// with no turn since: work that never ends (a server left running), or that went with its Claude
+// Code or terminal, would keep it waiting for good. The tick runs it, as it runs lostTurns.
+export async function overdueWaits(ledger: Ledger, home: string, now: Date): Promise<number[]> {
+  const asked: number[] = []
+  for (const t of ledger.list()) {
+    if (t.status !== 'running' || ledger.openAttempt(t.id) !== null) continue
+    const last = ledger.lastAttempt(t.id)
+    const since = waitingSince(ledger, t.id)
+    if (last === null || last.outcome !== 'waiting' || since === null) continue
+    if (now.getTime() - since < WAIT_LIMIT_MS) continue
+    const report = last.report ?? ''
+    const failed = parseReport(report)?.status === 'failed'
+    // Taken first, in one statement: of two ticks at once one asks, and a turn that started since
+    // (the work finished just now) goes on instead.
+    // ponytail: a turn that starts between this and the decision runs with it open, until the
+    // task's next question or its success closes it.
+    if (!ledger.endWait(last.id, failed ? 'failed' : 'needs_decision')) continue
+    const note = `${waitedNote(since, now.getTime())} No turn has come since it stopped.\n`
+    const reason = failed ? 'failed' : 'question'
+    await decide(ledger, home, t.id, last.id, reason, note + report.slice(-QUESTION_LIMIT))
+    asked.push(t.id)
+  }
+  return asked
 }
 
 export type Restart = 'restarted' | 'after its turn' | 'attached' | 'no terminal'

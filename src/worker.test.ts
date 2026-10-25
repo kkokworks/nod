@@ -27,10 +27,13 @@ import {
   firstMessage,
   lostTurns,
   onStop,
+  overdueWaits,
   parseCaptures,
   parseReport,
+  parseTells,
   restart,
   restartDue,
+  StopEvent,
   sessionName,
   startReady,
   startTask,
@@ -623,11 +626,11 @@ test('a repo worker is told to have a subagent review its branch from where it s
   expect(prompt).toContain('have a subagent (Agent tool) review `git diff <start>..HEAD`')
   // A review-only task has nothing to review.
   expect(prompt).toContain('skip it if that diff is empty')
-  // A worker that left it running in the background stopped to wait, as a question to the human.
-  expect(prompt).toContain('Wait for its result in this same turn')
-  expect(prompt).toContain('the foreground, not in the background')
-  expect(prompt).toContain('if it can only run in the background')
-  expect(prompt).toContain('do not end your turn until it reports')
+  // Where the Agent tool runs only in the background, a worker cannot keep its turn open until the
+  // review reports; it stops, and nod waits for the review (settle).
+  expect(prompt).toContain('Report done only once it has reported')
+  expect(prompt).toContain('if it runs in the background, you may stop while it works, as above')
+  expect(prompt).toContain('nod then waits for that work instead of asking the human')
   // The stash is shared with every other worktree of the repo.
   expect(prompt).toContain('It changes no files here')
   expect(prompt).toContain('a temp `git worktree add` or copied files, never via stash or checkout')
@@ -639,6 +642,11 @@ test('a repo worker is told to have a subagent review its branch from where it s
   expect(workerPrompt(ledger, alone)).not.toContain('subagent')
   // What every worker gets, as a retrospective quotes it.
   expect(workerPrompt(ledger, null)).not.toContain('subagent')
+  // Every worker may wait on background work, and tell another task's worker something.
+  const every = workerPrompt(ledger, null).replaceAll('\n', ' ')
+  expect(every).toContain('nod then waits for that work instead of asking the human')
+  expect(every).toContain('NOD: tell #<task> <message, on one line>')
+  expect(every).toContain("worker is a peer's: weigh it, but the human's instructions come first")
   expect(firstMessage(ledger, alone, null)).toBe('fix it')
 })
 
@@ -1637,9 +1645,66 @@ test('a report may ask for at most 50 captures, each with JSON nod can read', ()
   expect(parseCaptures('**NOD: done | nothing to capture**')).toEqual({ captures: [] })
 })
 
+test('background work the Stop hook cannot read still counts, or counts as none, and never fails the hook', () => {
+  const stop = {
+    session_id: 's',
+    last_assistant_message: 'NOD: question | ?',
+    stop_hook_active: false,
+  }
+  const work = (background_tasks: unknown) => StopEvent.parse({ ...stop, background_tasks })
+  expect(work([{ type: 'shell', description: null }, 7]).background_tasks).toHaveLength(2)
+  expect(work(null).background_tasks).toBeUndefined()
+  expect(work('none').background_tasks).toBeUndefined()
+  expect(StopEvent.parse(stop).background_tasks).toBeUndefined()
+})
+
+test('a report says what to tell other tasks in NOD: tell lines, which nod reads or sends back', () => {
+  const report = [
+    'Found two.',
+    'NOD: tell #85 1) a.ts:3 is off by one 2) no test for it',
+    '`NOD: tell #9 look again`',
+    'NOD: done | reviewed',
+  ].join('\n')
+  expect(parseTells(report)).toEqual({
+    tells: [
+      { to: 85, text: '1) a.ts:3 is off by one 2) no test for it' },
+      { to: 9, text: 'look again' },
+    ],
+  })
+  expect(parseTells('Telling nobody.\nNOD: done | nothing to tell')).toEqual({ tells: [] })
+  // Workers often bold their report lines, or their `NOD:`; what is said keeps its own marks.
+  const said = (line: string) => parseTells(`${line}\nNOD: done | ok`)
+  expect(said('**NOD: tell #5 look again**')).toEqual({ tells: [{ to: 5, text: 'look again' }] })
+  expect(said('**NOD:** tell #5 look again')).toEqual({ tells: [{ to: 5, text: 'look again' }] })
+  expect(said('NOD: tell #5 the glob should be src/**')).toEqual({
+    tells: [{ to: 5, text: 'the glob should be src/**' }],
+  })
+  expect(said('`NOD: tell #5 rename it to `foo``')).toEqual({
+    tells: [{ to: 5, text: 'rename it to `foo`' }],
+  })
+  const kept = (line: string, text: string) =>
+    expect(said(line)).toEqual({ tells: [{ to: 5, text }] })
+  kept('**NOD:** tell #5 this is **important**', 'this is **important**')
+  kept('*NOD:* tell #5 look at *this*', 'look at *this*')
+  kept('`NOD:` tell #5 hi', 'hi')
+  kept('**NOD: tell #5 look at *this***', 'look at *this*')
+  // A capture with unmatched ticks around it still goes in, as it did before tells.
+  expect(parseCaptures('``NOD: in {"title": "x"}`\nNOD: done | ok')).toEqual({
+    captures: [{ title: 'x' }],
+  })
+  // A long line of marks reads at once: a pattern that backtracks took minutes on it.
+  expect(said(`${'`'.repeat(100_000)}x`)).toEqual({ tells: [] })
+  kept(`${'`'.repeat(50_000)}NOD: tell #5 hi${'`'.repeat(50_000)}`, 'hi')
+  for (const bad of ['NOD: tell 85 no hash', 'NOD: tell #85', 'NOD: tell #x hi']) {
+    expect(parseTells(`${bad}\nNOD: done | ok`)).toMatchObject({
+      error: expect.stringContaining(bad),
+    })
+  }
+})
+
 // A task nod started whose hooks a test runs itself, with no terminal: its worker's first turn is
-// session `session`.
-function started(brief: string, session: string): number {
+// session `session`. `root`: the Claude session that added it.
+function started(brief: string, session: string, root: string | null = null): number {
   const id = ledger.add({
     brief,
     repo: null,
@@ -1649,6 +1714,7 @@ function started(brief: string, session: string): number {
     after: [],
     triggerId: null,
     issue: null,
+    rootSession: root,
   })
   const cwd = workspaceOf(home, ledger.get(id))
   mkdirSync(cwd, { recursive: true })
@@ -1663,12 +1729,14 @@ function started(brief: string, session: string): number {
   return id
 }
 
-// The Stop hook of a turn in session `session` that ended with `report`.
-const stopped = (session: string, report: string): Promise<string | null> =>
+// The Stop hook of a turn in session `session` that ended with `report`, while the background work
+// `running` (agents, as Claude Code describes them) still ran.
+const stopped = (session: string, report: string, running: string[] = []): Promise<string | null> =>
   onStop(ledger, home, {
     session_id: session,
     last_assistant_message: report,
     stop_hook_active: false,
+    background_tasks: running.map((description) => ({ type: 'subagent', description })),
   })
 
 test('a message that comes while nod checks a turn it closed starts the next turn, and that turn decides', async () => {
@@ -1751,6 +1819,248 @@ test('a turn the worker goes on to by itself closes what it asked before, and so
     null,
   ])
 })
+
+test('a turn that stops while background work it started still runs waits for that work, and asks nobody', async () => {
+  const events = listen()
+  const id = started('review it', 'waits')
+  await stopped('waits', 'The review runs.\nNOD: question | Waiting for the review', ['review'])
+  expect(status(id)).toBe('running')
+  expect(ledger.decisions(id)).toEqual([])
+  expect(ledger.attempts(id).map((a) => [a.kind, a.outcome])).toEqual([['start', 'waiting']])
+  // The review reports and Claude Code goes on by itself: a fix and a second review, then done.
+  await stopped('waits', 'Fixed; a second review runs.\nNOD: question | Waiting again', ['review'])
+  await stopped('waits', 'NOD: done | reviewed twice')
+  expect(status(id)).toBe('succeeded')
+  expect(ledger.decisions(id)).toEqual([])
+  expect(ledger.attempts(id).map((a) => [a.kind, a.outcome])).toEqual([
+    ['start', 'waiting'],
+    ['followup', 'waiting'],
+    ['followup', 'succeeded'],
+  ])
+  expect(events().filter((e) => e.event === 'decision')).toEqual([])
+
+  // Once the work is done, with none left running, a question goes to the person as before.
+  const asks = started('ask after', 'asks-after')
+  await stopped('asks-after', 'NOD: question | Waiting for the shell', ['a shell'])
+  await stopped('asks-after', 'NOD: question | Which file?')
+  expect(ledger.decisions(asks).map((d) => [d.reason, d.question, d.answer])).toEqual([
+    ['question', 'NOD: question | Which file?', null],
+  ])
+  expect(status(asks)).toBe('needs_decision')
+
+  // A done is checked and taken as ever, with work still running or not.
+  const done = started('serve it', 'done-serving')
+  await stopped('done-serving', 'NOD: done | the server runs', ['a dev server'])
+  expect(status(done)).toBe('succeeded')
+})
+
+test('a task that has waited on background work past the limit asks the person, at its next stop or at the tick', async () => {
+  const id = started('review it', 'waits-long')
+  await stopped('waits-long', 'NOD: question | Waiting for the review', ['review'])
+  const minutes = (n: number): Date => new Date(Date.now() + n * 60_000)
+  expect(await overdueWaits(ledger, home, minutes(59))).toEqual([])
+  // An hour on, no turn has come: the review never reports, or went with its Claude Code.
+  const later = minutes(61)
+  const [a, b] = await Promise.all([
+    overdueWaits(ledger, home, later),
+    overdueWaits(ledger, home, later),
+  ])
+  expect([...a, ...b]).toEqual([id])
+  const asked = ledger.decisions(id)
+  expect(asked.map((d) => d.reason)).toEqual(['question'])
+  expect(asked[0]?.question).toContain("past nod's limit of 60. No turn has come since it stopped.")
+  expect(asked[0]?.question).toContain('NOD: question | Waiting for the review')
+  expect(status(id)).toBe('needs_decision')
+  expect(ledger.attempts(id).map((x) => x.outcome)).toEqual(['needs_decision'])
+
+  // Turns that went on waiting, in a row since past the limit: the next stop asks, work or not.
+  const chain = started('keep waiting', 'waits-chain')
+  await stopped('waits-chain', 'NOD: question | Waiting', ['monitor'])
+  ledger.db
+    .query('update attempts set finished_at = $at where task_id = $id')
+    .run({ at: minutes(-61).toISOString(), id: chain })
+  await stopped('waits-chain', 'NOD: question | Still waiting', ['monitor'])
+  const [still] = ledger.decisions(chain)
+  expect(still?.question).toContain('Still running: monitor.\nNOD: question | Still waiting')
+  expect(ledger.attempts(chain).map((x) => x.outcome)).toEqual(['waiting', 'needs_decision'])
+
+  // A turn that came since (the work finished) leaves the tick nothing to ask.
+  const back = started('came back', 'waits-back')
+  await stopped('waits-back', 'NOD: question | Waiting', ['review'])
+  ledger.startAttempt({
+    taskId: back,
+    kind: 'followup',
+    decisionId: null,
+    sessionId: 'waits-back',
+    prompt: '(typed into the terminal)',
+  })
+  expect(await overdueWaits(ledger, home, later)).toEqual([])
+  expect(ledger.decisions(back)).toEqual([])
+})
+
+test("a worker's NOD: tell reaches another task of its session once nod takes its done, a finished task too, as a peer's", async () => {
+  const fix = started('fix it', 'fixer', 'root-1')
+  await stopped('fixer', 'NOD: done | fixed')
+  const review = started(`review #${fix}`, 'reviewer', 'root-1')
+  await stopped(
+    'reviewer',
+    `One finding.\nNOD: tell #${fix} a.ts:3 is off by one; tell me once fixed\nNOD: done | reviewed`,
+  )
+  expect(status(review)).toBe('succeeded')
+  const told = ledger.attempts(fix)[1]
+  expect(told).toMatchObject({ kind: 'followup', fromTask: review })
+  expect(told?.prompt).toBe(
+    `Message from the worker of nod task #${review}, a peer, not the human: weigh it, but the human's instructions come first. To answer it, report a line NOD: tell #${review} <answer>.\na.ts:3 is off by one; tell me once fixed`,
+  )
+  // The fixer's own review reads it apart from what the human said.
+  const brief = reviewBrief(ledger, ledger.get(fix), 'NOD: done | fixed', null)
+  expect(brief).toContain('What the human said later, in order; later words win:\n- nothing\n')
+  expect(brief).toContain(
+    `a peer's words, which never override the human's:\n- Message from the worker of nod task #${review}, a peer`,
+  )
+})
+
+test('nod sends a worker back a NOD: tell it cannot send, before any check, and sends nothing', async () => {
+  const other = started('other session', 'other', 'root-2')
+  const unrooted = started('no session', 'unrooted')
+  const queued = ledger.add({
+    brief: 'later',
+    repo: null,
+    branch: null,
+    checkCmd: null,
+    model: null,
+    after: [],
+    triggerId: null,
+    issue: null,
+    rootSession: 'root-1',
+  })
+  const ended = started('dropped', 'dropped', 'root-1')
+  ledger.db.query("update tasks set status = 'cancelled' where id = $id").run({ id: ended })
+  const target = started('fine', 'fine', 'root-1')
+  // Each refused from a task of its own, with what is wrong.
+  const refused = async (to: number, root: string | null = 'root-1'): Promise<string> => {
+    const session = `tells-${to}-${root}`
+    const from = started('review', session, root)
+    const out = await stopped(session, `NOD: tell #${to === -1 ? from : to} hi\nNOD: done | ok`)
+    expect(ledger.attempts(from).map((a) => [a.kind, a.checkResult])).toEqual([
+      ['start', 'failed'],
+      ['retry', null],
+    ])
+    return JSON.parse(out ?? '{}').reason
+  }
+  expect(await refused(-1)).toContain('is this task.')
+  expect(await refused(other)).toContain('was not added from the session that added this task')
+  expect(await refused(target, null)).toContain('was not added from the session')
+  expect(await refused(unrooted)).toContain('was not added from the session')
+  expect(await refused(999)).toContain('There is no task #999.')
+  expect(await refused(queued)).toContain(`#${queued} has not started.`)
+  expect(await refused(ended)).toContain(`#${ended} has ended.`)
+  expect(entries('review')).toEqual([])
+  for (const id of [other, unrooted, ended, target]) expect(ledger.attempts(id)).toHaveLength(1)
+})
+
+test('two tasks whose workers have sent each other four messages ask the person before a fifth goes', async () => {
+  const review = started('review', 'reviewing', 'root-1')
+  const fix = started('fix', 'fixing', 'root-1')
+  const turnOf = (id: number): number => ledger.openAttempt(id)?.id ?? 0
+  const [reviewTurn, fixTurn] = [turnOf(review), turnOf(fix)]
+  // Two round trips so far: findings, fixed, more findings, fixed again.
+  ledger.addMessage(fix, fixTurn, 'findings', review)
+  ledger.addMessage(review, reviewTurn, 'fixed', fix)
+  ledger.addMessage(fix, fixTurn, 'more findings', review)
+  ledger.addMessage(review, reviewTurn, 'fixed again', fix)
+  const out = await stopped('reviewing', `NOD: tell #${fix} one more thing\nNOD: done | reviewed`)
+  expect(out).toBeNull()
+  expect(status(review)).toBe('needs_decision')
+  const [asked] = ledger.decisions(review)
+  expect(asked?.reason).toBe('question')
+  expect(asked?.question).toContain(
+    `> to #${fix}: one more thing\n#${review} and #${fix} have sent each other 4 messages already, and nod passes on at most 4`,
+  )
+  expect(ledger.attempts(fix)).toHaveLength(1)
+  expect(entries('review')).toEqual([])
+
+  // Three so far, and two more in one report: neither goes, and the person sees both.
+  const other = started('review', 'reviewing-two', 'root-1')
+  const done = started('fix', 'fixing-two', 'root-1')
+  for (const text of ['findings', 'fixed', 'more findings']) {
+    ledger.addMessage(done, turnOf(done), text, other)
+  }
+  await stopped(
+    'reviewing-two',
+    `NOD: tell #${done} first\nNOD: tell #${done} second\nNOD: done | reviewed`,
+  )
+  const [both] = ledger.decisions(other)
+  expect(both?.question).toContain(`> to #${done}: first\n> to #${done}: second\n`)
+  expect(both?.question).toContain('have sent each other 3 messages already')
+  expect(ledger.attempts(done)).toHaveLength(1)
+})
+
+test('a message a worker told a task the person drops while nod checks it does not bring that task back', async () => {
+  const events = listen()
+  const target = started('fix', 'drop-target', 'root-1')
+  await stopped('drop-target', 'NOD: done | fixed')
+  // The person drops the target while the sender's checks run; here its check command does it,
+  // from a process of its own, as `nod drop` would.
+  const drop = join(home, 'drop.ts')
+  writeFileSync(
+    drop,
+    `import { Database } from 'bun:sqlite'\nnew Database(${JSON.stringify(join(home, 'nod.db'))}).run("update tasks set status = 'cancelled' where id = ${target}")\n`,
+  )
+  const from = started('review it', 'drop-sender', 'root-1')
+  ledger.db
+    .query('update tasks set check_cmd = $check where id = $id')
+    .run({ check: `${quote(process.execPath)} ${quote(drop)}`, id: from })
+  await stopped('drop-sender', `NOD: tell #${target} a.ts:3 is off by one\nNOD: done | reviewed`)
+  expect(status(from)).toBe('succeeded')
+  expect(status(target)).toBe('cancelled')
+  expect(ledger.attempts(target)).toHaveLength(1)
+  const heard = events().filter((e) => e.event === 'error')
+  expect(heard.map((e) => [e.task?.id, e.error])).toEqual([
+    [target, expect.stringContaining(`#${target} has ended.): a.ts:3 is off by one`)],
+  ])
+}, 30_000)
+
+test('a review tells the fixer its findings, and the fixer tells it back once fixed, through nod alone', async () => {
+  const rooted = async (brief: string): Promise<number> => {
+    const id = ledger.add({
+      brief,
+      repo: null,
+      branch: null,
+      checkCmd: null,
+      model: null,
+      after: [],
+      triggerId: null,
+      issue: null,
+      rootSession: 'root-1',
+    })
+    await startTask(ledger, home, id)
+    return id
+  }
+  const fix = await rooted('fix it')
+  await reaches(fix, 'succeeded')
+  // As the person would brief it: review, then send the findings to the fixer.
+  const review = await rooted(`tell #${fix} ping-back: a.ts:3 is off by one`)
+  const step = (done: () => boolean): Promise<true> =>
+    until(done).catch((error: unknown) => {
+      throw new Error(`${String(error)}\n${whereIs(fix)}\n${whereIs(review)}`)
+    })
+  // The findings reach the fixer, which tells the review back, which takes another look.
+  await step(() => ledger.attempts(fix).length === 2)
+  await step(() => ledger.attempts(review).length === 2)
+  await step(() => status(review) === 'succeeded' && status(fix) === 'succeeded')
+  expect(ledger.attempts(fix).map((a) => [a.kind, a.fromTask])).toEqual([
+    ['start', null],
+    ['followup', review],
+  ])
+  expect(ledger.attempts(review).map((a) => [a.kind, a.fromTask])).toEqual([
+    ['start', null],
+    ['followup', fix],
+  ])
+  expect(ledger.attempts(review)[1]?.prompt).toEndWith('\nfixed it')
+  expect(ledger.tellsBetween(fix, review)).toBe(2)
+  expect(ledger.openDecisions()).toEqual([])
+}, 30_000)
 
 test("a permission answered in the worker's terminal does not stay open once its turn ends", async () => {
   const id = started('fetch it', 'answered-there')

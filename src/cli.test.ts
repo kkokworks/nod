@@ -369,6 +369,59 @@ test('tick by hand says which finished tasks it collected', () => {
   expect(ledger.list().map((t) => t.collectedAt !== null)).toEqual([true, true])
 })
 
+test('hook stop waits on the background work Claude Code says still runs, and tick asks once that has taken an hour', () => {
+  const home = tmp.make('nod-wait-')
+  const ledger = new Ledger(home)
+  const id = ledger.add({
+    brief: 'review it',
+    repo: null,
+    branch: null,
+    checkCmd: null,
+    model: null,
+    after: [],
+    triggerId: null,
+    issue: null,
+  })
+  ledger.setRunning(id, home)
+  ledger.startAttempt({ taskId: id, kind: 'start', decisionId: null, sessionId: 'w', prompt: 'p' })
+  const env = { ...process.env, NOD_HOME: home }
+  // What Claude Code 2.1.309 passes the Stop hook while a background agent runs.
+  const event = {
+    session_id: 'w',
+    transcript_path: join(home, 'w.jsonl'),
+    cwd: home,
+    permission_mode: 'auto',
+    hook_event_name: 'Stop',
+    stop_hook_active: false,
+    last_assistant_message: 'The review runs.\nNOD: question | Waiting for the review',
+    background_tasks: [
+      {
+        id: 'a0123456789abcdef',
+        type: 'subagent',
+        status: 'running',
+        description: 'review',
+        agent_type: 'general-purpose',
+      },
+    ],
+    session_crons: [],
+  }
+  const stop = Bun.spawnSync(['bun', cli, 'hook', 'stop'], {
+    env,
+    stdin: Buffer.from(JSON.stringify(event)),
+  })
+  expect(stop.exitCode).toBe(0)
+  expect(ledger.attempts(id).map((a) => a.outcome)).toEqual(['waiting'])
+  expect(ledger.openDecisions()).toEqual([])
+
+  // An hour on, the review has not come back.
+  ledger.db
+    .query('update attempts set finished_at = $at where task_id = $id')
+    .run({ at: new Date(Date.now() - 61 * 60_000).toISOString(), id })
+  const tick = Bun.spawnSync(['bun', cli, 'tick'], { env })
+  expect(tick.stdout.toString()).toBe(`waited too long on background work: ${id}\n`)
+  expect(ledger.openDecisions().map((d) => [d.taskId, d.reason])).toEqual([[id, 'question']])
+})
+
 test('add refuses repo work without a valid branch, before adding anything', async () => {
   const home = tmp.make('nod-branch-')
   const repo = tmp.make('nod-branch-repo-')

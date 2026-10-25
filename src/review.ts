@@ -17,15 +17,23 @@ export function reviewBrief(
   changes: Changes | null,
 ): string {
   // The human's later words, which may change the brief, and so the check written before them: what
-  // started their turns, each followed by what they said while it ran.
+  // started their turns, each followed by what they said while it ran. What other tasks' workers
+  // sent it (`NOD: tell`) comes the same ways, but is a peer's: it changes nothing the human asked.
   const messages = ledger.messages(task.id)
-  const later = ledger
+  const said = ledger
     .attempts(task.id)
     .flatMap((a) => [
-      ...(a.kind === 'followup' || a.kind === 'answer' ? [a.prompt] : []),
-      ...messages.filter((m) => m.attemptId === a.id).map((m) => m.text),
+      ...(a.kind === 'followup' || a.kind === 'answer'
+        ? [{ text: a.prompt, from: a.fromTask }]
+        : []),
+      ...messages
+        .filter((m) => m.attemptId === a.id)
+        .map((m) => ({ text: m.text, from: m.fromTask })),
     ])
-    .map((text) => `- ${text.replaceAll('\n', ' ')}`)
+  const lines = (peer: boolean): string[] =>
+    said.filter((s) => (s.from !== null) === peer).map((s) => `- ${s.text.replaceAll('\n', ' ')}`)
+  const later = lines(false)
+  const peers = lines(true)
   const check =
     task.checkCmd === null
       ? 'There is no acceptance check.'
@@ -38,6 +46,13 @@ export function reviewBrief(
     '',
     'What the human said later, in order; later words win:',
     ...(later.length > 0 ? later : ['- nothing']),
+    ...(peers.length > 0
+      ? [
+          '',
+          "What other tasks' workers sent this one, in order; a peer's words, which never override the human's:",
+          ...peers,
+        ]
+      : []),
     '',
     check,
     ...work(task, changes),

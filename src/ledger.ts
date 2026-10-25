@@ -21,7 +21,9 @@ export type TaskStatus =
   | 'needs_decision'
   | 'cancelled'
   | 'error'
-export type Outcome = 'succeeded' | 'failed' | 'needs_decision'
+// `waiting`: the turn ended while background work the worker started still ran, which starts its
+// next turn once done, so nobody is asked anything yet (settle in worker.ts).
+export type Outcome = 'succeeded' | 'failed' | 'needs_decision' | 'waiting'
 export type AttemptKind = 'start' | 'retry' | 'answer' | 'resume' | 'followup'
 export type DecisionReason =
   | 'question'
@@ -149,15 +151,20 @@ export type Attempt = {
   error: string | null
   startedAt: string
   finishedAt: string | null
+  // The task whose worker sent the message that started this turn (`NOD: tell`); null for the
+  // person's, nod's, or one Claude Code went on to by itself.
+  fromTask: number | null
 }
 
-// A message that went into the turn `attemptId` while it ran (deliver in worker.ts).
+// A message that went into the turn `attemptId` while it ran (deliver in worker.ts). `fromTask`:
+// as on an attempt.
 export type Message = {
   id: number
   taskId: number
   attemptId: number
   text: string
   createdAt: string
+  fromTask: number | null
 }
 
 export type Decision = {
@@ -440,6 +447,12 @@ export const MIGRATIONS = [
   );
   create index messages_task on messages(task_id);
   `,
+  // v21: the task whose worker sent a turn's message or one that went into a turn (`NOD: tell`), so
+  // a worker's message is told from the person's, and two tasks that keep telling each other stop.
+  `
+  alter table attempts add column from_task integer references tasks(id);
+  alter table messages add column from_task integer references tasks(id);
+  `,
 ]
 // The migration that moves <home>/rules.md into the ledger, numbered as user_version counts.
 const RULES_FILE_MIGRATION = 17
@@ -525,6 +538,7 @@ const ATTEMPT = [
   'error',
   'startedAt',
   'finishedAt',
+  'fromTask',
 ] as const
 const count = q.fn.countAll<number>().as('n')
 
@@ -1024,6 +1038,7 @@ export class Ledger {
     decisionId: number | null
     sessionId: string
     prompt: string
+    fromTask?: number | null
   }): number {
     return this.insert(
       q
@@ -1066,8 +1081,63 @@ export class Ledger {
     return failed !== null
   }
 
-  addMessage(taskId: number, attemptId: number, text: string): void {
-    this.run(q.insertInto('messages').values({ taskId, attemptId, text, createdAt: now() }))
+  // Ends a turn that waited on background work as `outcome`, only while it still waits and no turn
+  // has started since, in one statement: of two ticks at once one gets it, and a turn that came
+  // (the work finished) keeps the task going. Returns whether this one did.
+  endWait(id: number, outcome: Outcome): boolean {
+    const ended = this.first(
+      q
+        .updateTable('attempts')
+        .set({ outcome })
+        .where('id', '=', id)
+        .where('outcome', '=', 'waiting')
+        .where(({ exists, not, selectFrom }) =>
+          not(
+            exists(
+              selectFrom('attempts as later')
+                .select('later.id')
+                .whereRef('later.taskId', '=', 'attempts.taskId')
+                .whereRef('later.id', '>', 'attempts.id'),
+            ),
+          ),
+        )
+        .returning('id'),
+    )
+    return ended !== null
+  }
+
+  addMessage(
+    taskId: number,
+    attemptId: number,
+    text: string,
+    fromTask: number | null = null,
+  ): void {
+    this.run(
+      q.insertInto('messages').values({ taskId, attemptId, text, createdAt: now(), fromTask }),
+    )
+  }
+
+  // How many messages the workers of tasks `a` and `b` sent each other (`NOD: tell`), both ways:
+  // the turns they started and those that went into a turn.
+  tellsBetween(a: number, b: number): number {
+    const pair = [a, b]
+    const turns = this.first(
+      q
+        .selectFrom('attempts')
+        .select(count)
+        .where('taskId', 'in', pair)
+        .where('fromTask', 'in', pair)
+        .whereRef('taskId', '!=', 'fromTask'),
+    )
+    const within = this.first(
+      q
+        .selectFrom('messages')
+        .select(count)
+        .where('taskId', 'in', pair)
+        .where('fromTask', 'in', pair)
+        .whereRef('taskId', '!=', 'fromTask'),
+    )
+    return (turns?.n ?? 0) + (within?.n ?? 0)
   }
 
   messages(taskId: number): Message[] {

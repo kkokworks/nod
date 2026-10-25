@@ -9,7 +9,16 @@ import { pullRequests } from './prs'
 import { homeId } from './tmux'
 import { type Todo, Todos } from './todos'
 import { oneLine } from './view'
-import { lostTurns, message, restartDue, SELF, savedEnv, startTask, tell } from './worker'
+import {
+  lostTurns,
+  message,
+  overdueWaits,
+  restartDue,
+  SELF,
+  savedEnv,
+  startTask,
+  tell,
+} from './worker'
 
 // Triggers add tasks on a schedule, and watches tell when what a waiting todo waits on has
 // happened. Once `nod schedule on` registers it, the OS scheduler (launchd on macOS, crontab on
@@ -69,9 +78,10 @@ export async function addTrigger(
 }
 
 // Runs the triggers due at `now` and starts the tasks they add, asks about the turns whose terminal
-// is gone and restarts the workers due a restart (worker.ts), then, with `watches`, the watches and
-// gc of the finished tasks a signal says are done with (done.ts). A run missed while the machine
-// slept happens once, on the first tick after.
+// is gone and the tasks that waited too long on background work, and restarts the workers due a
+// restart (worker.ts), then, with `watches`, the watches and gc of the finished tasks a signal says
+// are done with (done.ts). A run missed while the machine slept happens once, on the first tick
+// after.
 export async function tick(
   ledger: Ledger,
   home: string,
@@ -82,6 +92,7 @@ export async function tick(
   passed: number[]
   collected: number[]
   lost: number[]
+  waited: number[]
   restarted: number[]
 }> {
   const added: number[] = []
@@ -107,6 +118,7 @@ export async function tick(
     ),
   )
   const lost = await lostTurns(ledger, home, now)
+  const waited = await overdueWaits(ledger, home, now)
   // An account rule that cannot be read must not stop the watches.
   const restarted = await restartDue(ledger, home).catch((error) => {
     console.error(`nod: could not restart workers: ${message(error)}`)
@@ -120,7 +132,7 @@ export async function tick(
         ...report.clean,
       ])
     : []
-  return { added, passed, collected, lost, restarted }
+  return { added, passed, collected, lost, waited, restarted }
 }
 
 // A watch passes when it exits 0. A command the shell cannot run (126, 127) never will; anything
