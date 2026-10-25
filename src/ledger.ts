@@ -167,6 +167,7 @@ export type Decision = {
   question: string
   answer: string | null
   createdAt: string
+  // When a person answered; null while open, and for one nod closed itself (dismiss).
   answeredAt: string | null
 }
 
@@ -1123,22 +1124,37 @@ export class Ledger {
   }
 
   answer(decisionId: number, answer: string): void {
-    this.close(decisionId, answer, 'running')
+    this.close(decisionId, answer, 'running', now())
   }
 
   // The human ends the task instead of answering, so nothing counts it a success.
   drop(decisionId: number): void {
-    this.close(decisionId, '(dropped)', 'cancelled')
+    this.close(decisionId, '(dropped)', 'cancelled', now())
   }
 
-  private close(decisionId: number, answer: string, next: TaskStatus): void {
+  // The human answers or drops a decision left open on a task that ended: it closes, and the task
+  // stays as it is.
+  closeOnly(decisionId: number, answer: string): void {
+    this.close(decisionId, answer, null, now())
+  }
+
+  // nod closes a decision nothing waits on any more. No one answered it, so it has no answeredAt,
+  // and the wait for answers (stats) leaves it out; the task stays as it is.
+  dismiss(decisionId: number, answer: string): void {
+    this.close(decisionId, answer, null, null)
+  }
+
+  private close(
+    decisionId: number,
+    answer: string,
+    next: TaskStatus | null,
+    answeredAt: string | null,
+  ): void {
     this.db.transaction(() => {
       const decision = this.decision(decisionId)
       if (decision.answer !== null) throw new Error(`decision ${decisionId} is already answered`)
-      this.run(
-        q.updateTable('decisions').set({ answer, answeredAt: now() }).where('id', '=', decisionId),
-      )
-      this.setStatus(decision.taskId, next, null)
+      this.run(q.updateTable('decisions').set({ answer, answeredAt }).where('id', '=', decisionId))
+      if (next !== null) this.setStatus(decision.taskId, next, null)
     })()
   }
 

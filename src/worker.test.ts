@@ -1683,6 +1683,7 @@ test('a turn that asks as a message opens the next one leaves its question to th
   // As `nod tell` opens a turn while the hook tells notify the dialog closed (deliver).
   const tellWhileHeard = async (): Promise<void> => {
     await until(() => ledger.attempt(attempt.id).finishedAt !== null)
+    ledger.setRunning(id, workspaceOf(home, ledger.get(id)))
     ledger.startAttempt({
       taskId: id,
       kind: 'followup',
@@ -1801,7 +1802,7 @@ test('a retrospective that proposes again replaces its open rule decision', asyn
   expect(ledger.retroFor(of)).toMatchObject({ rule: 'rule B', outcome: 'added' })
 })
 
-test('a yes to a rule decision adds the rule that decision proposed, and an ended retrospective takes no answer', async () => {
+test('a yes to a rule decision adds the rule that decision proposed, and one left open once its retrospective ended only closes', async () => {
   const of = ledger.add({
     brief: 'x',
     repo: null,
@@ -1830,14 +1831,110 @@ test('a yes to a rule decision adds the rule that decision proposed, and an ende
   expect(ledger.rules().map((r) => r.text)).toEqual(['rule A'])
   expect(ledger.retroFor(of)).toMatchObject({ rule: 'rule A', outcome: 'added' })
 
-  // A rule decision still open once its retrospective ended takes neither a yes nor anything else.
+  // Rule decisions left open once the retrospective ended, as an older nod left them: a yes or a
+  // drop closes one, and nothing else changes.
   const late = ledger.ask(retro, decision.attemptId, 'rule', 'Add it?')
-  await expect(answer(ledger, home, late, 'yes', 'human')).rejects.toThrow('ended (added)')
-  await expect(answer(ledger, home, late, 'no', 'human')).rejects.toThrow('ended (added)')
-  expect(ledger.decision(late).answer).toBeNull()
+  const later = ledger.ask(retro, decision.attemptId, 'rule', 'Add it?')
+  const before = status(retro)
+  await answer(ledger, home, late, 'yes', 'human')
+  await drop(ledger, home, later)
+  expect([ledger.decision(late).answer, ledger.decision(later).answer]).toEqual([
+    'yes',
+    '(dropped)',
+  ])
   expect(ledger.rules()).toHaveLength(1)
   expect(ledger.retroFor(of)?.outcome).toBe('added')
-  expect(status(retro)).not.toBe('cancelled')
+  expect(status(retro)).toBe(before)
+})
+
+test('a decision left open on a task that ended only closes, answered or dropped', async () => {
+  const id = started('wait for the agents', 'ended-open')
+  await stopped('ended-open', 'NOD: question | Wait for them?')
+  const asked = ledger.decisions(id)[0]
+  if (asked === undefined) throw new Error('no decision')
+  // The task succeeded with the question left open, as an older nod left such questions.
+  ledger.succeed(id)
+  await answer(ledger, home, asked.id, 'never mind', 'human')
+  const again = ledger.ask(id, asked.attemptId, 'question', 'Still there?')
+  ledger.succeed(id)
+  await drop(ledger, home, again)
+  expect([ledger.decision(asked.id).answer, ledger.decision(again).answer]).toEqual([
+    'never mind',
+    '(dropped)',
+  ])
+  expect(status(id)).toBe('succeeded')
+  expect(ledger.attempts(id)).toHaveLength(1)
+
+  // One left open on a task that was dropped.
+  const first = ledger.ask(id, asked.attemptId, 'question', 'Which one?')
+  const left = ledger.ask(id, asked.attemptId, 'question', 'Where?')
+  ledger.drop(first)
+  await answer(ledger, home, left, 'here', 'human')
+  expect(ledger.decision(left).answer).toBe('here')
+  expect(status(id)).toBe('cancelled')
+  expect(ledger.attempts(id)).toHaveLength(1)
+})
+
+test('a turn that ends after its retrospective did changes nothing of what became of it', async () => {
+  const retroOf = (session: string): { of: number; retro: number } => {
+    const of = ledger.add({
+      brief: 'x',
+      repo: null,
+      branch: null,
+      checkCmd: null,
+      model: null,
+      after: [],
+      triggerId: null,
+      issue: null,
+    })
+    const retro = ledger.addRetro(ledger.get(of), 'look back')
+    ledger.startAttempt({
+      taskId: retro,
+      kind: 'start',
+      decisionId: null,
+      sessionId: session,
+      prompt: 'look back',
+    })
+    return { of, retro }
+  }
+  // Told to propose another, it is dropped while its Stop hook checks that turn.
+  const dropped = retroOf('dropped-session')
+  await stopped('dropped-session', 'NOD: done | rule A')
+  const first = ledger.decisions(dropped.retro)[0]
+  if (first === undefined) throw new Error('no rule decision')
+  ledger.startAttempt({
+    taskId: dropped.retro,
+    kind: 'followup',
+    decisionId: null,
+    sessionId: 'dropped-session',
+    prompt: 'propose another',
+  })
+  await drop(ledger, home, first.id)
+  await stopped('dropped-session', 'NOD: done | rule B')
+  expect(status(dropped.retro)).toBe('cancelled')
+  expect(ledger.retroFor(dropped.of)).toMatchObject({ rule: 'rule A', outcome: 'declined' })
+  expect(ledger.decisions(dropped.retro)).toHaveLength(1)
+
+  // One a yes ended, whose terminal a person types into: it stops with no rule, then another.
+  const added = retroOf('added-session')
+  await stopped('added-session', 'NOD: done | rule A')
+  const rule = ledger.decisions(added.retro)[0]
+  if (rule === undefined) throw new Error('no rule decision')
+  await answer(ledger, home, rule.id, 'yes', 'human')
+  await stopped('added-session', 'NOD: done | none')
+  await stopped('added-session', 'NOD: done | rule C')
+  expect(status(added.retro)).toBe('succeeded')
+  expect(ledger.retroFor(added.of)).toMatchObject({ rule: 'rule A', outcome: 'added' })
+  expect(ledger.rulesNow().map((r) => [r.text, r.edited])).toEqual([['rule A', false]])
+  expect(ledger.decisions(added.retro)).toHaveLength(1)
+})
+
+test('what nod closes by itself is no answer, so the wait for answers leaves it out', async () => {
+  started('wait', 'unanswered')
+  await stopped('unanswered', 'NOD: question | Wait for them?')
+  // Claude Code goes on by itself, which closes the question.
+  await stopped('unanswered', 'NOD: question | Still waiting?')
+  expect(ledger.stats().decisions).toEqual({ total: 2, open: 1, medianWaitSecs: null })
 })
 
 test('a rule decision takes no yes while its retrospective proposes again, and a yes closes what else is open', async () => {
@@ -1916,9 +2013,9 @@ test('an answer to a decision left open on a task gc collected brings its folder
   await stopped('collected-session', 'NOD: question | Which one?')
   const decision = ledger.decisions(id)[0]
   if (decision === undefined) throw new Error('no decision')
-  // The task ended with the decision left open, and gc collected it; Claude Code keeps its
-  // conversation.
-  ledger.succeed(id)
+  // The task errored with the decision left open, and gc collected it; Claude Code keeps its
+  // conversation. (On a task that ended, an answer only closes the decision.)
+  ledger.error(id, 'the review gave no verdict')
   const cwd = workspaceOf(home, ledger.get(id))
   const sessions = projectFolder(process.env.CLAUDE_CONFIG_DIR ?? '', cwd)
   mkdirSync(sessions, { recursive: true })
@@ -2053,4 +2150,41 @@ test('a message sent while a worker cut off in a turn starts again goes on in th
   expect(entries('turn').map((t) => t.message)).toEqual(['hang until ended', 'hang on'])
   expect(ledger.decisions(id)).toEqual([])
   expect(ledger.attempts(id).map((a) => [a.kind, a.outcome])).toEqual([['start', null]])
+}, 30_000)
+
+test('a message for a worker whose Claude Code has just ended waits for the next start, even before it is marked', async () => {
+  const id = await add('first')
+  await reaches(id, 'succeeded')
+  await settled(id)
+  // As in the moment after Claude Code ends, before keepWorker sets nod_restarting: the Claude
+  // Code it recorded is gone.
+  const gone = Bun.spawnSync(['true']).pid
+  Terminals.of(home).setOption(sessionName(id), 'nod_claude', String(gone))
+  await tell(ledger, home, id, 'second')
+  await Bun.sleep(2000)
+  expect(entries('turn').map((t) => t.message)).toEqual(['first'])
+  expect(readFileSync(join(home, 'work', `.prompt-${id}`), 'utf8')).toBe('second')
+}, 30_000)
+
+test('a message for a worker waiting on its trust decision waits for that decision, since its Enter would answer the trust dialog', async () => {
+  writeFileSync(join(home, 'fake-untrusted'), '')
+  const id = ledger.add({
+    brief: 'work here',
+    repo: newRepo(),
+    branch: 'feat/told',
+    checkCmd: null,
+    model: null,
+    after: [],
+    triggerId: null,
+    issue: null,
+  })
+  await startTask(ledger, home, id)
+  const trust = ledger.decisions(id)[0]
+  if (trust?.reason !== 'trust') throw new Error('no trust decision')
+  await expect(tell(ledger, home, id, 'also this')).rejects.toThrow(
+    `answer trust decision #${trust.id} first`,
+  )
+  await answer(ledger, home, trust.id, 'yes', 'human')
+  await reaches(id, 'succeeded')
+  expect(entries('turn').map((t) => t.message)).toEqual(['work here'])
 }, 30_000)

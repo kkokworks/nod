@@ -652,7 +652,9 @@ function show(id: number): void {
   for (const d of ledger.decisions(id)) {
     const answered = d.answeredAt
       ? `answered after ${secsBetween(d.createdAt, d.answeredAt)}s: ${d.answer}`
-      : 'open'
+      : d.answer === null
+        ? 'open'
+        : `closed by nod: ${d.answer}`
     console.log(`  decision #${d.id} ${d.reason} — ${answered}`)
   }
   const report = ledger
