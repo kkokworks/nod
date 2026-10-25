@@ -45,7 +45,9 @@ export function retroBrief(ledger: Ledger, task: Task, rules: string): string {
     ...quote(task.brief),
     '',
     `Repository: ${task.repo ?? 'none'}`,
-    `Acceptance check: ${task.checkCmd === null ? 'none' : `\`${task.checkCmd.replaceAll('\n', ' ')}\``}`,
+    ...(task.checkCmd === null
+      ? ['Acceptance check: none']
+      : ['Acceptance check:', ...quote(task.checkCmd)]),
     '',
     'Turns:',
     ...turns,

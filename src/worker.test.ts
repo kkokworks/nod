@@ -1017,12 +1017,12 @@ test('a retrospective hears the repo and check of its task, that the check runs 
     retroBrief(ledger, t, workerPrompt(ledger, null)).replaceAll('\n', ' ')
   const inRepo = brief(task('/repo', 'bun test'))
   expect(inRepo).toContain('Repository: /repo')
-  expect(inRepo).toContain('Acceptance check: `bun test`')
+  expect(inRepo).toContain('Acceptance check: > bun test')
   // A brief in another language must not turn `none` into a rule nod would ask about.
   expect(inRepo).toContain('keep `none` in English')
-  // A check on more than one line stays on its line, inside the data.
+  // A check on more than one line keeps its lines, each quoted as data.
   const twoLines = retroBrief(ledger, task('/repo', 'bun test\nbun run lint'), '')
-  expect(twoLines).toContain('Acceptance check: `bun test bun run lint`\n')
+  expect(twoLines).toContain('Acceptance check:\n> bun test\n> bun run lint\n')
   // A test the sandbox kept the worker from running still ran in the check.
   expect(inRepo).toContain("the acceptance check outside the worker's sandbox")
   expect(inRepo).toContain('every future worker, on every task')
