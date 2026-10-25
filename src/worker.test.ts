@@ -555,6 +555,9 @@ test('in a repo, done needs the work committed, and the next task starts from th
   expect(review('build on it')).toContain(`since ${base.trim()}. There are none.`)
   // The worker hears the same start, for its subagent review.
   expect(message).toContain(`Your branch starts at commit ${base.trim()}.`)
+  // The first task needed retries, so it has a retrospective, which quotes only what every worker
+  // gets, not a repo worker's subagent review.
+  expect((await until(() => retroTask(first))).brief).not.toContain('subagent')
 }, 30_000)
 
 test('a diff too long for the review brief is cut, and the reviewer is told where', () => {
@@ -597,7 +600,7 @@ test('a repo worker is told to have a subagent review its branch from where it s
     )
   const [inRepo, alone] = [task('/repo'), task(null)]
   // Read as one line, so rewrapping the prompt does not break the checks.
-  const prompt = workerPrompt(ledger, true).replaceAll('\n', ' ')
+  const prompt = workerPrompt(ledger, inRepo).replaceAll('\n', ' ')
   expect(prompt).toContain('have a subagent (Agent tool) review `git diff <start>..HEAD`')
   // A review-only task has nothing to review.
   expect(prompt).toContain('skip it if that diff is empty')
@@ -608,13 +611,15 @@ test('a repo worker is told to have a subagent review its branch from where it s
   expect(prompt).toContain('do not end your turn until it reports')
   // The stash is shared with every other worktree of the repo.
   expect(prompt).toContain('It changes no files here')
-  expect(prompt).toContain('never via stash or checkout')
+  expect(prompt).toContain('a temp `git worktree add` or copied files, never via stash or checkout')
   expect(prompt).toContain('file:line')
   expect(prompt).toContain('its confidence')
   expect(firstMessage(ledger, inRepo, 'abc123')).toBe(
     'fix it\n\nYour branch starts at commit abc123.',
   )
-  expect(workerPrompt(ledger, false)).not.toContain('subagent')
+  expect(workerPrompt(ledger, alone)).not.toContain('subagent')
+  // What every worker gets, as a retrospective quotes it.
+  expect(workerPrompt(ledger, null)).not.toContain('subagent')
   expect(firstMessage(ledger, alone, null)).toBe('fix it')
 })
 

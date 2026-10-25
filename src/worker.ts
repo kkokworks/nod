@@ -38,7 +38,7 @@ this same turn: run it in the foreground, not in the background, and if it can o
 background, do not end your turn until it reports. Give it only the brief, the human's later
 words and that range, not your reasons. It changes no files here and checks that the asked work
 is done, that each new test fails on the code before the change (run in a temp \`git worktree add\`
-or a copy, never via stash or checkout), and for new bugs (boundaries, swallowed errors, races,
+or copied files, never via stash or checkout), and for new bugs (boundaries, swallowed errors, races,
 lost data, injection, leaked secrets), reporting each as file:line, a scenario that reproduces it,
 and its confidence. Fix the findings that have a scenario, commit, and have it review again. In
 your final report, list each finding and what you did (fixed, or why not).`
@@ -359,8 +359,7 @@ export async function drop(ledger: Ledger, home: string, decisionId: number): Pr
 async function startRetro(ledger: Ledger, home: string, task: Task): Promise<void> {
   if (task.retroId !== null || ledger.retroFor(task.id) !== null) return
   if (!hadTrouble(ledger, task.id)) return
-  // What every worker gets, so not a repo worker's subagent review.
-  const id = ledger.addRetro(task, retroBrief(ledger, task, workerPrompt(ledger, false)))
+  const id = ledger.addRetro(task, retroBrief(ledger, task, workerPrompt(ledger, null)))
   await startTask(ledger, home, id).catch((error) =>
     notify(home, { event: 'error', task: taskRef(ledger.get(id)), error: message(error) }),
   )
@@ -759,7 +758,7 @@ function claudeArgs(
     '--settings',
     workerSettings(started),
     '--append-system-prompt',
-    workerPrompt(ledger, task.repo !== null),
+    workerPrompt(ledger, task),
     ...(task.model === null ? [] : ['--model', task.model]),
     ...(prompt === null ? [] : [prompt]),
   ]
@@ -1130,9 +1129,10 @@ export async function restartDue(ledger: Ledger, home: string, only?: number): P
   return restarted
 }
 
-// The built-in rules, then the ledger's rules that are on.
-export function workerPrompt(ledger: Ledger, inRepo: boolean): string {
-  const built = inRepo ? `${WORKER_PROMPT}\n${SUBAGENT_REVIEW_PROMPT}` : WORKER_PROMPT
+// The built-in rules, then the ledger's rules that are on. `task`: null for what every worker gets,
+// which leaves out a repo worker's subagent review.
+export function workerPrompt(ledger: Ledger, task: Task | null): string {
+  const built = task?.repo == null ? WORKER_PROMPT : `${WORKER_PROMPT}\n${SUBAGENT_REVIEW_PROMPT}`
   const rules = activeRules(ledger)
   if (rules === '') return built
   return `${built}\nRules the human approved for every task:\n${rules}`
