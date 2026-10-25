@@ -654,6 +654,23 @@ export class Ledger {
     this.run(q.updateTable('tasks').set(set).where('id', '=', id))
   }
 
+  // collected, but only while the task is as gc read it, in one statement: one told to go on since
+  // is not hidden from ls. One collected before keeps when.
+  collectedAsRead(task: Task, head: string | null): boolean {
+    const at = task.collectedAt ?? now()
+    const marked = this.run(
+      q
+        .updateTable('tasks')
+        .set(head === null ? { collectedAt: at } : { collectedAt: at, head })
+        .where('id', '=', task.id)
+        .where('status', '=', task.status)
+        .where('finishedAt', 'is', task.finishedAt)
+        .where('collectedAt', 'is', task.collectedAt)
+        .returning('id'),
+    )
+    return marked.length > 0
+  }
+
   // resume brought the task back after gc, so ls lists it again.
   uncollected(id: number): void {
     this.run(q.updateTable('tasks').set({ collectedAt: null }).where('id', '=', id))

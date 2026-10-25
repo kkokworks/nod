@@ -1274,7 +1274,15 @@ async function prepareWorkspace(ledger: Ledger, home: string, task: Task): Promi
     undefined,
   )
   if (code !== 0) throw new Error(`git worktree add failed: ${output.trim()}`)
-  await initSubmodules(task.repo, cwd)
+  try {
+    await initSubmodules(task.repo, cwd)
+  } catch (error) {
+    // The task did not start, so it records no workspace and gc takes no branch for its own
+    // (dropBranch in gc.ts): the worktree and the branch, which has no commits yet, go now.
+    await spawn(['git', '-C', task.repo, 'worktree', 'remove', '--force', cwd], undefined)
+    await spawn(['git', '-C', task.repo, 'branch', '-D', branchOf(task)], undefined)
+    throw error
+  }
   return cwd
 }
 

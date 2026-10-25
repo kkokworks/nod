@@ -28,13 +28,14 @@ export type Done = { id: number; reason: string }
 // A task whose signals could not be read, a git service call that failed, say: it waits.
 export type Unchecked = { id: number; error: string }
 
+// `tasks`: the ledger's tasks, as read once for the signals.
 export async function doneTasks(
   ledger: Ledger,
   home: string,
   prs: PrLookup,
   now: Date,
+  tasks: Task[] = ledger.list(),
 ): Promise<{ done: Done[]; unchecked: Unchecked[] }> {
-  const tasks = ledger.list()
   const terminals = Terminals.of(home)
   const done: Done[] = []
   const unchecked: Unchecked[] = []
@@ -53,15 +54,19 @@ export async function doneTasks(
   return { done, unchecked }
 }
 
-// Collects the finished tasks a signal says are done with.
+// Collects the finished tasks a signal says are done with, each only while it is as the signal read
+// it: reading the git service takes a while, and a task told to go on meanwhile may have finished
+// again with commits no remote has.
 export async function sweep(
   ledger: Ledger,
   home: string,
   prs: PrLookup,
   now: Date,
 ): Promise<{ report: GcReport; done: Done[]; unchecked: Unchecked[] }> {
-  const { done, unchecked } = await doneTasks(ledger, home, prs, now)
-  const report = await collect(ledger, home, { ids: done.map((d) => d.id) })
+  const tasks = ledger.list()
+  const { done, unchecked } = await doneTasks(ledger, home, prs, now, tasks)
+  const seen = tasks.filter((t) => done.some((d) => d.id === t.id))
+  const report = await collect(ledger, home, { seen })
   return { report, done, unchecked }
 }
 
@@ -104,11 +109,12 @@ async function signal(
 
 // A repo task's branch: how many commits the task made that the remote's default branch lacks,
 // whether the default branch has its changes, and whether some of its commits are on no remote and
-// not merged either. Null without a repo, or once the branch is gone. Only as fresh as the repo's
-// last fetch.
+// not merged either. Null without a repo, once the branch is gone, or for a task that never started
+// and so keeps no branch of its own (dropBranch in gc.ts): one by its name is someone else's. Only
+// as fresh as the repo's last fetch.
 function branchState(task: Task): { own: number; landed: boolean; unpushed: boolean } | null {
   const { repo, branch } = task
-  if (repo === null || branch === null) return null
+  if (repo === null || branch === null || task.workspace === null) return null
   const ref = `refs/heads/${branch}`
   const git = (...args: string[]) => Bun.spawnSync(['git', '-C', repo, ...args])
   if (git('rev-parse', '--verify', '-q', ref).exitCode !== 0) return null

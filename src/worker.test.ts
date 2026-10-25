@@ -604,6 +604,32 @@ test('a repo task gets its submodules filled from the repo checkout, and gc stil
   expect(existsSync(workspaceOf(home, ledger.get(id)))).toBe(false)
 })
 
+test('a repo task whose submodules cannot be filled leaves no worktree or branch behind', async () => {
+  const repo = newRepo()
+  git(repo, '-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', newRepo(), 'lib')
+  git(repo, 'commit', '-qm', 'add lib')
+  // The repo's own checkout of the submodule is empty, so there is nothing to fill it from.
+  git(repo, 'submodule', 'deinit', '-q', '-f', 'lib')
+  const id = ledger.add({
+    brief: 'use the lib',
+    repo,
+    branch: 'feat/lib',
+    checkCmd: null,
+    model: null,
+    after: [],
+    triggerId: null,
+    issue: null,
+  })
+
+  await expect(startTask(ledger, home, id)).rejects.toThrow('submodule lib')
+
+  expect(ledger.get(id).status).toBe('error')
+  expect(ledger.get(id).workspace).toBeNull()
+  expect(existsSync(workspaceOf(home, ledger.get(id)))).toBe(false)
+  const branches = Bun.spawnSync(['git', 'branch', '--list', 'feat/lib'], { cwd: repo })
+  expect(branches.stdout.toString()).toBe('')
+})
+
 function newRepo(): string {
   const repo = tmp.make('nod-repo-')
   git(repo, 'init', '-q')
