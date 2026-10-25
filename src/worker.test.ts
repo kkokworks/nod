@@ -2000,16 +2000,18 @@ test('a message a worker told a task the person drops while nod checks it does n
   const events = listen()
   const target = started('fix', 'drop-target', 'root-1')
   await stopped('drop-target', 'NOD: done | fixed')
-  const from = started('review-slow: review it', 'drop-sender', 'root-1')
-  // The person drops the target while the sender's review runs.
-  const dropWhileChecked = async (): Promise<void> => {
-    await until(() => entries('review').some((r) => r.message?.includes(`nod task #${from}.`)))
-    ledger.db.query("update tasks set status = 'cancelled' where id = $id").run({ id: target })
-  }
-  await Promise.all([
-    stopped('drop-sender', `NOD: tell #${target} a.ts:3 is off by one\nNOD: done | reviewed`),
-    dropWhileChecked(),
-  ])
+  // The person drops the target while the sender's checks run; here its check command does it,
+  // from a process of its own, as `nod drop` would.
+  const drop = join(home, 'drop.ts')
+  writeFileSync(
+    drop,
+    `import { Database } from 'bun:sqlite'\nnew Database(${JSON.stringify(join(home, 'nod.db'))}).run("update tasks set status = 'cancelled' where id = ${target}")\n`,
+  )
+  const from = started('review it', 'drop-sender', 'root-1')
+  ledger.db
+    .query('update tasks set check_cmd = $check where id = $id')
+    .run({ check: `${quote(process.execPath)} ${quote(drop)}`, id: from })
+  await stopped('drop-sender', `NOD: tell #${target} a.ts:3 is off by one\nNOD: done | reviewed`)
   expect(status(from)).toBe('succeeded')
   expect(status(target)).toBe('cancelled')
   expect(ledger.attempts(target)).toHaveLength(1)
