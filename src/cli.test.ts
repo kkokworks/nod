@@ -548,3 +548,72 @@ test('rule ls, add, edit, off and on change rules as a person, show r<n> tells w
   expect(ledger.decision(decision).answer).toBeNull()
   expect(ledger.rules()).toHaveLength(2)
 }, 15_000)
+
+test('repo sets how far nod lands a repo, records who changed what, and refuses a worker and a Claude session going up', async () => {
+  const home = tmp.make('nod-repo-')
+  const repo = tmp.make('nod-repo-git-')
+  Bun.spawnSync(['git', 'init', '-q', repo])
+  const ledger = new Ledger(home)
+  const {
+    CLAUDECODE: _,
+    NOD_TASK: __,
+    NOD_ACTOR: ___,
+    CLAUDE_CODE_SESSION_ID: ____,
+    ...env
+  } = process.env
+  const nod = async (extra: Record<string, string>, ...args: string[]) => {
+    const p = Bun.spawn(['bun', cli, ...args], {
+      env: { ...env, NOD_HOME: home, ...extra },
+      stdout: 'pipe',
+      stderr: 'pipe',
+    })
+    const [out, err, code] = await Promise.all([
+      new Response(p.stdout).text(),
+      new Response(p.stderr).text(),
+      p.exited,
+    ])
+    return { code, out: out.trimEnd().split('\n'), err }
+  }
+  const ok = async (...args: string[]): Promise<string[]> => {
+    const r = await nod({}, ...args)
+    expect(r.err).toBe('')
+    expect(r.code).toBe(0)
+    return r.out
+  }
+
+  expect(await ok('repo')).toEqual([''])
+  expect(await ok('repo', repo)).toEqual([`${repo}  off (never set)`])
+  expect(await ok('repo', repo, 'pr', '--check', 'bun test')).toEqual([
+    `${repo}  pr`,
+    '  check: bun test',
+    'the schedule is off, so tasks land only when you run nod land (nod schedule on)',
+  ])
+  const raised = ledger.repo(repo)?.raisedAt
+  expect(raised).toEqual(expect.any(String))
+  // Up again from pr keeps when it went up; the tasks added since still land.
+  expect((await ok('repo', repo, 'merge', '--gate', 'sh gate.sh'))[0]).toBe(`${repo}  merge`)
+  expect(ledger.repo(repo)?.raisedAt).toBe(raised ?? '')
+
+  const claude = await nod({ CLAUDECODE: '1' }, 'repo', repo, 'merge', '--gate', '')
+  expect(claude.code).not.toBe(0)
+  expect(claude.err).toContain('a Claude session can only turn a repo off')
+  const worker = await nod({ NOD_TASK: '5' }, 'repo', repo, 'off')
+  expect(worker.code).not.toBe(0)
+  expect(worker.err).toContain('a worker cannot change what nod may do in a repo')
+  expect(ledger.repo(repo)?.gateCmd).toBe('sh gate.sh')
+  // Down is always safe, a Claude session's too.
+  expect((await nod({ CLAUDECODE: '1' }, 'repo', repo, 'off')).code).toBe(0)
+  expect(ledger.repo(repo)?.land).toBe('off')
+
+  // Each change after the setting, with when it was made (left out here) and who made it.
+  const history = (await ok('repo', repo)).map((l) => l.replace(/^ {2}\d{4}-\S+ /, '  '))
+  expect(history).toEqual([
+    `${repo}  off`,
+    '  check: bun test',
+    '  gate: sh gate.sh',
+    '  human: land off → pr, checkCmd — → bun test',
+    '  human: land pr → merge, gateCmd — → sh gate.sh',
+    '  claude: land merge → off',
+  ])
+  expect((await ok('repo'))[0]).toBe(`${repo}  off`)
+}, 20_000)

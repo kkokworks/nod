@@ -8,8 +8,12 @@ import { collect, type GcPick, type GcReport, remotesHolding } from './gc'
 import {
   type Attempt,
   type Decision,
+  LAND_LEVELS,
+  type LandLevel,
   Ledger,
   nodHome,
+  type Repo,
+  type RepoEdit,
   type Rule,
   type Task,
   type Trigger,
@@ -122,6 +126,18 @@ const USAGE = `usage:
   nod rule off|on <rule>           stop or start giving a rule to workers. Nothing deletes a rule,
                                    so where one came from stays known. Each change records who
                                    made it, as a todo's do; a worker cannot make one
+  nod repo [<path> [off | pr | merge] [--check <command>] [--gate <command>]]
+                                   how far nod takes a repo's tasks once they succeed: off (the
+                                   default: the person pushes), pr (rebase onto the default
+                                   branch, check, push and open a pull request) or merge (and
+                                   squash merge it). Only tasks added after it goes up from off
+                                   land on their own; nod land names older ones. --check: the full
+                                   check after each rebase (else the task's own); --gate: a command
+                                   run before each push, with NOD_BASE..NOD_HEAD the commits and
+                                   NOD_PR a file with the pull request's title and body, that must
+                                   exit 0. With a path only, the setting and who changed it when;
+                                   with none, every repo set. A worker cannot change it, and a
+                                   Claude session can only turn a repo off
   nod schedule [on | off]          whether the OS scheduler runs the tick every minute; on, it
                                    runs with this shell's PATH and Claude config dir, which the
                                    triggers' workers and the watches use. It stays on until off
@@ -238,6 +254,9 @@ switch (command) {
     break
   case 'rule':
     rule(rest)
+    break
+  case 'repo':
+    repoCommand(rest)
     break
   case 'schedule':
     await schedule(rest)
@@ -429,6 +448,66 @@ function ruleId(ref: string | undefined): number {
 function printRule(r: Rule): void {
   const from = r.retroId === null ? '' : `r${r.retroId}`
   console.log(`${String(r.id).padEnd(4)} ${r.state.padEnd(3)} ${from.padEnd(5)} ${r.text}`)
+}
+
+// What nod may do in a repo reaches outside this machine, so a worker cannot change it, and a Claude
+// session, which could otherwise grant itself a merge, can only turn it off. The person runs it in
+// a shell of their own.
+// ponytail: both are told apart by their environment, which keeps out mistakes rather than an
+// agent set on it; the sandbox is what keeps a worker off the ledger.
+function repoCommand(args: string[]): void {
+  const { values, positionals } = parseArgs({
+    args,
+    options: { check: { type: 'string' }, gate: { type: 'string' } },
+    allowPositionals: true,
+  })
+  const [path, level, ...extra] = positionals
+  if (path === undefined) {
+    if (level !== undefined || values.check !== undefined || values.gate !== undefined) {
+      throw new Error(USAGE)
+    }
+    for (const r of ledger.repos()) printRepo(r)
+    return
+  }
+  if (extra.length > 0) throw new Error(USAGE)
+  const repo = repoPath(path) ?? path
+  const edit: RepoEdit = {}
+  if (level !== undefined) {
+    if (!LAND_LEVELS.includes(level as LandLevel)) throw new Error(`not off, pr or merge: ${level}`)
+    edit.land = level as LandLevel
+  }
+  // An empty command clears it.
+  if (values.check !== undefined) edit.checkCmd = values.check.trim() || null
+  if (values.gate !== undefined) edit.gateCmd = values.gate.trim() || null
+  if (Object.keys(edit).length === 0) {
+    const r = ledger.repo(repo)
+    if (r === null) console.log(`${repo}  off (never set)`)
+    else printRepo(r)
+    for (const c of ledger.repoChanges(repo)) {
+      const what = Object.entries(c.change)
+        .map(([k, [from, to]]) => `${k} ${String(from ?? '—')} → ${String(to ?? '—')}`)
+        .join(', ')
+      console.log(`  ${c.at} ${c.actor}: ${what}`)
+    }
+    return
+  }
+  if (process.env.NOD_TASK !== undefined) {
+    throw new Error('a worker cannot change what nod may do in a repo')
+  }
+  if (process.env.CLAUDECODE && !(edit.land === 'off' && Object.keys(edit).length === 1)) {
+    throw new Error('a Claude session can only turn a repo off; change it from a shell of your own')
+  }
+  const r = ledger.setRepo(repo, edit, actorFromEnv())
+  printRepo(r)
+  if (r.land !== 'off' && scheduleEnv(home) === null) {
+    console.log('the schedule is off, so tasks land only when you run nod land (nod schedule on)')
+  }
+}
+
+function printRepo(r: Repo): void {
+  console.log(`${r.path}  ${r.land}`)
+  if (r.checkCmd !== null) console.log(`  check: ${r.checkCmd}`)
+  if (r.gateCmd !== null) console.log(`  gate: ${r.gateCmd}`)
 }
 
 async function schedule([sub, ...extra]: string[]): Promise<void> {

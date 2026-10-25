@@ -24,7 +24,7 @@ test('reopening a ledger keeps its data and does not re-run migrations', () => {
   })
   const reopened = new Ledger(home)
   expect(reopened.get(id).brief).toBe('keep me')
-  expect(reopened.db.query('pragma user_version').get()).toEqual({ user_version: 21 })
+  expect(reopened.db.query('pragma user_version').get()).toEqual({ user_version: 22 })
 })
 
 test('v18 leaves the tasks before it without a root session', () => {
@@ -38,7 +38,7 @@ test('v18 leaves the tasks before it without a root session', () => {
 
   const ledger = new Ledger(home)
   expect(ledger.get(1)).toMatchObject({ brief: 'x', rootSession: null })
-  expect(ledger.db.query('pragma user_version').get()).toEqual({ user_version: 21 })
+  expect(ledger.db.query('pragma user_version').get()).toEqual({ user_version: 22 })
 })
 
 test("v21 counts the turns and messages before it as the person's, from no task", () => {
