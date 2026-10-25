@@ -549,9 +549,18 @@ async function decide(
   reason: DecisionReason,
   question: string,
 ): Promise<void> {
-  const id = ledger.ask(taskId, attemptId, reason, question)
-  const task = taskRef(ledger.get(taskId))
-  await notify(home, { event: 'decision', task, decision: { id, reason, question } })
+  // What the worker asks as a turn ends replaces what it asked as an earlier one ended.
+  const { id, replaced } = ledger.db
+    .transaction(() => {
+      const replaced = ASKED.includes(reason)
+        ? closeDecisions(ledger, taskId, (d) => ASKED.includes(d.reason), WENT_ON)
+        : []
+      return { id: ledger.ask(taskId, attemptId, reason, question), replaced }
+    })
+    .immediate()
+  const task = ledger.get(taskId)
+  await announce(home, task, replaced, WENT_ON)
+  await notify(home, { event: 'decision', task: taskRef(task), decision: { id, reason, question } })
 }
 
 async function settle(

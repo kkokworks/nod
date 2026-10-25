@@ -1637,6 +1637,22 @@ test('a turn the worker goes on to by itself closes what it asked before, and so
   await stopped('asked-late', 'NOD: done | did the first')
   expect(status(told)).toBe('succeeded')
   expect(ledger.decisions(told).map((d) => d.answer)).toEqual(['(the task succeeded without it)'])
+
+  // Such a turn that asks in turn: the newer question is the one left open.
+  const twice = started('ask twice', 'asked-twice')
+  await stopped('asked-twice', 'NOD: question | Which one?')
+  ledger.startAttempt({
+    taskId: twice,
+    kind: 'followup',
+    decisionId: null,
+    sessionId: 'asked-twice',
+    prompt: 'the first',
+  })
+  await stopped('asked-twice', 'NOD: question | And where?')
+  expect(ledger.decisions(twice).map((d) => d.answer)).toEqual([
+    '(it went on without an answer)',
+    null,
+  ])
 })
 
 test("a permission answered in the worker's terminal does not stay open once its turn ends", async () => {
