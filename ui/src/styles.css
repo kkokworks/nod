@@ -233,10 +233,6 @@ pre {
   cursor: default;
 }
 
-details > summary.side-label {
-  cursor: pointer;
-}
-
 .side-item {
   display: flex;
   gap: 0.55rem;
@@ -1714,6 +1710,7 @@ details summary {
   gap: 0.45rem;
   margin-top: 0.75rem;
   list-style: none;
+  cursor: pointer;
 }
 
 :is(.side-lists, .side-group) > summary.side-label::-webkit-details-marker {
