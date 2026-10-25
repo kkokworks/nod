@@ -1254,20 +1254,15 @@ async function nextRun(ledger: Ledger, home: string, taskId: number): Promise<St
       `its conversation is in ${named(before)}, not in ${named(config)}: accounts nod switches between must share their projects/ folder`,
     )
   }
-  const ended = attempts.some((a) => a.outcome !== null && a.outcome !== 'error')
-  if (!ended && !here) {
-    // A message left since (an answer, a tell) goes after the brief, not pasted once Claude Code
-    // is up: by then a trust dialog may be on the screen, and Enter there picks "No, exit".
-    const left = takePrompt(home, taskId)
-    const prompt = left === null ? first.prompt : `${first.prompt}\n\n${left}`
-    const session = ['--session-id', first.sessionId]
-    const argv = claudeArgs(ledger, task, session, prompt, marker)
-    return { argv, env, fresh: true, started: marker, left }
-  }
-  const session = ['--resume', last.sessionId]
+  const fresh = !here && !attempts.some((a) => a.outcome !== null && a.outcome !== 'error')
   const left = takePrompt(home, taskId)
-  const argv = claudeArgs(ledger, task, session, left, marker)
-  return { argv, env, fresh: false, started: marker, left }
+  // On a fresh start, a message left since (an answer, a tell) goes after the brief, not pasted
+  // once Claude Code is up: by then a trust dialog may be on the screen, and Enter there picks
+  // "No, exit".
+  const brief = left === null ? first.prompt : `${first.prompt}\n\n${left}`
+  const session = fresh ? ['--session-id', first.sessionId] : ['--resume', last.sessionId]
+  const argv = claudeArgs(ledger, task, session, fresh ? brief : left, marker)
+  return { argv, env, fresh, started: marker, left }
 }
 
 // Claude Code asks once per account whether to trust a repo. The person answered for this repo
