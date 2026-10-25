@@ -785,12 +785,18 @@ export function parseReport(text: string): Report | null {
   return null
 }
 
-// A report's `NOD: <word>` lines, without code ticks or Markdown emphasis around them.
+// A report's `NOD: <word>` lines, without the code ticks or Markdown emphasis a line or its `NOD:`
+// is wrapped in. Only a pair goes, so a message that ends in `*` or a tick keeps it.
 const nodLines = (text: string, word: string): string[] =>
   text
     .split('\n')
-    .map((l) => l.trim().replace(/^[`*]+|[`*]+$/g, ''))
+    .map((l) => unwrap(l.trim()).replace(/^(\*\*|\*)NOD:\1/, 'NOD:'))
     .filter((l) => new RegExp(`^NOD:\\s*${word}\\b`, 'i').test(l))
+
+const unwrap = (line: string): string => {
+  const [, , inner] = /^(\*\*|\*|`+)(.*)\1$/.exec(line) ?? []
+  return inner === undefined ? line : unwrap(inner)
+}
 
 // The `NOD: in {…}` lines of a report, or what is wrong with them, to send back to the worker.
 export function parseCaptures(text: string): { captures: Capture[] } | { error: string } {
@@ -904,6 +910,8 @@ const peerMessage = (from: number, text: string): string =>
 // worker's live session, or one brought back, a finished task's too. One that cannot go in (a
 // permission dialog open there, say) is the person's to pass on, so they hear it with the message.
 // Each is checked again first: the person may have dropped its task while the checks ran.
+// ponytail: one dropped while restore rebuilds its folder is not started again (deliver refuses
+// it), but shows in ls with its folder until the next gc.
 async function sendTells(ledger: Ledger, home: string, from: Task, tells: Tell[]): Promise<void> {
   for (const { to, text } of tells) {
     try {

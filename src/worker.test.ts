@@ -1672,9 +1672,15 @@ test('a report says what to tell other tasks in NOD: tell lines, which nod reads
     ],
   })
   expect(parseTells('Telling nobody.\nNOD: done | nothing to tell')).toEqual({ tells: [] })
-  // Workers often bold their report lines.
-  expect(parseTells('**NOD: tell #5 look again**\n**NOD: done | ok**')).toEqual({
-    tells: [{ to: 5, text: 'look again' }],
+  // Workers often bold their report lines, or their `NOD:`; what is said keeps its own marks.
+  const said = (line: string) => parseTells(`${line}\nNOD: done | ok`)
+  expect(said('**NOD: tell #5 look again**')).toEqual({ tells: [{ to: 5, text: 'look again' }] })
+  expect(said('**NOD:** tell #5 look again')).toEqual({ tells: [{ to: 5, text: 'look again' }] })
+  expect(said('NOD: tell #5 the glob should be src/**')).toEqual({
+    tells: [{ to: 5, text: 'the glob should be src/**' }],
+  })
+  expect(said('`NOD: tell #5 rename it to `foo``')).toEqual({
+    tells: [{ to: 5, text: 'rename it to `foo`' }],
   })
   for (const bad of ['NOD: tell 85 no hash', 'NOD: tell #85', 'NOD: tell #x hi']) {
     expect(parseTells(`${bad}\nNOD: done | ok`)).toMatchObject({
