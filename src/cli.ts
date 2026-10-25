@@ -129,7 +129,8 @@ const USAGE = `usage:
                                    finished tasks a signal says are done with (as nod gc does);
                                    the scheduled tick does the watches and gc every fifth minute.
                                    It also asks about turns whose terminal is gone (a restart of
-                                   the machine or tmux) and restarts the workers due a restart
+                                   the machine or tmux) and about tasks that have waited an hour
+                                   on background work, and restarts the workers due a restart
   nod restart [<task...>]          start the Claude Code of these workers, or of every worker,
                                    again in the same terminal and conversation: at once between
                                    turns, after its turn otherwise, and only once nobody is
@@ -243,13 +244,19 @@ switch (command) {
     break
   case 'tick': {
     // Run by hand, it checks the watches now too, not only on their every fifth minute.
-    const { added, passed, collected, lost, restarted } = await tick(ledger, home, new Date(), true)
+    const { added, passed, collected, lost, waited, restarted } = await tick(
+      ledger,
+      home,
+      new Date(),
+      true,
+    )
     if (added.length > 0) console.log(`added task(s) ${added.join(', ')}`)
     if (passed.length > 0) console.log(`watch passed: ${passed.map((id) => `t${id}`).join(', ')}`)
     if (collected.length > 0) console.log(`collected task(s) ${collected.join(', ')}`)
     if (lost.length > 0) console.log(`turn(s) lost with their terminal: ${lost.join(', ')}`)
+    if (waited.length > 0) console.log(`waited too long on background work: ${waited.join(', ')}`)
     if (restarted.length > 0) console.log(`restarted task(s) ${restarted.join(', ')}`)
-    if ([added, passed, collected, lost, restarted].every((ids) => ids.length === 0))
+    if ([added, passed, collected, lost, waited, restarted].every((ids) => ids.length === 0))
       console.log('nothing due')
     break
   }

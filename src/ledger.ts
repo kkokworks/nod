@@ -21,7 +21,9 @@ export type TaskStatus =
   | 'needs_decision'
   | 'cancelled'
   | 'error'
-export type Outcome = 'succeeded' | 'failed' | 'needs_decision'
+// `waiting`: the turn ended while background work the worker started still ran, which starts its
+// next turn once done, so nobody is asked anything yet (settle in worker.ts).
+export type Outcome = 'succeeded' | 'failed' | 'needs_decision' | 'waiting'
 export type AttemptKind = 'start' | 'retry' | 'answer' | 'resume' | 'followup'
 export type DecisionReason =
   | 'question'
@@ -1064,6 +1066,31 @@ export class Ledger {
         .returning('id'),
     )
     return failed !== null
+  }
+
+  // Ends a turn that waited on background work as `outcome`, only while it still waits and no turn
+  // has started since, in one statement: of two ticks at once one gets it, and a turn that came
+  // (the work finished) keeps the task going. Returns whether this one did.
+  endWait(id: number, outcome: Outcome): boolean {
+    const ended = this.first(
+      q
+        .updateTable('attempts')
+        .set({ outcome })
+        .where('id', '=', id)
+        .where('outcome', '=', 'waiting')
+        .where(({ exists, not, selectFrom }) =>
+          not(
+            exists(
+              selectFrom('attempts as later')
+                .select('later.id')
+                .whereRef('later.taskId', '=', 'attempts.taskId')
+                .whereRef('later.id', '>', 'attempts.id'),
+            ),
+          ),
+        )
+        .returning('id'),
+    )
+    return ended !== null
   }
 
   addMessage(taskId: number, attemptId: number, text: string): void {

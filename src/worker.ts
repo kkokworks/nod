@@ -27,21 +27,24 @@ NOD: done | <one-line summary>      (finished, and you checked the result yourse
 NOD: question | <your question>     (you need a human decision, a permission, or access you lack)
 NOD: failed | <reason>              (you cannot do the task)
 A human answers questions later in this same conversation.
+If you stop while background work you started (an agent, a shell, a monitor) still runs, end with
+NOD: question | <what you wait for>: nod then waits for that work instead of asking the human, and
+your next turn starts once it is done.
 To put something in the person's to-do inbox, add one line per item above that last line:
 NOD: in {"title": "<what to do>", "notes": "<optional>", "link": "<optional URL>", "source": "<optional channel>", "key": "<that channel's id for it>"}
 nod puts them in once it accepts your done. With a source and key, an item goes in only once.`
 // A repo worker also has its change reviewed before it reports done, by a subagent that knows what
 // was asked but not the worker's reasons. nod's independent review after done stays the last word.
 const SUBAGENT_REVIEW_PROMPT = `Before you report done, commit, then have a subagent (Agent tool) review \`git diff <start>..HEAD\`
-(start: the commit in your first message); skip it if that diff is empty. Wait for its result in
-this same turn: run it in the foreground, not in the background, and if it can only run in the
-background, do not end your turn until it reports. Give it only the brief, the human's later
-words and that range, not your reasons. It changes no files here and checks that the asked work
-is done, that each new test fails on the code before the change (run in a temp \`git worktree add\`
-or copied files, never via stash or checkout), and for new bugs (boundaries, swallowed errors, races,
-lost data, injection, leaked secrets), reporting each as file:line, a scenario that reproduces it,
-and its confidence. Fix the findings that have a scenario, commit, and have it review again. In
-your final report, list each finding and what you did (fixed, or why not).`
+(start: the commit in your first message); skip it if that diff is empty. Report done only once it
+has reported: if it runs in the background, you may stop while it works, as above, and its result
+starts your next turn. Give it only the brief, the human's later words and that range, not your
+reasons. It changes no files here and checks that the asked work is done, that each new test fails
+on the code before the change (run in a temp \`git worktree add\` or copied files, never via stash
+or checkout), and for new bugs (boundaries, swallowed errors, races, lost data, injection, leaked
+secrets), reporting each as file:line, a scenario that reproduces it, and its confidence. Fix the
+findings that have a scenario, commit, and have it review again. In your final report, list each
+finding and what you did (fixed, or why not).`
 
 const RESUME_PROMPT =
   'Your session was interrupted. Check the current state of this directory and continue the task.'
@@ -149,6 +152,11 @@ const OUTPUT_LIMIT = 4000
 const QUESTION_LIMIT = 2000
 // More than this in one report is more than a person can clarify, or a worker gone wrong.
 const MAX_CAPTURES = 50
+// A task waits on background work this long in a row at most; past it, its next stop or the tick
+// asks the person what it last asked. Work that never ends (a server left running) or that went
+// with its Claude Code would keep it waiting for good.
+// ponytail: one fixed limit; make it per task if real background work takes longer.
+const WAIT_LIMIT_MS = 60 * 60_000
 // The check and the review both run inside the Stop hook, so the hook outlasts them.
 const REVIEW_TIMEOUT_MS = 600_000
 const STOP_HOOK_TIMEOUT_SECS = 1800
@@ -182,6 +190,11 @@ export const StopEvent = z.object({
   session_id: z.string(),
   last_assistant_message: z.string(),
   stop_hook_active: z.boolean(),
+  // The session's background work still running or about to as the turn ends: agents (`subagent`),
+  // shells, monitors (measured on 2.1.309; older versions leave it out).
+  background_tasks: z
+    .array(z.object({ type: z.string(), description: z.string() }).partial())
+    .optional(),
 })
 export const NotificationEvent = z.object({
   session_id: z.string(),
@@ -629,15 +642,24 @@ async function settle(
   }
   if (!done) {
     const failed = report?.status === 'failed'
+    // Background work the worker started still runs, and Claude Code starts its next turn once that
+    // is done (2.1.309), so what it asks now waits on nothing the person can give yet. Not past
+    // WAIT_LIMIT_MS of waiting in a row, though (overdueWaits does it between turns).
+    const work = event.background_tasks ?? []
+    const since = waitingSince(ledger, task.id) ?? Date.now()
+    const overdue = Date.now() - since >= WAIT_LIMIT_MS
+    const waiting = work.length > 0 && !overdue
     ledger.endAttempt(attemptId, {
-      outcome: failed ? 'failed' : 'needs_decision',
+      outcome: waiting ? 'waiting' : failed ? 'failed' : 'needs_decision',
       summary,
       report: text,
     })
     await dialogs()
-    if (newer()) return null
+    if (waiting || newer()) return null
+    const still = work.map((w) => w.description ?? w.type ?? '?').join(', ')
+    const note = work.length > 0 ? `${waitedNote(since)} Still running: ${still}.\n` : ''
     const reason = failed ? 'failed' : 'question'
-    await decide(ledger, home, task.id, attemptId, reason, text.slice(-QUESTION_LIMIT))
+    await decide(ledger, home, task.id, attemptId, reason, note + text.slice(-QUESTION_LIMIT))
     return null
   }
   ledger.endAttempt(attemptId, { outcome: 'succeeded', summary, report: text })
@@ -1361,6 +1383,43 @@ export async function lostTurns(ledger: Ledger, home: string, now: Date): Promis
     if (await cutOff(ledger, home, t.id, open, LOST)) lost.push(t.id)
   }
   return lost
+}
+
+// When the task began to wait on background work: the end of the first of its finished turns that
+// waited, in a row up to the last one; null when its last finished turn did not wait.
+function waitingSince(ledger: Ledger, taskId: number): number | null {
+  const ended = ledger.attempts(taskId).filter((a) => a.finishedAt !== null)
+  const first = ended.slice(ended.findLastIndex((a) => a.outcome !== 'waiting') + 1)[0]
+  return first?.finishedAt ? Date.parse(first.finishedAt) : null
+}
+
+const waitedNote = (since: number, now = Date.now()): string =>
+  `It has waited on background work it started for ${Math.round((now - since) / 60_000)} minutes, past nod's limit of ${WAIT_LIMIT_MS / 60_000}.`
+
+// Asks the person what a task last asked once it has waited on background work past WAIT_LIMIT_MS
+// with no turn since: work that never ends (a server left running), or that went with its Claude
+// Code or terminal, would keep it waiting for good. The tick runs it, as it runs lostTurns.
+export async function overdueWaits(ledger: Ledger, home: string, now: Date): Promise<number[]> {
+  const asked: number[] = []
+  for (const t of ledger.list()) {
+    if (t.status !== 'running' || ledger.openAttempt(t.id) !== null) continue
+    const last = ledger.lastAttempt(t.id)
+    const since = waitingSince(ledger, t.id)
+    if (last === null || last.outcome !== 'waiting' || since === null) continue
+    if (now.getTime() - since < WAIT_LIMIT_MS) continue
+    const report = last.report ?? ''
+    const failed = parseReport(report)?.status === 'failed'
+    // Taken first, in one statement: of two ticks at once one asks, and a turn that started since
+    // (the work finished just now) goes on instead.
+    // ponytail: a turn that starts between this and the decision runs with it open, until the
+    // task's next question or its success closes it.
+    if (!ledger.endWait(last.id, failed ? 'failed' : 'needs_decision')) continue
+    const note = `${waitedNote(since, now.getTime())} No turn has come since it stopped.\n`
+    const reason = failed ? 'failed' : 'question'
+    await decide(ledger, home, t.id, last.id, reason, note + report.slice(-QUESTION_LIMIT))
+    asked.push(t.id)
+  }
+  return asked
 }
 
 export type Restart = 'restarted' | 'after its turn' | 'attached' | 'no terminal'

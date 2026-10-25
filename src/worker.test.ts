@@ -27,6 +27,7 @@ import {
   firstMessage,
   lostTurns,
   onStop,
+  overdueWaits,
   parseCaptures,
   parseReport,
   restart,
@@ -623,11 +624,11 @@ test('a repo worker is told to have a subagent review its branch from where it s
   expect(prompt).toContain('have a subagent (Agent tool) review `git diff <start>..HEAD`')
   // A review-only task has nothing to review.
   expect(prompt).toContain('skip it if that diff is empty')
-  // A worker that left it running in the background stopped to wait, as a question to the human.
-  expect(prompt).toContain('Wait for its result in this same turn')
-  expect(prompt).toContain('the foreground, not in the background')
-  expect(prompt).toContain('if it can only run in the background')
-  expect(prompt).toContain('do not end your turn until it reports')
+  // Where the Agent tool runs only in the background, a worker cannot keep its turn open until the
+  // review reports; it stops, and nod waits for the review (settle).
+  expect(prompt).toContain('Report done only once it has reported')
+  expect(prompt).toContain('if it runs in the background, you may stop while it works, as above')
+  expect(prompt).toContain('nod then waits for that work instead of asking the human')
   // The stash is shared with every other worktree of the repo.
   expect(prompt).toContain('It changes no files here')
   expect(prompt).toContain('a temp `git worktree add` or copied files, never via stash or checkout')
@@ -639,6 +640,9 @@ test('a repo worker is told to have a subagent review its branch from where it s
   expect(workerPrompt(ledger, alone)).not.toContain('subagent')
   // What every worker gets, as a retrospective quotes it.
   expect(workerPrompt(ledger, null)).not.toContain('subagent')
+  // Every worker may wait on background work.
+  const every = workerPrompt(ledger, null).replaceAll('\n', ' ')
+  expect(every).toContain('nod then waits for that work instead of asking the human')
   expect(firstMessage(ledger, alone, null)).toBe('fix it')
 })
 
@@ -1663,12 +1667,14 @@ function started(brief: string, session: string): number {
   return id
 }
 
-// The Stop hook of a turn in session `session` that ended with `report`.
-const stopped = (session: string, report: string): Promise<string | null> =>
+// The Stop hook of a turn in session `session` that ended with `report`, while the background work
+// `running` (agents, as Claude Code describes them) still ran.
+const stopped = (session: string, report: string, running: string[] = []): Promise<string | null> =>
   onStop(ledger, home, {
     session_id: session,
     last_assistant_message: report,
     stop_hook_active: false,
+    background_tasks: running.map((description) => ({ type: 'subagent', description })),
   })
 
 test('a message that comes while nod checks a turn it closed starts the next turn, and that turn decides', async () => {
@@ -1750,6 +1756,84 @@ test('a turn the worker goes on to by itself closes what it asked before, and so
     '(it went on without an answer)',
     null,
   ])
+})
+
+test('a turn that stops while background work it started still runs waits for that work, and asks nobody', async () => {
+  const events = listen()
+  const id = started('review it', 'waits')
+  await stopped('waits', 'The review runs.\nNOD: question | Waiting for the review', ['review'])
+  expect(status(id)).toBe('running')
+  expect(ledger.decisions(id)).toEqual([])
+  expect(ledger.attempts(id).map((a) => [a.kind, a.outcome])).toEqual([['start', 'waiting']])
+  // The review reports and Claude Code goes on by itself: a fix and a second review, then done.
+  await stopped('waits', 'Fixed; a second review runs.\nNOD: question | Waiting again', ['review'])
+  await stopped('waits', 'NOD: done | reviewed twice')
+  expect(status(id)).toBe('succeeded')
+  expect(ledger.decisions(id)).toEqual([])
+  expect(ledger.attempts(id).map((a) => [a.kind, a.outcome])).toEqual([
+    ['start', 'waiting'],
+    ['followup', 'waiting'],
+    ['followup', 'succeeded'],
+  ])
+  expect(events().filter((e) => e.event === 'decision')).toEqual([])
+
+  // Once the work is done, with none left running, a question goes to the person as before.
+  const asks = started('ask after', 'asks-after')
+  await stopped('asks-after', 'NOD: question | Waiting for the shell', ['a shell'])
+  await stopped('asks-after', 'NOD: question | Which file?')
+  expect(ledger.decisions(asks).map((d) => [d.reason, d.question, d.answer])).toEqual([
+    ['question', 'NOD: question | Which file?', null],
+  ])
+  expect(status(asks)).toBe('needs_decision')
+
+  // A done is checked and taken as ever, with work still running or not.
+  const done = started('serve it', 'done-serving')
+  await stopped('done-serving', 'NOD: done | the server runs', ['a dev server'])
+  expect(status(done)).toBe('succeeded')
+})
+
+test('a task that has waited on background work past the limit asks the person, at its next stop or at the tick', async () => {
+  const id = started('review it', 'waits-long')
+  await stopped('waits-long', 'NOD: question | Waiting for the review', ['review'])
+  const minutes = (n: number): Date => new Date(Date.now() + n * 60_000)
+  expect(await overdueWaits(ledger, home, minutes(59))).toEqual([])
+  // An hour on, no turn has come: the review never reports, or went with its Claude Code.
+  const later = minutes(61)
+  const [a, b] = await Promise.all([
+    overdueWaits(ledger, home, later),
+    overdueWaits(ledger, home, later),
+  ])
+  expect([...a, ...b]).toEqual([id])
+  const asked = ledger.decisions(id)
+  expect(asked.map((d) => d.reason)).toEqual(['question'])
+  expect(asked[0]?.question).toContain("past nod's limit of 60. No turn has come since it stopped.")
+  expect(asked[0]?.question).toContain('NOD: question | Waiting for the review')
+  expect(status(id)).toBe('needs_decision')
+  expect(ledger.attempts(id).map((x) => x.outcome)).toEqual(['needs_decision'])
+
+  // Turns that went on waiting, in a row since past the limit: the next stop asks, work or not.
+  const chain = started('keep waiting', 'waits-chain')
+  await stopped('waits-chain', 'NOD: question | Waiting', ['monitor'])
+  ledger.db
+    .query('update attempts set finished_at = $at where task_id = $id')
+    .run({ at: minutes(-61).toISOString(), id: chain })
+  await stopped('waits-chain', 'NOD: question | Still waiting', ['monitor'])
+  const [still] = ledger.decisions(chain)
+  expect(still?.question).toContain('Still running: monitor.\nNOD: question | Still waiting')
+  expect(ledger.attempts(chain).map((x) => x.outcome)).toEqual(['waiting', 'needs_decision'])
+
+  // A turn that came since (the work finished) leaves the tick nothing to ask.
+  const back = started('came back', 'waits-back')
+  await stopped('waits-back', 'NOD: question | Waiting', ['review'])
+  ledger.startAttempt({
+    taskId: back,
+    kind: 'followup',
+    decisionId: null,
+    sessionId: 'waits-back',
+    prompt: '(typed into the terminal)',
+  })
+  expect(await overdueWaits(ledger, home, later)).toEqual([])
+  expect(ledger.decisions(back)).toEqual([])
 })
 
 test("a permission answered in the worker's terminal does not stay open once its turn ends", async () => {
