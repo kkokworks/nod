@@ -1305,10 +1305,18 @@ details summary {
   min-width: 0;
 }
 
+/* A button: the title unfolds the todo where it is, as in Mindwtr. */
 .todo-main .todo-title {
   display: block;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  font-family: inherit;
   font-size: 14.5px;
   line-height: 1.45;
+  text-align: left;
+  cursor: pointer;
 }
 
 .todo-main .todo-title:hover {
@@ -1449,18 +1457,6 @@ details summary {
   margin-left: auto;
   color: var(--s);
   font-size: 12px;
-}
-
-/* The title unfolds the todo where it is, as in Mindwtr. */
-.todo-main button.todo-title {
-  width: 100%;
-  padding: 0;
-  border: 0;
-  background: none;
-  color: var(--fg);
-  font-family: inherit;
-  text-align: left;
-  cursor: pointer;
 }
 
 .todo-item.open .todo-title {
