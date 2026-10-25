@@ -299,7 +299,7 @@ export async function answer(
     })
   // One left open on a task that ended only closes: no turn starts, and the task stays as it is.
   if (finished(ledger, decision.taskId)) {
-    ledger.closeOnly(decisionId, text)
+    ledger.dismiss(decisionId, text)
     await told()
     return
   }
@@ -405,7 +405,7 @@ export async function drop(ledger: Ledger, home: string, decisionId: number): Pr
   const task = ledger.get(decision.taskId)
   // One left open on a task that ended only closes, and the task stays as it is.
   if (finished(ledger, task.id)) {
-    ledger.closeOnly(decisionId, '(dropped)')
+    ledger.dismiss(decisionId, '(dropped)')
     await notify(home, {
       event: 'answered',
       task: taskRef(task),
@@ -615,7 +615,9 @@ async function settle(
   const gone = '(its turn ended)'
   const dialogs = (): Promise<void> => {
     const ofTurn = (d: Decision): boolean => d.reason === 'permission' && d.attemptId === attemptId
-    return announce(home, task, closeDecisions(ledger, task.id, ofTurn, gone), gone)
+    const closed = closeDecisions(ledger, task.id, ofTurn, gone)
+    goesOn(ledger, task.id, closed)
+    return announce(home, task, closed, gone)
   }
   if (!done) {
     const failed = report?.status === 'failed'
@@ -781,13 +783,17 @@ async function currentAttempt(
     prompt: '(typed into the terminal)',
   })
   const closed = closeDecisions(ledger, taskId, (d) => ASKED.includes(d.reason), WENT_ON)
-  // The question it went on from held the task; now a turn runs.
-  const task = ledger.get(taskId)
-  if (closed.length > 0 && task.status === 'needs_decision' && task.workspace !== null) {
-    ledger.setRunning(taskId, task.workspace)
-  }
-  await announce(home, task, closed, WENT_ON)
+  goesOn(ledger, taskId, closed)
+  await announce(home, ledger.get(taskId), closed, WENT_ON)
   return id
+}
+
+// The worker went on past decisions that held its task (`closed`), so the task runs again, unless
+// it ended (ended).
+function goesOn(ledger: Ledger, taskId: number, closed: Decision[]): void {
+  const task = ledger.get(taskId)
+  if (closed.length === 0 || task.status !== 'needs_decision' || task.workspace === null) return
+  if (!ended(ledger, taskId)) ledger.setRunning(taskId, task.workspace)
 }
 
 // Closes the task's open decisions that `which` picks with `why`, so nobody waits on one nothing

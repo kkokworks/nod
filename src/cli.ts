@@ -654,7 +654,7 @@ function show(id: number): void {
       ? `answered after ${secsBetween(d.createdAt, d.answeredAt)}s: ${d.answer}`
       : d.answer === null
         ? 'open'
-        : `closed by nod: ${d.answer}`
+        : `closed: ${d.answer}`
     console.log(`  decision #${d.id} ${d.reason} — ${answered}`)
   }
   const report = ledger

@@ -167,7 +167,8 @@ export type Decision = {
   question: string
   answer: string | null
   createdAt: string
-  // When a person answered; null while open, and for one nod closed itself (dismiss).
+  // When a person's answer reached a turn waiting on it; null while open, and for one closed while
+  // no turn waited on it (dismiss).
   answeredAt: string | null
 }
 
@@ -1132,13 +1133,8 @@ export class Ledger {
     this.close(decisionId, '(dropped)', 'cancelled', now())
   }
 
-  // The human answers or drops a decision left open on a task that ended: it closes, and the task
-  // stays as it is.
-  closeOnly(decisionId: number, answer: string): void {
-    this.close(decisionId, answer, null, now())
-  }
-
-  // nod closes a decision nothing waits on any more. No one answered it, so it has no answeredAt,
+  // Closes a decision no turn waits on: one nod closes as its worker goes on without it, or one a
+  // person answers or drops on a task that ended. No answer reaches a turn, so it has no answeredAt
   // and the wait for answers (stats) leaves it out; the task stays as it is.
   dismiss(decisionId: number, answer: string): void {
     this.close(decisionId, answer, null, null)

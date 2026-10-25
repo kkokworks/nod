@@ -1864,6 +1864,8 @@ test('a decision left open on a task that ended only closes, answered or dropped
   ])
   expect(status(id)).toBe('succeeded')
   expect(ledger.attempts(id)).toHaveLength(1)
+  // No turn waited on them, so they stay out of the wait for answers.
+  expect(ledger.stats().decisions.medianWaitSecs).toBeNull()
 
   // One left open on a task that was dropped.
   const first = ledger.ask(id, asked.attemptId, 'question', 'Which one?')
@@ -1873,6 +1875,17 @@ test('a decision left open on a task that ended only closes, answered or dropped
   expect(ledger.decision(left).answer).toBe('here')
   expect(status(id)).toBe('cancelled')
   expect(ledger.attempts(id)).toHaveLength(1)
+})
+
+test("a permission answered in the worker's terminal leaves the task running into the retry its turn gets", async () => {
+  const id = started('review-strict: write it', 'answered-retry')
+  const attempt = ledger.openAttempt(id)
+  if (attempt === null) throw new Error('no turn')
+  ledger.ask(id, attempt.id, 'permission', 'Claude needs your permission') // as onNotification does
+  // Answered in the terminal; the turn ends, and the review sends it back.
+  expect(await stopped('answered-retry', 'NOD: done | did it')).toContain('"block"')
+  expect(status(id)).toBe('running')
+  expect(ledger.openDecisions()).toEqual([])
 })
 
 test('a turn that ends after its retrospective did changes nothing of what became of it', async () => {
