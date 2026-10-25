@@ -2,15 +2,13 @@ import { createFileRoute, Link, useRouter } from '@tanstack/react-router'
 import { createServerFn } from '@tanstack/react-start'
 import { useLayoutEffect, useRef, useState } from 'react'
 import type { Decision } from '../../../src/ledger'
+import { int } from '../input'
 import type { Message } from '../nod.server'
 import { detail, send } from '../nod.server'
 import { DecisionCard, duration, localTime, Markdown, Status, statusClass, Url } from '../parts'
 
 const getDetail = createServerFn({ method: 'GET' })
-  .validator((id: number) => {
-    if (!Number.isInteger(id)) throw new Error('task id must be an integer')
-    return id
-  })
+  .validator((id: number) => int(id, 'task id'))
   .handler(({ data }) => detail(data))
 
 const sendMessage = createServerFn({ method: 'POST' })
