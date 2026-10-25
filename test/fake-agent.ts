@@ -189,12 +189,8 @@ async function turn(message: string, continuing: boolean): Promise<void> {
   }
   // In a repo, it commits once told its changes are not committed.
   if (head.includes('not committed')) {
-    for (const args of [
-      ['add', '-A'],
-      ['commit', '-qm', 'fake work'],
-    ]) {
-      Bun.spawnSync([...GIT, ...args])
-    }
+    Bun.spawnSync([...GIT, 'add', '-A'])
+    Bun.spawnSync([...GIT, 'commit', '-qm', 'fake work'])
   }
   // Like Claude Code, a continuation after a blocked stop usually has no report line.
   if (continuing) reply = 'Fixed it.'
