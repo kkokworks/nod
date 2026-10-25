@@ -175,6 +175,9 @@ async function turn(message: string, continuing: boolean): Promise<void> {
     reply = 'Stopped without a report.'
   } else if (head.includes('ask-first')) {
     reply = 'Should I go ahead?\n**NOD: question | May I proceed?**'
+  } else if (head.startsWith('tell #')) {
+    // Tells the task it names the rest of the line, as `NOD: tell #<task> <message>`.
+    reply = `NOD: ${head}\nNOD: done | told`
   } else if (head.includes('capture')) {
     reply = [
       'NOD: in {"title": "Ask Kim again", "source": "chat", "key": "m1"}',
@@ -197,6 +200,11 @@ async function turn(message: string, continuing: boolean): Promise<void> {
   // Told a `NOD: in` line was wrong, it reports again with only the good one.
   if (head.includes('NOD: in')) {
     reply = 'NOD: in {"title": "Ask Kim again", "source": "chat", "key": "m1"}\nNOD: done | fixed'
+  }
+  // Another task's worker asks it to answer (`ping-back` below nod's header): it tells that one back.
+  const peer = /^Message from the worker of nod task #(\d+)/.exec(head)
+  if (peer !== null && message.includes('ping-back')) {
+    reply = `NOD: tell #${peer[1]} fixed it\nNOD: done | fixed`
   }
   const out = await runHooks('Stop', {
     session_id: sessionId,

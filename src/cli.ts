@@ -734,8 +734,9 @@ function unlinkedPushes(t: Task): string[] {
 function printAttempt(a: Attempt): void {
   const secs = a.finishedAt ? `${secsBetween(a.startedAt, a.finishedAt)}s` : 'running'
   const check = a.checkResult ? ` check ${a.checkResult}` : ''
+  const from = a.fromTask === null ? '' : ` from #${a.fromTask}`
   console.log(
-    `  ${a.kind.padEnd(8)} ${(a.outcome ?? '-').padEnd(14)} ${secs}${check}  session ${a.sessionId}`,
+    `  ${a.kind.padEnd(8)} ${(a.outcome ?? '-').padEnd(14)} ${secs}${check}${from}  session ${a.sessionId}`,
   )
   const note = a.error ?? a.summary
   if (note) console.log(indent(oneLine(note, 200), 4))

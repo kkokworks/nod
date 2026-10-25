@@ -24,7 +24,7 @@ test('reopening a ledger keeps its data and does not re-run migrations', () => {
   })
   const reopened = new Ledger(home)
   expect(reopened.get(id).brief).toBe('keep me')
-  expect(reopened.db.query('pragma user_version').get()).toEqual({ user_version: 20 })
+  expect(reopened.db.query('pragma user_version').get()).toEqual({ user_version: 21 })
 })
 
 test('v18 leaves the tasks before it without a root session', () => {
@@ -38,7 +38,61 @@ test('v18 leaves the tasks before it without a root session', () => {
 
   const ledger = new Ledger(home)
   expect(ledger.get(1)).toMatchObject({ brief: 'x', rootSession: null })
-  expect(ledger.db.query('pragma user_version').get()).toEqual({ user_version: 20 })
+  expect(ledger.db.query('pragma user_version').get()).toEqual({ user_version: 21 })
+})
+
+test("v21 counts the turns and messages before it as the person's, from no task", () => {
+  const home = freshHome()
+  const old = new Database(join(home, 'nod.db'), { create: true, strict: true })
+  for (const sql of MIGRATIONS.slice(0, 20)) old.exec(sql)
+  old.exec(`pragma user_version = 20;
+    insert into tasks (id, brief, created_at) values (1, 'x', 'at'), (2, 'y', 'at');
+    insert into attempts (id, task_id, kind, session_id, prompt, started_at)
+      values (1, 1, 'followup', 's', 'from the person', 'at');
+    insert into messages (task_id, attempt_id, text, created_at) values (1, 1, 'also', 'at');`)
+  old.close()
+
+  const ledger = new Ledger(home)
+  expect(ledger.attempts(1)).toMatchObject([{ prompt: 'from the person', fromTask: null }])
+  expect(ledger.messages(1)).toMatchObject([{ text: 'also', fromTask: null }])
+  expect(ledger.tellsBetween(1, 2)).toBe(0)
+})
+
+test('the messages two tasks sent each other count both ways, in turns and within them, and nothing else does', () => {
+  const ledger = new Ledger(freshHome())
+  const [a, b, c] = ['a', 'b', 'c'].map((brief) =>
+    ledger.add({
+      brief,
+      repo: null,
+      branch: null,
+      checkCmd: null,
+      model: null,
+      after: [],
+      triggerId: null,
+      issue: null,
+    }),
+  ) as [number, number, number]
+  const turn = (taskId: number, fromTask: number | null): number =>
+    ledger.startAttempt({
+      taskId,
+      kind: 'followup',
+      decisionId: null,
+      sessionId: `s${taskId}`,
+      prompt: 'p',
+      fromTask,
+    })
+  turn(b, a) // a told b, starting a turn
+  const inB = turn(b, null) // the person told b
+  ledger.addMessage(b, inB, 'more', a) // a told b again, into that turn
+  ledger.addMessage(b, inB, 'mine') // and so did the person
+  turn(a, b) // b answered a
+  turn(c, a) // a told another task
+  expect(ledger.tellsBetween(a, b)).toBe(3)
+  expect(ledger.tellsBetween(b, a)).toBe(3)
+  expect(ledger.tellsBetween(a, c)).toBe(1)
+  expect(ledger.tellsBetween(b, c)).toBe(0)
+  expect(ledger.attempts(b).map((x) => x.fromTask)).toEqual([a, null])
+  expect(ledger.messages(b).map((m) => m.fromTask)).toEqual([a, null])
 })
 
 test('a task keeps the session that added it, and its retrospective takes it; a trigger task has none', () => {
