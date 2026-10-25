@@ -860,23 +860,6 @@ details summary {
   font-size: 13px;
 }
 
-.window-empty {
-  display: flex;
-  flex-direction: column;
-  gap: 0.6rem;
-  align-items: center;
-  justify-content: center;
-  text-align: center;
-  min-height: 220px;
-  padding: 2rem;
-  color: color-mix(in srgb, var(--term-fg) 55%, transparent);
-}
-
-.window-empty code {
-  background: color-mix(in srgb, var(--term-fg) 10%, transparent);
-  color: var(--term-fg);
-}
-
 .computer > p {
   margin: 0.6rem 0.25rem 0;
 }
