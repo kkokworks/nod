@@ -1807,7 +1807,7 @@ a.task-line:hover {
 
 .task-line .side-id {
   flex: none;
-  min-width: 2rem;
+  min-width: 2.6rem;
   font-variant-numeric: tabular-nums;
 }
 
@@ -1861,10 +1861,6 @@ a.task-line:hover {
 }
 
 /* On the home page's lines the task's number sits under its todo's, so the titles line up. */
-.task-line .side-id {
-  min-width: 2.6rem;
-}
-
 .task-line .side-id .task-no {
   display: block;
   margin-left: 0;
