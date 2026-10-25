@@ -662,10 +662,7 @@ function show(id: number): void {
         : `closed: ${d.answer}`
     console.log(`  decision #${d.id} ${d.reason} — ${answered}`)
   }
-  const report = ledger
-    .attempts(id)
-    .filter((a) => a.report)
-    .at(-1)?.report
+  const report = ledger.attempts(id).findLast((a) => a.report)?.report
   if (report) console.log(`\n${report}`)
 }
 
