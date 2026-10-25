@@ -377,13 +377,15 @@ kbd + kbd {
 
 /* ── status ── */
 
+/* ponytail: a dot takes the tone of the nearest status class, its own or its chip's; give it
+   `--tone: initial` if one ever sits inside another toned element it should not follow. */
 .dot {
   flex: none;
   display: inline-block;
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: var(--idle);
+  background: var(--tone, var(--idle));
 }
 
 .chip {
@@ -419,17 +421,6 @@ kbd + kbd {
 .failed,
 .session_ended {
   --tone: var(--bad);
-}
-
-.dot.succeeded,
-.dot.needs_decision,
-.dot.running,
-.dot.queued,
-.dot.error,
-.dot.failed,
-.dot.session_ended,
-.chip .dot {
-  background: var(--tone, var(--idle));
 }
 
 .chip.succeeded,
