@@ -2,6 +2,8 @@ import { expect, test } from 'bun:test'
 import type { Project, Todo } from './todos'
 import { nudgeLine, trust } from './trust'
 
+// A moment written as local time, so it falls on the day written in every time zone.
+const at = (local: string): string => new Date(local).toISOString()
 const todo = (id: number, edit: Partial<Todo>): Todo => ({
   id,
   title: `todo ${id}`,
@@ -19,8 +21,8 @@ const todo = (id: number, edit: Partial<Todo>): Todo => ({
   backTo: null,
   source: 'cli',
   sourceKey: null,
-  createdAt: '2026-10-20T01:00:00.000Z',
-  statusAt: '2026-10-20T01:00:00.000Z',
+  createdAt: at('2026-10-20T10:00'),
+  statusAt: at('2026-10-20T10:00'),
   ...edit,
 })
 const project = (id: number, next: number): Project & { next: number } => ({
@@ -45,7 +47,7 @@ test('the numbers that say whether the lists can be trusted', () => {
   const t = trust(
     {
       open: [
-        todo(1, { status: 'inbox', createdAt: '2026-10-14T03:00:00.000Z' }),
+        todo(1, { status: 'inbox', createdAt: at('2026-10-14T12:00') }),
         todo(2, { status: 'inbox' }),
         kim,
         lee,
@@ -56,11 +58,11 @@ test('the numbers that say whether the lists can be trusted', () => {
       ],
       projects: [project(1, 1), project(2, 0)],
       lastChange: new Map([
-        [3, '2026-10-20T01:00:00.000Z'],
-        [4, '2026-10-27T01:00:00.000Z'],
-        [7, '2026-10-20T01:00:00.000Z'],
+        [3, at('2026-10-20T10:00')],
+        [4, at('2026-10-27T10:00')],
+        [7, at('2026-10-20T10:00')],
       ]),
-      lastReview: '2026-10-16T08:00:00.000Z',
+      lastReview: at('2026-10-16T17:00'),
       day: { ...none, overdue: [late], scheduled: [call] },
     },
     '2026-10-28',
