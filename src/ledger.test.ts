@@ -445,7 +445,7 @@ test('a transaction that reads before it writes waits while another process writ
       db.exec('begin immediate')
       db.run("update tasks set brief = 'edited'")
       console.log('locked')
-      await Bun.sleep(300)
+      await Bun.sleep(1000)
       db.exec('commit')`,
     ],
     { stdout: 'pipe' },
