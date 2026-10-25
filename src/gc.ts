@@ -101,10 +101,14 @@ export async function collect(ledger: Ledger, home: string, pick: GcPick): Promi
 
       if (task.repo !== null) {
         // Submodules too, even one the repo tells status to ignore: their changes go with --force.
-        const status = await spawn(
-          ['git', '-C', task.workspace, 'status', '--porcelain', '--ignore-submodules=none'],
-          undefined,
-        )
+        const status = await spawn([
+          'git',
+          '-C',
+          task.workspace,
+          'status',
+          '--porcelain',
+          '--ignore-submodules=none',
+        ])
         if (status.code !== 0 || status.stdout.trim()) {
           skip('uncommitted changes in worktree')
           continue

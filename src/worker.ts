@@ -1591,20 +1591,17 @@ async function prepareWorkspace(ledger: Ledger, home: string, task: Task): Promi
   // conflict.
   const base = baseOf(ledger, task)
   // 32 concurrent `worktree add` on one repo all succeeded when measured, so no lock here.
-  const { code, output } = await spawn(
-    [
-      'git',
-      '-C',
-      task.repo,
-      'worktree',
-      'add',
-      '-b',
-      branchOf(task),
-      cwd,
-      ...(base === null ? [] : [branchOf(base)]),
-    ],
-    undefined,
-  )
+  const { code, output } = await spawn([
+    'git',
+    '-C',
+    task.repo,
+    'worktree',
+    'add',
+    '-b',
+    branchOf(task),
+    cwd,
+    ...(base === null ? [] : [branchOf(base)]),
+  ])
   if (code !== 0) throw new Error(`git worktree add failed: ${output.trim()}`)
   try {
     await initSubmodules(task.repo, cwd)
@@ -1661,9 +1658,9 @@ async function rebuildWorktree(
   }
   // A worktree folder deleted by hand stays registered, which keeps git from adding it again and
   // its branch checked out.
-  await spawn(['git', '-C', repo, 'worktree', 'prune'], undefined)
+  await spawn(['git', '-C', repo, 'worktree', 'prune'])
   const args = has(`refs/heads/${branch}`) ? [cwd, branch] : ['-b', branch, cwd, from()]
-  const { code, output } = await spawn(['git', '-C', repo, 'worktree', 'add', ...args], undefined)
+  const { code, output } = await spawn(['git', '-C', repo, 'worktree', 'add', ...args])
   if (code !== 0) throw new Error(`git worktree add failed: ${output.trim()}`)
   await initSubmodules(repo, cwd)
 }
@@ -1693,23 +1690,20 @@ async function initSubmodules(repo: string, worktree: string): Promise<void> {
     const [key, path] = line.split(' ')
     if (key === undefined || path === undefined) throw new Error(`unexpected .gitmodules: ${line}`)
     const name = key.slice('submodule.'.length, -'.path'.length)
-    const { code, output } = await spawn(
-      [
-        'git',
-        '-C',
-        worktree,
-        '-c',
-        'protocol.file.allow=always',
-        '-c',
-        `submodule.${name}.url=${join(repo, path)}`,
-        'submodule',
-        'update',
-        '--init',
-        '--',
-        path,
-      ],
-      undefined,
-    )
+    const { code, output } = await spawn([
+      'git',
+      '-C',
+      worktree,
+      '-c',
+      'protocol.file.allow=always',
+      '-c',
+      `submodule.${name}.url=${join(repo, path)}`,
+      'submodule',
+      'update',
+      '--init',
+      '--',
+      path,
+    ])
     if (code !== 0) throw new Error(`submodule ${path} from ${repo} failed: ${output.trim()}`)
   }
 }
@@ -1834,7 +1828,7 @@ async function uncommittedChanges(worktree: string): Promise<string> {
 // `timeoutMs` is killed and exits nonzero.
 export async function spawn(
   cmd: string[],
-  cwd: string | undefined,
+  cwd?: string,
   opts: { stdin?: string; timeoutMs?: number } = {},
 ): Promise<{ code: number; stdout: string; output: string }> {
   const proc = Bun.spawn(cmd, {
