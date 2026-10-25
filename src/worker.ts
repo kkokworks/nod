@@ -34,13 +34,13 @@ nod puts them in once it accepts your done. With a source and key, an item goes 
 // was asked but not the worker's reasons. nod's independent review after done stays the last word.
 const SUBAGENT_REVIEW_PROMPT = `Before you report done, commit, then have a subagent (Agent tool) review \`git diff <start>..HEAD\`,
 with the start commit from your first message. Wait for its result in this same turn: run it in
-the foreground, or if it can only run in the background, do not end your turn until it reports.
-Give it only the brief, what the human said since, and that range, not your reasons. It changes
-no files and checks that the asked work is done, that each new test fails on the code before the
-change, and for bugs the change adds (boundaries, swallowed errors, races, lost data, injection,
-leaked secrets), reporting each as file:line, a scenario that reproduces it, and its confidence.
-Fix the findings that have a scenario, commit, and have it review again. In your final report,
-list each finding and what you did with it (fixed, or why not).`
+the foreground, not in the background, and if it can only run in the background,
+do not end your turn until it reports. Give it only the brief, what the human said since, and
+that range, not your reasons. It changes no files and checks that the asked work is done, that
+each new test fails on the code before the change, and for new bugs (boundaries, swallowed
+errors, races, lost data, injection, leaked secrets), reporting each as file:line, a scenario
+that reproduces it, and its confidence. Fix the findings that have a scenario, commit, and have
+it review again. In your final report, list each finding and what you did (fixed, or why not).`
 
 const RESUME_PROMPT =
   'Your session was interrupted. Check the current state of this directory and continue the task.'
