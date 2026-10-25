@@ -74,6 +74,8 @@ beforeEach(() => useHome('nod-worker-'))
 function useHome(prefix: string): void {
   home = tmp.make(prefix)
   homes.push(home)
+  // As a worker's hooks have it, for those a test runs itself: the fake reviewer logs there.
+  process.env.NOD_HOME = home
   mkdirSync(join(home, 'work'))
   trust(process.env.CLAUDE_CONFIG_DIR ?? null) // nod's own work folder counts as trusted
   log = join(home, 'agent.log') // where the fake logs (fake-agent.ts)
@@ -968,16 +970,19 @@ test('yes to a rule closes its decision only as the rule goes in', async () => {
     stop_hook_active: false,
   })
   const decision = ledger.decisions(retro)[0]
-  const retroId = ledger.get(retro).retroId
-  if (decision === undefined || retroId === null) throw new Error('no rule decision')
-  // A rule the ledger refuses: the decision stays open, the task waits on it.
-  ledger.proposeRule(retroId, 'keep it\nshort')
+  if (decision === undefined) throw new Error('no rule decision')
+  // A rule the ledger refuses, as the report of the turn the decision asks about: the decision
+  // stays open, the task waits on it.
+  const proposal = (rule: string): void => {
+    ledger.db.run('update attempts set summary = ? where id = ?', [rule, decision.attemptId])
+  }
+  proposal('keep it\nshort')
   await expect(answer(ledger, home, decision.id, 'yes', 'human')).rejects.toThrow('one line')
   expect(ledger.decision(decision.id).answer).toBeNull()
   expect(ledger.rules()).toEqual([])
   expect(status(retro)).toBe('needs_decision')
 
-  ledger.proposeRule(retroId, 'keep it short')
+  proposal('keep it short')
   await answer(ledger, home, decision.id, 'yes', 'human')
   expect(ledger.decision(decision.id).answer).toBe('yes')
   expect(ledger.rules().map((r) => r.text)).toEqual(['keep it short'])
@@ -1534,3 +1539,315 @@ test('a report may ask for at most 50 captures, each with JSON nod can read', ()
   })
   expect(parseCaptures('**NOD: done | nothing to capture**')).toEqual({ captures: [] })
 })
+
+// A task nod started whose hooks a test runs itself, with no terminal: its worker's first turn is
+// session `session`.
+function started(brief: string, session: string): number {
+  const id = ledger.add({
+    brief,
+    repo: null,
+    branch: null,
+    checkCmd: null,
+    model: null,
+    after: [],
+    triggerId: null,
+    issue: null,
+  })
+  const cwd = workspaceOf(home, ledger.get(id))
+  mkdirSync(cwd, { recursive: true })
+  ledger.setRunning(id, cwd)
+  ledger.startAttempt({
+    taskId: id,
+    kind: 'start',
+    decisionId: null,
+    sessionId: session,
+    prompt: brief,
+  })
+  return id
+}
+
+// The Stop hook of a turn in session `session` that ended with `report`.
+const stopped = (session: string, report: string): Promise<string | null> =>
+  onStop(ledger, home, {
+    session_id: session,
+    last_assistant_message: report,
+    stop_hook_active: false,
+  })
+
+test('a message that comes while nod checks a turn it closed starts the next turn, and that turn decides', async () => {
+  // As `nod tell` opens a turn while the Stop hook checks the last one (deliver); Claude Code runs it
+  // once the hook ends.
+  const tellWhileChecked = async (id: number, session: string): Promise<void> => {
+    await until(() => entries('review').some((r) => r.message?.includes(`nod task #${id}.`)))
+    ledger.startAttempt({
+      taskId: id,
+      kind: 'followup',
+      decisionId: null,
+      sessionId: session,
+      prompt: 'also this',
+    })
+  }
+  const passing = started('review-slow: write it', 'checked-pass')
+  const failing = started('review-slow review-strict: write it', 'checked-fail')
+  const [pass, fail] = await Promise.all([
+    stopped('checked-pass', 'NOD: done | did it'),
+    stopped('checked-fail', 'NOD: done | did it'),
+    tellWhileChecked(passing, 'checked-pass'),
+    tellWhileChecked(failing, 'checked-fail'),
+  ])
+  // Neither a success nor a retry while that turn runs: its own stop is checked next.
+  expect([pass, fail]).toEqual([null, null])
+  expect([status(passing), status(failing)]).toEqual(['running', 'running'])
+  const turns = (id: number) => ledger.attempts(id).map((a) => [a.kind, a.outcome, a.checkResult])
+  expect(turns(passing)).toEqual([
+    ['start', 'succeeded', 'passed'],
+    ['followup', null, null],
+  ])
+  expect(turns(failing)).toEqual([
+    ['start', 'succeeded', 'failed'],
+    ['followup', null, null],
+  ])
+}, 30_000)
+
+test('a turn the worker goes on to by itself closes what it asked before, and so does its success', async () => {
+  const events = listen()
+  const id = started('wait for the agents', 'went-on')
+  await stopped('went-on', 'Started two agents.\nNOD: question | Wait for them?')
+  // They finish, and Claude Code goes on by itself: turns nod did not send.
+  await stopped('went-on', 'One is back.\nNOD: question | Wait for the other?')
+  await stopped('went-on', 'NOD: done | both back')
+  expect(status(id)).toBe('succeeded')
+  expect(ledger.attempts(id).map((a) => a.kind)).toEqual(['start', 'followup', 'followup'])
+  expect(ledger.decisions(id).map((d) => [d.reason, d.answer])).toEqual([
+    ['question', '(it went on without an answer)'],
+    ['question', '(it went on without an answer)'],
+  ])
+  expect(events().filter((e) => e.event === 'answered')).toHaveLength(2)
+
+  // A message that opened its turn just before the question did: the task succeeds in that turn.
+  const told = started('ask then go on', 'asked-late')
+  await stopped('asked-late', 'NOD: question | Which one?')
+  ledger.startAttempt({
+    taskId: told,
+    kind: 'followup',
+    decisionId: null,
+    sessionId: 'asked-late',
+    prompt: 'the first',
+  })
+  await stopped('asked-late', 'NOD: done | did the first')
+  expect(status(told)).toBe('succeeded')
+  expect(ledger.decisions(told).map((d) => d.answer)).toEqual(['(the task succeeded without it)'])
+})
+
+test("a permission answered in the worker's terminal does not stay open once its turn ends", async () => {
+  const id = started('fetch it', 'answered-there')
+  const attempt = ledger.openAttempt(id)
+  if (attempt === null) throw new Error('no turn')
+  ledger.ask(id, attempt.id, 'permission', 'Claude needs your permission') // as onNotification does
+  // A person attached to the worker answers the dialog there, and the turn goes on to its end.
+  await stopped('answered-there', 'NOD: done | fetched')
+  expect(status(id)).toBe('succeeded')
+  expect(ledger.decisions(id).map((d) => [d.reason, d.answer])).toEqual([
+    ['permission', '(its turn ended)'],
+  ])
+})
+
+test('a retrospective that proposes again replaces its open rule decision', async () => {
+  const of = ledger.add({
+    brief: 'x',
+    repo: null,
+    branch: null,
+    checkCmd: null,
+    model: null,
+    after: [],
+    triggerId: null,
+    issue: null,
+  })
+  const retro = ledger.addRetro(ledger.get(of), 'look back')
+  const turn = (kind: 'start' | 'followup'): number =>
+    ledger.startAttempt({
+      taskId: retro,
+      kind,
+      decisionId: null,
+      sessionId: 'again-session',
+      prompt: 'look back',
+    })
+  turn('start')
+  await stopped('again-session', 'NOD: done | rule A')
+  // Told to propose another (deliver opens its turn), it reports one.
+  turn('followup')
+  await stopped('again-session', 'NOD: done | rule B')
+  const [first, second] = ledger.decisions(retro)
+  if (first === undefined || second === undefined) throw new Error('no rule decisions')
+  expect(first.answer).toBe('(a newer proposal replaced it)')
+  await expect(answer(ledger, home, first.id, 'yes', 'human')).rejects.toThrow('already answered')
+  await answer(ledger, home, second.id, 'yes', 'human')
+  expect(ledger.rules().map((r) => r.text)).toEqual(['rule B'])
+  expect(ledger.retroFor(of)).toMatchObject({ rule: 'rule B', outcome: 'added' })
+})
+
+test('a yes to a rule decision adds the rule that decision proposed, and an ended retrospective takes no answer', async () => {
+  const of = ledger.add({
+    brief: 'x',
+    repo: null,
+    branch: null,
+    checkCmd: null,
+    model: null,
+    after: [],
+    triggerId: null,
+    issue: null,
+  })
+  const retro = ledger.addRetro(ledger.get(of), 'look back')
+  ledger.startAttempt({
+    taskId: retro,
+    kind: 'start',
+    decisionId: null,
+    sessionId: 'race-session',
+    prompt: 'look back',
+  })
+  await stopped('race-session', 'NOD: done | rule A')
+  const decision = ledger.decisions(retro)[0]
+  const retroId = ledger.get(retro).retroId
+  if (decision === undefined || retroId === null) throw new Error('no rule decision')
+  // A newer turn proposes another as this decision is answered.
+  ledger.proposeRule(retroId, 'rule B')
+  await answer(ledger, home, decision.id, 'yes', 'human')
+  expect(ledger.rules().map((r) => r.text)).toEqual(['rule A'])
+  expect(ledger.retroFor(of)).toMatchObject({ rule: 'rule A', outcome: 'added' })
+
+  // A rule decision still open once its retrospective ended takes neither a yes nor anything else.
+  const late = ledger.ask(retro, decision.attemptId, 'rule', 'Add it?')
+  await expect(answer(ledger, home, late, 'yes', 'human')).rejects.toThrow('ended (added)')
+  await expect(answer(ledger, home, late, 'no', 'human')).rejects.toThrow('ended (added)')
+  expect(ledger.decision(late).answer).toBeNull()
+  expect(ledger.rules()).toHaveLength(1)
+  expect(ledger.retroFor(of)?.outcome).toBe('added')
+  expect(status(retro)).not.toBe('cancelled')
+})
+
+test('two ticks that find the same lost turn at once raise one decision for it', async () => {
+  const id = started('fetch it', 'lost-twice')
+  const attempt = ledger.openAttempt(id)
+  if (attempt === null) throw new Error('no turn')
+  // A permission dialog was up when the machine restarted.
+  ledger.ask(id, attempt.id, 'permission', 'Claude needs your permission')
+  const later = new Date(Date.now() + 60_000)
+  const [a, b] = await Promise.all([lostTurns(ledger, home, later), lostTurns(ledger, home, later)])
+  expect([...a, ...b]).toEqual([id])
+  expect(ledger.decisions(id).map((d) => [d.reason, d.answer])).toEqual([
+    ['permission', '(the turn was cut off)'],
+    ['interrupted', null],
+  ])
+})
+
+test('an answer to a decision left open on a task gc collected brings its folder back first, as tell does', async () => {
+  const id = started('first', 'collected-session')
+  await stopped('collected-session', 'NOD: question | Which one?')
+  const decision = ledger.decisions(id)[0]
+  if (decision === undefined) throw new Error('no decision')
+  // The task ended with the decision left open, and gc collected it; Claude Code keeps its
+  // conversation.
+  ledger.succeed(id)
+  const cwd = workspaceOf(home, ledger.get(id))
+  const sessions = projectFolder(process.env.CLAUDE_CONFIG_DIR ?? '', cwd)
+  mkdirSync(sessions, { recursive: true })
+  writeFileSync(join(sessions, 'collected-session.jsonl'), '{}\n')
+  expect((await collect(ledger, home, { ids: [id] })).removed).toEqual([id])
+  expect(existsSync(cwd)).toBe(false)
+
+  await answer(ledger, home, decision.id, 'the second', 'human')
+  expect(existsSync(cwd)).toBe(true)
+  expect(ledger.get(id).collectedAt).toBeNull()
+})
+
+test('the review hears what the human told the worker in the middle of a turn, in order with the rest', () => {
+  const id = ledger.add({
+    brief: 'write it',
+    repo: null,
+    branch: null,
+    checkCmd: null,
+    model: null,
+    after: [],
+    triggerId: null,
+    issue: null,
+  })
+  const turn = (kind: 'start' | 'followup', prompt: string): number =>
+    ledger.startAttempt({ taskId: id, kind, decisionId: null, sessionId: 's', prompt })
+  const first = turn('start', 'write it')
+  ledger.addMessage(id, first, 'use tabs')
+  ledger.endAttempt(first, { outcome: 'needs_decision', summary: 'which file?', report: null })
+  const second = turn('followup', 'in a.txt')
+  ledger.addMessage(id, second, 'no,\nin b.txt')
+  const brief = reviewBrief(ledger, ledger.get(id), 'NOD: done | ok', null)
+  expect(brief).toContain(
+    'What the human said later, in order; later words win:\n- use tabs\n- in a.txt\n- no, in b.txt\n',
+  )
+})
+
+test('a message sent while a worker starts again after its Claude Code ended by itself waits for the new start', async () => {
+  // An account command that takes a while, so each start of Claude Code does.
+  const config = process.env.CLAUDE_CONFIG_DIR ?? ''
+  setAccountRule(home, { command: `sleep 2; echo ${quote(config)}` })
+  const id = await add('first')
+  await reaches(id, 'succeeded')
+  await settled(id)
+  endClaude(id) // a crash, a person's /exit, a tool that switches accounts outside nod
+  await until(() => Terminals.of(home).option(sessionName(id), 'nod_restarting') !== '')
+  await tell(ledger, home, id, 'second')
+  await reaches(id, 'succeeded')
+  await until(() => entries('turn')[1])
+  expect(entries('launch').map((l) => [l.resumed, l.prompt])).toEqual([
+    [false, 'first'],
+    [true, 'second'],
+  ])
+  expect(entries('turn').map((t) => t.message)).toEqual(['first', 'second'])
+}, 40_000)
+
+test('a failed check whose Claude Code ended while nod checked it is a turn cut off, not a retry no one runs', async () => {
+  const id = await add('review-slow review-strict: write it')
+  await until(() => entries('review')[0])
+  endClaude(id) // its Stop hook goes on checking
+  const decision = await until(() => ledger.decisions(id).find((d) => d.reason === 'interrupted'))
+  expect(decision.question).toContain('the failed check nod sent back reached no one')
+  expect(ledger.attempts(id).map((a) => [a.kind, a.outcome, a.checkResult])).toEqual([
+    ['start', 'succeeded', 'failed'],
+    ['retry', 'error', null],
+  ])
+  expect(status(id)).toBe('needs_decision')
+}, 30_000)
+
+test('closing a worker whose Claude Code waits on a trust check to start again does not wait for that check', async () => {
+  const id = await add('first')
+  await reaches(id, 'succeeded')
+  await settled(id)
+  // Its next start finds nod's work folder not trusted yet, and Claude Code there never starts.
+  rmSync(trustedFile(home, process.env.CLAUDE_CONFIG_DIR ?? null))
+  writeFileSync(join(home, 'fake-slow-start'), '')
+  endClaude(id)
+  // The fake gives a session nod starts without an ID (the trust check's) the ID `missing`.
+  await until(() => entries('launch').some((l) => l.sessionId === 'missing'))
+  await Terminals.of(home).close(sessionName(id))
+  expect(Terminals.of(home).alive(sessionName(id))).toBe(false)
+}, 30_000)
+
+test('a message for a worker showing a permission dialog waits for that decision, since its Enter would answer the dialog', async () => {
+  const id = await add('need-permission')
+  const decision = await until(() => ledger.decisions(id)[0])
+  await expect(tell(ledger, home, id, 'also this')).rejects.toThrow(
+    `answer permission decision #${decision.id} first`,
+  )
+  await answer(ledger, home, decision.id, 'yes', 'human')
+  await reaches(id, 'succeeded')
+  expect(entries('turn').map((t) => t.message)).toEqual(['need-permission'])
+  expect(ledger.attempts(id).map((a) => [a.kind, a.summary])).toEqual([['start', 'allowed']])
+})
+
+test('a message told to a worker in the middle of a turn goes into that turn, and the review hears it', async () => {
+  const id = await add('slow: write it')
+  await until(() => entries('turn')[0])
+  await tell(ledger, home, id, 'use tabs')
+  await reaches(id, 'succeeded')
+  expect(entries('heard').map((h) => h.message)).toEqual(['use tabs'])
+  expect(ledger.attempts(id).map((a) => a.kind)).toEqual(['start'])
+  expect(entries('review')[0]?.message).toContain('later words win:\n- use tabs\n')
+}, 30_000)
