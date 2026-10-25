@@ -1,6 +1,6 @@
 import { createFileRoute, Link, useRouter } from '@tanstack/react-router'
 import { createServerFn } from '@tanstack/react-start'
-import { useState } from 'react'
+import { useLayoutEffect, useRef, useState } from 'react'
 import type { Decision } from '../../../src/ledger'
 import type { Message } from '../nod.server'
 import { detail, send } from '../nod.server'
@@ -206,7 +206,14 @@ function TaskPage() {
               <pre className="screen">{screen}</pre>
             </div>
           )}
-          {canSend && <Composer taskId={task.id} open={decisions.find((d) => d.answer === null)} />}
+          {/* Keyed, as moving to another task keeps this page: what was written does not go along. */}
+          {canSend && (
+            <Composer
+              key={task.id}
+              taskId={task.id}
+              open={decisions.find((d) => d.answer === null)}
+            />
+          )}
           {screen !== null && (
             <p className="muted small">
               or in a terminal: <code>nod attach {task.id}</code>
@@ -221,19 +228,31 @@ function TaskPage() {
 // These decisions take yes or no; for trust and rule anything but yes ends the task, so they get
 // buttons instead of a text box.
 const YES_OR_NO = new Set(['permission', 'trust', 'rule'])
+// How long the buttons wait after the open decision changed under them.
+const CHANGED_MS = 1000
 
 function Composer({ taskId, open }: { taskId: number; open: Decision | undefined }) {
   const router = useRouter()
   const [text, setText] = useState('')
+  // The decision the text was begun for, or null for a message. The page reloads under the person
+  // as they write, so a decision that opens or closes meanwhile must not take the text.
+  const [aim, setAim] = useState<number | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const now = open?.id ?? null
+  // When the open decision last changed on this page. A click just then was aimed at the one
+  // before, so it must not answer the one that took its place.
+  const changed = useRef({ id: now, at: 0 })
+  useLayoutEffect(() => {
+    if (changed.current.id !== now) changed.current = { id: now, at: Date.now() }
+  }, [now])
 
-  const submit = async (reply: string) => {
+  const submit = async (reply: string, decisionId: number | null, sent = () => {}) => {
     setBusy(true)
     setError(null)
     try {
-      await sendMessage({ data: { taskId, decisionId: open?.id ?? null, text: reply } })
-      setText('')
+      await sendMessage({ data: { taskId, decisionId, text: reply } })
+      sent()
       await router.invalidate()
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
@@ -241,13 +260,40 @@ function Composer({ taskId, open }: { taskId: number; open: Decision | undefined
       setBusy(false)
     }
   }
+  const write = (value: string) => {
+    if (text === '') setAim(now)
+    setText(value)
+  }
+  // Sends the text to what it was begun for; when that changed, says so, and sends to what is open
+  // now only when asked again.
+  const sendText = () => {
+    // ⌘↵ is not a disabled button: pressed again while the message is on its way, it waits.
+    if (busy || text.trim() === '') return
+    if (aim !== now) {
+      setAim(now)
+      setError(
+        now === null
+          ? `Decision #${aim} closed while you wrote. Send again to message the worker.`
+          : `Decision #${now} opened while you wrote. Send again to answer it.`,
+      )
+      return
+    }
+    void submit(text, aim, () => setText(''))
+  }
+  const press = (reply: string, d: Decision) => {
+    if (Date.now() - changed.current.at < CHANGED_MS) {
+      setError(`Decision #${d.id} just opened. Read it, then answer.`)
+      return
+    }
+    void submit(reply, d.id)
+  }
 
   return (
     <form
       className="composer"
       onSubmit={(e) => {
         e.preventDefault()
-        if (text.trim() !== '') void submit(text)
+        sendText()
       }}
     >
       {open !== undefined && (
@@ -257,14 +303,14 @@ function Composer({ taskId, open }: { taskId: number; open: Decision | undefined
       )}
       {open !== undefined && YES_OR_NO.has(open.reason) ? (
         <div className="composer-actions">
-          <button type="button" disabled={busy} onClick={() => void submit('yes')}>
+          <button type="button" disabled={busy} onClick={() => press('yes', open)}>
             Yes
           </button>
           <button
             type="button"
             className="secondary"
             disabled={busy}
-            onClick={() => void submit('no')}
+            onClick={() => press('no', open)}
           >
             {open.reason === 'permission' ? 'No' : 'No — end the task'}
           </button>
@@ -275,12 +321,12 @@ function Composer({ taskId, open }: { taskId: number; open: Decision | undefined
             value={text}
             rows={3}
             placeholder={open === undefined ? 'Message the worker…' : 'Your answer…'}
-            onChange={(e) => setText(e.target.value)}
+            onChange={(e) => write(e.target.value)}
             onKeyDown={(e) => {
               // ⌘/Ctrl+Enter sends; plain Enter stays a newline, and is safe mid-IME composition.
               if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && !e.nativeEvent.isComposing) {
                 e.preventDefault()
-                if (text.trim() !== '') void submit(text)
+                sendText()
               }
             }}
           />

@@ -394,6 +394,12 @@ function focusStep(items: HTMLElement[], from: Element | null, step: number) {
 export const focusRow = (from: HTMLElement | null, step: number) =>
   focusStep(shownRows(), from, step)
 
+// When the refresh last took away the row that had the focus and handed it on. A one-letter key
+// pressed just then was meant for the row that went, so for a moment the rows ignore them.
+let handedAt = 0
+const HANDED_MS = 1000
+const justHanded = () => Date.now() - handedAt < HANDED_MS
+
 // A todo on one line, as in Mindwtr: the title unfolds its notes and details, the status menu moves
 // it to another list or finishes it, the star picks it for the day's focus, and the "…" menu has
 // the rest. There is no one-click circle, so a stray click finishes nothing. The row's keys
@@ -413,6 +419,13 @@ export function TodoRow({
   const [open, setOpen] = useState(false)
   const row = useRef<HTMLDivElement>(null)
   const title = useRef<HTMLButtonElement>(null)
+  // When a change made here last finished, Infinity while one is on its way: the row leaving then,
+  // or just after, when a later refresh brings the change, is its own doing.
+  const changedAt = useRef(0)
+  useLayoutEffect(() => {
+    if (busy) changedAt.current = Number.POSITIVE_INFINITY
+    else if (changedAt.current === Number.POSITIVE_INFINITY) changedAt.current = Date.now()
+  }, [busy])
   // A row leaving the page, its todo moved here or the refresh taking it away, hands the focus in it
   // on to the next row (or the one before). React runs this before it takes the row out, so the
   // rows are still there to count; a move that keeps the row, or fails, leaves the focus be.
@@ -421,6 +434,7 @@ export function TodoRow({
     const own = title.current
     return () => {
       if (el === null || own === null || !el.contains(document.activeElement)) return
+      if (Date.now() - changedAt.current >= HANDED_MS) handedAt = Date.now()
       const rows = shownRows()
       const i = rows.indexOf(own)
       rows[i + 1 < rows.length ? i + 1 : i - 1]?.focus()
@@ -433,10 +447,11 @@ export function TodoRow({
       down: () => focusRow(el, 1),
       up: () => focusRow(el, -1),
       done: () => {
-        if (t.status !== 'done') move('done')
+        if (t.status !== 'done' && !justHanded()) move('done')
       },
       // As a click on the badge does, with focus on the current status.
       status: () => {
+        if (justHanded()) return
         row.current?.querySelector<HTMLButtonElement>('.status-pill')?.click()
         row.current?.querySelector<HTMLElement>('.status-option[aria-selected="true"]')?.focus()
       },

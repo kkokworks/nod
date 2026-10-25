@@ -52,12 +52,7 @@ function TodoDetail() {
       </div>
 
       {error !== null && <div className="banner">{error}</div>}
-      {edit ? (
-        // A recorded change remounts the form, so it shows what the ledger now holds.
-        <EditForm key={page.changes.length} page={page} />
-      ) : (
-        <TodoFacts t={todo} />
-      )}
+      {edit ? <EditForm key={todo.id} page={page} /> : <TodoFacts t={todo} />}
 
       {page.links.length > 0 && (
         <>
@@ -109,11 +104,16 @@ const datePart = (when: string | null) => when?.slice(0, 10) ?? ''
 const timePart = (when: string | null) => when?.slice(11, 16) ?? ''
 const join = (date: string, time: string) =>
   date === '' ? '' : time === '' ? date : `${date} ${time}`
+// The edit's fields the form shows as two.
+const PAIRS: Record<string, string[]> = {
+  due: ['dueDate', 'dueTime'],
+  scheduled: ['onDate', 'onTime'],
+}
 
-// Every field at once, as `nod todo set` takes them; the ledger records only what changed.
+// The fields the person changed, as `nod todo set` takes them.
 function EditForm({ page }: { page: TodoPage }) {
   const { todo } = page
-  const [f, setF] = useState({
+  const held = {
     title: todo.title,
     status: todo.status,
     projectId: todo.projectId === null ? '' : String(todo.projectId),
@@ -127,15 +127,32 @@ function EditForm({ page }: { page: TodoPage }) {
     repeat: todo.repeat ?? '',
     focus: todo.focus ?? '',
     notes: todo.notes ?? '',
-  })
+  }
+  // Only the fields the person changed, over what the ledger holds now: a change from elsewhere,
+  // or a line added below, shows in the others and leaves what is being typed alone.
+  const [typed, setTyped] = useState<Partial<typeof held>>({})
+  const f = { ...held, ...typed }
+  // How many changes the ledger had when the person began, to say when it changed under them.
+  const [began, setBegan] = useState(page.changes.length)
   const [note, setNote] = useState('')
   const { busy, error, run } = useChange()
   const navigate = useNavigate()
   const done = () => navigate({ to: '/todos/$id', params: { id: String(todo.id) }, search: {} })
-  const set = (field: keyof typeof f) => (e: { target: { value: string } }) =>
-    setF({ ...f, [field]: e.target.value })
+  const set = (field: keyof typeof f) => (e: { target: { value: string } }) => {
+    if (Object.keys(typed).length === 0) setBegan(page.changes.length)
+    setTyped({ ...typed, [field]: e.target.value })
+  }
   const save = (edit: RawEdit) => run(() => changeTodo({ data: { id: todo.id, edit } }))
-  const all: RawEdit = {
+  // A line added below notes being rewritten goes below what is typed too, or saving would drop it.
+  const add = (line: string) => {
+    setTyped(({ notes, ...rest }) =>
+      notes === undefined
+        ? rest
+        : { ...rest, notes: [notes, line.trim()].filter(Boolean).join('\n') },
+    )
+    setNote('')
+  }
+  const every: RawEdit = {
     title: f.title,
     status: f.status,
     projectId: f.projectId === '' ? null : Number(f.projectId),
@@ -148,16 +165,27 @@ function EditForm({ page }: { page: TodoPage }) {
     focus: f.focus,
     notes: f.notes,
   }
+  // Only those: the others may have changed in the ledger since the page last reloaded, and
+  // sending them would put the old values back.
+  const changed = Object.fromEntries(
+    Object.entries(every).filter(([key]) => (PAIRS[key] ?? [key]).some((field) => field in typed)),
+  ) as RawEdit
   return (
     <form
       className="composer todo-form"
       onSubmit={(e) => {
         e.preventDefault()
-        void save(all).then((ok) => {
+        void save(changed).then((ok) => {
           if (ok) void done()
         })
       }}
     >
+      {Object.keys(typed).length > 0 && page.changes.length !== began && (
+        <div className="banner wide">
+          This todo changed while you were editing; the other fields show it. Save keeps what you
+          typed.
+        </div>
+      )}
       <label className="wide">
         Title
         <input value={f.title} onChange={set('title')} />
@@ -243,7 +271,7 @@ function EditForm({ page }: { page: TodoPage }) {
         <button
           type="button"
           disabled={busy || note.trim() === ''}
-          onClick={() => void save({ addNote: note }).then((ok) => ok && setNote(''))}
+          onClick={() => void save({ addNote: note }).then((ok) => ok && add(note))}
         >
           Add
         </button>

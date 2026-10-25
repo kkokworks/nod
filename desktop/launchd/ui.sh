@@ -25,28 +25,35 @@ install)
   }
   (cd "$ui" && "$bun" install && "$bun" run build)
   mkdir -p "$(dirname "$plist")" "$(dirname "$log")"
-  cp "$here/nod-ui.plist" "$plist"
+  # Made aside and moved in last, so a failure leaves the agent as it was, not half made for the
+  # next login to load.
+  new=$(mktemp "${TMPDIR:-/tmp}/nod-ui-plist.XXXXXX")
+  saved=$(mktemp "${TMPDIR:-/tmp}/nod-ui-env.XXXXXX")
+  trap 'rm -f "$new" "$saved"' EXIT
+  cp "$here/nod-ui.plist" "$new"
   # -replace on an array index inserts, so the sample's bun comes out first.
-  plutil -remove ProgramArguments.0 "$plist"
-  plutil -insert ProgramArguments.0 -string "$bun" "$plist"
-  plutil -replace WorkingDirectory -string "$ui" "$plist"
-  plutil -replace EnvironmentVariables.PATH -string "$PATH" "$plist"
-  plutil -replace StandardOutPath -string "$log" "$plist"
-  plutil -replace StandardErrorPath -string "$log" "$plist"
+  plutil -remove ProgramArguments.0 "$new"
+  plutil -insert ProgramArguments.0 -string "$bun" "$new"
+  plutil -replace WorkingDirectory -string "$ui" "$new"
+  plutil -replace EnvironmentVariables.PATH -string "$PATH" "$new"
+  plutil -replace StandardOutPath -string "$log" "$new"
+  plutil -replace StandardErrorPath -string "$log" "$new"
   for name in NOD_HOME CLAUDE_CONFIG_DIR; do
     value=$(printenv "$name" || true)
     if [ -n "$value" ]; then
-      plutil -replace "EnvironmentVariables.$name" -string "$value" "$plist"
+      plutil -replace "EnvironmentVariables.$name" -string "$value" "$new"
     fi
   done
   # And what else a worker gets of this shell but secrets (savedEnv): proxies, locale, TMUX_TMPDIR.
+  # Through a file, not a pipe: sh has no pipefail, so a pipe would hide bun failing.
   src=$(cd "$here/../../src" && pwd)
   "$bun" -e "import { savedEnv } from '$src/worker.ts'
-for (const [name, value] of Object.entries(savedEnv())) console.log(name + '\t' + value)" |
-    while IFS="$(printf '\t')" read -r name value; do
-      plutil -replace "EnvironmentVariables.$name" -string "$value" "$plist"
-    done
-  chmod 600 "$plist"
+for (const [name, value] of Object.entries(savedEnv())) console.log(name + '\t' + value)" >"$saved"
+  while IFS="$(printf '\t')" read -r name value; do
+    plutil -replace "EnvironmentVariables.$name" -string "$value" "$new"
+  done <"$saved"
+  chmod 600 "$new"
+  mv "$new" "$plist"
   launchctl bootout "$domain/$label" 2>/dev/null || true
   launchctl bootstrap "$domain" "$plist"
   echo "nod UI server: http://127.0.0.1:4800 (agent $plist, log $log)"

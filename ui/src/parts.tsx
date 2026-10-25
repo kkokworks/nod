@@ -1,17 +1,41 @@
 import { Link } from '@tanstack/react-router'
-import type { ReactNode } from 'react'
-import ReactMarkdown from 'react-markdown'
+import { type ComponentProps, createContext, type ReactNode, useContext } from 'react'
+import ReactMarkdown, { type ExtraProps } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import type { Decision } from '../../src/ledger'
 import type { TaskRow } from './nod.server'
 
 // Briefs, reports and questions are Markdown that workers and people wrote. react-markdown leaves
 // raw HTML out and drops unsafe link protocols by default, so this text cannot run in the page.
+// An image would load as the page opens, its address carrying whatever a worker put there past
+// its sandbox, so it shows as a link to follow by hand; in a link, as a badge is, it is that link's
+// text, since an anchor in an anchor would split the link.
+const InLink = createContext(false)
+const a = ({ node: _, ...props }: ComponentProps<'a'> & ExtraProps) => (
+  <InLink.Provider value>
+    <a {...props} />
+  </InLink.Provider>
+)
+function Img({ src, alt }: { src?: string; alt?: string }) {
+  const text = alt || src
+  return useContext(InLink) ? (
+    text
+  ) : (
+    <a href={src} target="_blank" rel="noreferrer">
+      {text}
+    </a>
+  )
+}
+
 export function Markdown({ text, inline = false }: { text: string; inline?: boolean }) {
   const md = (
     <ReactMarkdown
       remarkPlugins={[remarkGfm]}
-      components={inline ? { p: ({ children }: { children?: ReactNode }) => children } : {}}
+      components={
+        inline
+          ? { a, img: Img, p: ({ children }: { children?: ReactNode }) => children }
+          : { a, img: Img }
+      }
     >
       {text}
     </ReactMarkdown>
