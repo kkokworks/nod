@@ -17,6 +17,7 @@ import { collect } from './gc'
 import { Ledger, type Task, type TaskStatus } from './ledger'
 import { notify } from './notify'
 import { DIFF_LIMIT, reviewBrief } from './review'
+import { retroBrief } from './rules'
 import { quote, Terminals } from './tmux'
 import { Todos } from './todos'
 import { addTrigger, tick } from './triggers'
@@ -995,6 +996,100 @@ test('a notify that cannot run changes nothing else', async () => {
   writeFileSync(join(home, 'notify'), '') // not executable
   const task = { id: 1, brief: 'x', issue: null }
   await expect(notify(home, { event: 'cancelled', task })).resolves.toBeUndefined()
+})
+
+test('a retrospective hears the repo and check of its task, that the check runs outside the sandbox, and where each kind of fix goes', () => {
+  const task = (repo: string | null, checkCmd: string | null): Task =>
+    ledger.get(
+      ledger.add({
+        brief: 'fix it',
+        repo,
+        branch: repo === null ? null : 'feat/fix',
+        checkCmd,
+        model: null,
+        after: [],
+        triggerId: null,
+        issue: null,
+      }),
+    )
+  // Read as one line, so rewrapping the brief does not break the checks.
+  const brief = (t: Task): string =>
+    retroBrief(ledger, t, workerPrompt(ledger, null)).replaceAll('\n', ' ')
+  const inRepo = brief(task('/repo', 'bun test'))
+  expect(inRepo).toContain('Repository: /repo')
+  expect(inRepo).toContain('Acceptance check: > bun test')
+  // A brief in another language must not turn `none` into a rule nod would ask about.
+  expect(inRepo).toContain('keep `none` in English')
+  // A check on more than one line keeps its lines, each quoted as data.
+  const twoLines = retroBrief(ledger, task('/repo', 'bun test\nbun run lint'), '')
+  expect(twoLines).toContain('Acceptance check:\n> bun test\n> bun run lint\n')
+  // A test the sandbox kept the worker from running still ran in the check.
+  expect(inRepo).toContain("the acceptance check outside the worker's sandbox")
+  expect(inRepo).toContain('every future worker, on every task')
+  // It starts from what happened, not from advice that fits any task.
+  expect(inRepo).toContain('First find the turn or decision where the trouble shows')
+  // A fix for nod or the task's check goes to the person, not to every worker as a workaround.
+  expect(inRepo).toContain('no rule that works around it')
+  expect(inRepo).toContain("Put it in the person's inbox with one `NOD: in` line")
+  const alone = brief(task(null, null))
+  expect(alone).toContain('Repository: none')
+  expect(alone).toContain('Acceptance check: none')
+})
+
+test('a retrospective that sends its fix to the inbox ends as todo, and one that also proposes a rule keeps the todo', async () => {
+  const todos = new Todos(ledger)
+  const inbox = (): string[] =>
+    todos
+      .list({
+        statuses: ['inbox'],
+        context: null,
+        projectId: null,
+        hideSomedayProjects: false,
+        day: null,
+      })
+      .map((t) => t.title)
+  // A retrospective of a new task, its turn open in `session`, stopping with `report`.
+  const retroStops = async (session: string, report: string): Promise<[number, number]> => {
+    const of = ledger.add({
+      brief: 'x',
+      repo: null,
+      branch: null,
+      checkCmd: null,
+      model: null,
+      after: [],
+      triggerId: null,
+      issue: null,
+    })
+    const retro = ledger.addRetro(ledger.get(of), 'look back')
+    ledger.startAttempt({
+      taskId: retro,
+      kind: 'start',
+      decisionId: null,
+      sessionId: session,
+      prompt: 'look back',
+    })
+    await onStop(ledger, home, {
+      session_id: session,
+      last_assistant_message: report,
+      stop_hook_active: false,
+    })
+    return [of, retro]
+  }
+  const [of, routed] = await retroStops(
+    'routed',
+    'nod lost the message.\nNOD: in {"title": "Fix nod"}\nNOD: done | none',
+  )
+  expect(status(routed)).toBe('succeeded')
+  expect(ledger.decisions(routed)).toEqual([])
+  expect(ledger.retroFor(of)).toMatchObject({ rule: null, outcome: 'todo' })
+  expect(inbox()).toEqual(['Fix nod'])
+  // While the person decides on the rule, the todo is already in.
+  const [, both] = await retroStops(
+    'both',
+    'NOD: in {"title": "Add a check"}\nNOD: done | check first',
+  )
+  expect(ledger.decisions(both).map((d) => d.reason)).toEqual(['rule'])
+  expect(inbox()).toEqual(['Fix nod', 'Add a check'])
 })
 
 test('a worker learns its task through NOD_TASK, so the todos it changes name it', () => {
