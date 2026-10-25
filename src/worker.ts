@@ -1196,12 +1196,8 @@ export async function keepWorker(
     }
     // A restart ends Claude Code between turns, or with deliver's message still to come; a turn
     // open with no message left for the new start began in between, and was cut off.
-    if (!asked) {
-      if (!up) quick++
-      cut ??= open
-    } else if (!existsSync(promptFile(home, taskId))) {
-      cut ??= open
-    }
+    if (!asked && !up) quick++
+    if (!asked || !existsSync(promptFile(home, taskId))) cut ??= open
     if (quick >= MAX_QUICK_EXITS) {
       await giveUp(ledger, home, taskId, cut, failure)
       return
