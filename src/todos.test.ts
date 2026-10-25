@@ -1,4 +1,4 @@
-import { afterAll, expect, test } from 'bun:test'
+import { afterAll, expect, setSystemTime, test } from 'bun:test'
 import { tempDirs } from '../test/tmp'
 import { Ledger, type NewTask } from './ledger'
 import { OPEN, parseRef, type TodoEdit, type TodoFilter, Todos } from './todos'
@@ -132,13 +132,13 @@ test('a watch is only for a waiting todo, and passing it makes the todo next aga
   expect(ids(todos.watched())).toEqual([t.id])
 
   // Its watch changed while the command ran: that result is not for this watch.
-  expect(todos.endWatch(t.id, 'test -f other', 'passed', 'nod')).toBe(false)
-  expect(todos.endWatch(t.id, 'test -f pushed', 'passed', 'nod')).toBe(true)
+  expect(todos.endWatch(t.id, 'test -f other', 'passed', 'nod')).toBeNull()
+  expect(todos.endWatch(t.id, 'test -f pushed', 'passed', 'nod', true)).toEqual({ back: null })
   const back = todos.get(t.id)
   expect([back.status, back.waitingOn, back.watch]).toEqual(['next', null, null])
   expect(back.notes).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2} watch passed: test -f pushed$/)
   expect(todos.changes(t.id).at(-1)?.actor).toBe('nod')
-  expect(todos.endWatch(t.id, 'test -f pushed', 'passed', 'nod')).toBe(false)
+  expect(todos.endWatch(t.id, 'test -f pushed', 'passed', 'nod')).toBeNull()
   expect(todos.watched()).toEqual([])
 
   // Leaving waiting any other way forgets the watch too.
@@ -202,10 +202,18 @@ test('--back-to names the task that did the todo; a passing watch hands the todo
   expect(todos.set(t.id, { watch: null }, 'human').backTo).toBeNull()
   todos.set(t.id, { watch, backTo: did }, 'human')
   expect(todos.set(t.id, { status: 'next' }, 'human').backTo).toBeNull()
+  // The task is the one named when the watch ends: none for a watch that cannot run, nor once the
+  // person took it back while the command ran.
+  todos.set(t.id, { status: 'waiting', watch, backTo: did }, 'human')
+  expect(todos.endWatch(t.id, watch, 'cannot run (gone)', 'nod')).toEqual({ back: null })
+  todos.set(t.id, { status: 'waiting', watch, backTo: did }, 'human')
+  todos.set(t.id, { backTo: null }, 'human')
+  expect(todos.endWatch(t.id, watch, 'passed', 'nod', true)).toEqual({ back: null })
+  expect(todos.get(t.id).status).toBe('next')
 
   Bun.sleepSync(2) // so it starts waiting after the task ended, on a millisecond clock
   todos.set(t.id, { status: 'waiting', waitingOn: 'Kim', watch, backTo: did }, 'human')
-  expect(todos.endWatch(t.id, watch, 'passed', 'nod', did)).toBe(true)
+  expect(todos.endWatch(t.id, watch, 'passed', 'nod', true)).toEqual({ back: did })
   const back = todos.get(t.id)
   expect([back.status, back.waitingOn, back.watch, back.backTo]).toEqual([
     'waiting',
@@ -246,9 +254,27 @@ test('--back-to takes only the latest task, the one whose end moves the todo', (
     `task #${earlier} is not the latest task of t${t.id}`,
   )
   todos.set(t.id, { status: 'waiting', watch, backTo: latest }, 'human')
-  todos.endWatch(t.id, watch, 'passed', 'nod', latest)
+  todos.endWatch(t.id, watch, 'passed', 'nod', true)
   ended(latest)
   expect(todos.get(t.id).status).toBe('done')
+})
+
+test('a watched todo waits on its watch, not on a task told more after it began waiting', () => {
+  const { ledger, todos } = books()
+  const t = captured(todos, 'Get the review answered')
+  const did = todos.delegate(t.id, task, 'human')
+  const ended = () => {
+    ledger.setRunning(did, `/work/${did}`)
+    ledger.succeed(did)
+    todos.followTasks('nod')
+  }
+  ended()
+  Bun.sleepSync(2) // so it starts waiting after the task ended, on a millisecond clock
+  const watch = 'test -f answered'
+  todos.set(t.id, { status: 'waiting', watch, backTo: did }, 'human')
+  Bun.sleepSync(2)
+  ended() // the person told the task something (nod tell), and it ended again
+  expect(todos.get(t.id)).toMatchObject({ status: 'waiting', watch, backTo: did })
 })
 
 test('an edit that fails changes nothing, links included', () => {
@@ -533,6 +559,24 @@ test('done makes the next one of a repeating todo, once; dropped ends it', () =>
   expect(() => todos.set(undated.id, { repeat: 'daily' }, 'human')).toThrow(
     'a repeating todo needs a due, on or start day',
   )
+})
+
+test('a monthly series keeps the day it was set on through short months', () => {
+  setSystemTime(new Date(2026, 0, 15, 12))
+  try {
+    const todos = fresh()
+    const edit: TodoEdit = { status: 'next', due: '2026-01-31', repeat: 'monthly' }
+    let t = todos.set(captured(todos, 'Pay the rent').id, edit, 'human')
+    const dues: (string | null)[] = []
+    for (let i = 0; i < 3; i += 1) {
+      todos.finish([t.id], 'done', 'human')
+      t = only(todos.list({ ...open, statuses: ['next'] }))
+      dues.push(t.due)
+    }
+    expect(dues).toEqual(['2026-02-28', '2026-03-31', '2026-04-30'])
+  } finally {
+    setSystemTime()
+  }
 })
 
 test('a day holds what is overdue, scheduled, due and focused, each open todo once', () => {

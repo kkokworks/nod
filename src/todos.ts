@@ -421,14 +421,16 @@ export class Todos {
 
   // Moves each todo waiting on nod along once none of its tasks can go on: done when the last one
   // succeeded, back to next when it was cancelled, so the person takes it back. Every such todo is
-  // looked at, so those of tasks a cancel cascaded to move too.
+  // looked at, so those of tasks a cancel cascaded to move too. One with a watch waits on its watch,
+  // even when its task is told more and ends again.
   followTasks(actor: string): void {
     const waiting = this.run(
       q
         .selectFrom('todos')
         .selectAll()
         .where('status', '=', 'waiting')
-        .where('waitingOn', 'is', null),
+        .where('waitingOn', 'is', null)
+        .where('watch', 'is', null),
     )
     for (const todo of waiting) {
       const tasks = this.ledger.tasksOf(todo.id)
@@ -472,25 +474,27 @@ export class Todos {
   }
 
   // Makes a watched todo a next action again once its watch has ended, with a line in its notes
-  // saying when and how: `passed`, or `cannot run (<why>)`. Handed `back` to a task, it waits on
-  // that task instead, which moves it on when it ends (followTasks). A todo that left waiting or got
-  // another watch while the command ran is left as it is; false says so.
+  // saying when and how: `passed`, or `cannot run (<why>)`. One that passed with a task to go back
+  // to waits on that task instead, which moves it on when it ends (followTasks); the task is the
+  // one it names now, not when the command started, so it is returned for the caller to tell. A
+  // todo that left waiting or got another watch while the command ran is left as it is; null says so.
   endWatch(
     id: number,
     watch: string,
     outcome: string,
     actor: string,
-    back: number | null = null,
-  ): boolean {
+    passed = false,
+  ): { back: number | null } | null {
     return this.db.transaction(() => {
       const t = this.get(id)
-      if (t.status !== 'waiting' || t.watch !== watch) return false
+      if (t.status !== 'waiting' || t.watch !== watch) return null
+      const back = passed ? t.backTo : null
       const to = back === null ? '' : `, back to task #${back}`
       const line = `${localTime(new Date())} watch ${outcome}${to}: ${watch}`
       const notes = [t.notes, line].filter((x) => x !== null).join('\n')
       const edit: TodoEdit = back === null ? { status: 'next' } : { waitingOn: null, watch: null }
       this.set(id, { ...edit, notes }, actor)
-      return true
+      return { back }
     })()
   }
 
@@ -787,7 +791,7 @@ export class Todos {
       status: 'next' as const,
       projectId: done.projectId,
       context: done.context,
-      ...nextDates(done, done.repeat, localDay(new Date())),
+      ...nextDates(done, done.repeat, localDay(new Date()), this.earlier(done)),
       repeat: done.repeat,
       source: done.source,
       sourceKey,
@@ -800,6 +804,27 @@ export class Todos {
         .returning('id'),
     )
     this.recordTodo(next, actor, diff({}, fields), at)
+  }
+
+  // The todos of a monthly series before this one, latest first, through the key each next one
+  // has (repeatNext); only a monthly series needs them (nextDates).
+  // ponytail: reads the whole series though a date asks at most a few back; a series of years is
+  // a few dozen rows.
+  private earlier(t: Todo): Todo[] {
+    if (t.repeat !== 'monthly') return []
+    const before: Todo[] = []
+    for (let at = t; ; ) {
+      // A next one is made after the one it follows, so the walk only goes down, and ends.
+      const id = Number(/^t(\d+)$/.exec(at.sourceKey ?? '')?.[1])
+      if (!(id < at.id)) break
+      const prev = this.first(
+        q.selectFrom('todos').selectAll().where('id', '=', id).where('source', '=', at.source),
+      )
+      if (prev === null) break
+      before.push(prev)
+      at = prev
+    }
+    return before
   }
 
   private recordTodo(id: number, actor: string, change: Change['change'], at: string): void {

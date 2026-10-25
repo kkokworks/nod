@@ -4,7 +4,7 @@ import { z } from 'zod'
 import { localTime } from './days'
 import { sweep } from './done'
 import { Ledger, type Trigger } from './ledger'
-import { notify, taskRef } from './notify'
+import { notify, runGroup, taskRef } from './notify'
 import { pullRequests } from './prs'
 import { homeId } from './tmux'
 import { type Todo, Todos } from './todos'
@@ -163,27 +163,30 @@ async function checkWatches(ledger: Ledger, home: string): Promise<number[]> {
     todos.recordCheck(t.id, t.watch, code, output)
     if (code !== 0 && !cannotRun(code)) continue
     const outcome = code === 0 ? 'passed' : `cannot run (${oneLine(output, 200)})`
-    const back = code === 0 ? t.backTo : null
-    if (!todos.endWatch(t.id, t.watch, outcome, SELF, back)) continue
+    const ended = todos.endWatch(t.id, t.watch, outcome, SELF, code === 0)
+    if (ended === null) continue
+    const { back } = ended
     const todo = { id: t.id, title: t.title }
     if (code === 0) {
       passed.push(t.id)
-      await notify(home, { event: 'watch_passed', todo, watch: t.watch })
-      if (back === null) continue
-      try {
-        await tell(ledger, home, back, carryOn(t, output))
-      } catch (error) {
-        // The task could not carry on (its transcript gone after gc, its session failing to start),
-        // so the person takes the todo, as when no task is named.
-        const line = `${localTime(new Date())} task #${back} could not carry on: ${oneLine(message(error), 200)}`
-        const notes = [todos.get(t.id).notes, line].filter((x) => x !== null).join('\n')
-        todos.set(t.id, { status: 'next', notes }, SELF)
-        await notify(home, {
-          event: 'error',
-          task: taskRef(ledger.get(back)),
-          error: message(error),
-        })
+      // The task is told first: a todo handed back to it waits on nothing until it is.
+      if (back !== null) {
+        try {
+          await tell(ledger, home, back, carryOn(t, output))
+        } catch (error) {
+          // The task could not carry on (its transcript gone after gc, its session failing to
+          // start), so the person takes the todo, as when no task is named.
+          const line = `${localTime(new Date())} task #${back} could not carry on: ${oneLine(message(error), 200)}`
+          const notes = [todos.get(t.id).notes, line].filter((x) => x !== null).join('\n')
+          todos.set(t.id, { status: 'next', notes }, SELF)
+          await notify(home, {
+            event: 'error',
+            task: taskRef(ledger.get(back)),
+            error: message(error),
+          })
+        }
       }
+      await notify(home, { event: 'watch_passed', todo, watch: t.watch })
     } else {
       await notify(home, { event: 'watch_failed', todo, watch: t.watch, error: output })
     }
@@ -205,39 +208,15 @@ function carryOn(t: Todo & { watch: string }, output: string): string {
   ].join('\n')
 }
 
-// Runs a source or a watch in a process group of its own, so the timeout ends all of a pipeline.
-// Killing only `sh` leaves the rest holding its output open, and the wait goes on (measured).
-export async function shell(
+// Runs a source or a watch in a process group of its own, so the timeout ends all of a pipeline
+// and what it started (runGroup).
+export function shell(
   cmd: string,
   cwd: string,
   env: Record<string, string | undefined> = process.env,
   timeoutMs = SOURCE_TIMEOUT_MS,
 ): Promise<{ code: number; stdout: string; stderr: string }> {
-  const proc = Bun.spawn(['sh', '-c', cmd], {
-    cwd,
-    env,
-    stdin: 'ignore',
-    stdout: 'pipe',
-    stderr: 'pipe',
-    detached: true,
-  })
-  const timer = setTimeout(() => {
-    try {
-      process.kill(-proc.pid, 'SIGKILL')
-    } catch {
-      // The group has ended already.
-    }
-  }, timeoutMs)
-  try {
-    const [stdout, stderr, code] = await Promise.all([
-      new Response(proc.stdout).text(),
-      new Response(proc.stderr).text(),
-      proc.exited,
-    ])
-    return { code, stdout, stderr }
-  } finally {
-    clearTimeout(timer)
-  }
+  return runGroup(['sh', '-c', cmd], { cwd, env, timeoutMs })
 }
 
 async function addTasks(ledger: Ledger, home: string, t: Trigger): Promise<number[]> {

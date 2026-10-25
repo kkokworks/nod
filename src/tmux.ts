@@ -89,9 +89,11 @@ export class Terminals {
     return clients.exitCode === 0 && clients.stdout.toString().trim() !== ''
   }
 
-  // A bracketed paste keeps a multi-line message together; Enter then sends it.
+  // A bracketed paste keeps a multi-line message together; Enter then sends it. Control characters
+  // but newline and tab go first: a message may carry text from elsewhere (what a watch printed),
+  // and an escape in it (`ESC[201~`) could end the paste early and type the rest as keys.
   send(name: string, text: string): void {
-    this.tmux(['load-buffer', '-b', name, '-'], text)
+    this.tmux(['load-buffer', '-b', name, '-'], text.replace(/[^\P{Cc}\n\t]/gu, ''))
     this.tmux(['paste-buffer', '-p', '-r', '-d', '-b', name, '-t', `=${name}:`])
     this.keys(name, 'Enter')
   }

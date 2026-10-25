@@ -15,7 +15,7 @@ import { setAccountRule } from './account'
 import { collect } from './gc'
 import { Ledger, type Task, type TaskStatus } from './ledger'
 import { DIFF_LIMIT, reviewBrief } from './review'
-import { Terminals } from './tmux'
+import { quote, Terminals } from './tmux'
 import { Todos } from './todos'
 import { addTrigger, tick } from './triggers'
 import {
@@ -382,6 +382,63 @@ test('a watch with --back-to passes into that task, brought back after gc, which
   expect(given.status).toBe('next')
   expect(given.notes).toMatch(/task #\d+ could not carry on: .*transcript is gone/)
 })
+
+// A todo handed to a task that has succeeded, so the person's todo is done.
+async function didTodo(todos: Todos): Promise<{ todoId: number; taskId: number }> {
+  const { todo } = todos.capture(
+    { title: 'Get the review answered', notes: null, source: 'cli', sourceKey: null, url: null },
+    'human',
+  )
+  const taskId = todos.delegate(
+    todo.id,
+    {
+      brief: 'review it',
+      repo: null,
+      branch: null,
+      checkCmd: null,
+      model: null,
+      after: [],
+      triggerId: null,
+      issue: null,
+    },
+    'human',
+  )
+  await startTask(ledger, home, taskId)
+  await reaches(taskId, 'succeeded')
+  await until(() => todos.get(todo.id).status === 'done')
+  return { todoId: todo.id, taskId }
+}
+
+test('a notify that cannot run changes nothing else: the task succeeds, and a passing watch hands the todo back to it', async () => {
+  writeFileSync(join(home, 'notify'), '#!/bin/sh\nexit 0\n') // not executable
+  const todos = new Todos(ledger)
+  const { todoId, taskId } = await didTodo(todos)
+  todos.set(todoId, { status: 'waiting', watch: 'true', backTo: taskId }, 'human')
+  expect((await tick(ledger, home, new Date(), true)).passed).toEqual([todoId])
+  await until(() => todos.get(todoId).status === 'done')
+  expect(entries('turn').at(-1)?.message).toContain('its watch `true` passed')
+}, 30_000)
+
+test('a passing watch goes back to the task its todo names then, not when the watch started', async () => {
+  const todos = new Todos(ledger)
+  const { todoId, taskId } = await didTodo(todos)
+  // While the watch runs, the person takes back the --back-to.
+  const cli = resolve(import.meta.dir, 'cli.ts')
+  const watch = `NOD_HOME=${quote(home)} ${quote(process.execPath)} ${quote(cli)} todo set t${todoId} --back-to ''`
+  todos.set(todoId, { status: 'waiting', watch, backTo: taskId }, 'human')
+  expect((await tick(ledger, home, new Date(), true)).passed).toEqual([todoId])
+  expect(todos.get(todoId)).toMatchObject({ status: 'next', backTo: null })
+  expect(todos.get(todoId).notes).not.toContain('back to task')
+  expect(ledger.attempts(taskId)).toHaveLength(1)
+}, 30_000)
+
+test('a message pastes without control characters, which could end the paste and type keys', async () => {
+  const id = await add('first')
+  await reaches(id, 'succeeded')
+  await tell(ledger, home, id, 'see\x1b[201~ this\x07\r\nand\tthat')
+  await reaches(id, 'succeeded')
+  expect(entries('turn').map((t) => t.message)).toEqual(['first', 'see[201~ this\nand\tthat'])
+}, 30_000)
 
 test('a stop from a session nod did not start changes nothing', async () => {
   const out = await onStop(ledger, home, {
