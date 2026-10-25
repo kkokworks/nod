@@ -150,6 +150,15 @@ export type Attempt = {
   finishedAt: string | null
 }
 
+// A message that went into the turn `attemptId` while it ran (deliver in worker.ts).
+export type Message = {
+  id: number
+  taskId: number
+  attemptId: number
+  text: string
+  createdAt: string
+}
+
 export type Decision = {
   id: number
   taskId: number
@@ -158,6 +167,8 @@ export type Decision = {
   question: string
   answer: string | null
   createdAt: string
+  // When a person's answer reached a turn waiting on it; null while open, and for one closed while
+  // no turn waited on it (dismiss).
   answeredAt: string | null
 }
 
@@ -416,6 +427,18 @@ export const MIGRATIONS = [
   // v19: the account (Claude config dir) a worker's Claude Code started with, so nod can tell when
   // the current account is another one.
   'alter table tasks add column account text;',
+  // v20: what a person told a worker in the middle of a turn, which goes into that turn and so
+  // starts no attempt of its own, kept for the reviewer with what they said in their own turns.
+  `
+  create table messages (
+    id integer primary key,
+    task_id integer not null references tasks(id),
+    attempt_id integer not null references attempts(id),
+    text text not null,
+    created_at text not null
+  );
+  create index messages_task on messages(task_id);
+  `,
 ]
 // The migration that moves <home>/rules.md into the ledger, numbered as user_version counts.
 const RULES_FILE_MIGRATION = 17
@@ -430,6 +453,7 @@ type Tables = {
   triggerItems: { triggerId: number; key: string; taskId: number | null; seenAt: string }
   attempts: Omit<Attempt, 'id'> & { id: Generated<number>; pid: number | null }
   decisions: Omit<Decision, 'id'> & { id: Generated<number> }
+  messages: Omit<Message, 'id'> & { id: Generated<number> }
   retros: Omit<Retro, 'id'> & { id: Generated<number> }
   rules: Omit<Rule, 'id'> & { id: Generated<number> }
   ruleChanges: { id: Generated<number>; ruleId: number; actor: string; change: string; at: string }
@@ -1022,6 +1046,28 @@ export class Ledger {
     )
   }
 
+  // Fails an attempt only while it is open, in one statement, so of two processes that find it open
+  // at once one gets it. Returns whether this one did.
+  failOpenAttempt(id: number, error: string): boolean {
+    const failed = this.first(
+      q
+        .updateTable('attempts')
+        .set({ outcome: 'error', error, finishedAt: now() })
+        .where('id', '=', id)
+        .where('finishedAt', 'is', null)
+        .returning('id'),
+    )
+    return failed !== null
+  }
+
+  addMessage(taskId: number, attemptId: number, text: string): void {
+    this.run(q.insertInto('messages').values({ taskId, attemptId, text, createdAt: now() }))
+  }
+
+  messages(taskId: number): Message[] {
+    return this.run(q.selectFrom('messages').selectAll().where('taskId', '=', taskId).orderBy('id'))
+  }
+
   recordCheck(id: number, passed: boolean, output: string): void {
     this.run(
       q
@@ -1079,22 +1125,32 @@ export class Ledger {
   }
 
   answer(decisionId: number, answer: string): void {
-    this.close(decisionId, answer, 'running')
+    this.close(decisionId, answer, 'running', now())
   }
 
   // The human ends the task instead of answering, so nothing counts it a success.
   drop(decisionId: number): void {
-    this.close(decisionId, '(dropped)', 'cancelled')
+    this.close(decisionId, '(dropped)', 'cancelled', now())
   }
 
-  private close(decisionId: number, answer: string, next: TaskStatus): void {
+  // Closes a decision no turn waits on: one nod closes as its worker goes on without it, or one a
+  // person answers or drops on a task that ended. No answer reaches a turn, so it has no answeredAt
+  // and the wait for answers (stats) leaves it out; the task stays as it is.
+  dismiss(decisionId: number, answer: string): void {
+    this.close(decisionId, answer, null, null)
+  }
+
+  private close(
+    decisionId: number,
+    answer: string,
+    next: TaskStatus | null,
+    answeredAt: string | null,
+  ): void {
     this.db.transaction(() => {
       const decision = this.decision(decisionId)
       if (decision.answer !== null) throw new Error(`decision ${decisionId} is already answered`)
-      this.run(
-        q.updateTable('decisions').set({ answer, answeredAt: now() }).where('id', '=', decisionId),
-      )
-      this.setStatus(decision.taskId, next, null)
+      this.run(q.updateTable('decisions').set({ answer, answeredAt }).where('id', '=', decisionId))
+      if (next !== null) this.setStatus(decision.taskId, next, null)
     })()
   }
 

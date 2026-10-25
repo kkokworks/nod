@@ -2,14 +2,18 @@
 // the reply, so context nod adds below cannot, then the hooks from --settings run as in Claude
 // Code, and a hook that blocks the stop starts a continuation. Between turns it reads what is typed
 // into its terminal. Started with no message, it waits for one. Like Claude Code, it keeps a
-// transcript in $CLAUDE_CONFIG_DIR (only when that is set, so a test never writes to the real one).
+// transcript in $CLAUDE_CONFIG_DIR (only when that is set, so a test never writes to the real one),
+// refuses a new session the ID of one it has a transcript of, and an option it does not know.
 // nod gives a worker a fixed environment, so the fake takes its switches from files in $NOD_HOME:
 // with `fake-untrusted`, a new session first shows the trust dialog, and with `fake-untrusted-again`
 // a resumed one does, as Claude Code asks about a repo once per account; with `fake-exit`, it exits
-// as it starts, as Claude Code does without a login. Every launch, with its account and the names
-// in its environment, and every turn is logged to $NOD_HOME/agent.log.
-import { appendFileSync, existsSync, mkdirSync, realpathSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+// as it starts, as Claude Code does without a login; with `fake-slow-start`, it never gets past its
+// start, as Claude Code waiting on a first-run screen. Every launch, with its account and the names
+// in its environment, every turn, and what a turn takes in while it runs is logged to
+// $NOD_HOME/agent.log.
+import { appendFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { projectFolder } from './projects'
 
 type Hooks = Record<string, { hooks: { command: string }[] }[]>
 
@@ -39,9 +43,13 @@ const VALUED = new Set([
 ])
 
 const args = process.argv.slice(2)
+// Like Claude Code (commander): before `--`, an argument that starts with `-` is an option; after
+// it, the prompt.
+const dashes = args.indexOf('--')
+const options = dashes === -1 ? args : args.slice(0, dashes)
 const flag = (name: string): string | null => {
-  const i = args.indexOf(name)
-  return i === -1 ? null : (args[i + 1] ?? null)
+  const i = options.indexOf(name)
+  return i === -1 ? null : (options[i + 1] ?? null)
 }
 const resumed = flag('--resume')
 const sessionId = resumed ?? flag('--session-id') ?? 'missing'
@@ -50,7 +58,10 @@ const home = process.env.NOD_HOME
 if (!home) throw new Error('NOD_HOME is not set')
 const log = (entry: object): void =>
   appendFileSync(join(home, 'agent.log'), `${JSON.stringify(entry)}\n`)
-const prompt = args.find((a, i) => !a.startsWith('--') && !VALUED.has(args[i - 1] ?? '')) ?? null
+const prompt =
+  dashes === -1
+    ? (options.find((a, i) => !a.startsWith('-') && !VALUED.has(options[i - 1] ?? '')) ?? null)
+    : (args[dashes + 1] ?? null)
 
 // Like `claude -p`, which nod runs as the reviewer: the prompt comes on stdin and the reply is
 // printed once. A brief with `review-strict` fails until ok.txt exists; `review-mute` gives no
@@ -117,13 +128,17 @@ async function runHooks(event: string, payload: object): Promise<string> {
   return out
 }
 
-// Where Claude Code keeps a session's transcript (sessionFolder in worker.ts).
-function keepTranscript(): void {
+// Where Claude Code keeps this session's transcript; null without a config dir.
+function transcript(): string | null {
   const config = process.env.CLAUDE_CONFIG_DIR
-  if (!config) return
-  const folder = join(config, 'projects', realpathSync(process.cwd()).replace(/[/.]/g, '-'))
-  mkdirSync(folder, { recursive: true })
-  appendFileSync(join(folder, `${sessionId}.jsonl`), '{}\n')
+  return config ? join(projectFolder(config, process.cwd()), `${sessionId}.jsonl`) : null
+}
+
+function keepTranscript(): void {
+  const file = transcript()
+  if (file === null) return
+  mkdirSync(dirname(file), { recursive: true })
+  appendFileSync(file, '{}\n')
 }
 
 async function turn(message: string, continuing: boolean): Promise<void> {
@@ -138,6 +153,10 @@ async function turn(message: string, continuing: boolean): Promise<void> {
     // Like Claude Code at a usage limit: the turn ends with StopFailure in place of Stop.
     await runHooks('StopFailure', { session_id: sessionId, error: 'rate_limit' })
     return
+  } else if (head.startsWith('slow')) {
+    // A turn that takes a while and, like Claude Code, takes in what is typed meanwhile.
+    await Bun.sleep(3000)
+    for (const input of inputs.splice(0)) log({ event: 'heard', sessionId, message: input })
   } else if (head.includes('need-permission')) {
     await runHooks('Notification', {
       session_id: sessionId,
@@ -193,7 +212,7 @@ async function turn(message: string, continuing: boolean): Promise<void> {
 }
 
 // Like Claude Code in a repo it does not trust: the dialog starts on "No, exit", Down moves to
-// "Yes", Enter picks, and the session starts only after "Yes".
+// "Yes", Enter picks, also after text pasted into it, and the session starts only after "Yes".
 async function trustDialog(): Promise<void> {
   let yes = false
   while (true) {
@@ -203,8 +222,8 @@ async function trustDialog(): Promise<void> {
     )
     const key = await nextInput()
     if (key === DOWN) yes = true
-    else if (key === ENTER && yes) return
-    else if (key === ENTER || key === ESCAPE) process.exit(0)
+    else if (key !== ESCAPE && yes) return
+    else process.exit(0)
   }
 }
 
@@ -217,10 +236,24 @@ log({
   config: process.env.CLAUDE_CONFIG_DIR ?? null,
   env: Object.keys(process.env),
 })
+const unknown = options.find(
+  (a, i) => a.startsWith('-') && !VALUED.has(a) && !VALUED.has(options[i - 1] ?? ''),
+)
+if (unknown !== undefined) {
+  console.log(`error: unknown option '${unknown}'`)
+  process.exit(1)
+}
+// Like Claude Code, a new session cannot take the ID of one it keeps a transcript of.
+const kept = transcript()
+if (flag('--session-id') !== null && kept !== null && existsSync(kept)) {
+  console.log(`Error: Session ID ${sessionId} is already in use.`)
+  process.exit(1)
+}
 if (existsSync(join(home, 'fake-exit'))) {
   console.log('Not logged in · Please run /login')
   process.exit(1)
 }
+if (existsSync(join(home, 'fake-slow-start'))) await new Promise(() => {})
 if (existsSync(join(home, resumed === null ? 'fake-untrusted' : 'fake-untrusted-again'))) {
   await trustDialog()
 }

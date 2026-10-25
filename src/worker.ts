@@ -1,9 +1,9 @@
-import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { basename, dirname, join } from 'node:path'
+import { basename, join } from 'node:path'
 import { z } from 'zod'
 import { accountChanged, accountRule, configDir } from './account'
-import type { Attempt, AttemptKind, DecisionReason, Ledger, Task } from './ledger'
+import type { Attempt, AttemptKind, Decision, DecisionReason, Ledger, Task } from './ledger'
 import { notify, taskRef } from './notify'
 import { type Changes, reviewBrief } from './review'
 import { activeRules, hadTrouble, isNoRule, retroBrief } from './rules'
@@ -115,11 +115,15 @@ const LAUNCH_GRACE_MS = 30_000
 const RESTART_OPTION = 'nod_restart'
 const TOLD_OPTION = 'nod_told'
 const STALLED_OPTION = 'nod_stalled'
-// Set from asking keepWorker to start Claude Code again until the new one is up: a message pasted
-// in between would be lost, so it waits in the prompt file.
+// Set from when keepWorker's Claude Code ends, or keepWorker is asked to end it, until the next one
+// is up: a message pasted in between would be lost, so it waits in the prompt file.
 const RESTARTING_OPTION = 'nod_restarting'
-// The pid of the Stop hook while it checks a turn it has already closed (onStop).
+// The pid of the Stop hook while it checks a turn it has already closed (onStop), and once it
+// knows it, that turn's attempt: `<pid> <attempt>`.
 const SETTLING_OPTION = 'nod_settling'
+// The pid of the Claude Code keepWorker runs, so its Stop hook can tell whether it is still there to
+// hear what the hook answers.
+const CLAUDE_OPTION = 'nod_claude'
 
 // The OS sandbox is the boundary, not a command allowlist: once a worker may run tests it can run
 // anything, so limit where it can write and what it can reach instead. Measured on 2.1.289:
@@ -130,6 +134,14 @@ const SANDBOX = {
   allowUnsandboxedCommands: false,
   network: { allowedDomains: ['registry.npmjs.org'] },
 }
+
+// What a worker asks as its turn ends, which an answer goes on from in its conversation. Once it
+// goes on without one, nothing waits on them. Permission, trust and rule decisions are about other
+// things, and close where those end; every decision closes once the task does.
+const ASKED: readonly DecisionReason[] = ['question', 'failed', 'check_failed', 'interrupted']
+const WENT_ON = '(it went on without an answer)'
+// What a decision a turn showed gets once that turn is cut off with its terminal or Claude Code.
+const CUT = '(the turn was cut off)'
 
 // ponytail: fixed retry budget; make it per-task if real checks need more.
 const CHECK_RETRIES = 2
@@ -267,56 +279,106 @@ function baseOf(ledger: Ledger, task: Task): Task | null {
   return ledger.after(task.id).find((a) => task.repo !== null && a.repo === task.repo) ?? null
 }
 
-// `actor`: who answers, recorded on the rule a yes to a rule decision adds.
+// `actor`: who answers, recorded on the rule a yes to a rule decision adds. Returns whether the task
+// took the answer; false when the decision only closed, its task having ended.
 export async function answer(
   ledger: Ledger,
   home: string,
   decisionId: number,
   text: string,
   actor: string,
-): Promise<void> {
+): Promise<boolean> {
   const decision = ledger.decision(decisionId)
+  // Before anything acts on it, as bringing a collected task back (restore below).
+  if (decision.answer !== null) throw new Error(`decision ${decisionId} is already answered`)
+  // A to-do list that mirrors open decisions can close this one.
+  const told = (): Promise<void> =>
+    notify(home, {
+      event: 'answered',
+      task: taskRef(ledger.get(decision.taskId)),
+      decision: { id: decisionId, reason: decision.reason, answer: text },
+    })
+  // One left open on a task that ended only closes: no turn starts, and the task stays as it is.
+  if (finished(ledger, decision.taskId)) {
+    ledger.dismiss(decisionId, text)
+    await told()
+    return false
+  }
   const yes = /^y(es)?$/i.test(text.trim())
   // Trust and rules are yes-or-nothing: anything but yes ends the task.
   if ((decision.reason === 'trust' || decision.reason === 'rule') && !yes) {
-    await drop(ledger, home, decisionId)
-    return
+    return drop(ledger, home, decisionId)
   }
-  ledger.answer(decisionId, text)
-  // A to-do list that mirrors open decisions can close this one.
-  await notify(home, {
-    event: 'answered',
-    task: taskRef(ledger.get(decision.taskId)),
-    decision: { id: decisionId, reason: decision.reason, answer: text },
-  })
-  // The retrospective proposed the rule as its report; adding it is all that is left to do.
+  // The retrospective proposed the rule as the report of the turn this decision is on; adding it is
+  // all that is left to do, with the decision, so neither happens without the other. That turn's
+  // rule, not a later proposal, and none once the retrospective ended or while it proposes again
+  // (its next proposal replaces this one). What else it asked waits on nothing once it ends.
   if (decision.reason === 'rule') {
-    const { retroId } = ledger.get(decision.taskId)
+    const task = ledger.get(decision.taskId)
+    const { retroId } = task
     if (retroId === null) throw new Error(`decision ${decisionId} is on no retrospective`)
-    const { rule } = ledger.retro(retroId)
+    const rule = ledger.attempt(decision.attemptId).summary
     if (!rule) throw new Error(`decision ${decisionId} has no rule to add`)
-    ledger.db.transaction(() => {
-      ledger.addRule(rule, retroId, actor)
-      ledger.endRetro(retroId, 'added')
-      ledger.succeed(decision.taskId)
-    })()
-    return
+    const without = '(the task succeeded without it)'
+    const closed = ledger.db
+      .transaction(() => {
+        refuseEnded(ledger, task)
+        if (ledger.openAttempt(task.id) !== null) {
+          throw new Error(`retrospective r${retroId} is proposing again; answer its next proposal`)
+        }
+        ledger.answer(decisionId, text)
+        const others = closeDecisions(ledger, task.id, (d) => d.id !== decisionId, without)
+        ledger.proposeRule(retroId, rule)
+        ledger.addRule(rule, retroId, actor)
+        ledger.endRetro(retroId, 'added')
+        ledger.succeed(decision.taskId)
+        return others
+      })
+      .immediate()
+    await told()
+    await announce(home, task, closed, without)
+    return true
+  }
+  // gc closed a collected task's terminal, and a dialog it showed went with it; an answer goes on
+  // as a tell does, in the task's folder brought back.
+  if (
+    (decision.reason === 'permission' || decision.reason === 'trust') &&
+    ledger.get(decision.taskId).collectedAt !== null
+  ) {
+    throw new Error(
+      `task ${decision.taskId} was collected, and its ${decision.reason} dialog went with its terminal; nod tell goes on`,
+    )
+  }
+  await restore(ledger, home, decision.taskId)
+  // Closed first, so of two answers at once only one reaches the worker.
+  ledger.answer(decisionId, text)
+  await told()
+  // The decision is closed, so a message that cannot go in (an account rule that cannot be read,
+  // say) leaves the task in error, and the person tells it again.
+  const reply = async (words: string): Promise<void> => {
+    try {
+      await deliver(ledger, home, decision.taskId, 'answer', words, decisionId)
+    } catch (error) {
+      ledger.error(decision.taskId, message(error))
+      throw error
+    }
   }
   const terminals = Terminals.of(home)
   const name = sessionName(decision.taskId)
   if (decision.reason === 'trust') {
     await acceptTrust(terminals, name, startedMarker(home, decision.taskId))
-    return
+    return true
   }
   if (decision.reason !== 'permission') {
-    const reply = `${decision.reason === 'interrupted' ? `${CUT_OFF_PROMPT}\n` : ''}Human decision: ${text}`
-    deliver(ledger, home, decision.taskId, 'answer', reply, decisionId)
-    return
+    await reply(
+      `${decision.reason === 'interrupted' ? `${CUT_OFF_PROMPT}\n` : ''}Human decision: ${text}`,
+    )
+    return true
   }
   // The permission dialog has "Yes" selected first (measured on 2.1.290).
   if (yes) {
     terminals.keys(name, 'Enter')
-    return
+    return true
   }
   // Escape answers no, but also ends the turn without a Stop hook (measured on 2.1.290), so close
   // the attempt here and tell the worker in a new turn.
@@ -327,8 +389,8 @@ export async function answer(
     summary: 'permission denied',
     report: null,
   })
-  const reply = `Human decision: permission denied. ${text}`
-  deliver(ledger, home, decision.taskId, 'answer', reply, decisionId)
+  await reply(`Human decision: permission denied. ${text}`)
+  return true
 }
 
 async function waitForScreen(terminals: Terminals, name: string, text: string): Promise<void> {
@@ -339,18 +401,41 @@ async function waitForScreen(terminals: Terminals, name: string, text: string): 
   }
 }
 
-export async function drop(ledger: Ledger, home: string, decisionId: number): Promise<void> {
-  ledger.drop(decisionId)
-  // The person takes back a todo whose task they ended.
-  new Todos(ledger).followTasks(SELF)
+// Returns whether the task was dropped; false when the decision only closed, its task having ended.
+export async function drop(ledger: Ledger, home: string, decisionId: number): Promise<boolean> {
   const decision = ledger.decision(decisionId)
   const task = ledger.get(decision.taskId)
-  if (task.retroId !== null) {
-    ledger.endRetro(task.retroId, decision.reason === 'rule' ? 'declined' : 'dropped')
+  // One left open on a task that ended only closes, and the task stays as it is.
+  if (finished(ledger, task.id)) {
+    ledger.dismiss(decisionId, '(dropped)')
+    await notify(home, {
+      event: 'answered',
+      task: taskRef(task),
+      decision: { id: decisionId, reason: decision.reason, answer: '(dropped)' },
+    })
+    return false
   }
+  // The task ends, so its other decisions wait on nothing, and a retrospective ends with it, before
+  // anything is heard of, so no message goes on in it meanwhile (deliver).
+  const why = '(the task was dropped)'
+  const closed = ledger.db
+    .transaction(() => {
+      refuseEnded(ledger, task)
+      const others = closeDecisions(ledger, task.id, (d) => d.id !== decisionId, why)
+      ledger.drop(decisionId)
+      if (task.retroId !== null) {
+        ledger.endRetro(task.retroId, decision.reason === 'rule' ? 'declined' : 'dropped')
+      }
+      return others
+    })
+    .immediate()
+  await announce(home, task, closed, why)
+  // The person takes back a todo whose task they ended.
+  new Todos(ledger).followTasks(SELF)
   await Terminals.of(home).close(sessionName(task.id))
   await notify(home, { event: 'cancelled', task: taskRef(task) })
   await startRetro(ledger, home, task)
+  return true
 }
 
 // Looks back on a task that ran into trouble, in a new session that gets only its history, and
@@ -372,7 +457,7 @@ export async function tell(
   text: string,
 ): Promise<void> {
   await restore(ledger, home, taskId)
-  deliver(ledger, home, taskId, 'followup', text, null)
+  await deliver(ledger, home, taskId, 'followup', text, null)
 }
 
 export async function resume(ledger: Ledger, home: string, taskId: number): Promise<void> {
@@ -380,7 +465,7 @@ export async function resume(ledger: Ledger, home: string, taskId: number): Prom
     throw new Error(`task ${taskId}'s session is still open; send it a message with \`nod tell\``)
   }
   await restore(ledger, home, taskId)
-  deliver(ledger, home, taskId, 'resume', RESUME_PROMPT, null)
+  await deliver(ledger, home, taskId, 'resume', RESUME_PROMPT, null)
 }
 
 // Called by the Stop hook. Returns the hook's stdout: a "block" that makes Claude Code continue the
@@ -398,16 +483,28 @@ export async function onStop(
   const terminals = Terminals.of(home)
   const name = sessionName(taskId)
   const live = terminals.alive(name)
-  if (live) {
-    terminals.setOption(name, STALLED_OPTION, null)
-    terminals.setOption(name, SETTLING_OPTION, String(process.pid))
-  }
-  const attemptId = currentAttempt(ledger, taskId, event.session_id)
-  const out = await settle(ledger, home, ledger.get(taskId), attemptId, event).catch((error) => {
+  // Set first: a message that comes from here on runs as a turn of its own (deliver).
+  if (live) terminals.setOption(name, SETTLING_OPTION, String(process.pid))
+  // The Claude Code this hook answers; 0 for one keepWorker did not start.
+  const claude = live ? Number(terminals.option(name, CLAUDE_OPTION)) : 0
+  if (live) terminals.setOption(name, STALLED_OPTION, null)
+  const attemptId = await currentAttempt(ledger, home, taskId, event.session_id)
+  // And the turn it checks, so a message that finds another one open, the retry it starts, goes
+  // into that one.
+  if (live) terminals.setOption(name, SETTLING_OPTION, `${process.pid} ${attemptId}`)
+  let out = await settle(ledger, home, ledger.get(taskId), attemptId, event).catch((error) => {
     ledger.failAttempt(attemptId, message(error))
-    ledger.error(taskId, message(error))
+    // A task that ended meanwhile (dropped while this hook checked) stays as it ended.
+    if (!ended(ledger, taskId)) ledger.error(taskId, message(error))
     return null
   })
+  // Claude Code ended while nod checked its turn, and keepWorker starts another: a failed check
+  // sent back now reaches no one, so the turn it would have gone on in was cut off.
+  if (out !== null && claude !== 0 && !running(claude)) {
+    out = null
+    const retry = ledger.openAttempt(taskId)
+    if (retry !== null) await cutOff(ledger, home, taskId, retry, UNHEARD)
+  }
   new Todos(ledger).followTasks(SELF)
   // A task that just succeeded may let others start.
   await startReady(ledger, home)
@@ -456,7 +553,7 @@ export async function onNotification(
   if (event.notification_type !== 'permission_prompt') return
   const taskId = ledger.taskOfSession(event.session_id)
   if (taskId === null) return
-  const attemptId = currentAttempt(ledger, taskId, event.session_id)
+  const attemptId = await currentAttempt(ledger, home, taskId, event.session_id)
   const screen = Terminals.of(home).screen(sessionName(taskId))
   const prompt = screen.trimEnd().split('\n').slice(-15).join('\n')
   await decide(
@@ -477,10 +574,28 @@ async function decide(
   attemptId: number,
   reason: DecisionReason,
   question: string,
+  // What goes into the ledger with the decision, in its transaction.
+  along: () => void = () => {},
 ): Promise<void> {
-  const id = ledger.ask(taskId, attemptId, reason, question)
-  const task = taskRef(ledger.get(taskId))
-  await notify(home, { event: 'decision', task, decision: { id, reason, question } })
+  // What the worker asks as a turn ends replaces what it asked as an earlier one ended, and a
+  // retrospective's proposal the one before it. A task that ended takes none (ended).
+  const rule = reason === 'rule'
+  const why = rule ? '(a newer proposal replaced it)' : WENT_ON
+  const same = (d: Decision): boolean => (rule ? d.reason === 'rule' : ASKED.includes(d.reason))
+  const made = ledger.db
+    .transaction(() => {
+      if (ended(ledger, taskId)) return null
+      along()
+      const replaced =
+        rule || ASKED.includes(reason) ? closeDecisions(ledger, taskId, same, why) : []
+      return { id: ledger.ask(taskId, attemptId, reason, question), replaced }
+    })
+    .immediate()
+  if (made === null) return
+  const { id, replaced } = made
+  const task = ledger.get(taskId)
+  await announce(home, task, replaced, why)
+  await notify(home, { event: 'decision', task: taskRef(task), decision: { id, reason, question } })
 }
 
 async function settle(
@@ -495,6 +610,23 @@ async function settle(
   const summary = report?.text ?? oneLine(text)
   // A worker that keeps going after a failed check often drops the report line; the check decides.
   const done = report?.status === 'done' || (report === null && event.stop_hook_active)
+  // A message that came while this hook ran started another turn, which Claude Code runs once the
+  // hook ends: that turn's stop decides, not this one. Asked again in the transaction that acts on
+  // a check, as deliver starts a turn in one, with whether the task ended meanwhile (ended).
+  const newer = (): boolean => ledger.openAttempt(task.id) !== null
+  // A permission dialog of this turn went with it: one a person answered in the worker's own
+  // terminal waits on nothing.
+  // And a turn that ran got past the trust dialog: one a person answered there waits on nothing.
+  const gone = '(its turn ended)'
+  const past = '(it got past the trust dialog)'
+  const dialogs = async (): Promise<void> => {
+    const ofTurn = (d: Decision): boolean => d.reason === 'permission' && d.attemptId === attemptId
+    const closed = closeDecisions(ledger, task.id, ofTurn, gone)
+    const trusted = closeDecisions(ledger, task.id, (d) => d.reason === 'trust', past)
+    goesOn(ledger, task.id, [...closed, ...trusted])
+    await announce(home, task, closed, gone)
+    await announce(home, task, trusted, past)
+  }
   if (!done) {
     const failed = report?.status === 'failed'
     ledger.endAttempt(attemptId, {
@@ -502,11 +634,14 @@ async function settle(
       summary,
       report: text,
     })
+    await dialogs()
+    if (newer()) return null
     const reason = failed ? 'failed' : 'question'
     await decide(ledger, home, task.id, attemptId, reason, text.slice(-QUESTION_LIMIT))
     return null
   }
   ledger.endAttempt(attemptId, { outcome: 'succeeded', summary, report: text })
+  await dialogs()
   // Lines nod cannot read go back like a failed check, before the slower checks run.
   const captured = parseCaptures(text)
   const check =
@@ -514,10 +649,11 @@ async function settle(
       ? { passed: false, output: captured.error }
       : await verify(ledger, task, text)
   if (check !== null) ledger.recordCheck(attemptId, check.passed, check.output)
+  if (newer()) return null
   if (check === null || check.passed) {
     if (task.retroId !== null && !isNoRule(summary)) {
       const retro = ledger.retro(task.retroId)
-      ledger.proposeRule(retro.id, summary)
+      // One rule decision at a time: a newer proposal replaces one still open (decide).
       await decide(
         ledger,
         home,
@@ -525,15 +661,25 @@ async function settle(
         attemptId,
         'rule',
         `Task #${retro.ofTaskId} ran into trouble, and its retrospective r${retro.id} proposes this rule for every future worker:\n${summary}\nAnswer yes to add it to the rules every worker gets (nod rule ls); anything else drops it.`,
+        () => ledger.proposeRule(retro.id, summary),
       )
       return null
     }
     const captures = 'error' in captured ? [] : captured.captures
-    ledger.db.transaction(() => {
-      captureFor(ledger, task, captures)
-      if (task.retroId !== null) ledger.endRetro(task.retroId, 'none')
-      ledger.succeed(task.id)
-    })()
+    // Nothing the task asked before waits on anything once it succeeds with no turn left running.
+    const without = '(the task succeeded without it)'
+    const closed = ledger.db
+      .transaction((): Decision[] | null => {
+        if (newer() || ended(ledger, task.id)) return null
+        captureFor(ledger, task, captures)
+        if (task.retroId !== null) ledger.endRetro(task.retroId, 'none')
+        const left = closeDecisions(ledger, task.id, () => true, without)
+        ledger.succeed(task.id)
+        return left
+      })
+      .immediate()
+    if (closed === null) return null
+    await announce(home, task, closed, without)
     await notify(home, { event: 'succeeded', task: taskRef(task), summary })
     await startRetro(ledger, home, task)
     return null
@@ -550,15 +696,21 @@ async function settle(
     return null
   }
   const reason = `${check.output}\nFix the problem, then finish.`
-  ledger.startAttempt({
-    taskId: task.id,
-    kind: 'retry',
-    decisionId: null,
-    sessionId: event.session_id,
-    prompt: reason,
-  })
+  const retried = ledger.db
+    .transaction((): boolean => {
+      if (newer() || ended(ledger, task.id)) return false
+      ledger.startAttempt({
+        taskId: task.id,
+        kind: 'retry',
+        decisionId: null,
+        sessionId: event.session_id,
+        prompt: reason,
+      })
+      return true
+    })
+    .immediate()
   // Blocking the stop makes Claude Code continue the same turn with `reason` as feedback.
-  return JSON.stringify({ decision: 'block', reason })
+  return retried ? JSON.stringify({ decision: 'block', reason }) : null
 }
 
 // The last `NOD: <status> | <text>` line, ignoring Markdown emphasis around it.
@@ -620,19 +772,92 @@ function captureFor(ledger: Ledger, task: Task, captures: Capture[]): void {
   }
 }
 
-// The attempt a hook event belongs to. A person who typed straight into the worker's terminal
-// started a turn nod did not send, so record it as a follow-up.
-function currentAttempt(ledger: Ledger, taskId: number, sessionId: string): number {
-  return (
-    ledger.openAttempt(taskId)?.id ??
-    ledger.startAttempt({
-      taskId,
-      kind: 'followup',
-      decisionId: null,
-      sessionId,
-      prompt: '(typed into the terminal)',
+// The attempt a hook event belongs to. A turn nod did not send, one a person typed straight into
+// the worker's terminal or one Claude Code went on to by itself (once background agents it waited
+// on finished), is recorded as a follow-up, and what the worker asked before it waits on nothing.
+async function currentAttempt(
+  ledger: Ledger,
+  home: string,
+  taskId: number,
+  sessionId: string,
+): Promise<number> {
+  const open = ledger.openAttempt(taskId)
+  if (open !== null) return open.id
+  const id = ledger.startAttempt({
+    taskId,
+    kind: 'followup',
+    decisionId: null,
+    sessionId,
+    prompt: '(typed into the terminal)',
+  })
+  const closed = closeDecisions(ledger, taskId, (d) => ASKED.includes(d.reason), WENT_ON)
+  goesOn(ledger, taskId, closed)
+  await announce(home, ledger.get(taskId), closed, WENT_ON)
+  return id
+}
+
+// The worker went on past decisions that held its task (`closed`), so the task runs again, unless
+// it ended (ended).
+function goesOn(ledger: Ledger, taskId: number, closed: Decision[]): void {
+  if (closed.length === 0) return
+  ledger.db
+    .transaction(() => {
+      const task = ledger.get(taskId)
+      if (task.status !== 'needs_decision' || task.workspace === null) return
+      if (!ended(ledger, taskId)) ledger.setRunning(taskId, task.workspace)
     })
-  )
+    .immediate()
+}
+
+// Closes the task's open decisions that `which` picks with `why`, so nobody waits on one nothing
+// acts on any more. In one transaction, so one a person answers at the same time is left to them.
+// Leaves the task's status to the caller. Returns them, to announce once the change is in.
+function closeDecisions(
+  ledger: Ledger,
+  taskId: number,
+  which: (d: Decision) => boolean,
+  why: string,
+): Decision[] {
+  return ledger.db
+    .transaction(() => {
+      const open = ledger.decisions(taskId).filter((d) => d.answer === null && which(d))
+      for (const d of open) ledger.dismiss(d.id, why)
+      return open
+    })
+    .immediate()
+}
+
+// A task that ended for good: dropped, or a retrospective that has its outcome. A turn that ends
+// after (one its Stop hook still checked as it was dropped, or one typed into its terminal) is only
+// recorded, and changes nothing else.
+function ended(ledger: Ledger, taskId: number): boolean {
+  const task = ledger.get(taskId)
+  if (task.status === 'cancelled') return true
+  return task.retroId !== null && ledger.retro(task.retroId).outcome !== null
+}
+
+// A task that ended, or succeeded: a decision left open on it only closes (answer, drop).
+const finished = (ledger: Ledger, taskId: number): boolean =>
+  ledger.get(taskId).status === 'succeeded' || ended(ledger, taskId)
+
+// Tells a to-do list that mirrors open decisions that these closed.
+async function announce(home: string, task: Task, closed: Decision[], why: string): Promise<void> {
+  for (const d of closed) {
+    await notify(home, {
+      event: 'answered',
+      task: taskRef(task),
+      decision: { id: d.id, reason: d.reason, answer: why },
+    })
+  }
+}
+
+// An ended retrospective keeps what became of it; going on, or another answer, would write over it.
+function refuseEnded(ledger: Ledger, task: Task): void {
+  if (task.retroId === null) return
+  const { outcome } = ledger.retro(task.retroId)
+  if (outcome !== null) {
+    throw new Error(`task ${task.id} is retrospective r${task.retroId}, which ended (${outcome})`)
+  }
 }
 
 function trailingRetries(ledger: Ledger, taskId: number): number {
@@ -643,51 +868,103 @@ function trailingRetries(ledger: Ledger, taskId: number): number {
 
 // Sends a message into the task's session so the worker keeps its context. A session that has ended
 // (exited, machine restarted) is reopened from Claude Code's transcript first.
-function deliver(
+async function deliver(
   ledger: Ledger,
   home: string,
   taskId: number,
   kind: AttemptKind,
   text: string,
   decisionId: number | null,
-): void {
+): Promise<void> {
   const task = ledger.get(taskId)
   const last = ledger.lastAttempt(taskId)
-  if (last === null || task.workspace === null) throw new Error(`task ${taskId} has not started`)
+  const workspace = task.workspace
+  if (last === null || workspace === null) throw new Error(`task ${taskId} has not started`)
   const terminals = Terminals.of(home)
   const name = sessionName(taskId)
   const live = terminals.alive(name)
-  const open = ledger.openAttempt(taskId)
   // Claude Code is starting again: pasted now, the message would be lost, so it waits for the new
-  // start in the prompt file (keepWorker).
-  const restarting = live && terminals.option(name, RESTARTING_OPTION) !== ''
-  // The worker is mid-turn: Claude Code queues the message into the turn in progress.
-  if (open !== null && live) {
-    if (restarting) leavePrompt(home, taskId, text)
-    else terminals.send(name, text)
-    return
-  }
+  // start in the prompt file (keepWorker). Also once the Claude Code keepWorker started is gone,
+  // before keepWorker marks the restart.
+  const claude = live ? Number(terminals.option(name, CLAUDE_OPTION)) : 0
+  const restarting =
+    live && (terminals.option(name, RESTARTING_OPTION) !== '' || (claude !== 0 && !running(claude)))
+  // A Stop hook is checking the worker's last turn: Claude Code waits in that hook, so a message
+  // runs as a turn of its own once the hook ends, even before the hook closes that turn. Another
+  // turn open by then, a retry the hook starts, is one the message goes into.
+  const checking = live && settling(terminals, name)
+  const checked = checking ? Number(terminals.option(name, SETTLING_OPTION).split(' ')[1]) : null
   // A worker started as an account that is no longer the current one starts again as the current
   // one, with the message as its first (keepWorker); pasted, it would land while Claude Code
   // restarts. A person attached keeps the screen they are in, and a Stop hook still checking the
   // last turn would go with the restart, so those take the message where they are and restart
   // after it. Read before the ledger changes, so a rule that fails leaves the task as it was.
+  // A hook that started while the account was read counts too.
   const restart =
     live &&
     !restarting &&
-    !settling(terminals, name) &&
+    !checking &&
+    ledger.openAttempt(taskId) === null &&
     !terminals.attached(name) &&
-    accountChanged(home, task.account)
-  if (open !== null) ledger.failAttempt(open.id, 'session ended')
-
-  ledger.setRunning(taskId, task.workspace)
-  const attemptId = ledger.startAttempt({
-    taskId,
-    kind,
-    decisionId,
-    sessionId: last.sessionId,
-    prompt: text,
-  })
+    accountChanged(home, task.account) &&
+    !settling(terminals, name)
+  // A trust decision open is a trust dialog on the screen (awaitStart), whichever turn it is on, and
+  // the dialog has "No, exit" selected first: the message's Enter would end Claude Code.
+  const trusting = ledger.decisions(taskId).find((d) => d.answer === null && d.reason === 'trust')
+  if (live && !restarting && trusting !== undefined) {
+    throw new Error(`answer trust decision #${trusting.id} first: Enter would answer its dialog`)
+  }
+  // Whether the worker is mid-turn is settled in one transaction, as the Stop hook acts on a check
+  // in one (settle): a retry it starts takes the message, and a turn started here it leaves to run.
+  // So is whether a retrospective ended, as an answer ends one in one.
+  type Turn = { attemptId: number; started: boolean; cut: Decision[]; closed: Decision[] }
+  const turn = ledger.db
+    .transaction((): Turn => {
+      refuseEnded(ledger, ledger.get(taskId))
+      const open = ledger.openAttempt(taskId)
+      // `checked` is NaN while the hook has yet to read which turn it checks: the one that ended.
+      const hookTurn = checking && (open?.id === checked || Number.isNaN(checked))
+      if (open !== null && live && !hookTurn) {
+        return { attemptId: open.id, started: false, cut: [], closed: [] }
+      }
+      // Its terminal went in the middle of the turn, and a dialog the turn showed went with it.
+      let cut: Decision[] = []
+      if (open !== null && !live) {
+        ledger.failAttempt(open.id, 'session ended')
+        cut = closeDecisions(ledger, taskId, (d) => d.attemptId === open.id, CUT)
+      }
+      ledger.setRunning(taskId, workspace)
+      const attemptId = ledger.startAttempt({
+        taskId,
+        kind,
+        decisionId,
+        sessionId: last.sessionId,
+        prompt: text,
+      })
+      // A new turn: what the worker asked before it waits on nothing.
+      const closed = closeDecisions(ledger, taskId, (d) => ASKED.includes(d.reason), WENT_ON)
+      return { attemptId, started: true, cut, closed }
+    })
+    .immediate()
+  // The worker is mid-turn: Claude Code queues the message into the turn in progress, and the
+  // ledger keeps it with that turn, for the reviewer. Its Enter would answer a permission dialog
+  // that turn shows, so that is answered first.
+  if (!turn.started) {
+    const asking = ledger
+      .decisions(taskId)
+      .find((d) => d.answer === null && d.reason === 'permission' && d.attemptId === turn.attemptId)
+    if (asking !== undefined && !restarting) {
+      throw new Error(
+        `answer permission decision #${asking.id} first: Enter would answer its dialog`,
+      )
+    }
+    if (restarting) leavePrompt(home, taskId, text)
+    else terminals.send(name, text)
+    ledger.addMessage(taskId, turn.attemptId, text)
+    return
+  }
+  await announce(home, task, turn.cut, CUT)
+  await announce(home, task, turn.closed, WENT_ON)
   try {
     if (restarting) {
       leavePrompt(home, taskId, text)
@@ -699,10 +976,10 @@ function deliver(
     } else {
       // keepWorker starts it as any later start: the current account, trust, the message.
       leavePrompt(home, taskId, text)
-      launch(home, taskId, task.workspace, [])
+      launch(home, taskId, workspace, [])
     }
   } catch (error) {
-    ledger.failAttempt(attemptId, message(error))
+    ledger.failAttempt(turn.attemptId, message(error))
     ledger.error(taskId, message(error))
     throw error
   }
@@ -729,14 +1006,19 @@ function startAgain(terminals: Terminals, name: string): void {
 // Whether a Stop hook is still checking the worker's last turn. A hook that went without clearing
 // its pid (cut off with Claude Code, or timed out) no longer counts.
 function settling(terminals: Terminals, name: string): boolean {
-  const pid = Number(terminals.option(name, SETTLING_OPTION))
+  return running(Number.parseInt(terminals.option(name, SETTLING_OPTION), 10))
+}
+
+function running(pid: number): boolean {
   if (!pid) return false
   try {
     process.kill(pid, 0)
     return true
-  } catch {
-    // ESRCH: gone. EPERM: the pid is another user's process now, so not the hook either.
-    return false
+  } catch (error) {
+    // ESRCH: gone. EPERM: it runs, but this process may not signal it, as from inside a sandbox
+    // that keeps nod off processes outside it (macOS sandbox-exec answers EPERM for those).
+    // ponytail: a pid another user's process took since counts too.
+    return error instanceof Error && 'code' in error && error.code === 'EPERM'
   }
 }
 
@@ -760,18 +1042,22 @@ function claudeArgs(
     '--append-system-prompt',
     workerPrompt(ledger, task),
     ...(task.model === null ? [] : ['--model', task.model]),
-    ...(prompt === null ? [] : [prompt]),
+    // After `--`, a message that starts with `-` is not read as an option.
+    ...(prompt === null ? [] : ['--', prompt]),
   ]
 }
 
 // A message deliver leaves for the worker's next start of Claude Code.
 const promptFile = (home: string, taskId: number): string => join(home, 'work', `.prompt-${taskId}`)
 
-// Messages that arrive before the next start each go in, in order.
-function leavePrompt(home: string, taskId: number, text: string): void {
+// Messages that arrive before the next start each go in, in order; one a start gave back goes
+// `ahead` of those.
+function leavePrompt(home: string, taskId: number, text: string, ahead = false): void {
   const file = promptFile(home, taskId)
-  const before = existsSync(file) ? `${readFileSync(file, 'utf8')}\n\n` : ''
-  writeFileSync(file, `${before}${text}`, { mode: 0o600 })
+  const kept = existsSync(file) ? readFileSync(file, 'utf8') : null
+  let all = text
+  if (kept !== null) all = ahead ? `${text}\n\n${kept}` : `${kept}\n\n${text}`
+  writeFileSync(file, all, { mode: 0o600 })
 }
 
 function takePrompt(home: string, taskId: number): string | null {
@@ -804,12 +1090,16 @@ export async function keepWorker(
   let child: Bun.Subprocess | null = null
   let stopping = false
   let restarting = false
+  // Settles once the session ends, so a wait between runs (nextRun's trust check, up to its
+  // timeout) does not outlast Terminals.close.
+  const stopped = Promise.withResolvers<null>()
   // tmux ends a session with SIGHUP. Claude Code goes with it, and this waits for it to exit, as
   // Terminals.close waits for this.
   for (const signal of ['SIGHUP', 'SIGTERM'] as const) {
     process.on(signal, () => {
       stopping = true
       child?.kill(signal)
+      stopped.resolve(null)
     })
   }
   // A Ctrl-C typed while Claude Code starts again is not for nod.
@@ -826,13 +1116,16 @@ export async function keepWorker(
   let failure = ''
   for (let run = 0; ; run++) {
     let exited: Promise<unknown> = Promise.resolve()
+    let left: string | null = null
     try {
-      const next: Start =
+      // ponytail: a trust check the session ended in the middle of leaves its own session behind.
+      const next: Start | null =
         run === 0 && first.length > 0
-          ? { argv: first, env: process.env, fresh: false, started: null }
-          : await nextRun(ledger, home, taskId)
+          ? { argv: first, env: process.env, fresh: false, started: null, left: null }
+          : await Promise.race([nextRun(ledger, home, taskId), stopped.promise])
       // The session may have ended while this waited.
-      if (stopping) return
+      if (next === null || stopping) return
+      left = next.left
       if (next.fresh) cut = null
       ledger.setAccount(taskId, next.env.CLAUDE_CONFIG_DIR ?? '')
       // What waited on the Claude Code that ended is done with this start.
@@ -840,6 +1133,7 @@ export async function keepWorker(
         terminals.setOption(name, option, null)
       }
       child = Bun.spawn(next.argv, { env: next.env, stdio: ['inherit', 'inherit', 'inherit'] })
+      terminals.setOption(name, CLAUDE_OPTION, String(child.pid))
       exited = child.exited
       failure = ''
       if (next.started !== null) {
@@ -858,6 +1152,8 @@ export async function keepWorker(
       exited.then(() => false),
       Bun.sleep(QUICK_EXIT_MS).then(() => true),
     ])
+    // A start that ended before it was up gives back the message it took, for the next.
+    if (!up && left !== null) leavePrompt(home, taskId, left, true)
     if (up) {
       quick = 0
       // The new Claude Code is up: messages paste again, and one left while it started goes in.
@@ -866,7 +1162,9 @@ export async function keepWorker(
       if (late !== null) terminals.send(name, late)
       const turn = cut
       cut = null
-      if (turn !== null) {
+      // A turn cut off goes on in a message the person sent since, which the new start got: there
+      // is nothing to decide, and the stop of the turn it runs closes that turn.
+      if (turn !== null && left === null && late === null) {
         await cutOff(ledger, home, taskId, turn, RESTARTED).catch((error) =>
           notify(home, {
             event: 'error',
@@ -881,6 +1179,11 @@ export async function keepWorker(
     const asked = restarting
     restarting = false
     if (stopping || terminals.stopped(name) || terminals.pane(name) !== pane) return
+    // The turn open as this one ended, read before a message can open another (deliver).
+    const open = ledger.openAttempt(taskId)
+    // However this one ended, a message pasted before the next is up would reach none: it waits for
+    // that start in the prompt file (deliver).
+    terminals.setOption(name, RESTARTING_OPTION, '1')
     if (terminals.option(name, SETTLING_OPTION) !== '') {
       void watchSettling(ledger, home, taskId).catch((error) =>
         notify(home, { event: 'error', task: taskRef(ledger.get(taskId)), error: message(error) }),
@@ -890,9 +1193,9 @@ export async function keepWorker(
     // open with no message left for the new start began in between, and was cut off.
     if (!asked) {
       if (!up) quick++
-      cut ??= ledger.openAttempt(taskId)
+      cut ??= open
     } else if (!existsSync(promptFile(home, taskId))) {
-      cut ??= ledger.openAttempt(taskId)
+      cut ??= open
     }
     if (quick >= MAX_QUICK_EXITS) {
       await giveUp(ledger, home, taskId, cut, failure)
@@ -905,22 +1208,27 @@ export async function keepWorker(
 const RESTARTED =
   'Claude Code ended in the middle of a turn, and nod started it again in the same terminal and conversation.'
 const LOST = 'Its terminal went in the middle of a turn: the machine restarted, or tmux stopped.'
+const UNHEARD =
+  'Claude Code ended while nod checked its turn, so the failed check nod sent back reached no one.'
 
 // A start of a worker's Claude Code. `started`: the file its SessionStart hook creates in a repo,
 // where Claude Code may ask about trust first (trustOnStart); null for the first start, whose trust
-// startTask awaits.
+// startTask awaits. `left`: the message deliver left that the start took, after its brief on a
+// fresh start.
 type Start = {
   argv: string[]
   env: Record<string, string | undefined>
   fresh: boolean
   started: string | null
+  left: string | null
 }
 
 // The next start of a worker's Claude Code (keepWorker): as the account the rule gives now, which
 // trusts nod's work folder first, in the conversation of its last turn. A conversation with no
 // transcript and no turn that ended never began: Claude Code ended before it took the brief, so
-// it starts anew with the brief (`fresh`), and that turn was not cut off. One kept only in the
-// folder of the account it ran as before cannot go on in this one.
+// it starts anew with the brief and any message deliver left after it (`fresh`), and that turn
+// was not cut off. One kept only in the folder of the account it ran as before cannot go on in
+// this one.
 async function nextRun(ledger: Ledger, home: string, taskId: number): Promise<Start> {
   const config = configDir(home)
   await ensureTrusted(home, config)
@@ -928,14 +1236,12 @@ async function nextRun(ledger: Ledger, home: string, taskId: number): Promise<St
   const task = ledger.get(taskId)
   const attempts = ledger.attempts(taskId)
   const [first, last] = [attempts[0], attempts.at(-1)]
-  const workspace = task.workspace
-  if (first === undefined || last === undefined || workspace === null) {
+  if (first === undefined || last === undefined || task.workspace === null) {
     throw new Error(`task ${taskId} has not started`)
   }
   const marker = task.repo === null ? null : startedMarker(home, taskId)
   if (marker !== null) rmSync(marker, { force: true })
-  const kept = (folder: string | null): boolean =>
-    existsSync(join(sessionFolder(workspace, folder), `${last.sessionId}.jsonl`))
+  const kept = (folder: string | null): boolean => hasTranscript(folder, last.sessionId)
   const here = kept(config)
   // '' is Claude Code's default folder, null an account nod never recorded.
   const before = task.account === null ? undefined : task.account || null
@@ -947,14 +1253,18 @@ async function nextRun(ledger: Ledger, home: string, taskId: number): Promise<St
   }
   const ended = attempts.some((a) => a.outcome !== null && a.outcome !== 'error')
   if (!ended && !here) {
-    rmSync(promptFile(home, taskId), { force: true })
+    // A message left since (an answer, a tell) goes after the brief, not pasted once Claude Code
+    // is up: by then a trust dialog may be on the screen, and Enter there picks "No, exit".
+    const left = takePrompt(home, taskId)
+    const prompt = left === null ? first.prompt : `${first.prompt}\n\n${left}`
     const session = ['--session-id', first.sessionId]
-    const argv = claudeArgs(ledger, task, session, first.prompt, marker)
-    return { argv, env, fresh: true, started: marker }
+    const argv = claudeArgs(ledger, task, session, prompt, marker)
+    return { argv, env, fresh: true, started: marker, left }
   }
   const session = ['--resume', last.sessionId]
-  const argv = claudeArgs(ledger, task, session, takePrompt(home, taskId), marker)
-  return { argv, env, fresh: false, started: marker }
+  const left = takePrompt(home, taskId)
+  const argv = claudeArgs(ledger, task, session, left, marker)
+  return { argv, env, fresh: false, started: marker, left }
 }
 
 // Claude Code asks once per account whether to trust a repo. The person answered for this repo
@@ -1015,28 +1325,19 @@ async function giveUp(
 
 // A turn that ended without its Stop hook, because its Claude Code or terminal went. It may have
 // done part of its work, so the person decides how it goes on instead of nod running it again. A
-// permission or trust prompt it was showing went with it.
+// permission or trust prompt it was showing went with it. Returns whether it raised the decision.
 async function cutOff(
   ledger: Ledger,
   home: string,
   taskId: number,
   attempt: Attempt,
   why: string,
-): Promise<void> {
-  // A message sent while Claude Code started again may have run the turn to its end since.
-  if (ledger.attempt(attempt.id).finishedAt !== null) return
-  const task = taskRef(ledger.get(taskId))
-  for (const d of ledger.decisions(taskId)) {
-    if (d.answer !== null || d.attemptId !== attempt.id) continue
-    const answer = '(the turn was cut off)'
-    ledger.answer(d.id, answer)
-    await notify(home, {
-      event: 'answered',
-      task,
-      decision: { id: d.id, reason: d.reason, answer },
-    })
-  }
-  ledger.failAttempt(attempt.id, why.split('\n')[0] ?? why)
+): Promise<boolean> {
+  // Taken first, in one statement: of two that find the turn open at once (ticks, say), one raises
+  // the decision. A message sent while Claude Code started again may have run it to its end since.
+  if (!ledger.failOpenAttempt(attempt.id, why.split('\n')[0] ?? why)) return false
+  const closed = closeDecisions(ledger, taskId, (d) => d.attemptId === attempt.id, CUT)
+  await announce(home, ledger.get(taskId), closed, CUT)
   await decide(
     ledger,
     home,
@@ -1045,6 +1346,7 @@ async function cutOff(
     'interrupted',
     `${why}\nThe turn did not finish, and part of it may be done. It was on:\n> ${oneLine(attempt.prompt)}\nAnswer with how to go on, such as to check what is done and carry on; the answer goes into the same conversation.`,
   )
+  return true
 }
 
 // Raises a decision for each turn whose terminal is gone (keepWorker went with it), as after a
@@ -1058,8 +1360,7 @@ export async function lostTurns(ledger: Ledger, home: string, now: Date): Promis
     if (live.has(sessionName(t.id))) continue
     const open = ledger.openAttempt(t.id)
     if (open === null || Date.parse(open.startedAt) > now.getTime() - LAUNCH_GRACE_MS) continue
-    await cutOff(ledger, home, t.id, open, LOST)
-    lost.push(t.id)
+    if (await cutOff(ledger, home, t.id, open, LOST)) lost.push(t.id)
   }
   return lost
 }
@@ -1193,13 +1494,26 @@ function withConfig(
 // ponytail: answers the dialog by reading it off the screen. If Claude Code changes its wording,
 // this times out with the screen in the error rather than guessing.
 async function ensureTrusted(home: string, config: string | null): Promise<void> {
-  const work = join(home, 'work')
   const trusted = trustedFile(home, config)
   if (existsSync(trusted)) return
+  // Tasks this process starts at once (startReady, a tick's) wait on the one check.
+  let pending = trusting.get(trusted)
+  if (pending === undefined) {
+    pending = trustWork(home, config, trusted).finally(() => trusting.delete(trusted))
+    trusting.set(trusted, pending)
+  }
+  await pending
+}
+
+// The checks ensureTrusted has in progress, by the file each writes once it is done.
+const trusting = new Map<string, Promise<void>>()
+
+async function trustWork(home: string, config: string | null, trusted: string): Promise<void> {
+  const work = join(home, 'work')
   mkdirSync(work, { recursive: true })
-  // Named for this process, so several starting at once (a tick's tasks, workers starting again
-  // after an account switch) do not take each other's session.
-  const name = `trust-${process.pid}`
+  // Named for this process and account, so other processes starting workers at once (several
+  // ticks, workers starting again after an account switch) do not take each other's session.
+  const name = `trust-${process.pid}-${Bun.hash(trusted).toString(36)}`
   const started = join(work, `.started-${name}`)
   rmSync(started, { force: true })
   const settings = JSON.stringify({
@@ -1215,8 +1529,11 @@ async function ensureTrusted(home: string, config: string | null): Promise<void>
   writeFileSync(trusted, '')
 }
 
+// Named after the account, Claude Code's default folder (null) too: `.trusted`, which nod wrote
+// before it had accounts, is for whatever account its shell had, and the default folder may never
+// have trusted the work folder.
 export const trustedFile = (home: string, config: string | null): string =>
-  join(home, 'work', config === null ? '.trusted' : `.trusted-${Bun.hash(config).toString(36)}`)
+  join(home, 'work', `.trusted-${Bun.hash(config ?? '').toString(36)}`)
 
 // Picks "Yes" in the trust dialog and waits until the session has started. Keys sent before the
 // dialog takes input are lost, so act on what is selected right now, and press Enter only with
@@ -1314,20 +1631,13 @@ async function prepareWorkspace(ledger: Ledger, home: string, task: Task): Promi
 // branch's changes.
 export async function restore(ledger: Ledger, home: string, taskId: number): Promise<void> {
   const task = ledger.get(taskId)
-  // An ended retrospective keeps what became of it; going on would write over that.
-  if (task.retroId !== null) {
-    const { outcome } = ledger.retro(task.retroId)
-    if (outcome !== null) {
-      throw new Error(`task ${taskId} is retrospective r${task.retroId}, which ended (${outcome})`)
-    }
-  }
+  refuseEnded(ledger, task)
   if (task.collectedAt === null) return
   const last = ledger.lastAttempt(taskId)
   if (last === null || task.workspace === null) throw new Error(`task ${taskId} has not started`)
-  const transcript = join(sessionFolder(task.workspace, configDir(home)), `${last.sessionId}.jsonl`)
-  if (!existsSync(transcript)) {
+  if (!hasTranscript(configDir(home), last.sessionId)) {
     throw new Error(
-      `task ${taskId}'s session transcript is gone (gc deleted transcripts before nod kept them): ${transcript}`,
+      `task ${taskId}'s session transcript is gone (gc deleted transcripts before nod kept them): ${last.sessionId}.jsonl`,
     )
   }
   if (!existsSync(task.workspace)) {
@@ -1364,23 +1674,16 @@ async function rebuildWorktree(
   await initSubmodules(repo, cwd)
 }
 
-// Claude Code keeps one session folder per working directory, named after its real path with `/`
-// and `.` turned into `-` (observed on 2.1.289), in the config dir `config`. That is Claude Code's
-// internal layout, so the rule lives only here.
-export function sessionFolder(workspace: string, config: string | null): string {
-  return join(
-    config ?? join(homedir(), '.claude'),
-    'projects',
-    realPath(workspace).replace(/[/.]/g, '-'),
+// Whether Claude Code keeps a transcript of session `sessionId` in the config dir `config`. It keeps
+// one folder per working directory in projects/, named by a rule of its own (2.1.309: each
+// character but a letter or digit turned into `-`, and a hash past 200 characters), so nod looks
+// for the session's ID, which is in no other folder, in all of them.
+function hasTranscript(config: string | null, sessionId: string): boolean {
+  const projects = join(config ?? join(homedir(), '.claude'), 'projects')
+  if (!existsSync(projects)) return false
+  return readdirSync(projects).some((folder) =>
+    existsSync(join(projects, folder, `${sessionId}.jsonl`)),
   )
-}
-
-// The real path of a folder that may be gone (a collected task's): its nearest existing parent's
-// real path, then the rest.
-function realPath(path: string): string {
-  if (existsSync(path)) return realpathSync(path)
-  const parent = dirname(path)
-  return parent === path ? path : join(realPath(parent), basename(path))
 }
 
 // A new worktree has empty submodules, and the worker's sandbox cannot fetch them, so each one is
