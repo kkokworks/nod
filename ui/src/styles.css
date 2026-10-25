@@ -1099,8 +1099,7 @@ details summary {
 }
 
 .todo-actions button,
-.filters button,
-.filters a {
+.filters button {
   padding: 0.15rem 0.6rem;
   border: 1px solid var(--line);
   border-radius: 999px;
@@ -1112,8 +1111,7 @@ details summary {
 }
 
 .todo-actions button:hover,
-.filters button:hover,
-.filters a:hover {
+.filters button:hover {
   background: var(--hover);
 }
 
