@@ -311,6 +311,28 @@ test('landed reads a non-ASCII file name as that file, so an unpushed change to 
   expect(landed(repo, 'refs/heads/feat/plan')).toBe(true)
 })
 
+test('landed reads a name with pathspec magic in it as that file, not as a pattern', () => {
+  const home = tmp.make('nod-gc-')
+  const repo = join(home, 'repo')
+  mkdirSync(repo)
+  const git = (...args: string[]): string =>
+    sh(['git', '-c', 'user.email=t@t', '-c', 'user.name=t', ...args], repo)
+  git('init', '-q', '-b', 'main')
+  writeFileSync(join(repo, 'memo.md'), 'memo')
+  git('add', '.')
+  git('commit', '-q', '-m', 'init')
+  git('update-ref', 'refs/remotes/origin/main', 'HEAD')
+  git('symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main')
+  git('checkout', '-q', '-b', 'feat/colon')
+  writeFileSync(join(repo, ':memo.md'), 'colon')
+  git('add', '.')
+  git('commit', '-q', '-m', 'colon')
+  git('checkout', '-q', 'main')
+
+  // As a pattern, `:memo.md` is `memo.md`, which both branches have alike.
+  expect(landed(repo, 'refs/heads/feat/colon')).toBe(false)
+})
+
 test('gc keeps a worktree holding the only copy of commits: in a submodule, or on a detached HEAD', async () => {
   const home = tmp.make('nod-gc-')
   process.env.CLAUDE_CONFIG_DIR = tmp.make('nod-gc-claude-')
