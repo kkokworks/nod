@@ -32,15 +32,16 @@ NOD: in {"title": "<what to do>", "notes": "<optional>", "link": "<optional URL>
 nod puts them in once it accepts your done. With a source and key, an item goes in only once.`
 // A repo worker also has its change reviewed before it reports done, by a subagent that knows what
 // was asked but not the worker's reasons. nod's independent review after done stays the last word.
-const SUBAGENT_REVIEW_PROMPT = `Before you report done, commit, then have a subagent (Agent tool) review \`git diff <start>..HEAD\`,
-with the start commit from your first message. Wait for its result in this same turn: run it in
-the foreground, not in the background, and if it can only run in the background,
-do not end your turn until it reports. Give it only the brief, what the human said since, and
-that range, not your reasons. It changes no files and checks that the asked work is done, that
-each new test fails on the code before the change, and for new bugs (boundaries, swallowed
-errors, races, lost data, injection, leaked secrets), reporting each as file:line, a scenario
-that reproduces it, and its confidence. Fix the findings that have a scenario, commit, and have
-it review again. In your final report, list each finding and what you did (fixed, or why not).`
+const SUBAGENT_REVIEW_PROMPT = `Before you report done, commit, then have a subagent (Agent tool) review \`git diff <start>..HEAD\`
+(start: the commit in your first message); skip it if that diff is empty. Wait for its result in
+this same turn: run it in the foreground, not in the background, and if it can only run in the
+background, do not end your turn until it reports. Give it only the brief, the human's later
+words and that range, not your reasons. It changes no files here and checks that the asked work
+is done, that each new test fails on the code before the change (run in a temp \`git worktree add\`
+or a copy, never via stash or checkout), and for new bugs (boundaries, swallowed errors, races,
+lost data, injection, leaked secrets), reporting each as file:line, a scenario that reproduces it,
+and its confidence. Fix the findings that have a scenario, commit, and have it review again. In
+your final report, list each finding and what you did (fixed, or why not).`
 
 const RESUME_PROMPT =
   'Your session was interrupted. Check the current state of this directory and continue the task.'
@@ -358,7 +359,8 @@ export async function drop(ledger: Ledger, home: string, decisionId: number): Pr
 async function startRetro(ledger: Ledger, home: string, task: Task): Promise<void> {
   if (task.retroId !== null || ledger.retroFor(task.id) !== null) return
   if (!hadTrouble(ledger, task.id)) return
-  const id = ledger.addRetro(task, retroBrief(ledger, task, workerPrompt(ledger, task)))
+  // What every worker gets, so not a repo worker's subagent review.
+  const id = ledger.addRetro(task, retroBrief(ledger, task, workerPrompt(ledger, false)))
   await startTask(ledger, home, id).catch((error) =>
     notify(home, { event: 'error', task: taskRef(ledger.get(id)), error: message(error) }),
   )
@@ -757,7 +759,7 @@ function claudeArgs(
     '--settings',
     workerSettings(started),
     '--append-system-prompt',
-    workerPrompt(ledger, task),
+    workerPrompt(ledger, task.repo !== null),
     ...(task.model === null ? [] : ['--model', task.model]),
     ...(prompt === null ? [] : [prompt]),
   ]
@@ -1129,8 +1131,8 @@ export async function restartDue(ledger: Ledger, home: string, only?: number): P
 }
 
 // The built-in rules, then the ledger's rules that are on.
-export function workerPrompt(ledger: Ledger, task: Task): string {
-  const built = task.repo === null ? WORKER_PROMPT : `${WORKER_PROMPT}\n${SUBAGENT_REVIEW_PROMPT}`
+export function workerPrompt(ledger: Ledger, inRepo: boolean): string {
+  const built = inRepo ? `${WORKER_PROMPT}\n${SUBAGENT_REVIEW_PROMPT}` : WORKER_PROMPT
   const rules = activeRules(ledger)
   if (rules === '') return built
   return `${built}\nRules the human approved for every task:\n${rules}`

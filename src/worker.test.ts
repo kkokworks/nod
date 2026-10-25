@@ -596,19 +596,25 @@ test('a repo worker is told to have a subagent review its branch from where it s
       }),
     )
   const [inRepo, alone] = [task('/repo'), task(null)]
-  const prompt = workerPrompt(ledger, inRepo)
+  // Read as one line, so rewrapping the prompt does not break the checks.
+  const prompt = workerPrompt(ledger, true).replaceAll('\n', ' ')
   expect(prompt).toContain('have a subagent (Agent tool) review `git diff <start>..HEAD`')
+  // A review-only task has nothing to review.
+  expect(prompt).toContain('skip it if that diff is empty')
   // A worker that left it running in the background stopped to wait, as a question to the human.
   expect(prompt).toContain('Wait for its result in this same turn')
   expect(prompt).toContain('the foreground, not in the background')
   expect(prompt).toContain('if it can only run in the background')
   expect(prompt).toContain('do not end your turn until it reports')
+  // The stash is shared with every other worktree of the repo.
+  expect(prompt).toContain('It changes no files here')
+  expect(prompt).toContain('never via stash or checkout')
   expect(prompt).toContain('file:line')
   expect(prompt).toContain('its confidence')
   expect(firstMessage(ledger, inRepo, 'abc123')).toBe(
     'fix it\n\nYour branch starts at commit abc123.',
   )
-  expect(workerPrompt(ledger, alone)).not.toContain('subagent')
+  expect(workerPrompt(ledger, false)).not.toContain('subagent')
   expect(firstMessage(ledger, alone, null)).toBe('fix it')
 })
 
