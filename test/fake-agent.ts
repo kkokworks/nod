@@ -7,8 +7,10 @@
 // nod gives a worker a fixed environment, so the fake takes its switches from files in $NOD_HOME:
 // with `fake-untrusted`, a new session first shows the trust dialog, and with `fake-untrusted-again`
 // a resumed one does, as Claude Code asks about a repo once per account; with `fake-exit`, it exits
-// as it starts, as Claude Code does without a login. Every launch, with its account and the names
-// in its environment, and every turn is logged to $NOD_HOME/agent.log.
+// as it starts, as Claude Code does without a login; with `fake-slow-start`, it never gets past its
+// start, as Claude Code waiting on a first-run screen. Every launch, with its account and the names
+// in its environment, every turn, and what a turn takes in while it runs is logged to
+// $NOD_HOME/agent.log.
 import { appendFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { projectFolder } from './projects'
@@ -151,6 +153,10 @@ async function turn(message: string, continuing: boolean): Promise<void> {
     // Like Claude Code at a usage limit: the turn ends with StopFailure in place of Stop.
     await runHooks('StopFailure', { session_id: sessionId, error: 'rate_limit' })
     return
+  } else if (head.startsWith('slow')) {
+    // A turn that takes a while and, like Claude Code, takes in what is typed meanwhile.
+    await Bun.sleep(3000)
+    for (const input of inputs.splice(0)) log({ event: 'heard', sessionId, message: input })
   } else if (head.includes('need-permission')) {
     await runHooks('Notification', {
       session_id: sessionId,
@@ -247,6 +253,7 @@ if (existsSync(join(home, 'fake-exit'))) {
   console.log('Not logged in · Please run /login')
   process.exit(1)
 }
+if (existsSync(join(home, 'fake-slow-start'))) await new Promise(() => {})
 if (existsSync(join(home, resumed === null ? 'fake-untrusted' : 'fake-untrusted-again'))) {
   await trustDialog()
 }
