@@ -804,6 +804,47 @@ export class Ledger {
     this.run(q.updateTable('tasks').set({ status: 'running', workspace }).where('id', '=', id))
   }
 
+  // Marks running again a task that errored before its worker started, with no workspace, once the
+  // tasks it comes after have all succeeded, so it can start anew (resume in worker.ts); its failed
+  // start keeps the error. `mark` stands in its error while it starts, naming who starts it;
+  // `stale`, the mark of a start that was cut off (a resume stopped, a crash), which this one takes
+  // over. A head gc recorded meanwhile is another branch's. One statement, so of two resumes at once
+  // only one starts it. Returns whether this one did.
+  claimRestart(id: number, mark: string, stale: string | null): boolean {
+    const claimed = this.first(
+      q
+        .updateTable('tasks')
+        .set({ status: 'running', error: mark, finishedAt: null, collectedAt: null, head: null })
+        .where('id', '=', id)
+        .where('workspace', 'is', null)
+        .where((eb) =>
+          stale === null
+            ? eb('status', '=', 'error')
+            : eb.and([eb('status', '=', 'running'), eb('error', '=', stale)]),
+        )
+        .where(({ exists, not, selectFrom }) =>
+          not(
+            exists(
+              selectFrom('taskDeps as d')
+                .innerJoin('tasks as a', 'a.id', 'd.afterId')
+                .select('a.id')
+                .where('d.taskId', '=', id)
+                .where('a.status', '!=', 'succeeded'),
+            ),
+          ),
+        )
+        .returning('id'),
+    )
+    return claimed !== null
+  }
+
+  // Clears the mark claimRestart left, unless something changed it since (the start failed, say).
+  unmark(id: number, mark: string): void {
+    this.run(
+      q.updateTable('tasks').set({ error: null }).where('id', '=', id).where('error', '=', mark),
+    )
+  }
+
   succeed(id: number): void {
     this.setStatus(id, 'succeeded', null)
   }

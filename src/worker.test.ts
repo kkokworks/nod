@@ -38,6 +38,8 @@ import {
   parseTells,
   restart,
   restartDue,
+  restartMark,
+  resume,
   StopEvent,
   sessionName,
   startReady,
@@ -1005,31 +1007,331 @@ test('a repo task gets its submodules filled from the repo checkout, and gc stil
   expect(existsSync(workspaceOf(home, ledger.get(id)))).toBe(false)
 })
 
-test('a repo task whose submodules cannot be filled leaves no worktree or branch behind', async () => {
+// A repo whose own checkout of its submodule `lib` is empty, so there is nothing to fill a
+// worktree's from, and a task in it.
+function unfilledLib(check: string | null = null): { repo: string; id: number } {
   const repo = newRepo()
   git(repo, '-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', newRepo(), 'lib')
   git(repo, 'commit', '-qm', 'add lib')
-  // The repo's own checkout of the submodule is empty, so there is nothing to fill it from.
   git(repo, 'submodule', 'deinit', '-q', '-f', 'lib')
   const id = ledger.add({
     brief: 'use the lib',
     repo,
     branch: 'feat/lib',
+    checkCmd: check,
+    model: null,
+    after: [],
+    triggerId: null,
+    issue: null,
+  })
+  return { repo, id }
+}
+
+const failure = (start: Promise<unknown>): Promise<string> =>
+  start.then(
+    () => {
+      throw new Error('it started')
+    },
+    (error: Error) => error.message,
+  )
+
+test('a repo task whose submodules cannot be filled leaves no worktree or branch behind, and says how to fill them', async () => {
+  const { repo, id } = unfilledLib()
+
+  const error = await failure(startTask(ledger, home, id))
+
+  expect(error).toContain('submodule lib')
+  expect(error).toContain(
+    `check that out first: git -C ${quote(repo)} submodule update --init 'lib'`,
+  )
+  expect(error).toEndWith(`\nFix what stopped it, then \`nod resume ${id}\` starts it again.`)
+  expect(ledger.get(id).status).toBe('error')
+  expect(ledger.get(id).error).toBe(error)
+  expect(ledger.get(id).workspace).toBeNull()
+  expect(existsSync(workspaceOf(home, ledger.get(id)))).toBe(false)
+  const branches = Bun.spawnSync(['git', 'branch', '--list', 'feat/lib'], { cwd: repo })
+  expect(branches.stdout.toString()).toBe('')
+  // A start that failed, which keeps why once the task starts again.
+  const [first, ...more] = ledger.attempts(id)
+  expect([first?.kind, first?.outcome, more.length]).toEqual(['start', 'error', 0])
+  expect(first?.error).toStartWith('submodule lib from ')
+})
+
+test('a repo task whose folder is taken leaves no branch of its own behind, and keeps one that was there', async () => {
+  const repo = newRepo()
+  const addOn = (branch: string): number =>
+    ledger.add({
+      brief: 'work here',
+      repo,
+      branch,
+      checkCmd: null,
+      model: null,
+      after: [],
+      triggerId: null,
+      issue: null,
+    })
+  const branches = (): string =>
+    Bun.spawnSync(['git', 'branch', '--list', 'feat/*'], { cwd: repo }).stdout.toString()
+  const taken = addOn('feat/taken')
+  const folder = workspaceOf(home, ledger.get(taken))
+  mkdirSync(folder, { recursive: true })
+  writeFileSync(join(folder, 'mine.txt'), 'not the task’s')
+  git(repo, 'branch', 'feat/theirs')
+  const theirs = addOn('feat/theirs')
+
+  expect(await failure(startTask(ledger, home, taken))).toContain('already exists')
+  expect(await failure(startTask(ledger, home, theirs))).toContain('already exists')
+
+  // Left, the branch would keep the task from starting again once the folder is cleared.
+  expect(branches()).toBe('  feat/theirs\n')
+  expect(readFileSync(join(folder, 'mine.txt'), 'utf8')).toBe('not the task’s')
+  // Starting it again clears nothing either: no start was cut off, so the branch is not one's.
+  expect(await failure(resume(ledger, home, theirs))).toContain('already exists')
+  expect(branches()).toBe('  feat/theirs\n')
+})
+
+// A task without a repo that fails before its worker starts, as long as a file sits where its
+// folder goes. Returns it once it failed.
+async function blocked(after: number[] = []): Promise<number> {
+  const id = ledger.add({
+    brief: 'first',
+    repo: null,
+    branch: null,
+    checkCmd: null,
+    model: null,
+    after,
+    triggerId: null,
+    issue: null,
+  })
+  writeFileSync(workspaceOf(home, ledger.get(id)), '')
+  expect(await failure(startTask(ledger, home, id))).toContain(`nod resume ${id}`)
+  return id
+}
+
+const outcomes = (id: number): (string | null)[][] =>
+  ledger.attempts(id).map((a) => [a.kind, a.outcome])
+
+test('a task that failed before it started takes no message, and resume tries it again, once for two at once', async () => {
+  const id = await blocked()
+  // gc collected it, recording a head of a branch by its name, which is not the task's.
+  ledger.collected(id, 'abc123')
+
+  expect(await failure(tell(ledger, home, id, 'go on'))).toBe(
+    `task ${id} has not started. Fix what stopped it, then \`nod resume ${id}\` starts it again.`,
+  )
+  // Nothing fixed it, so it fails again, and only one of two resumes at once tries.
+  const [one, two] = await Promise.all([
+    failure(resume(ledger, home, id)),
+    failure(resume(ledger, home, id)),
+  ])
+  expect(one).toContain(`nod resume ${id}`)
+  expect(two).toBe(`task ${id} has not started. ${restartMark(process.pid, id)}.`)
+  expect(outcomes(id)).toEqual([
+    ['start', 'error'],
+    ['start', 'error'],
+  ])
+  const task = ledger.get(id)
+  expect([task.status, task.workspace, task.collectedAt, task.head]).toEqual([
+    'error',
+    null,
+    null,
+    null,
+  ])
+})
+
+// A process that has ended, for the mark of a resume cut off (restartMark).
+const gone = (): number => Bun.spawnSync(['true']).pid
+
+test('a resume cut off as it starts a task again is taken over by the next one, but not while its process runs', async () => {
+  const id = await blocked()
+  // As a resume stopped as it starts the task leaves it: running, with no workspace.
+  const pid = gone()
+  expect(ledger.claimRestart(id, restartMark(pid, id), null)).toBe(true)
+  expect(await failure(tell(ledger, home, id, 'go on'))).toBe(
+    `task ${id} has not started. nod resume (pid ${pid}) is starting it again; if that process is gone, nod resume ${id} takes over.`,
+  )
+
+  expect(await failure(resume(ledger, home, id))).toContain(`nod resume ${id}`)
+  expect(outcomes(id)).toEqual([
+    ['start', 'error'],
+    ['start', 'error'],
+  ])
+
+  const mark = restartMark(process.pid, id)
+  expect(ledger.claimRestart(id, mark, null)).toBe(true)
+  expect(await failure(resume(ledger, home, id))).toBe(`task ${id} has not started. ${mark}.`)
+  expect(outcomes(id)).toHaveLength(2)
+})
+
+test('a resume that takes over a cut-off start clears the worktree and branch it left, but keeps a branch with commits of its own', async () => {
+  const { repo, id } = unfilledLib()
+  await failure(startTask(ledger, home, id))
+  const folder = workspaceOf(home, ledger.get(id))
+  const cutOff = (): void => {
+    expect(ledger.claimRestart(id, restartMark(gone(), id), null)).toBe(true)
+  }
+  const branch = (): string =>
+    Bun.spawnSync(['git', 'branch', '--list', 'feat/lib'], { cwd: repo }).stdout.toString()
+
+  // Cut off as it filled the submodules: the worktree and its branch are there.
+  cutOff()
+  git(repo, 'worktree', 'add', '-q', '-b', 'feat/lib', folder)
+  // So the start fails on what it failed on before, not on what the cut-off start left.
+  expect(await failure(resume(ledger, home, id))).toStartWith('submodule lib')
+  expect([existsSync(folder), branch()]).toEqual([false, ''])
+
+  // Cut off as git made the worktree, which takes its folder away on a signal, but not the branch.
+  cutOff()
+  git(repo, 'branch', 'feat/lib')
+  expect(await failure(resume(ledger, home, id))).toStartWith('submodule lib')
+  expect(branch()).toBe('')
+
+  // A branch by that name with a commit nothing else has is not the cut-off start's.
+  cutOff()
+  git(repo, 'checkout', '-q', '-b', 'feat/lib')
+  git(repo, 'commit', '-q', '--allow-empty', '-m', 'mine')
+  git(repo, 'checkout', '-q', '-')
+  expect(await failure(resume(ledger, home, id))).toContain('already exists')
+  expect(branch()).toBe('  feat/lib\n')
+})
+
+test('a resume that takes over a cut-off start keeps a worktree at the task’s path that is not that start’s', async () => {
+  const { repo, id } = unfilledLib()
+  await failure(startTask(ledger, home, id))
+  const folder = workspaceOf(home, ledger.get(id))
+  const other = ledger.add({
+    brief: 'another task',
+    repo,
+    branch: 'feat/other',
     checkCmd: null,
     model: null,
     after: [],
     triggerId: null,
     issue: null,
   })
+  // A worktree on the task's branch at its path, as a cut-off start leaves it, once `change` is done
+  // to it; it stays, and the start fails on it.
+  const keeps = async (change: () => void): Promise<void> => {
+    expect(ledger.claimRestart(id, restartMark(gone(), id), null)).toBe(true)
+    git(repo, 'worktree', 'add', '-q', '-b', 'feat/lib', folder)
+    change()
+    expect(await failure(resume(ledger, home, id))).toContain('already exists')
+    expect(existsSync(folder)).toBe(true)
+    git(repo, 'worktree', 'remove', '--force', folder)
+    git(repo, 'branch', '-D', 'feat/lib')
+  }
 
-  await expect(startTask(ledger, home, id)).rejects.toThrow('submodule lib')
-
-  expect(ledger.get(id).status).toBe('error')
-  expect(ledger.get(id).workspace).toBeNull()
-  expect(existsSync(workspaceOf(home, ledger.get(id)))).toBe(false)
-  const branches = Bun.spawnSync(['git', 'branch', '--list', 'feat/lib'], { cwd: repo })
-  expect(branches.stdout.toString()).toBe('')
+  // Another task works there.
+  await keeps(() => ledger.setRunning(other, folder))
+  ledger.setRunning(other, join(home, 'elsewhere'))
+  // Something in it is not committed, or is ignored.
+  await keeps(() => writeFileSync(join(folder, 'wip.txt'), 'wip'))
+  writeFileSync(join(repo, '.git', 'info', 'exclude'), 'secret.env\n')
+  await keeps(() => writeFileSync(join(folder, 'secret.env'), 'TOKEN=example'))
+  // A submodule in it has a commit only it holds.
+  await keeps(() => {
+    git(folder, '-c', 'protocol.file.allow=always', 'submodule', 'update', '-q', '--init', 'lib')
+    git(join(folder, 'lib'), 'commit', '-q', '--allow-empty', '-m', 'mine')
+  })
+  // The branch has a commit nothing else has; the worktree's own HEAD does not count.
+  await keeps(() => git(folder, 'commit', '-q', '--allow-empty', '-m', 'mine'))
 })
+
+test('a start resume took over drops the mark of the resume once the task has its folder', async () => {
+  const id = await blocked()
+  rmSync(workspaceOf(home, ledger.get(id)))
+  expect(ledger.claimRestart(id, restartMark(gone(), id), null)).toBe(true)
+
+  await startTask(ledger, home, id)
+
+  const task = ledger.get(id)
+  expect([task.workspace, task.error]).toEqual([workspaceOf(home, task), null])
+})
+
+test('resume starts a task that failed before it started again only once the tasks it comes after have succeeded', async () => {
+  const before = ledger.add({
+    brief: 'before',
+    repo: null,
+    branch: null,
+    checkCmd: null,
+    model: null,
+    after: [],
+    triggerId: null,
+    issue: null,
+  })
+  ledger.succeed(before)
+  const id = await blocked([before])
+  // A message sent the task it comes after back to work.
+  ledger.setRunning(before, home)
+
+  expect(await failure(resume(ledger, home, id))).toBe(
+    `task ${id} has not started. It comes after #${before}, which must succeed before \`nod resume ${id}\` can start it again.`,
+  )
+  expect(outcomes(id)).toHaveLength(1)
+
+  ledger.succeed(before)
+  expect(await failure(resume(ledger, home, id))).toContain(`nod resume ${id}`)
+  expect(outcomes(id)).toHaveLength(2)
+})
+
+test('a task that failed before it started starts again with resume, under the same number and branch, and keeps why it failed', async () => {
+  const { repo, id } = unfilledLib('test -e lib/.git')
+  await failure(startTask(ledger, home, id))
+
+  git(repo, '-c', 'protocol.file.allow=always', 'submodule', 'update', '-q', '--init', 'lib')
+  expect(await resume(ledger, home, id)).toBe('started')
+  await reaches(id, 'succeeded')
+
+  const task = ledger.get(id)
+  expect([task.branch, task.workspace, task.error]).toEqual([
+    'feat/lib',
+    workspaceOf(home, task),
+    null,
+  ])
+  expect(ledger.attempts(id).map((a) => [a.kind, a.outcome])).toEqual([
+    ['start', 'error'],
+    ['start', 'succeeded'],
+  ])
+  expect(entries('turn').map((t) => t.message)).toEqual([
+    expect.stringMatching(/^use the lib\n\nYour branch starts at commit [0-9a-f]{40}\./),
+  ])
+  const show = Bun.spawnSync(['bun', resolve(import.meta.dir, 'cli.ts'), 'show', String(id)], {
+    env: { ...process.env, NOD_HOME: home },
+  })
+  expect(show.stdout.toString()).toContain(`submodule lib from ${repo} failed`)
+}, 30_000)
+
+test('a task resume started again goes on in the conversation of that start, not of the one that failed', async () => {
+  const id = ledger.add({
+    brief: 'first',
+    repo: null,
+    branch: null,
+    checkCmd: null,
+    model: null,
+    after: [],
+    triggerId: null,
+    issue: null,
+  })
+  const folder = workspaceOf(home, ledger.get(id))
+  writeFileSync(folder, '')
+  await failure(startTask(ledger, home, id))
+  rmSync(folder)
+
+  // Its first turn never begins, so the turn after the answer starts it with its brief.
+  writeFileSync(join(home, 'fake-exit'), '')
+  expect(await resume(ledger, home, id)).toBe('started')
+  const decision = await until(() => ledger.decisions(id)[0])
+  await until(() => !Terminals.of(home).alive(sessionName(id)))
+  rmSync(join(home, 'fake-exit'))
+  await answer(ledger, home, decision.id, 'go on', 'human')
+  await reaches(id, 'succeeded')
+
+  expect(entries('turn').map((t) => t.message)).toEqual([
+    expect.stringMatching(/^first\n\nYour last turn was cut off.*\nHuman decision: go on$/s),
+  ])
+  const started = ledger.attempts(id)[1]?.sessionId ?? 'none'
+  expect(new Set(entries('launch').map((l) => l.sessionId))).toEqual(new Set([started]))
+}, 30_000)
 
 function newRepo(): string {
   const repo = tmp.make('nod-repo-')

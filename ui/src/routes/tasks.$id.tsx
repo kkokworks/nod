@@ -45,7 +45,8 @@ function TaskPage() {
   // The brief's first line is the title; the whole brief folds away, as it can run to pages.
   const nl = task.brief.indexOf('\n')
   const title = nl === -1 ? task.brief : task.brief.slice(0, nl)
-  const canSend = task.collectedAt === null && attempts.length > 0
+  // One that failed before its worker started has a failed start but no conversation to message.
+  const canSend = task.collectedAt === null && task.workspace !== null
   // A session that is gone has nothing to show, so the page keeps its width for the turns and the
   // result; the box to message the worker stays while the task can be resumed.
   const aside = screen !== null || canSend

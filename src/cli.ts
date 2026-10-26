@@ -112,7 +112,9 @@ const USAGE = `usage:
                                    tasks as its own (--mine), whichever session added them, and
                                    nod add there keeps to the project
   nod tell <task> <message...>     send a follow-up into the task's session
-  nod resume <task>                reopen a task whose session ended, from its transcript
+  nod resume <task>                reopen a task whose session ended, from its transcript; one that
+                                   failed before its worker started starts again under the same
+                                   number and branch, once you fixed what stopped it
   nod attach <task>                open the worker's terminal (tmux)
   nod peek <task>                  print what the worker's terminal shows right now
   nod watch [--issue <key,...>] [--mine]
@@ -255,8 +257,7 @@ switch (command) {
     console.log('sent')
     break
   case 'resume':
-    await resume(ledger, home, taskRef(rest[0]))
-    console.log('reopened')
+    console.log(await resume(ledger, home, taskRef(rest[0])))
     break
   case 'attach':
     attach(taskRef(rest[0]))
@@ -783,12 +784,13 @@ function peek(taskId: number): void {
 }
 
 // A finished task's terminal closes after a while (closeFinished in worker.ts), and a message
-// starts it again in the same conversation: one that started, and no retrospective that ended.
+// starts it again in the same conversation: one that started, and no retrospective that ended. One
+// that failed before it started has a failed start but no workspace and no conversation.
 function noTerminal(taskId: number): Error {
   const task = ledger.get(taskId)
   const goesOn =
     FINISHED.has(task.status) &&
-    ledger.lastAttempt(taskId) !== null &&
+    task.workspace !== null &&
     (task.retroId === null || ledger.retro(task.retroId).outcome === null)
   const why = goesOn
     ? `task #${taskId} finished and its terminal is closed; nod tell ${taskId} <message> goes on in the same conversation, and`

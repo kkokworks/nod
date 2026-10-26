@@ -1014,8 +1014,17 @@ test('attach and peek of a finished task whose terminal is closed say a message 
   const finished = started(ledger.add(spec))
   ledger.succeed(finished)
   const queued = ledger.add({ ...spec, after: [ledger.add(spec)] })
-  // No conversation to go on in: one that failed to start, and a retrospective that ended.
+  // No conversation to go on in: one that failed before it started, recorded as a start that failed
+  // (startTask), and a retrospective that ended.
   const neverStarted = ledger.add(spec)
+  const failedStart = ledger.startAttempt({
+    taskId: neverStarted,
+    kind: 'start',
+    decisionId: null,
+    sessionId: 'never',
+    prompt: '(not sent)',
+  })
+  ledger.failAttempt(failedStart, 'git worktree add failed')
   ledger.error(neverStarted, 'git worktree add failed')
   const retro = started(ledger.addRetro(ledger.get(finished), 'look back'))
   ledger.endRetro(ledger.get(retro).retroId ?? 0, 'none')

@@ -171,7 +171,7 @@ export async function collect(ledger: Ledger, home: string, pick: GcPick): Promi
 // (worker.ts) cloned it from.
 // ponytail: a submodule's checkout is looked for at its name, which is its path unless it moved,
 // and a moved one stays; a commit only a reflog reaches goes.
-function onlyCopy(repo: string, workspace: string, branch: string): string | null {
+export function onlyCopy(repo: string, workspace: string, branch: string): string | null {
   const git = (cwd: string, ...args: string[]) => Bun.spawnSync(['git', '-C', cwd, ...args])
   if (
     git(workspace, 'merge-base', '--is-ancestor', 'HEAD', `refs/heads/${branch}`).exitCode !== 0
