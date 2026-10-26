@@ -74,6 +74,10 @@ have it review again. In your final report, list each finding and what you did (
 
 const RESUME_PROMPT =
   'Your session was interrupted. Check the current state of this directory and continue the task.'
+// The prompt of a start that failed before its worker started (startTask): nothing went to a worker.
+const NOT_SENT = '(not sent: the task failed before its worker started)'
+const restartHint = (taskId: number): string =>
+  `Fix what stopped it, then \`nod resume ${taskId}\` starts it again.`
 // What a worker hears with the answer to an `interrupted` decision.
 const CUT_OFF_PROMPT =
   'Your last turn was cut off before it finished. Check what it already did before you do any of it again.'
@@ -276,13 +280,27 @@ export const sessionName = (taskId: number): string => `task-${taskId}`
 
 export async function startTask(ledger: Ledger, home: string, taskId: number): Promise<void> {
   const task = ledger.get(taskId)
+  // A task that fails before its worker starts has no workspace and no conversation. Its failure is
+  // recorded as a start that failed, so the error stays in its history once `nod resume` starts it
+  // again (resume), and the person hears how.
   const failed = (error: unknown): never => {
-    ledger.error(taskId, message(error))
-    throw error
+    const why = `${message(error)}\n${restartHint(taskId)}`
+    ledger.db
+      .transaction(() => {
+        const attemptId = ledger.startAttempt({
+          taskId,
+          kind: 'start',
+          decisionId: null,
+          sessionId: crypto.randomUUID(),
+          prompt: NOT_SENT,
+        })
+        ledger.failAttempt(attemptId, message(error))
+        ledger.error(taskId, why)
+      })
+      .immediate()
+    throw new Error(why, { cause: error })
   }
-  const cwd = await prepareWorkspace(ledger, home, task).catch(failed)
-  // A new worktree's HEAD is where its branch starts, the start the independent review diffs from.
-  const start = task.repo === null ? null : await headOf(cwd).catch(failed)
+  const { cwd, start } = await prepareWorkspace(ledger, home, task).catch(failed)
   const prompt = firstMessage(ledger, task, start)
   ledger.setRunning(taskId, cwd)
   const sessionId = crypto.randomUUID()
@@ -567,12 +585,31 @@ export async function tell(
   await deliver(ledger, home, taskId, 'followup', text, null)
 }
 
-export async function resume(ledger: Ledger, home: string, taskId: number): Promise<void> {
+// A task that failed before its worker started has no conversation to reopen, so it starts anew,
+// under the same number, brief and branch, once the person fixed what stopped it (`started`). nod
+// never does that by itself.
+export async function resume(
+  ledger: Ledger,
+  home: string,
+  taskId: number,
+): Promise<'reopened' | 'started'> {
   if (Terminals.of(home).alive(sessionName(taskId))) {
     throw new Error(`task ${taskId}'s session is still open; send it a message with \`nod tell\``)
   }
+  if (ledger.claimRestart(taskId)) {
+    await startTask(ledger, home, taskId)
+    return 'started'
+  }
   await restore(ledger, home, taskId)
   await deliver(ledger, home, taskId, 'resume', RESUME_PROMPT, null)
+  return 'reopened'
+}
+
+// Why a task with no conversation cannot take a message: it never started. One that failed before
+// it did starts again with `nod resume`.
+function notStarted(task: Task): Error {
+  const again = task.status === 'error' ? ` ${restartHint(task.id)}` : ''
+  return new Error(`task ${task.id} has not started.${again}`)
 }
 
 // How a landing turn reaches the worker: deliver, but in tests, which have no terminal for it.
@@ -1292,7 +1329,7 @@ async function deliver(
   const task = ledger.get(taskId)
   const last = ledger.lastAttempt(taskId)
   const workspace = task.workspace
-  if (last === null || workspace === null) throw new Error(`task ${taskId} has not started`)
+  if (last === null || workspace === null) throw notStarted(task)
   const terminals = Terminals.of(home)
   const name = sessionName(taskId)
   const live = terminals.alive(name)
@@ -1661,7 +1698,9 @@ async function nextRun(ledger: Ledger, home: string, taskId: number): Promise<St
   const env = config === null ? rest : { ...rest, CLAUDE_CONFIG_DIR: config }
   const task = ledger.get(taskId)
   const attempts = ledger.attempts(taskId)
-  const [first, last] = [attempts[0], attempts.at(-1)]
+  // The conversation began with the last start: those before it failed before a worker started
+  // (startTask), and `nod resume` started the task again.
+  const [first, last] = [attempts.findLast((a) => a.kind === 'start'), attempts.at(-1)]
   if (first === undefined || last === undefined || task.workspace === null) {
     throw new Error(`task ${taskId} has not started`)
   }
@@ -2085,39 +2124,57 @@ async function awaitStart(
   rmSync(started)
 }
 
-async function prepareWorkspace(ledger: Ledger, home: string, task: Task): Promise<string> {
+// The task's folder, and in a repo the commit its new branch starts at. One that fails leaves no
+// worktree or branch of the task's, so `nod resume` can start it again (resume).
+async function prepareWorkspace(
+  ledger: Ledger,
+  home: string,
+  task: Task,
+): Promise<{ cwd: string; start: string | null }> {
   await ensureTrusted(home, configDir(home))
   const cwd = workspaceOf(home, task)
   if (task.repo === null) {
     mkdirSync(cwd, { recursive: true })
-    return cwd
+    return { cwd, start: null }
   }
+  const { repo } = task
+  const branch = branchOf(task)
   // Starting from the earlier task's branch keeps tasks on the same files in sequence, not in
   // conflict.
   const base = baseOf(ledger, task)
+  const had =
+    Bun.spawnSync(['git', '-C', repo, 'rev-parse', '--verify', '-q', `refs/heads/${branch}`])
+      .exitCode === 0
   // 32 concurrent `worktree add` on one repo all succeeded when measured, so no lock here.
   const { code, output } = await spawn([
     'git',
     '-C',
-    task.repo,
+    repo,
     'worktree',
     'add',
     '-b',
-    branchOf(task),
+    branch,
     cwd,
     ...(base === null ? [] : [branchOf(base)]),
   ])
-  if (code !== 0) throw new Error(`git worktree add failed: ${output.trim()}`)
+  // The task did not start, so it records no workspace and gc takes no branch for its own
+  // (dropBranch in gc.ts): what it made goes now. The branch has no commits yet.
+  const dropBranch = () => spawn(['git', '-C', repo, 'branch', '-D', branch], undefined)
+  if (code !== 0) {
+    // git makes the branch before it finds the folder taken (measured on 2.53), and the branch
+    // left would keep the task from starting again. One that was there before is someone else's.
+    if (!had) await dropBranch()
+    throw new Error(`git worktree add failed: ${output.trim()}`)
+  }
   try {
-    await initSubmodules(task.repo, cwd)
+    await initSubmodules(repo, cwd)
+    // A new worktree's HEAD is where its branch starts, the start the independent review diffs from.
+    return { cwd, start: await headOf(cwd) }
   } catch (error) {
-    // The task did not start, so it records no workspace and gc takes no branch for its own
-    // (dropBranch in gc.ts): the worktree and the branch, which has no commits yet, go now.
-    await spawn(['git', '-C', task.repo, 'worktree', 'remove', '--force', cwd], undefined)
-    await spawn(['git', '-C', task.repo, 'branch', '-D', branchOf(task)], undefined)
+    await spawn(['git', '-C', repo, 'worktree', 'remove', '--force', cwd], undefined)
+    await dropBranch()
     throw error
   }
-  return cwd
 }
 
 // Brings back a task gc collected, so its Claude Code session can go on: gc leaves the session's
@@ -2130,7 +2187,7 @@ export async function restore(ledger: Ledger, home: string, taskId: number): Pro
   refuseEnded(ledger, task)
   if (task.collectedAt === null) return
   const last = ledger.lastAttempt(taskId)
-  if (last === null || task.workspace === null) throw new Error(`task ${taskId} has not started`)
+  if (last === null || task.workspace === null) throw notStarted(task)
   if (!hasTranscript(configDir(home), last.sessionId)) {
     throw new Error(
       `task ${taskId}'s session transcript is gone (gc deleted transcripts before nod kept them): ${last.sessionId}.jsonl`,
@@ -2215,7 +2272,11 @@ async function initSubmodules(repo: string, worktree: string): Promise<void> {
       '--',
       path,
     ])
-    if (code !== 0) throw new Error(`submodule ${path} from ${repo} failed: ${output.trim()}`)
+    if (code !== 0) {
+      throw new Error(
+        `submodule ${path} from ${repo} failed: ${output.trim()}\nnod fills it from the repo's own checkout of it, so check that out first: git -C ${quote(repo)} submodule update --init ${quote(path)}`,
+      )
+    }
   }
 }
 

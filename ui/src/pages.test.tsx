@@ -185,6 +185,7 @@ const detail = (id: number) => ({
     checkCmd: null,
     triggerId: null,
     rootSession: null,
+    workspace: `/work/${id}`,
     error: null,
   },
   status: 'running',
@@ -318,6 +319,18 @@ test('a finished task whose terminal is closed says a message goes on, where one
   await go('/tasks/10')
   expect(note()).toContain('No live session')
   expect(note()).not.toContain('a message goes on')
+})
+
+test('a task that failed before it started has no box to message it, having no conversation', async () => {
+  answer = (id) => {
+    const d = detail(id as number)
+    const failed = { ...d.attempts[0], outcome: 'error', finishedAt: AT }
+    const task = { ...d.task, status: 'error', workspace: null, error: 'it did not start' }
+    return { ...d, task, status: 'error', attempts: [failed], screen: null }
+  }
+  await go('/tasks/11')
+  expect(document.querySelector('textarea')).toBeNull()
+  expect(document.querySelector('.idle-note')).toBeNull()
 })
 
 test('a change to the todo keeps what is being typed in the form and says so', async () => {

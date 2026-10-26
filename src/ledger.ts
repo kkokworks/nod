@@ -804,6 +804,22 @@ export class Ledger {
     this.run(q.updateTable('tasks').set({ status: 'running', workspace }).where('id', '=', id))
   }
 
+  // Marks running again a task that errored before its worker started, with no workspace, so it
+  // can start anew (resume in worker.ts); its failed start keeps the error. One statement, so of two
+  // resumes at once only one starts it. Returns whether this one did.
+  claimRestart(id: number): boolean {
+    const claimed = this.first(
+      q
+        .updateTable('tasks')
+        .set({ status: 'running', error: null, finishedAt: null, collectedAt: null })
+        .where('id', '=', id)
+        .where('status', '=', 'error')
+        .where('workspace', 'is', null)
+        .returning('id'),
+    )
+    return claimed !== null
+  }
+
   succeed(id: number): void {
     this.setStatus(id, 'succeeded', null)
   }
