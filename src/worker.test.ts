@@ -961,9 +961,13 @@ test('a repo worker is told to have a subagent review its branch from where it s
   expect(prompt).toContain('Report done only once it has reported')
   expect(prompt).toContain('if it runs in the background, you may stop while it works, as above')
   expect(prompt).toContain('nod then waits for that work instead of asking the human')
-  // The stash is shared with every other worktree of the repo.
+  // The stash is shared with every other worktree of the repo, and a worktree's record in the
+  // shared .git is one the sandbox will not let the reviewer remove.
   expect(prompt).toContain('It changes no files here')
-  expect(prompt).toContain('a temp `git worktree add` or copied files, never via stash or checkout')
+  expect(prompt).toContain(
+    'run in <start> unpacked by `git archive` into the scratchpad, never via worktree, stash or checkout',
+  )
+  expect(prompt).not.toContain('git worktree add')
   expect(prompt).toContain('file:line')
   expect(prompt).toContain('its confidence')
   expect(firstMessage(ledger, inRepo, 'abc123')).toBe(
