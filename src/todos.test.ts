@@ -512,10 +512,10 @@ test('a number finds every kind it numbers, a prefix only its own kind, nothing 
   // The ref each is shown by finds it again.
   for (const f of all) expect(todos.find(f.ref)).toContainEqual(f)
   // A task's state is as the caller names it, such as a running task whose terminal is gone.
-  const ended = todos.find('1', (x) => (x.status === 'queued' ? 'session ended' : x.status))
+  const ended = todos.find('1', () => 'session ended')
   expect(ended.map((f) => f.status)).toEqual([
     'waiting',
-    'needs_decision',
+    'session ended',
     'session ended',
     'active',
     'open',
