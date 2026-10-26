@@ -30,7 +30,7 @@ import {
   todayCommand,
   todoCommand,
 } from './todo-cli'
-import { parseRef, Todos } from './todos'
+import { type Found, parseRef, Todos } from './todos'
 import {
   addTrigger,
   nextRun,
@@ -98,6 +98,7 @@ const USAGE = `usage:
                                    listed under it
   nod show <task>                  history, links, then the worker's last full report. root: is
                                    the Claude session that added it (claude --resume <session>)
+  nod search <ref>                 find by number: t<n>, #<n>, r<n>, p<n>, or <n> for every kind
   nod stats
   nod gc [<task...> | --older-than <days>]
                                    close sessions and delete workspaces and worktrees of the named
@@ -245,6 +246,9 @@ switch (command) {
   }
   case 'show':
     show(taskRef(rest[0]))
+    break
+  case 'search':
+    await search(rest)
     break
   case 'drop': {
     const said = {
@@ -797,6 +801,46 @@ function show(id: number): void {
   }
   const report = ledger.attempts(id).findLast((a) => a.report)?.report
   if (report) console.log(`\n${report}`)
+}
+
+// One match prints as the command that shows it does; several, a line each with that command.
+async function search(args: string[]): Promise<void> {
+  const [ref, ...extra] = args
+  if (ref === undefined || extra.length > 0) throw new Error(USAGE)
+  const todos = new Todos(ledger)
+  const found = todos.find(ref, (t) => taskStatus(t, terminals))
+  const [one, ...more] = found
+  if (one === undefined) {
+    console.error(`no match for ${ref}`)
+    process.exit(1)
+  }
+  if (more.length > 0) {
+    for (const f of found) {
+      console.log(
+        `${f.ref.padEnd(5)} ${f.kind.padEnd(8)} ${f.status.padEnd(14)} ${oneLine(f.title, 60)}  · ${opens(f)}`,
+      )
+    }
+  } else if (one.kind === 'todo') {
+    await todoCommand(todos, home, [one.ref])
+  } else if (one.kind === 'project') {
+    projectCommand(todos, [one.ref])
+  } else if (one.kind === 'decision') {
+    const d = ledger.decision(one.id)
+    if (d.answer === null) printDecisions([d])
+    else {
+      printDecision(d)
+      console.log(`${one.status}: ${d.answer}`)
+    }
+  } else {
+    show(one.taskId)
+  }
+}
+
+// A decision has no view of its own; its task's shows it.
+function opens(f: Found): string {
+  if (f.kind === 'todo') return `nod todo ${f.ref}`
+  if (f.kind === 'project') return `nod project ${f.ref}`
+  return `nod show ${f.kind === 'retro' ? f.ref : f.taskId}`
 }
 
 function printDecisions(decisions: Decision[]): void {

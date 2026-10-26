@@ -193,7 +193,10 @@ export async function focusPage(): Promise<FocusPage> {
 export function projectsPage(): ProjectsPage {
   return {
     today: localDay(new Date()),
-    projects: todos.projects(['active', 'someday']).map((p) => ({
+    // Finished ones too, which the page shows only when a link picks one (the search box).
+    // ponytail: every finished project on each 5-second reload (~8ms and 84KB at 490); send only
+    // the picked one if that grows.
+    projects: todos.projects([...PROJECT_STATUSES]).map((p) => ({
       ...p,
       todos: todos
         .list({

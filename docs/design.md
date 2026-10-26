@@ -44,7 +44,7 @@ nod 는 여러 에이전트를 동시에 돌려 일을 처리하고, 사람에�
 | `src/todo-cli.ts` | `nod in`, `nod todo`(`check` 포함), `nod project`, `nod today` |
 | `ui/` | 이 컴퓨터에서만 여는 웹 화면. 작업·결정 화면(`nod.server.ts`)과 할 일 화면(`todos.server.ts`, `todo-fns.ts`)이 같은 장부 연결을 씁니다. |
 | `desktop/` | macOS 데스크톱 앱(Tauri). 화면 서버를 창에 띄우는 껍데기와 메뉴·전역 단축키·받아 적기 창(`src-tauri/src/main.rs`, `src/`), 화면 서버를 로그인할 때 띄우는 launchd 설정(`launchd/`). |
-| `src/cli.ts` | `nod`, `nod <결정> <답>`, `nod drop`, `nod add`, `nod tell`, `nod resume`, `nod attach`, `nod watch`, `nod ls`, `nod show`, `nod stats`, `nod gc`, `nod trigger add·ls·rm`, `nod rule ls·add·edit·off·on`, `nod repo`, `nod land`, `nod tick`, `nod restart`, `nod account`, `nod hook`, `nod run` |
+| `src/cli.ts` | `nod`, `nod <결정> <답>`, `nod drop`, `nod add`, `nod tell`, `nod resume`, `nod attach`, `nod watch`, `nod ls`, `nod show`, `nod search`, `nod stats`, `nod gc`, `nod trigger add·ls·rm`, `nod rule ls·add·edit·off·on`, `nod repo`, `nod land`, `nod tick`, `nod restart`, `nod account`, `nod hook`, `nod run` |
 | `skills/nod/SKILL.md` | Claude 세션을 앞단으로 만드는 스킬입니다. 요청을 작업으로 나눠 넣고, `nod watch` 를 Monitor 로 걸어 결정을 바로 전합니다. 결정은 대신 내리지 않습니다. |
 | `skills/gtd/` | 할 일 장부로 GTD 를 하는 스킬 묶음(`gtd:capture`·`scan`·`clarify`·`focus`·`tomorrow`·`review` 등)과 업무 도구 연결부(`sources/`). 켠 도구와 도구별 값은 `<홈>/config.json` 에서 읽습니다. |
 | `skills/wide-research/`, `agents/wide-item.md` | 항목 여러 개 × 같은 칸 비교 조사. 세션 안 서브 에이전트로 돌고 nod 장부·워커는 쓰지 않습니다. 항목마다 맥락을 새로 써야 뒤 항목의 조사가 얕아지지 않고, 결과가 세션으로 바로 돌아와 표로 합치기 쉬워서입니다. `merge.ts` 가 결과 줄을 검사해 표·CSV 로 합칩니다. |
@@ -441,6 +441,7 @@ GTD 앱의 데스크톱 화면 대신 볼 화면입니다. 이 단계는 이슈 
 4. **캘린더는 5분 동안 캐시합니다.** 화면은 5초마다 새로 고치는데, 캘린더를 읽을 때마다 앱을 띄웁니다. 읽지 못한 결과도 캐시해서 이유를 보여 줍니다.
 5. **할 일 상세 경로는 목록과 묶지 않습니다**(`todos_.$id.tsx`). 파일 이름이 `todos.$id.tsx` 면 목록 화면의 자식 경로가 되어, 목록에 자식을 그릴 자리가 없으면 상세 주소에서도 목록이 그려집니다.
 6. **고치는 화면은 사람이 손댄 칸만 따로 들고, 나머지는 장부를 따릅니다.** 처음에는 장부에 변경이 기록될 때마다 폼을 다시 그려서, 다른 곳(작업·CLI)의 변경이나 같은 화면의 메모 한 줄 더하기에 저장하지 않은 제목·메모가 사라졌습니다(2026-10-23 리뷰). 이제 손대지 않은 칸은 새 값을 보이고, 손댄 뒤에 장부가 바뀌면 바뀌었다고 알립니다. 메모를 고치던 중에 더한 한 줄은 고치던 메모 아래에도 붙입니다. 그러지 않으면 저장이 고치던 메모로 덮어써 더한 줄이 사라집니다(리뷰). 저장은 손댄 칸만 보냅니다. 처음에는 모든 칸을 보내서, 마지막 새로 고침 뒤(5초 안)에 들어온 다른 곳의 변경을 화면이 가진 옛 값으로 되돌렸습니다(리뷰).
+7. **번호로 찾기는 `Todos.find` 하나로 합니다.** 사이드바 검색창과 `nod search` 가 같은 함수를 불러, `t`·`#`·`r`·`p` 가 붙으면 그 종류만, 숫자만이면 할 일·작업·회고·프로젝트·결정을 모두 찾습니다. 제목으로 찾기는 두지 않았습니다. 찾은 것이 하나면 그 화면으로 가는데, 회고와 결정은 그것을 보여 주는 작업 화면으로 갑니다. 결정의 번호 표기는 숫자만입니다. `#<n>` 으로 적으면 다시 찾을 때 작업이 나오기 때문입니다(리뷰). 끝낸·버린 프로젝트는 Projects 화면에 평소 보이지 않다가 링크가 고르면(`#p<n>`) 맨 위에 보입니다. 처음에는 찾은 끝낸 프로젝트로 가면 빈 화면이 나왔습니다(리뷰). 앞서 보낸 찾기의 답이 나중 것보다 늦게 오면 버립니다.
 
 **실측 (2026-10-21).** 임시 장부로 띄운 화면을 헤드리스 브라우저로 눌러 봤습니다. 받아 적기, 받은 일함에서 다음 행동으로 정리, 상황으로 거르기, 상세 화면에서 마감·상황 저장, 메모 한 줄 더하기(이력의 누가는 모두 `human:ui`), 내일 보기, 프로젝트 미루기, 열린 할 일이 남은 프로젝트 끝내기 거절이 모두 동작했고 콘솔 오류는 없었습니다. 완료 기준인 "GTD 앱을 열지 않고 하루 보내기"는 Mindwtr 데이터를 옮긴 뒤(G6) 실제로 써 봐야 확인됩니다.
 

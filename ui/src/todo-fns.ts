@@ -36,7 +36,6 @@ export const getTodo = createServerFn({ method: 'GET' })
 export const getFocus = createServerFn({ method: 'GET' }).handler(() => focusPage())
 
 export const getProjects = createServerFn({ method: 'GET' }).handler(() => projectsPage())
-
 export const captureTodo = createServerFn({ method: 'POST' })
   .validator((title: string) => text(title, 'title'))
   .handler(({ data }) => capture(data))

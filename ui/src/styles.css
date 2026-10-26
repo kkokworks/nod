@@ -215,6 +215,21 @@ pre {
   text-decoration: none;
 }
 
+.side-search {
+  padding: 0.75rem 0 0.25rem;
+}
+
+.side-search input {
+  width: 100%;
+  padding: 0.35rem 0.5rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--fg);
+  font: inherit;
+  font-size: 13px;
+}
+
 .side-summary {
   display: flex;
   gap: 0.75rem;
@@ -276,6 +291,10 @@ pre {
 .side-more {
   color: var(--muted);
   font-size: 12px;
+}
+
+.side-search .side-more {
+  padding: 0.4rem 0.5rem 0;
 }
 
 .side-foot {

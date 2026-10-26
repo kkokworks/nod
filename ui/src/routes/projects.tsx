@@ -13,14 +13,22 @@ export const Route = createFileRoute('/projects')({
 // decision on one of its tasks counts as one.
 function ProjectsView() {
   const { today, projects } = Route.useLoaderData()
+  const hash = useLocation({ select: (l) => l.hash })
   const active = projects.filter((p) => p.status === 'active')
   const someday = projects.filter((p) => p.status === 'someday')
+  // A finished project shows only when a link picks it, so it can be read or reopened.
+  const finished = projects.filter(
+    (p) => (p.status === 'done' || p.status === 'dropped') && hash === `p${p.id}`,
+  )
   return (
     <div className="page">
       <h1 className="title">Projects</h1>
       <p className="subtitle">
         {active.length} active · {active.filter((p) => p.next === 0).length} with no next action
       </p>
+      {finished.map((p) => (
+        <ProjectCard key={p.id} p={p} today={today} />
+      ))}
       <AddProject />
       {active.map((p) => (
         <ProjectCard key={p.id} p={p} today={today} />
@@ -52,6 +60,9 @@ function ProjectCard({ p, today }: { p: ProjectsPage['projects'][number]; today:
           {p.next} next · {p.waiting} waiting
         </span>
         {stuck && <span className="warn-text">no next action</span>}
+        {(p.status === 'done' || p.status === 'dropped') && (
+          <span className="muted">{p.status}</span>
+        )}
         <span className="todo-actions">
           <button
             type="button"
