@@ -71,7 +71,13 @@ const setRepo = (land: LandLevel, more: { checkCmd?: string; gateCmd?: string } 
 
 // A repo task that succeeded with a commit of `files` on `branch`, after `after` if given, on whose
 // branch it then starts.
-function finished(branch: string, files: Record<string, string>, after?: number): number {
+// `start`: what its branch starts from without an earlier task (the repo's HEAD otherwise).
+function finished(
+  branch: string,
+  files: Record<string, string>,
+  after?: number,
+  start?: string,
+): number {
   const id = ledger.add({
     brief: `work on ${branch}`,
     repo,
@@ -83,7 +89,8 @@ function finished(branch: string, files: Record<string, string>, after?: number)
     issue: null,
   })
   const ws = workspaceOf(home, ledger.get(id))
-  const from = after === undefined ? [] : [ledger.get(after).branch ?? '']
+  const from =
+    after === undefined ? (start === undefined ? [] : [start]) : [ledger.get(after).branch ?? '']
   git(repo, 'worktree', 'add', '-q', '-b', branch, ws, ...from)
   for (const [file, text] of Object.entries(files)) writeFileSync(join(ws, file), text)
   git(ws, 'add', '-A')
@@ -341,3 +348,184 @@ test('the tick lands on its fifth minutes, before it sweeps', async () => {
     { id, did: 'pull request open, waiting for its merge: https://github.com/o/r/pull/1' },
   ])
 })
+
+// Someone else's commit on a branch of the remote, `from` main.
+function theirBranch(name: string): string {
+  const other = tmp.make('nod-other-')
+  git(other, 'clone', '-q', origin, '.')
+  git(other, 'checkout', '-qb', name)
+  git(other, 'commit', '-q', '--allow-empty', '-m', `theirs on ${name}`)
+  git(other, 'push', '-q', 'origin', name)
+  git(repo, 'fetch', '-q', 'origin')
+  return git(other, 'rev-parse', 'HEAD')
+}
+
+const rebasing = (id: number): boolean =>
+  Bun.spawnSync(['git', 'rev-parse', '-q', '--verify', 'REBASE_HEAD'], { cwd: ws(id) }).exitCode ===
+  0
+
+// A task whose rebase onto the moved default branch stops on f.txt.
+function conflicting(branch: string): number {
+  writeFileSync(join(repo, 'f.txt'), 'start\n')
+  git(repo, 'add', '-A')
+  git(repo, 'commit', '-qm', 'add f')
+  git(repo, 'push', '-q', 'origin', 'main')
+  const id = finished(branch, { 'f.txt': 'mine\n' })
+  mainMoves('f.txt', 'main\n')
+  return id
+}
+
+test('a later done of the same landing does not write over the pull request text the worker gave', async () => {
+  setRepo('pr', { checkCmd: 'test -f ok.txt' })
+  const id = finished('feat/c', { 'c.txt': 'c\n' })
+  expect((await land(ledger, home, { send }))[0]?.did).toBe('its worker fixes the check')
+  // The text first, but the check still fails; then the fix, reported in words of its own.
+  const again = await stops(id, 'Add c\n\nAdds c.\nNOD: done | wrote it')
+  expect(JSON.parse(again ?? '{}').reason).toContain('test -f ok.txt')
+  writeFileSync(join(ws(id), 'ok.txt'), 'ok\n')
+  git(ws(id), 'add', '-A')
+  git(ws(id), 'commit', '-qm', 'add ok')
+  expect(await stops(id, 'I added ok.txt and committed it.\nNOD: done | fixed', true)).toBeNull()
+  expect(ledger.landing(id)).toMatchObject({ title: 'Add c', body: 'Adds c.' })
+}, 30_000)
+
+test('a conflict nod cannot hand to the worker goes back as it was, so yes starts over', async () => {
+  const id = conflicting('feat/h')
+  setRepo('pr')
+  const before = head(id)
+  const failing: Send = async () => {
+    throw new Error('a permission dialog is open')
+  }
+  expect((await land(ledger, home, { send: failing, only: [id] }))[0]?.did).toBe(
+    'asked: nod could not hand its worker the landing: a permission dialog is open',
+  )
+  expect(rebasing(id)).toBe(false)
+  expect(head(id)).toBe(before)
+  const asked = ledger.decisions(id).find((d) => d.answer === null)
+  await answer(ledger, home, asked?.id ?? 0, 'yes', 'human')
+  expect((await land(ledger, home, { send, only: [id] }))[0]?.did).toBe(
+    'its worker resolves a conflict',
+  )
+}, 30_000)
+
+test('a rebase that will not go on for anything but a conflict counts as a failure to fix, and asks the person once retries run out', async () => {
+  setRepo('pr')
+  const id = conflicting('feat/u')
+  await land(ledger, home, { send })
+  writeFileSync(join(ws(id), 'f.txt'), 'main\nmine\n')
+  git(ws(id), 'add', 'f.txt')
+  // A change left unstaged beside the resolution: git keeps the rebase where it is.
+  writeFileSync(join(ws(id), 'README'), 'changed\n')
+  for (const _ of [1, 2]) {
+    const back = JSON.parse((await stops(id, 'Change f\n\nNOD: done | resolved', true)) ?? '{}')
+    expect(back.reason).toContain('git rebase --continue failed')
+    expect(ledger.attempts(id).at(-1)?.kind).toBe('retry')
+  }
+  expect(await stops(id, 'Change f\n\nNOD: done | resolved', true)).toBeNull()
+  expect(ledger.decisions(id).find((d) => d.answer === null)?.reason).toBe('check_failed')
+}, 30_000)
+
+test("a remote branch at the task's start is someone else's, not the task's own push", async () => {
+  setRepo('pr')
+  const theirs = theirBranch('feat/s')
+  // The task starts from that branch, under its name.
+  const id = finished('feat/s', { 's.txt': 's\n' }, undefined, 'origin/feat/s')
+  await land(ledger, home, { send })
+  await stops(id, 'Add s\n\nNOD: done | wrote it')
+  expect((await land(ledger, home, { send }))[0]?.did).toStartWith(
+    'asked: origin/feat/s has commits nod did not push',
+  )
+  expect(git(origin, 'rev-parse', 'feat/s')).toBe(theirs)
+}, 30_000)
+
+test('nod pushes no branch that is the default one, no merge commit, and over nothing it did not push', async () => {
+  setRepo('pr')
+  // The remote's default branch is named as the task's branch.
+  const named = finished('feat/d', { 'd.txt': 'd\n' })
+  git(origin, 'branch', 'feat/d', 'main')
+  git(origin, 'symbolic-ref', 'HEAD', 'refs/heads/feat/d')
+  expect((await land(ledger, home, { send, only: [named] }))[0]?.did).toBe(
+    'asked: Its branch feat/d is the default branch, which nod never pushes to.',
+  )
+  git(origin, 'symbolic-ref', 'HEAD', 'refs/heads/main')
+
+  const merging = finished('feat/m', { 'm.txt': 'm\n' })
+  git(ws(merging), 'checkout', '-qb', 'side', 'main')
+  git(ws(merging), 'commit', '-q', '--allow-empty', '-m', 'side')
+  git(ws(merging), 'checkout', '-q', 'feat/m')
+  git(ws(merging), 'merge', '-q', '--no-ff', '-m', 'merge side', 'side')
+  await land(ledger, home, { send, only: [merging] })
+  await stops(merging, 'Add m\n\nNOD: done | wrote it')
+  expect((await land(ledger, home, { send, only: [merging] }))[0]?.did).toStartWith(
+    'asked: Its branch has merge commits',
+  )
+  expect(
+    Bun.spawnSync(['git', '-C', origin, 'rev-parse', '-q', '--verify', 'feat/m']).exitCode,
+  ).toBe(1)
+
+  // Someone pushed over the pull request's branch after nod did: the lease keeps theirs.
+  const leased = finished('feat/l', { 'l.txt': 'l\n' })
+  await land(ledger, home, { send, only: [leased] })
+  await stops(leased, 'Add l\n\nNOD: done | wrote it')
+  await land(ledger, home, { send, only: [leased] })
+  const other = tmp.make('nod-other-')
+  git(other, 'clone', '-q', origin, '.')
+  git(other, 'checkout', '-q', 'feat/l')
+  git(other, 'commit', '-q', '--allow-empty', '-m', 'theirs on top')
+  git(other, 'push', '-q', '-f', 'origin', 'feat/l')
+  const theirs = git(other, 'rev-parse', 'HEAD')
+  mainMoves('n.txt', 'n\n')
+  writeFileSync(join(service, 'merge-state'), 'BEHIND')
+  expect((await land(ledger, home, { send, only: [leased] }))[0]?.did).toStartWith(
+    'asked: The push of feat/l was refused',
+  )
+  expect(git(origin, 'rev-parse', 'feat/l')).toBe(theirs)
+}, 30_000)
+
+test('nod leaves a worktree alone while a turn runs in it', async () => {
+  setRepo('pr')
+  const id = finished('feat/o', { 'o.txt': 'o\n' })
+  mainMoves('m.txt', 'm\n')
+  const before = head(id)
+  // A turn typed into the worker's terminal, which leaves the status succeeded.
+  ledger.startAttempt({
+    taskId: id,
+    kind: 'followup',
+    decisionId: null,
+    sessionId: `s${id}`,
+    prompt: 'x',
+  })
+  expect((await land(ledger, home, { send }))[0]?.did).toBe('its worker is busy')
+  expect(head(id)).toBe(before)
+})
+
+test('dropping a question asked on a conflict undoes the rebase and stops landing; the task stays succeeded', async () => {
+  setRepo('pr')
+  const id = conflicting('feat/q')
+  const before = head(id)
+  await land(ledger, home, { send })
+  expect(rebasing(id)).toBe(true)
+  await stops(id, 'Main says main, mine says mine.\nNOD: question | which one?')
+  const asked = ledger.decisions(id).find((d) => d.answer === null)
+  expect(asked?.reason).toBe('question')
+  expect(await drop(ledger, home, asked?.id ?? 0)).toBe('landing stopped')
+  expect(rebasing(id)).toBe(false)
+  expect(head(id)).toBe(before)
+  expect(ledger.get(id).status).toBe('succeeded')
+  expect(ledger.landing(id)).toMatchObject({ stopped: 'dropped', handedAt: null })
+}, 30_000)
+
+test('a pull request closed without its merge asks the person', async () => {
+  setRepo('pr')
+  const id = finished('feat/z', { 'z.txt': 'z\n' })
+  await land(ledger, home, { send })
+  await stops(id, 'Add z\n\nNOD: done | wrote it')
+  await land(ledger, home, { send })
+  const prs = JSON.parse(readFileSync(join(service, 'prs.json'), 'utf8'))
+  prs[0].state = 'closed'
+  writeFileSync(join(service, 'prs.json'), JSON.stringify(prs))
+  expect((await land(ledger, home, { send }))[0]?.did).toStartWith(
+    'asked: Its pull request was closed without being merged',
+  )
+  expect(ledger.decisions(id).find((d) => d.answer === null)?.reason).toBe('land')
+}, 30_000)

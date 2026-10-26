@@ -65,6 +65,8 @@ describe('nod opens and squash merges its pull requests through the repo service
       expect((await service.view(pr)).state).toBe('open')
       await service.merge(pr, { head, title: 'Add a', body: 'Body' })
       expect((await service.view(pr)).state).toBe('merged')
+      // A later task given the same branch name is not that merged pull request's.
+      expect(await service.find('feat/a')).toBeNull()
       // One commit on main with the branch's files, and no merge commit.
       expect(git(origin, 'log', '--format=%s', 'main').split('\n')).toEqual(['Add a', 'init'])
       expect(git(origin, 'show', 'main:a.txt')).toBe('a')

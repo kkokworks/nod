@@ -2136,8 +2136,11 @@ async function verifyLanding(
   const ws = task.workspace
   if (ws === null) throw new Error(`task ${task.id} has no workspace`)
   if (task.repo === null) return verify(ledger, task, report)
+  // Only while there is none: a later done of the same landing (a second conflict, a fixed check)
+  // reports on that work, not on the pull request. A gate that fails clears it (land.ts).
   const pr = reported ? prText(report) : null
-  if (pr !== null && ledger.landing(task.id)?.pr === null) ledger.setLanding(task.id, pr)
+  const had = ledger.landing(task.id)
+  if (pr !== null && had?.pr === null && had.title === null) ledger.setLanding(task.id, pr)
   if (rebasing(ws)) {
     const unmerged = (await spawn(['git', 'diff', '--name-only', '--diff-filter=U'], ws)).stdout
     if (unmerged.trim() !== '') {
@@ -2149,7 +2152,13 @@ async function verifyLanding(
     const onto = readFileSync(gitPath(ws, 'rebase-merge/onto'), 'utf8').trim()
     const r = await spawn([...NOD_GIT, 'rebase', '--continue'], ws)
     if (r.code !== 0) {
-      if (rebasing(ws)) return { passed: false, next: true, output: await conflictBrief(ws) }
+      // Stopped at the next commit's conflict: the landing goes on. Anything else (an unstaged
+      // change left beside the resolution, say) is the worker's to fix, as a failed check is, so
+      // it counts toward the retries and git says why.
+      const next = (await spawn(['git', 'diff', '--name-only', '--diff-filter=U'], ws)).stdout
+      if (rebasing(ws) && next.trim() !== '') {
+        return { passed: false, next: true, output: await conflictBrief(ws) }
+      }
       return {
         passed: false,
         output: `git rebase --continue failed:\n${r.output.slice(-OUTPUT_LIMIT)}`,
@@ -2241,11 +2250,11 @@ async function uncommittedChanges(worktree: string): Promise<string> {
 export async function spawn(
   cmd: string[],
   cwd?: string,
-  opts: { stdin?: string; timeoutMs?: number } = {},
+  opts: { stdin?: string; timeoutMs?: number; env?: Record<string, string> } = {},
 ): Promise<{ code: number; stdout: string; output: string }> {
   const proc = Bun.spawn(cmd, {
     cwd,
-    env: process.env,
+    env: opts.env === undefined ? process.env : { ...process.env, ...opts.env },
     stdin: opts.stdin === undefined ? 'ignore' : new Blob([opts.stdin]),
     stdout: 'pipe',
     stderr: 'pipe',

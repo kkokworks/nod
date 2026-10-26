@@ -27,9 +27,15 @@ import {
 // pull request's text (handOff in worker.ts, a `land` turn). What only the person can clear is a
 // decision (askToLand). The tick runs it every fifth minute, and `nod land` now.
 
-// The check runs in the tick, which nothing else waits on, but one that hangs would hold the repo.
+// The tick lands last but for its sweep, and the scheduler starts no tick while one runs, so a long
+// check holds back the sweep and the next ticks' triggers and watches.
+// ponytail: one cap per step; land in a process of its own if checks run longer than ticks may wait.
 const CHECK_TIMEOUT_MS = 30 * 60_000
 const GATE_TIMEOUT_MS = 5 * 60_000
+// fetch and push reach the remote: a network that hangs, or a login that would ask for a password
+// no one is there to type, must not hold the tick.
+const GIT_TIMEOUT_MS = 2 * 60_000
+const NO_PROMPT = { GIT_TERMINAL_PROMPT: '0' }
 const OUTPUT_LIMIT = 4000
 const GIT = NOD_GIT
 
@@ -95,6 +101,8 @@ async function landRepo(pass: Pass, only: number[] | undefined): Promise<void> {
   let service: GitService | null = null
   const serviceNow = (): GitService => {
     service ??= serviceOf(repo.path)
+    // Missing, it would fail at every pass; the person installs it or lands by hand.
+    if (Bun.which(service.name) === null) throw new MissingCli(service.name)
     return service
   }
   for (const t of tasks) {
@@ -105,8 +113,11 @@ async function landRepo(pass: Pass, only: number[] | undefined): Promise<void> {
       if (did.startsWith('merged')) tip = await fetchTip(repo.path)
     } catch (error) {
       ledger.setLanding(t.id, { busy: null })
-      await noteFor(pass, t, message(error))
-      pass.moved.push({ id: t.id, did: message(error) })
+      const did =
+        error instanceof MissingCli
+          ? await askFor(pass, t, `${error.message}, which is not on PATH where nod lands.`)
+          : await noteFor(pass, t, message(error))
+      pass.moved.push({ id: t.id, did })
     }
   }
 }
@@ -204,6 +215,8 @@ async function landTask(
     try {
       await handOff(ledger, home, task.id, said, pass.send)
     } catch (error) {
+      // No worker is on the conflict, so the branch goes back as it was: yes starts over.
+      if (conflict !== null) await spawn([...GIT, 'rebase', '--abort'], ws)
       return ask(`nod could not hand its worker the landing: ${message(error)}`)
     }
     const did =
@@ -250,6 +263,7 @@ async function landTask(
         `${head}:refs/heads/${branch}`,
       ],
       ws,
+      { timeoutMs: GIT_TIMEOUT_MS, env: NO_PROMPT },
     )
     if (push.code !== 0) {
       return ask(`The push of ${branch} was refused:\n${push.output.trim().slice(-OUTPUT_LIMIT)}`)
@@ -316,16 +330,19 @@ async function askFor(pass: Pass, task: Task, question: string): Promise<string>
 // A gate failure is about what must not go out, so the person sees it, and the answer goes to the
 // worker as landing work.
 async function gateFailed(pass: Pass, task: Task, gate: string, output: string): Promise<string> {
+  // The text goes back to the worker with the rest: it writes it again (verifyLanding).
   pass.ledger.setLanding(task.id, {
     note: `the gate failed: ${gate}`,
     handedAt: new Date().toISOString(),
+    title: null,
+    body: null,
   })
   await askToLand(
     pass.ledger,
     pass.home,
     task.id,
     'check_failed',
-    `Before pushing, the repo's gate \`${gate}\` failed:\n${output}\nAnswer with how its worker should fix it (it goes to the worker's conversation, as the pull request's text, commit messages and the diff are its work); nod drop stops landing it.`,
+    `Before pushing, the repo's gate \`${gate}\` failed:\n${output}\nAnswer with how its worker should fix it (it goes to the worker's conversation, as the pull request's text, commit messages and the diff are its work, and it writes the pull request's text again); nod drop stops landing it.`,
   )
   return 'asked: the gate failed'
 }
@@ -455,9 +472,14 @@ async function runGate(
   return code === 0 ? null : (out + err).trim().slice(-OUTPUT_LIMIT) || `exited ${code}`
 }
 
-// Whether `remote`, the branch as origin has it, holds only the task's own commits: it is in the
-// branch as it was at some point (its reflog).
+// Whether `remote`, the branch as origin has it, holds only the task's own commits: past where the
+// branch started, and in the branch as it was at some point (its reflog). The start itself, or what
+// it was made from, is someone else's.
 async function ownPush(ws: string, branch: string, remote: string): Promise<boolean> {
+  const start = await startOf(ws, branch)
+  if (start === null || remote === start) return false
+  const past = await spawn(['git', 'merge-base', '--is-ancestor', start, remote], ws)
+  if (past.code !== 0) return false
   const tips = (await maybe(git(ws, 'reflog', 'show', '--format=%H', `refs/heads/${branch}`))) ?? ''
   for (const tip of tips.split('\n').filter(Boolean)) {
     const r = await spawn(['git', 'merge-base', '--is-ancestor', remote, tip], ws)
@@ -467,9 +489,18 @@ async function ownPush(ws: string, branch: string, remote: string): Promise<bool
 }
 
 async function git(cwd: string, ...args: string[]): Promise<string> {
-  const { code, stdout, output } = await spawn([...GIT, ...args], cwd)
+  const { code, stdout, output } = await spawn([...GIT, ...args], cwd, {
+    timeoutMs: GIT_TIMEOUT_MS,
+    env: NO_PROMPT,
+  })
   if (code !== 0) throw new Error(`git ${args[0]} failed: ${output.trim().slice(-OUTPUT_LIMIT)}`)
   return stdout.trim()
 }
 
 const maybe = (p: Promise<string>): Promise<string | null> => p.catch(() => null)
+
+class MissingCli extends Error {
+  constructor(name: string) {
+    super(`landing this repo needs ${name}`)
+  }
+}

@@ -126,7 +126,8 @@ export type NewPr = { base: string; head: string; title: string; body: string }
 // checked: the service refuses one whose head moved since.
 export type GitService = {
   name: 'gh' | 'tea'
-  // The pull request whose head is this branch, open or merged; one closed unmerged is no longer it.
+  // The open pull request whose head is this branch. Not a merged or closed one: a branch name the
+  // person gives may have been used before, and that pull request is someone else's work.
   find(branch: string): Promise<string | null>
   open(pr: NewPr): Promise<string>
   view(url: string): Promise<OwnPr>
@@ -183,10 +184,7 @@ export function serviceOf(repo: string): GitService {
             'url,state',
           ]),
         )
-        return (
-          (prs.find((p) => p.state === 'OPEN') ?? prs.find((p) => p.state === 'MERGED'))?.url ??
-          null
-        )
+        return prs.find((p) => p.state === 'OPEN')?.url ?? null
       },
       open: async (pr) => {
         const out = await run(
@@ -229,7 +227,7 @@ export function serviceOf(repo: string): GitService {
             ? 'conflict'
             : status === 'BEHIND'
               ? 'behind'
-              : status === 'CLEAN' || status === 'HAS_HOOKS'
+              : status === 'CLEAN'
                 ? 'clean'
                 : status === 'UNKNOWN'
                   ? 'unknown'
@@ -284,7 +282,7 @@ export function serviceOf(repo: string): GitService {
     find: async (branch) => {
       const listed = JSON.parse(await api(`${pulls}?state=all&limit=50`))
       const prs = GITEA_LIST.parse(listed).filter((p) => p.head.ref === branch)
-      return (prs.find((p) => p.state === 'open') ?? prs.find((p) => p.merged))?.html_url ?? null
+      return prs.find((p) => p.state === 'open')?.html_url ?? null
     },
     open: async (pr) => GITEA_CREATED.parse(JSON.parse(await api(pulls, pr))).html_url,
     view: async (url) => {
