@@ -24,6 +24,11 @@ export type NotifyEvent =
   | { event: 'error'; task: TaskRef; error: string }
   // A worker's Claude Code is due to start again, but a person is attached to its terminal.
   | { event: 'restart_held'; task: TaskRef; reason: string }
+  // Landing a task (land.ts): the pull request nod opened, its merge, and what the landing waits on
+  // or failed on, each time that changes.
+  | { event: 'pr_opened'; task: TaskRef; url: string }
+  | { event: 'merged'; task: TaskRef; url: string }
+  | { event: 'landing'; task: TaskRef; note: string }
   | { event: 'trigger_failed'; trigger: { id: number; cron: string }; error: string }
   | { event: 'watch_passed'; todo: { id: number; title: string }; watch: string }
   | { event: 'watch_failed'; todo: { id: number; title: string }; watch: string; error: string }

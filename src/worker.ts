@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { basename, join } from 'node:path'
+import { basename, join, resolve } from 'node:path'
 import { z } from 'zod'
 import { accountChanged, accountRule, configDir } from './account'
 import type { Attempt, AttemptKind, Decision, DecisionReason, Ledger, Task } from './ledger'
@@ -334,7 +334,20 @@ export async function answer(
   const yes = /^y(es)?$/i.test(text.trim())
   // Trust and rules are yes-or-nothing: anything but yes ends the task.
   if ((decision.reason === 'trust' || decision.reason === 'rule') && !yes) {
-    return drop(ledger, home, decisionId)
+    return (await drop(ledger, home, decisionId)) === 'dropped'
+  }
+  // A decision on landing (land.ts) waits on no turn: yes lets landing try again (the next pass, or
+  // nod land now), and anything else stops landing the task. Its work stands either way.
+  if (decision.reason === 'land') {
+    ledger.db
+      .transaction(() => {
+        ledger.closeAnswered(decisionId, text, 'succeeded')
+        const stopped = yes ? null : `stopped by the person: ${text}`
+        ledger.setLanding(decision.taskId, { stopped, note: null })
+      })
+      .immediate()
+    await told()
+    return true
   }
   // The retrospective proposed the rule as the report of the turn this decision is on; adding it is
   // all that is left to do, with the decision, so neither happens without the other. That turn's
@@ -428,19 +441,47 @@ async function waitForScreen(terminals: Terminals, name: string, text: string): 
   }
 }
 
-// Returns whether the task was dropped; false when the decision only closed, its task having ended.
-export async function drop(ledger: Ledger, home: string, decisionId: number): Promise<boolean> {
+// What a drop did: ended the task; only closed the decision, its task having ended; or stopped
+// landing the task, whose work stands.
+export type Dropped = 'dropped' | 'closed' | 'landing stopped'
+
+export async function drop(ledger: Ledger, home: string, decisionId: number): Promise<Dropped> {
   const decision = ledger.decision(decisionId)
   const task = ledger.get(decision.taskId)
+  const dropped = {
+    event: 'answered',
+    task: taskRef(task),
+    decision: { id: decisionId, reason: decision.reason, answer: '(dropped)' },
+  } as const
   // One left open on a task that ended only closes, and the task stays as it is.
   if (finished(ledger, task.id)) {
     ledger.dismiss(decisionId, '(dropped)')
-    await notify(home, {
-      event: 'answered',
-      task: taskRef(task),
-      decision: { id: decisionId, reason: decision.reason, answer: '(dropped)' },
-    })
-    return false
+    await notify(home, dropped)
+    return 'closed'
+  }
+  // Landing work, or a decision on landing (land.ts): the work succeeded, so only its landing stops.
+  // Ending the task would turn that success into a cancellation and cancel the tasks after it. A
+  // rebase going on is undone, so the branch is as it was; the worker goes first, which may be
+  // in the middle of a turn on it.
+  if (decision.reason === 'land' || ledger.landing(task.id)?.handedAt != null) {
+    const why = '(its landing was stopped)'
+    const closed = ledger.db
+      .transaction(() => {
+        const others = closeDecisions(ledger, task.id, (d) => d.id !== decisionId, why)
+        ledger.closeAnswered(decisionId, '(dropped)', 'succeeded')
+        ledger.setLanding(task.id, { handedAt: null, busy: null, stopped: 'dropped', note: null })
+        return others
+      })
+      .immediate()
+    await Terminals.of(home).close(sessionName(task.id))
+    const open = ledger.openAttempt(task.id)
+    if (open !== null) ledger.failAttempt(open.id, 'its landing was stopped')
+    if (task.workspace !== null && rebasing(task.workspace)) {
+      await spawn([...NOD_GIT, 'rebase', '--abort'], task.workspace)
+    }
+    await notify(home, dropped)
+    await announce(home, task, closed, why)
+    return 'landing stopped'
   }
   // The task ends, so its other decisions wait on nothing, and a retrospective ends with it, before
   // anything is heard of, so no message goes on in it meanwhile (deliver).
@@ -462,7 +503,7 @@ export async function drop(ledger: Ledger, home: string, decisionId: number): Pr
   await Terminals.of(home).close(sessionName(task.id))
   await notify(home, { event: 'cancelled', task: taskRef(task) })
   await startRetro(ledger, home, task)
-  return true
+  return 'dropped'
 }
 
 // Looks back on a task that ran into trouble, in a new session that gets only its history, and
@@ -493,6 +534,47 @@ export async function resume(ledger: Ledger, home: string, taskId: number): Prom
   }
   await restore(ledger, home, taskId)
   await deliver(ledger, home, taskId, 'resume', RESUME_PROMPT, null)
+}
+
+// How a landing turn reaches the worker: deliver, but in tests, which have no terminal for it.
+export type Send = (taskId: number, text: string) => Promise<void>
+
+// Gives the worker landing work (land.ts) in a turn of its own, the way `nod tell` does: a conflict
+// to resolve, a check to fix, the pull request's text to write. Until a done of its passes nod's
+// checks, its turns are landing work (settle), whatever starts them: an answer, a retry, a tell.
+export async function handOff(
+  ledger: Ledger,
+  home: string,
+  taskId: number,
+  text: string,
+  send?: Send,
+): Promise<void> {
+  ledger.setLanding(taskId, { handedAt: new Date().toISOString(), busy: null })
+  try {
+    if (send !== undefined) {
+      await send(taskId, text)
+      return
+    }
+    await restore(ledger, home, taskId)
+    await deliver(ledger, home, taskId, 'land', text, null)
+  } catch (error) {
+    ledger.setLanding(taskId, { handedAt: null })
+    throw error
+  }
+}
+
+// A decision on landing the task (land.ts), on its last turn: `land` for what only the person can
+// clear, `check_failed` for a gate that failed, whose answer goes to the worker as landing work.
+export async function askToLand(
+  ledger: Ledger,
+  home: string,
+  taskId: number,
+  reason: 'land' | 'check_failed',
+  question: string,
+): Promise<void> {
+  const last = ledger.lastAttempt(taskId)
+  if (last === null) throw new Error(`task ${taskId} has not started`)
+  await decide(ledger, home, taskId, last.id, reason, question)
 }
 
 // Called by the Stop hook. Returns the hook's stdout: a "block" that makes Claude Code continue the
@@ -697,8 +779,14 @@ async function settle(
     await decide(ledger, home, task.id, attemptId, 'question', over)
     return null
   }
-  const check =
-    unread !== null ? { passed: false, output: unread } : await verify(ledger, task, text)
+  // Landing work nod gave the worker (land.ts) is checked as the branch now lands (verifyLanding).
+  const lands = ledger.landing(task.id)?.handedAt != null
+  const check: Check | null =
+    unread !== null
+      ? { passed: false, output: unread }
+      : lands
+        ? await verifyLanding(ledger, task, text, report !== null)
+        : await verify(ledger, task, text)
   if (check !== null) ledger.recordCheck(attemptId, check.passed, check.output)
   if (newer()) return null
   if (check === null || check.passed) {
@@ -732,17 +820,21 @@ async function settle(
           ledger.endRetro(task.retroId, captures.length > 0 ? 'todo' : 'none')
         const left = closeDecisions(ledger, task.id, () => true, without)
         ledger.succeed(task.id)
+        // The head that passed, which the next landing pass takes up from.
+        if (lands) ledger.setLanding(task.id, { ready: check?.head ?? null, handedAt: null })
         return left
       })
       .immediate()
     if (closed === null) return null
     await announce(home, task, closed, without)
-    await notify(home, { event: 'succeeded', task: taskRef(task), summary })
+    // Landing work done tells the person nothing yet; the pull request or the merge will.
+    if (!lands) await notify(home, { event: 'succeeded', task: taskRef(task), summary })
     await sendTells(ledger, home, task, tells)
     await startRetro(ledger, home, task)
     return null
   }
-  if (trailingRetries(ledger, task.id) >= CHECK_RETRIES) {
+  // The next conflict of a rebase going on is the landing going on, not a failure to fix.
+  if (!check.next && trailingRetries(ledger, task.id) >= CHECK_RETRIES) {
     await decide(
       ledger,
       home,
@@ -753,13 +845,13 @@ async function settle(
     )
     return null
   }
-  const reason = `${check.output}\nFix the problem, then finish.`
+  const reason = check.next ? check.output : `${check.output}\nFix the problem, then finish.`
   const retried = ledger.db
     .transaction((): boolean => {
       if (newer() || ended(ledger, task.id)) return false
       ledger.startAttempt({
         taskId: task.id,
-        kind: 'retry',
+        kind: check.next ? 'land' : 'retry',
         decisionId: null,
         sessionId: event.session_id,
         prompt: reason,
@@ -1089,6 +1181,14 @@ async function deliver(
   const turn = ledger.db
     .transaction((): Turn => {
       refuseEnded(ledger, ledger.get(taskId))
+      // nod is rebasing or checking the branch in its worktree (land.ts): a turn now would work on
+      // files that move under it.
+      const busy = ledger.landing(taskId)?.busy ?? null
+      if (kind !== 'land' && busy !== null && busy !== process.pid && running(busy)) {
+        throw new Error(
+          `nod is landing task ${taskId} right now (rebasing or checking its branch); try again in a minute`,
+        )
+      }
       // A worker's message never brings back a task the person dropped (sendTells).
       if (from !== null && ledger.get(taskId).status === 'cancelled') {
         throw new Error(`task ${taskId} was dropped`)
@@ -1182,7 +1282,7 @@ function settling(terminals: Terminals, name: string): boolean {
   return running(Number.parseInt(terminals.option(name, SETTLING_OPTION), 10))
 }
 
-function running(pid: number): boolean {
+export function running(pid: number): boolean {
   if (!pid) return false
   try {
     process.kill(pid, 0)
@@ -1911,20 +2011,26 @@ async function initSubmodules(repo: string, worktree: string): Promise<void> {
 // What nod checks itself before a "done" counts: the task's check command, then, in a repo, that
 // the work is committed, since later tasks start from the branch and gc keeps only commits, then
 // an independent review. Null for a retrospective, whose rule the human decides on instead.
+// What a check of a done came to. `next`: a rebase nod went on with stopped at another conflict, which
+// the worker resolves next (verifyLanding); `head`: the head that passed.
+type Check = { passed: boolean; output: string; next?: boolean; head?: string }
+
+// `checkCmd`: the task's, or as it lands the repo's (verifyLanding).
 async function verify(
   ledger: Ledger,
   task: Task,
   report: string,
-): Promise<{ passed: boolean; output: string } | null> {
+  checkCmd: string | null = task.checkCmd,
+): Promise<Check | null> {
   if (task.retroId !== null) return null
   if (task.workspace === null) throw new Error(`task ${task.id} has no workspace`)
   // ponytail: the check runs unsandboxed because a human wrote it; sandbox it once the planner
   // starts generating checks.
-  const check = task.checkCmd === null ? null : await runCheck(task.checkCmd, task.workspace)
+  const check = checkCmd === null ? null : await runCheck(checkCmd, task.workspace)
   if (check !== null && !check.passed) {
     return {
       passed: false,
-      output: `The acceptance check \`${task.checkCmd}\` failed:\n${check.output}`,
+      output: `The acceptance check \`${checkCmd}\` failed:\n${check.output}`,
     }
   }
   const uncommitted = task.repo === null ? '' : await uncommittedChanges(task.workspace)
@@ -1954,7 +2060,9 @@ async function review(
   cwd: string,
   report: string,
 ): Promise<{ passed: boolean; output: string }> {
-  const changes = task.repo === null ? null : await changesOf(cwd, branchOf(task))
+  // Since the branch now starts, once nod rebased it as it lands it (land.ts).
+  const base = ledger.landing(task.id)?.base ?? null
+  const changes = task.repo === null ? null : await changesOf(cwd, branchOf(task), base)
   const head = task.repo === null ? null : await headOf(cwd)
   const { code, stdout, output } = await spawn(
     [
@@ -1985,19 +2093,19 @@ async function review(
   return { passed: false, output: stdout.trim().slice(-OUTPUT_LIMIT) }
 }
 
-// What the branch changed since it was created. The start is its oldest reflog entry, since
-// `worktree add -b` records where it started and later commits only add entries. No color and no
-// external diff tool, whatever the human's git config says, so the reviewer reads a plain diff.
-async function changesOf(worktree: string, branch: string): Promise<Changes> {
+// What the branch changed since it was created, or since `base`, where nod rebased it to as it
+// lands it. The start is its oldest reflog entry, since `worktree add -b` records where it started
+// and later commits only add entries. No color and no external diff tool, whatever the human's git
+// config says, so the reviewer reads a plain diff.
+async function changesOf(worktree: string, branch: string, base: string | null): Promise<Changes> {
   const git = async (...args: string[]): Promise<string> => {
     const { code, stdout, output } = await spawn(['git', ...args], worktree)
     if (code !== 0) throw new Error(`git ${args.join(' ')} failed: ${output.trim()}`)
     return stdout
   }
-  const start = (await git('reflog', 'show', '--format=%H', `refs/heads/${branch}`))
-    .trim()
-    .split('\n')
-    .at(-1)
+  const start =
+    base ??
+    (await git('reflog', 'show', '--format=%H', `refs/heads/${branch}`)).trim().split('\n').at(-1)
   if (!start) throw new Error(`${branch} has no reflog to find where it started`)
   const range = `${start}..HEAD`
   return {
@@ -2012,6 +2120,110 @@ async function headOf(worktree: string): Promise<string> {
   if (code !== 0) throw new Error(`git rev-parse failed: ${output.trim()}`)
   return stdout.trim()
 }
+
+// A done of landing work (land.ts), checked as the branch now lands. A rebase whose conflict the
+// worker resolved goes on, and stops again at the next one. What the worker changed since the head
+// nod last checked passes the check (the repo's full one, else the task's) and the independent
+// review, both on the commits since the branch now starts. Until nod opens the pull request, the
+// done brings its text, kept from a done with its report line: one that follows a blocked stop
+// often leaves the line out, and the text with it.
+async function verifyLanding(
+  ledger: Ledger,
+  task: Task,
+  report: string,
+  reported: boolean,
+): Promise<Check | null> {
+  const ws = task.workspace
+  if (ws === null) throw new Error(`task ${task.id} has no workspace`)
+  if (task.repo === null) return verify(ledger, task, report)
+  const pr = reported ? prText(report) : null
+  if (pr !== null && ledger.landing(task.id)?.pr === null) ledger.setLanding(task.id, pr)
+  if (rebasing(ws)) {
+    const unmerged = (await spawn(['git', 'diff', '--name-only', '--diff-filter=U'], ws)).stdout
+    if (unmerged.trim() !== '') {
+      return {
+        passed: false,
+        output: `These files are still unmerged:\n${unmerged.trim()}\nResolve each and stage it with \`git add <file>\`; nod goes on with the rebase once none is left.`,
+      }
+    }
+    const onto = readFileSync(gitPath(ws, 'rebase-merge/onto'), 'utf8').trim()
+    const r = await spawn([...NOD_GIT, 'rebase', '--continue'], ws)
+    if (r.code !== 0) {
+      if (rebasing(ws)) return { passed: false, next: true, output: await conflictBrief(ws) }
+      return {
+        passed: false,
+        output: `git rebase --continue failed:\n${r.output.slice(-OUTPUT_LIMIT)}`,
+      }
+    }
+    ledger.setLanding(task.id, { base: onto, ready: null })
+  }
+  const landing = ledger.landing(task.id)
+  if (landing?.pr === null && landing.title === null) {
+    return {
+      passed: false,
+      output:
+        'Write the pull request above your report line: its title on the first line, then its body.',
+    }
+  }
+  const head = await headOf(ws)
+  if (head === landing?.ready && (await uncommittedChanges(ws)) === '') {
+    return { passed: true, output: 'nothing changed since nod checked it', head }
+  }
+  const check = ledger.repo(task.repo)?.checkCmd ?? task.checkCmd
+  const verdict = await verify(ledger, task, report, check)
+  return verdict === null ? null : { ...verdict, head }
+}
+
+// The pull request's text a worker writes above its report line: the title on its first line,
+// then the body. The `NOD:` lines are nod's. Null without a title.
+export function prText(report: string): { title: string; body: string } | null {
+  const lines = report.split('\n').filter((l) => nodLine(l) === null)
+  const at = lines.findIndex((l) => l.trim() !== '')
+  const first = lines[at]
+  if (first === undefined) return null
+  const title = first
+    .replace(/^#+\s*/, '')
+    .replace(/^[*`]+|[*`]+$/g, '')
+    .trim()
+    .slice(0, 256)
+  if (title === '') return null
+  return {
+    title,
+    body: lines
+      .slice(at + 1)
+      .join('\n')
+      .trim(),
+  }
+}
+
+// nod's own git calls run no hooks: one the branch brings (a core.hooksPath into the worktree) would
+// run outside the sandbox. A rebase going on takes its messages as they are.
+export const NOD_GIT = ['git', '-c', 'core.hooksPath=/dev/null', '-c', 'core.editor=true']
+
+const gitPath = (ws: string, path: string): string =>
+  resolve(
+    ws,
+    Bun.spawnSync(['git', 'rev-parse', '--git-path', path], { cwd: ws }).stdout.toString().trim(),
+  )
+
+// Whether a rebase is going on in the worktree, stopped at a conflict.
+export function rebasing(ws: string): boolean {
+  return existsSync(gitPath(ws, 'rebase-merge')) || existsSync(gitPath(ws, 'rebase-apply'))
+}
+
+// The commit a stopped rebase is on and the files in conflict, with how to resolve them.
+export async function conflictBrief(ws: string): Promise<string> {
+  const files = (await spawn(['git', 'diff', '--name-only', '--diff-filter=U'], ws)).stdout
+    .trim()
+    .split('\n')
+    .filter(Boolean)
+  const at = await spawn(['git', 'log', '-1', '--format=%h %s', 'REBASE_HEAD'], ws)
+  const listed = files.length > 0 ? files.map((f) => `- ${f}`).join('\n') : '- (see git status)'
+  return `The rebase stopped at your commit ${at.code === 0 ? at.stdout.trim() : '?'} with conflicts in:\n${listed}\n${RESOLVE}`
+}
+
+const RESOLVE =
+  "Resolve them in this worktree: keep what the default branch changed and put your branch's change on top of it, dropping neither side silently. Stage each resolved file with `git add <file>`; do not commit, and do not continue or abort the rebase: nod continues it once you report done, and sends you the next conflict if there is one. Skip the subagent review this turn; nod's independent review reads the result. Report each conflict as a table row: | file and place | what the default branch changed | what your branch changed | what you kept and why |. Where numbers or conditions differ and the right one is not clear, ask with NOD: question instead of choosing."
 
 async function runCheck(cmd: string, cwd: string): Promise<{ passed: boolean; output: string }> {
   const { code, output } = await spawn(['sh', '-c', cmd], cwd)

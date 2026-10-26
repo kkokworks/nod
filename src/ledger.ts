@@ -1406,6 +1406,12 @@ export class Ledger {
     this.close(decisionId, '(dropped)', 'cancelled', now())
   }
 
+  // The person answers or drops a decision on landing the task (land.ts), which leaves it `status`:
+  // succeeded, since its work stands either way.
+  closeAnswered(decisionId: number, answer: string, status: TaskStatus): void {
+    this.close(decisionId, answer, status, now())
+  }
+
   // Closes a decision no turn waits on: one nod closes as its worker goes on without it, or one a
   // person answers or drops on a task that ended. No answer reaches a turn, so it has no answeredAt
   // and the wait for answers (stats) leaves it out; the task stays as it is.

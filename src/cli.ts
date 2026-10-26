@@ -5,6 +5,7 @@ import { parseArgs } from 'node:util'
 import { accountRule, configDir, describeRule, setAccountRule } from './account'
 import { sweep } from './done'
 import { collect, type GcPick, type GcReport, remotesHolding } from './gc'
+import { land } from './land'
 import {
   type Attempt,
   type Decision,
@@ -138,12 +139,19 @@ const USAGE = `usage:
                                    exit 0. With a path only, the setting and who changed it when;
                                    with none, every repo set. A worker cannot change it, and a
                                    Claude session can only turn a repo off
+  nod land [<task...>]             land now what the repos let nod land (the schedule does it every
+                                   fifth minute), or only these tasks, ones added before their repo
+                                   went up and ones whose landing stopped too. What needs judgment
+                                   (a conflict, a check that fails once rebased, the pull request's
+                                   text) goes to the task's worker, and what only you can clear
+                                   becomes a decision
   nod schedule [on | off]          whether the OS scheduler runs the tick every minute; on, it
                                    runs with this shell's PATH and Claude config dir, which the
                                    triggers' workers and the watches use. It stays on until off
-  nod tick                         run the triggers that are due and the watches, and gc the
-                                   finished tasks a signal says are done with (as nod gc does);
-                                   the scheduled tick does the watches and gc every fifth minute.
+  nod tick                         run the triggers that are due and the watches, land what the
+                                   repos let nod land, and gc the finished tasks a signal says
+                                   are done with (as nod gc does); the scheduled tick does the
+                                   watches, landing and gc every fifth minute.
                                    It also asks about turns whose terminal is gone (a restart of
                                    the machine or tmux) and about tasks that have waited an hour
                                    on background work, and restarts the workers due a restart
@@ -238,11 +246,15 @@ switch (command) {
   case 'show':
     show(taskRef(rest[0]))
     break
-  case 'drop':
-    console.log(
-      (await drop(ledger, home, Number(rest[0]))) ? 'dropped' : 'closed; its task had ended',
-    )
+  case 'drop': {
+    const said = {
+      dropped: 'dropped',
+      closed: 'closed; its task had ended',
+      'landing stopped': 'stopped landing it; the task stays succeeded',
+    }
+    console.log(said[await drop(ledger, home, Number(rest[0]))])
     break
+  }
   case 'gc':
     await gc(rest)
     break
@@ -258,12 +270,15 @@ switch (command) {
   case 'repo':
     repoCommand(rest)
     break
+  case 'land':
+    await landCommand(rest.map(taskRef))
+    break
   case 'schedule':
     await schedule(rest)
     break
   case 'tick': {
     // Run by hand, it checks the watches now too, not only on their every fifth minute.
-    const { added, passed, collected, lost, waited, restarted } = await tick(
+    const { added, passed, collected, lost, waited, restarted, landed } = await tick(
       ledger,
       home,
       new Date(),
@@ -275,7 +290,8 @@ switch (command) {
     if (lost.length > 0) console.log(`turn(s) lost with their terminal: ${lost.join(', ')}`)
     if (waited.length > 0) console.log(`waited too long on background work: ${waited.join(', ')}`)
     if (restarted.length > 0) console.log(`restarted task(s) ${restarted.join(', ')}`)
-    if ([added, passed, collected, lost, waited, restarted].every((ids) => ids.length === 0))
+    for (const m of landed) console.log(`landing #${m.id}: ${m.did}`)
+    if ([added, passed, collected, lost, waited, restarted, landed].every((x) => x.length === 0))
       console.log('nothing due')
     break
   }
@@ -314,12 +330,16 @@ switch (command) {
     if (process.env.NOD_TASK !== undefined && ledger.decision(id).reason === 'rule') {
       throw new Error('a worker cannot change the rules')
     }
-    const taskId = ledger.decision(id).taskId
-    console.log(
-      (await answer(ledger, home, id, words(rest), actorFromEnv()))
-        ? `answered; sent to task #${taskId}`
-        : `closed; task #${taskId} had ended`,
-    )
+    const { taskId, reason } = ledger.decision(id)
+    const said = words(rest)
+    const took = await answer(ledger, home, id, said, actorFromEnv())
+    if (reason === 'land') {
+      console.log(/^y(es)?$/i.test(said) ? 'landing it again' : 'stopped landing it')
+      // Yes tries again now, not at the next fifth minute.
+      if (/^y(es)?$/i.test(said)) await landCommand([taskId])
+    } else {
+      console.log(took ? `answered; sent to task #${taskId}` : `closed; task #${taskId} had ended`)
+    }
   }
 }
 
@@ -502,6 +522,23 @@ function repoCommand(args: string[]): void {
   if (r.land !== 'off' && scheduleEnv(home) === null) {
     console.log('the schedule is off, so tasks land only when you run nod land (nod schedule on)')
   }
+}
+
+// Lands now what the schedule would on its next fifth minute, or the tasks named, ones added
+// before their repo went up from off too, and one whose landing stopped again.
+async function landCommand(ids: number[]): Promise<void> {
+  for (const id of ids) {
+    const { repo } = ledger.get(id)
+    if (repo === null || (ledger.repo(repo)?.land ?? 'off') === 'off') {
+      throw new Error(
+        `task #${id}'s repo does not let nod land it: nod repo ${repo ?? '<path>'} pr`,
+      )
+    }
+    if (ledger.landing(id)?.stopped) ledger.setLanding(id, { stopped: null, note: null })
+  }
+  const moved = await land(ledger, home, ids.length > 0 ? { only: ids } : {})
+  for (const m of moved) console.log(`#${m.id} ${m.did}`)
+  if (moved.length === 0) console.log('nothing to land')
 }
 
 function printRepo(r: Repo): void {
@@ -733,6 +770,16 @@ function show(id: number): void {
   if (task.todoId !== null) console.log(`  todo: t${task.todoId}`)
   for (const url of ledger.links(id)) console.log(`  link: ${url}`)
   for (const ref of unlinkedPushes(task)) console.log(`  pushed: ${ref}`)
+  const landing = ledger.landing(id)
+  if (landing !== null) {
+    const short = (sha: string | null): string => sha?.slice(0, 12) ?? '—'
+    const at = landing.mergedAt
+      ? `merged ${landing.mergedAt}`
+      : landing.stopped
+        ? `stopped: ${landing.stopped}`
+        : (landing.note ?? 'going on')
+    console.log(`  landing: ${at} (on ${short(landing.base)}, pushed ${short(landing.pushed)})`)
+  }
   if (task.collectedAt !== null) console.log(`  collected: ${task.collectedAt}`)
   const after = ledger.after(id)
   if (after.length > 0) {
@@ -798,7 +845,7 @@ function printTask(t: Task, prefix = ''): void {
 
 // The remote branches holding a succeeded task's branch, while it has no link: its result was
 // pushed, maybe under another name, and is waiting to be linked. Only as fresh as the repo's last
-// fetch; nod does not fetch.
+// fetch; nod fetches only as it lands a repo's tasks (land.ts).
 function unlinkedPushes(t: Task): string[] {
   const { repo } = t
   if (repo === null || t.status !== 'succeeded' || ledger.links(t.id).length > 0) return []

@@ -616,4 +616,20 @@ test('repo sets how far nod lands a repo, records who changed what, and refuses 
     '  claude: land merge → off',
   ])
   expect((await ok('repo'))[0]).toBe(`${repo}  off`)
+
+  // Off, a task of the repo does not land even when named.
+  const task = ledger.add({
+    brief: 'x',
+    repo,
+    branch: 'feat/x',
+    checkCmd: null,
+    model: null,
+    after: [],
+    triggerId: null,
+    issue: null,
+  })
+  const off = await nod({}, 'land', String(task))
+  expect(off.code).not.toBe(0)
+  expect(off.err).toContain(`task #${task}'s repo does not let nod land it: nod repo ${repo} pr`)
+  expect(await ok('land')).toEqual(['nothing to land'])
 }, 20_000)

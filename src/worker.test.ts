@@ -2265,7 +2265,7 @@ test('a decision left open on a task that ended only closes, answered or dropped
   expect(await answer(ledger, home, asked.id, 'never mind', 'human')).toBe(false)
   const again = ledger.ask(id, asked.attemptId, 'question', 'Still there?')
   ledger.succeed(id)
-  expect(await drop(ledger, home, again)).toBe(false)
+  expect(await drop(ledger, home, again)).toBe('closed')
   expect([ledger.decision(asked.id).answer, ledger.decision(again).answer]).toEqual([
     'never mind',
     '(dropped)',
