@@ -83,8 +83,8 @@ asked work is done, that each new test fails on the code before the change (run 
 by \`git archive\` into the scratchpad, never via \`git worktree\`, stash or checkout), and for new
 bugs (boundaries, swallowed errors, races, lost data, injection, leaked secrets), reporting each as
 file:line, a scenario that reproduces it, and its confidence. Fix the findings that have a scenario,
-commit, and have it review again. In your final report, list each finding and what you did (fixed,
-or why not).`
+commit, and have it review again, two reviews at most: fix what the second finds without a third.
+In your final report, list each finding and what you did (fixed, or why not).`
 
 const RESUME_PROMPT =
   'Your session was interrupted. Check the current state of this directory and continue the task.'
