@@ -192,7 +192,7 @@ test('nod in --project captures the todo into that project, and a project that i
   expect(await ok('todo', 'inbox')).toHaveLength(2)
 })
 
-test('nod open resumes the latest session where it was opened, or starts one: with --new, with none yet, and again under its ID while Claude Code keeps no transcript of it', () => {
+test('nod open resumes the latest session where it was opened, or starts one: with --new, with none yet, and again under its ID while Claude Code keeps no transcript of it, named after the project every way', () => {
   const todos = new Todos(new Ledger(tmp.make('nod-open-')))
   const config = tmp.make('nod-open-config-')
   const [here, there] = [tmp.make('nod-open-here-'), tmp.make('nod-open-there-')]
@@ -225,11 +225,10 @@ test('nod open resumes the latest session where it was opened, or starts one: wi
   const said = '{"type":"user","message":{"role":"user","content":"hi"}}'
   // Once something is said in it, it is resumed there, wherever nod open runs.
   keep(opened, here, said)
-  expect(open(false, there)).toEqual({ argv: ['claude', '--resume', opened, ...told], cwd: here })
-  expect(open(false, there, 'Release')).toEqual({
-    argv: ['claude', '--resume', opened, ...told],
-    cwd: here,
-  })
+  // Resumed, it is named again, so a /rename goes back to the project's title.
+  const resumed = { argv: ['claude', '--resume', opened, '--name', 'Release', ...told], cwd: here }
+  expect(open(false, there)).toEqual(resumed)
+  expect(open(false, there, 'Release')).toEqual(resumed)
   // --new opens another here, which is the project's from now on: nod open opens it after.
   const second = open(true, there)
   const newer = key()
@@ -241,7 +240,10 @@ test('nod open resumes the latest session where it was opened, or starts one: wi
   expect(todos.sessionPlace(opened)?.latest).toBe(false)
   expect(open(false, here)).toEqual(second)
   keep(newer, there, said)
-  expect(open(false, here)).toEqual({ argv: ['claude', '--resume', newer, ...told], cwd: there })
+  expect(open(false, here)).toEqual({
+    argv: ['claude', '--resume', newer, '--name', 'Release', ...told],
+    cwd: there,
+  })
   expect(key()).toBe(newer)
   // The folder it was opened in is gone: no session to resume there.
   rmSync(there, { recursive: true })

@@ -491,13 +491,15 @@ exit 3
   expect(first.out).toBe(`${here} | --name Release --session-id ${opened} ${told} | ${account}\n`)
   expect(open(there, 'p1')).toMatchObject({
     code: 3,
-    out: `${here} | --resume ${opened} ${told} | ${account}\n`,
+    out: `${here} | --resume ${opened} --name Release ${told} | ${account}\n`,
   })
   expect(open(there, 'p1', '--new').out).toBe(
     `${there} | --name Release --session-id ${key()} ${told} | ${account}\n`,
   )
   expect(key()).not.toBe(opened)
-  expect(open(here, 'p1').out).toBe(`${there} | --resume ${key()} ${told} | ${account}\n`)
+  expect(open(here, 'p1').out).toBe(
+    `${there} | --resume ${key()} --name Release ${told} | ${account}\n`,
+  )
 
   const usage = Bun.spawnSync(['bun', cli, 'open'], { cwd: here, env })
   expect(usage.exitCode).not.toBe(0)

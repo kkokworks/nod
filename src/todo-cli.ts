@@ -167,6 +167,8 @@ const SAID = /"type":"(user|assistant)"/
 // `--resume` (no conversation found) nor, once a transcript file of it is there, even an empty one
 // or a title alone, `--session-id` (already in use). So a session with no transcript starts again
 // under the same ID and name, and one whose transcript holds nothing said gives way to a new one.
+// Every way, the session gets the project's name, resumed too (Claude Code 2.1.310 records it in
+// the transcript): a /rename goes back to it, and a new title shows once the project is retitled.
 export function openSession(
   todos: Todos,
   ref: string,
@@ -192,8 +194,13 @@ export function openSession(
       `p${project.id}'s session was opened in ${again.cwd}, which is gone; nod open p${project.id} --new opens a new one here`,
     )
   }
-  if (again !== null && said)
-    return { argv: ['claude', '--resume', again.sessionId, ...told], cwd: again.cwd }
+  const name = sessionTitle(project)
+  if (again !== null && said) {
+    return {
+      argv: ['claude', '--resume', again.sessionId, '--name', name, ...told],
+      cwd: again.cwd,
+    }
+  }
   if (last !== null) {
     const why =
       kept === null
@@ -204,14 +211,7 @@ export function openSession(
     )
   }
   const session = again ?? todos.addSession(project.id, crypto.randomUUID(), cwd)
-  const argv = [
-    'claude',
-    '--name',
-    sessionTitle(project),
-    '--session-id',
-    session.sessionId,
-    ...told,
-  ]
+  const argv = ['claude', '--name', name, '--session-id', session.sessionId, ...told]
   return { argv, cwd: session.cwd }
 }
 
