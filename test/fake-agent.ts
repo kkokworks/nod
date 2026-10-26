@@ -9,8 +9,11 @@
 // with `fake-untrusted`, a new session first shows the trust dialog, and with `fake-untrusted-again`
 // a resumed one does, as Claude Code asks about a repo once per account; with `fake-exit`, it exits
 // as it starts, as Claude Code does without a login; with `fake-slow-start`, it never gets past its
-// start, as Claude Code waiting on a first-run screen. Every launch, with its account and the names
-// in its environment, every turn, and what a turn takes in while it runs is logged to
+// start, as Claude Code waiting on a first-run screen. Like Claude Code, it runs a SessionStart
+// hook only for a start its matcher names (startup, resume, compact), and a turn whose first line
+// starts with `compact` compacts the conversation first, as Claude Code does once it fills up.
+// Every launch, with its account, the names in its environment and how early it compacts, every
+// turn, what a turn takes in while it runs, and what SessionStart hooks print is logged to
 // $NOD_HOME/agent.log.
 import {
   appendFileSync,
@@ -23,7 +26,7 @@ import {
 import { dirname, join } from 'node:path'
 import { projectFolder } from './projects'
 
-type Hooks = Record<string, { hooks: { command: string }[] }[]>
+type Hooks = Record<string, { matcher?: string; hooks: { command: string }[] }[]>
 
 const ENTER = '\r'
 const ESCAPE = '\x1b'
@@ -140,9 +143,13 @@ async function nextInput(): Promise<string> {
   }
 }
 
-async function runHooks(event: string, payload: object): Promise<string> {
+// `on`: what a matcher picks hooks by (SessionStart's source); a group without a matcher always runs.
+async function runHooks(event: string, payload: object, on?: string): Promise<string> {
   let out = ''
   for (const group of hooks[event] ?? []) {
+    if (on !== undefined && group.matcher !== undefined && !group.matcher.split('|').includes(on)) {
+      continue
+    }
     for (const hook of group.hooks) {
       const proc = Bun.spawn(['sh', '-c', hook.command], {
         stdin: new Blob([JSON.stringify(payload)]),
@@ -169,6 +176,13 @@ function keepTranscript(): void {
   appendFileSync(file, '{}\n')
 }
 
+// Runs the SessionStart hooks for `source` and logs what they print, which Claude Code adds to the
+// conversation.
+async function sessionStart(source: string): Promise<void> {
+  const context = await runHooks('SessionStart', { session_id: sessionId, source }, source)
+  log({ event: 'session-start', sessionId, source, context })
+}
+
 async function turn(message: string, continuing: boolean): Promise<void> {
   // Like Claude Code, for each message it takes in, before the turn; not for a blocked stop's
   // continuation. What the hook prints would go into the conversation.
@@ -180,6 +194,7 @@ async function turn(message: string, continuing: boolean): Promise<void> {
   keepTranscript()
   const head = message.split('\n')[0] ?? ''
   let reply = 'NOD: done | did it'
+  if (head.startsWith('compact')) await sessionStart('compact')
   if (head.startsWith('hang')) {
     // A turn that goes on until something ends Claude Code.
     await new Promise(() => {})
@@ -273,6 +288,7 @@ log({
   system: flag('--append-system-prompt'),
   config: process.env.CLAUDE_CONFIG_DIR ?? null,
   env: Object.keys(process.env),
+  autocompact: process.env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE ?? null,
 })
 const unknown = options.find(
   (a, i) => a.startsWith('-') && !VALUED.has(a) && !VALUED.has(options[i - 1] ?? ''),
@@ -295,6 +311,6 @@ if (existsSync(join(home, 'fake-slow-start'))) await new Promise(() => {})
 if (existsSync(join(home, resumed === null ? 'fake-untrusted' : 'fake-untrusted-again'))) {
   await trustDialog()
 }
-await runHooks('SessionStart', { session_id: sessionId })
+await sessionStart(resumed === null ? 'startup' : 'resume')
 if (prompt !== null) await turn(prompt, false)
 while (true) await turn(await nextInput(), false)
