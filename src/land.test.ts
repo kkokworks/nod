@@ -224,6 +224,22 @@ test('at merge, a task on an earlier task’s branch lands after it, with only i
   expect(git(origin, 'rev-list', '--merges', 'main')).toBe('')
 }, 30_000)
 
+test('a branch its worker rebased onto the default branch itself lands only its own commits', async () => {
+  setRepo('pr')
+  const id = finished('feat/v', { 'v.txt': 'v\n' })
+  mainMoves('m.txt', 'm\n')
+  git(ws(id), 'fetch', '-q', 'origin')
+  git(ws(id), 'rebase', '-q', 'origin/main')
+  // Moving the default branch's commit it brought in again would conflict with this one.
+  const tip = mainMoves('m.txt', 'm2\n')
+
+  expect(await land(ledger, home, { send })).toEqual([
+    { id, did: 'its worker writes the pull request' },
+  ])
+  expect(git(ws(id), 'log', '--format=%s', `${tip}..HEAD`)).toBe('change v.txt')
+  expect(ledger.landing(id)?.base).toBe(tip)
+}, 30_000)
+
 test('a conflict goes to the worker, which stages its resolution; nod goes on with the rebase, sends the next one, then checks and reviews the result', async () => {
   setRepo('pr')
   writeFileSync(join(repo, 'f.txt'), 'start\n')

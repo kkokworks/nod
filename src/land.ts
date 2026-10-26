@@ -8,9 +8,11 @@ import { Terminals } from './tmux'
 import {
   askToLand,
   conflictBrief,
+  createdFrom,
   handOff,
   message,
   NOD_GIT,
+  ownStart,
   PR_TEXT,
   rebasing,
   restore,
@@ -148,19 +150,23 @@ async function landTask(
   const ws = task.workspace
   if (ws === null) throw new Error(`task ${task.id} has no workspace`)
   let l = ledger.landing(task.id) ?? ledger.setLanding(task.id, {})
-  const base = l.base ?? (await startOf(ws, branch))
+  // Before its start is read from HEAD: mid-rebase, HEAD is not where the branch is.
+  if (rebasing(ws)) return noteFor(pass, task, 'a rebase is in progress in its worktree')
+  let head = await git(ws, 'rev-parse', 'HEAD')
+  // As its review reads it, so what the worker brought in of the default branch is not moved again.
+  // ponytail: a branch gc deleted and resume made again starts at its last head, so its commits
+  // read as none of its own; landings record the start before gc can get to them.
+  const base = l.base ?? (await ownStart(ws, branch, head, tip.commit))
   if (base === null) {
     return ask(
       `Where its own commits start is unknown: its branch's reflog is gone. Rebase ${branch} onto origin/${tip.branch} by hand and answer yes, or answer no to land it yourself.`,
     )
   }
   if (l.base === null) l = ledger.setLanding(task.id, { base })
-  let head = await git(ws, 'rev-parse', 'HEAD')
   if (l.pr === null && (await git(ws, 'rev-list', '--count', `${base}..${head}`)) === '0') {
     ledger.setLanding(task.id, { stopped: 'nothing to land: its branch has no commits of its own' })
     return 'nothing to land'
   }
-  if (rebasing(ws)) return noteFor(pass, task, 'a rebase is in progress in its worktree')
   if ((await git(ws, 'status', '--porcelain')) !== '') {
     return noteFor(pass, task, 'its worktree has uncommitted changes')
   }
@@ -406,17 +412,6 @@ async function fetchTip(repo: string): Promise<Tip> {
   }
 }
 
-// Where the branch's own commits start: the oldest entry of its reflog, where `worktree add -b`
-// made it, as the independent review reads it. Null once that is gone.
-// ponytail: a branch gc deleted and resume made again starts at its last head, so its commits
-// read as none of its own; landings record the start before gc can get to them.
-async function startOf(ws: string, branch: string): Promise<string | null> {
-  const log = await maybe(git(ws, 'reflog', 'show', '--format=%H %gs', `refs/heads/${branch}`))
-  const oldest = log?.split('\n').at(-1) ?? ''
-  const [start, ...subject] = oldest.split(' ')
-  return start && subject.join(' ').startsWith('branch: Created from') ? start : null
-}
-
 function landingMessage(m: {
   tip: Tip
   base: string
@@ -475,10 +470,10 @@ async function runGate(
 }
 
 // Whether `remote`, the branch as origin has it, holds only the task's own commits: past where the
-// branch started, and in the branch as it was at some point (its reflog). The start itself, or what
-// it was made from, is someone else's.
+// branch was created, and in the branch as it was at some point (its reflog), so a push from before
+// its worker rebased it counts too. The start itself, or what it was made from, is someone else's.
 async function ownPush(ws: string, branch: string, remote: string): Promise<boolean> {
-  const start = await startOf(ws, branch)
+  const start = await createdFrom(ws, branch)
   if (start === null || remote === start) return false
   const past = await spawn(['git', 'merge-base', '--is-ancestor', start, remote], ws)
   if (past.code !== 0) return false
