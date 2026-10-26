@@ -195,11 +195,20 @@ pre {
 }
 
 .brand {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
   font-family: ui-serif, Georgia, serif;
   font-size: 1.6rem;
   font-weight: 600;
   letter-spacing: -0.02em;
   padding: 0 0.5rem;
+}
+
+.brand-mark {
+  width: 0.9em;
+  height: 0.9em;
+  flex: none;
 }
 
 .brand:hover {

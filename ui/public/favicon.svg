@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <title>nod</title>
+  <style>
+    rect { fill: #1f2328; }
+    path { stroke: #f6f8fa; }
+    @media (prefers-color-scheme: dark) {
+      rect { fill: #ecebe8; }
+      path { stroke: #1f2328; }
+    }
+  </style>
+  <rect x="2" y="2" width="60" height="60" rx="14"/>
+  <path d="M18 33l9.5 9.5L47 21" fill="none" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

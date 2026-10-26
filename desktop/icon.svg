@@ -1,5 +1,16 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
   <title>nod</title>
-  <rect x="64" y="64" width="896" height="896" rx="200" fill="#1f2328"/>
-  <path d="M304 528l144 144 288-320" fill="none" stroke="#fff" stroke-width="96" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- macOS app icon grid: an 824 square at 100, its shadow inside the canvas. -->
+  <defs>
+    <linearGradient id="face" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#363d47"/>
+      <stop offset="1" stop-color="#1b1f24"/>
+    </linearGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="125%">
+      <feDropShadow dx="0" dy="12" stdDeviation="14" flood-color="#000" flood-opacity="0.32"/>
+    </filter>
+  </defs>
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#face)" filter="url(#shadow)"/>
+  <rect x="101.5" y="101.5" width="821" height="821" rx="183.5" fill="none" stroke="#fff" stroke-opacity="0.08" stroke-width="3"/>
+  <path d="M321 527l132 132 265-294" fill="none" stroke="#f6f8fa" stroke-width="88" stroke-linecap="round" stroke-linejoin="round"/>
 </svg>
