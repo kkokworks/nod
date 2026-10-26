@@ -26,7 +26,13 @@ export const Route = createRootRoute({
       { name: 'viewport', content: 'width=device-width, initial-scale=1' },
       { title: 'nod' },
     ],
-    links: [{ rel: 'stylesheet', href: css }],
+    links: [
+      { rel: 'stylesheet', href: css },
+      // The SVG follows the system's light or dark; the PNG is for browsers without SVG icons.
+      { rel: 'icon', href: '/favicon.svg', type: 'image/svg+xml' },
+      { rel: 'icon', href: '/favicon.png', type: 'image/png', sizes: '64x64' },
+      { rel: 'apple-touch-icon', href: '/apple-touch-icon.png' },
+    ],
   }),
   loader: () => getOverview(),
   shellComponent: Shell,
@@ -159,6 +165,18 @@ function Sidebar() {
   return (
     <aside className="sidebar">
       <Link to="/" className="brand">
+        {/* The app icon's mark, in the text's colors. */}
+        <svg className="brand-mark" viewBox="0 0 64 64" aria-hidden="true">
+          <rect x="2" y="2" width="60" height="60" rx="14" fill="currentColor" />
+          <path
+            d="M18 33l9.5 9.5L47 21"
+            fill="none"
+            stroke="var(--side)"
+            strokeWidth="8"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
         nod
       </Link>
       <nav className="side-nav">
