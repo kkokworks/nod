@@ -1,4 +1,4 @@
-import type { Decision, Ledger, Task, TaskStatus } from './ledger'
+import { type Decision, FINISHED, type Ledger, type Task, type TaskStatus } from './ledger'
 import { quote, type Terminals } from './tmux'
 import type { Change, SessionPlace } from './todos'
 import { sessionName } from './worker'
@@ -6,15 +6,21 @@ import { sessionName } from './worker'
 // Also covers a decision that opens just as the last worker stops.
 const WATCH_GRACE_SECS = 5
 
-// `nod watch`: hands `print` each decision that opens on a task `counts`, once, until none of those
-// tasks has had a worker running for WATCH_GRACE_SECS looks. `wait` comes between looks.
+// `nod watch`: hands `print` each decision that opens on a task `counts`, once, and `printEnd` each
+// time one of those tasks ends, until none of them has had a worker running for WATCH_GRACE_SECS
+// looks. `wait` comes between looks. The look that finds the last worker stopped hands over its end
+// too. An end is a new status and finishedAt, or an ended status seen after one that was not.
 export async function watch(
   ledger: Ledger,
   counts: (t: Task) => boolean,
   print: (d: Decision) => void,
+  printEnd: (t: Task) => void,
   wait: () => Promise<void> = () => Bun.sleep(1000),
 ): Promise<void> {
   const seen = new Set(ledger.openDecisions().map((d) => d.id))
+  const endOf = (t: Task): string | null =>
+    FINISHED.has(t.status) ? `${t.status} ${t.finishedAt}` : null
+  const ends = new Map(ledger.list().map((t) => [t.id, endOf(t)]))
   let idleSecs = 0
   while (idleSecs < WATCH_GRACE_SECS) {
     await wait()
@@ -23,9 +29,38 @@ export async function watch(
       seen.add(d.id)
       if (counts(ledger.get(d.taskId))) print(d)
     }
-    const running = ledger.list().some((t) => t.status === 'running' && counts(t))
+    const tasks = ledger.list()
+    for (const t of tasks) {
+      const end = endOf(t)
+      if (end !== null && end !== ends.get(t.id) && counts(t) && !landed(ledger, t)) printEnd(t)
+      ends.set(t.id, end)
+    }
+    const running = tasks.some((t) => t.status === 'running' && counts(t))
     idleSecs = running ? 0 : idleSecs + 1
   }
+}
+
+// A task that succeeded again after a turn landing gave its worker (land.ts: a conflict, a failed
+// check, the pull request's text), which the notify event leaves out too: the pull request or the
+// merge tells. A retry after a failed check goes on with the turn before it.
+// ponytail: a decision on landing closed before any landing turn (a refused push) brings the task
+// back to succeeded as if it ended again; leave out ends right after a `land` decision if that
+// turns out noisy.
+function landed(ledger: Ledger, t: Task): boolean {
+  if (t.status !== 'succeeded') return false
+  return ledger.attempts(t.id).findLast((a) => a.kind !== 'retry')?.kind === 'land'
+}
+
+// What `nod watch` prints as a task ends: its number, todo and issue, how it ended, and the worker's
+// last report once it succeeded, else the error's first line, else its brief.
+export function endLine(ledger: Ledger, t: Task): string {
+  const note = t.status === 'succeeded' ? ledger.lastAttempt(t.id)?.summary : t.error
+  return `${taskLabel(t)} ${t.status}: ${firstLine(note || t.brief)}`
+}
+
+// A task as watch and the decision list name it: `task #5 t3 PROJ-1`.
+export function taskLabel(t: Task): string {
+  return ['task', `#${t.id}`, owner(t), t.issue ?? ''].filter((x) => x !== '').join(' ')
 }
 
 // The command that goes back into a project's session: nod open for the project's latest, else
