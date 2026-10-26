@@ -644,6 +644,7 @@ test('ls keeps tasks of one status together and gives each its issue; --plain an
     createdAt: task.createdAt,
     startedAt: null,
     finishedAt: null,
+    collectedAt: null,
     note: 'loose\nwith a second line',
     issue: null,
     links: [],

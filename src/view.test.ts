@@ -12,6 +12,7 @@ const task = (o: Partial<LsTask> & { id: number }): LsTask => ({
   createdAt: minsAgo(600),
   startedAt: null,
   finishedAt: null,
+  collectedAt: null,
   note: '',
   issue: null,
   links: [],
@@ -90,14 +91,16 @@ test('ls groups what needs you, running, queued, unsent, then ended, the latest 
   const asked = task({ id: 22, status: 'needs_decision', startedAt: minsAgo(30) })
   const cancelled = task({ id: 23, status: 'cancelled', finishedAt: minsAgo(5) })
   const pushed = task({ id: 24, finishedAt: minsAgo(2), pushed: ['origin/feat/x'] })
-  const groups = lsGroups([...tasks, sessionEnded, asked, cancelled, pushed])
+  // gc collected it (--all): the person dealt with it, though it has no link.
+  const collected = task({ id: 25, finishedAt: minsAgo(4), collectedAt: minsAgo(1) })
+  const groups = lsGroups([...tasks, sessionEnded, asked, cancelled, pushed, collected])
 
   expect(groups.map((g) => [g.name, g.tasks.map((t) => t.id)])).toEqual([
     ['결정 대기 · 오류', [21, 22, 3]],
     ['진행 중', [9]],
     ['차례 기다림', [11]],
     ['끝남 · 내보내기 전', [6]],
-    ['끝남', [24, 23, 8]],
+    ['끝남', [24, 25, 23, 8]],
   ])
   // No task queued or running: those groups are not drawn.
   const ended = lsTable([pushed, cancelled], 80, false, now)
@@ -136,6 +139,22 @@ test('ls shortens pull request links and counts the age from the end, else the l
     '59분',
     '23시간',
   ])
+})
+
+test('ls counts a task that runs again from its last turn, not from the end it had before', () => {
+  // Told to go on after it succeeded six days ago: running again, its old finished_at kept.
+  const again = task({
+    id: 30,
+    todoId: 40,
+    status: 'running',
+    finishedAt: minsAgo(60 * 24 * 6),
+    startedAt: minsAgo(1),
+  })
+  const other = task({ id: 31, todoId: 41, status: 'running', startedAt: minsAgo(10) })
+
+  expect(lsGroups([other, again])[0]?.tasks.map((t) => t.id)).toEqual([30, 31])
+  expect(cellsOf(rowOf(lsTable([other, again], 110, false, now), 30))[4]).toBe('1분')
+  expect(lsLine(again).split('\t')[4]).toBe(minsAgo(1))
 })
 
 test('ls colors only the status, dims the age and results, and has no color in a pipe or with NO_COLOR', () => {
@@ -188,4 +207,15 @@ test('ls --plain gives a tab-separated line a task, with whole values', () => {
   )
   expect(lsLine(tabbed).split('\t')).toHaveLength(7)
   expect(lsLine(tabbed)).not.toContain('\x1b')
+
+  // A right-to-left override and a line separator: Bun counts each as a column a terminal does not
+  // draw, and the override would reverse the rest of the row.
+  const bidi = task({
+    id: 12,
+    note: `abc${String.fromCodePoint(0x202e)}def${String.fromCodePoint(0x2028)}ghi`,
+  })
+  expect(lsLine(bidi)).not.toMatch(/[\p{Bidi_Control}\p{Zl}]/u)
+  const table = lsTable([bidi], 80, false, now)
+  expect(table).not.toMatch(/[\p{Bidi_Control}\p{Zl}]/u)
+  expect(rowOf(table, 12)).toContain('abc def ghi')
 })

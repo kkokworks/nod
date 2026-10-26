@@ -959,6 +959,7 @@ function lsTask(t: Task): LsTask {
     createdAt: t.createdAt,
     startedAt: attempts.at(-1)?.startedAt ?? null,
     finishedAt: t.finishedAt,
+    collectedAt: t.collectedAt,
     note: taskNote(ledger, t),
     issue: t.issue,
     links: ledger.links(t.id),
