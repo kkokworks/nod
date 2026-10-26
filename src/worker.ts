@@ -2521,34 +2521,46 @@ async function changesOf(
     return stdout
   }
   const head = (await git('rev-parse', 'HEAD')).trim()
-  const start = base ?? (await ownStart(worktree, branch, head, git))
+  const start = base ?? (await ownStart(worktree, branch, head, 'refs/remotes/origin/HEAD'))
+  if (start === null) throw new Error(`${branch}'s reflog no longer says where it was created`)
   const range = `${start}..${head}`
   const saved = join(dir, 'changes.diff')
   writeFileSync(saved, await git('diff', '--no-color', '--no-ext-diff', range))
   return { start, head, stat: await git('diff', '--no-color', '--stat', range), saved }
 }
 
-// Where the task's own commits start: where the branch was created, its oldest reflog entry, since
-// `worktree add -b` records it and later commits only add entries. A worker that brought the remote's
-// default branch in itself (a rebase onto it, or a merge) leaves that start behind where HEAD now
+// Where the branch was created: its oldest reflog entry, since `worktree add -b` records it and later
+// commits only add entries. Null once that entry is gone.
+export async function createdFrom(worktree: string, branch: string): Promise<string | null> {
+  const log = await spawn(
+    ['git', 'reflog', 'show', '--format=%H %gs', `refs/heads/${branch}`],
+    worktree,
+  )
+  const [start, ...subject] = (log.stdout.trim().split('\n').at(-1) ?? '').split(' ')
+  return log.code === 0 && start && subject.join(' ').startsWith('branch: Created from')
+    ? start
+    : null
+}
+
+// Where the task's own commits start, for its review and where landing first rebases it from:
+// where the branch was created (createdFrom). A worker that brought the remote's default branch
+// (`defaultBranch`) in itself (a rebase onto it, or a merge) leaves that start behind where HEAD now
 // leaves the default branch, or off HEAD once the earlier task the branch started on was
-// squash-merged, and the commits between are others': then they start where HEAD leaves it.
+// squash-merged, and the commits between are others': then they start where HEAD leaves it. Null
+// once the created start is gone.
 // ponytail: a branch started on an earlier task's branch that merged the default branch in, rather
 // than rebasing onto it, keeps the created start, so its reviewer reads the merged commits too;
 // diff from both if that shows up.
-async function ownStart(
+export async function ownStart(
   worktree: string,
   branch: string,
   head: string,
-  git: (...args: string[]) => Promise<string>,
-): Promise<string> {
-  const created = (await git('reflog', 'show', '--format=%H', `refs/heads/${branch}`))
-    .trim()
-    .split('\n')
-    .at(-1)
-  if (!created) throw new Error(`${branch} has no reflog to find where it started`)
+  defaultBranch: string,
+): Promise<string | null> {
+  const created = await createdFrom(worktree, branch)
+  if (created === null) return null
   // Fails without a default branch fetched, or with no commit in common.
-  const left = await spawn(['git', 'merge-base', head, 'refs/remotes/origin/HEAD'], worktree)
+  const left = await spawn(['git', 'merge-base', head, defaultBranch], worktree)
   const main = left.code === 0 ? left.stdout.trim() : created
   if (main === created) return created
   const isAncestor = async (a: string, b: string): Promise<boolean> =>
