@@ -222,18 +222,19 @@ test('ls --plain gives a tab-separated line a task, with whole values', () => {
   expect(lsLine(tabbed).split('\t')).toHaveLength(7)
   expect(lsLine(tabbed)).not.toContain('\x1b')
 
-  // A right-to-left override, a line separator and other format characters: Bun counts each as a
-  // column a terminal does not draw, and the override would reverse the rest of the row. Emoji
-  // built with the joiner or with tags (a subdivision flag) stay whole.
+  // A right-to-left override, a line separator and other format characters, one beyond U+FFFF:
+  // Bun counts each as a column a terminal does not draw, and the override would reverse the rest
+  // of the row. Emoji built with the joiner or with tags (a subdivision flag) stay whole.
   const c = String.fromCodePoint
   const flag = c(0x1f3f4, 0xe0067, 0xe0062, 0xe0065, 0xe006e, 0xe0067, 0xe007f)
   const bidi = task({
     id: 12,
-    note: `abc${c(0x202e)}def${c(0x2028)}ghi${c(0xfff9)}jkl${c(0x206a)}mno ${flag} 👩‍💻`,
+    note: `abc${c(0x202e)}def${c(0x2028)}ghi${c(0xfff9)}jkl${c(0x206a)}mno${c(0x1d173)}pqr ${flag} 👩‍💻`,
   })
-  const hidden = /[\p{Zl}[\p{Cf}--\p{Emoji_Component}]]/v
-  expect(lsLine(bidi)).not.toMatch(hidden)
+  const shown = `abc def ghi jkl mno pqr ${flag} 👩‍💻`
+  expect(lsLine(bidi).split('\t')[5]).toBe(shown)
+  expect(lsLine(bidi).isWellFormed()).toBe(true)
   const table = lsTable([bidi], 110, false, now)
-  expect(table).not.toMatch(hidden)
-  expect(rowOf(table, 12)).toContain(`abc def ghi jkl mno ${flag} 👩‍💻`)
+  expect(table.isWellFormed()).toBe(true)
+  expect(rowOf(table, 12)).toContain(shown)
 })

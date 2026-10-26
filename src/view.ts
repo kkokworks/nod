@@ -267,9 +267,10 @@ function shortLink(url: string): string {
 // A worker's text may carry tabs and terminal escapes, which would break the columns, and format
 // characters (bidi controls among them) and line separators, which reorder a row or which
 // Bun.stringWidth counts otherwise than a terminal draws them. Emoji keep the joiner and tags
-// (Emoji_Component) they are built from.
+// (Emoji_Component) they are built from. A lookahead with the u flag, not a v-flag set difference:
+// Bun 1.3's nested v class matched half of a character beyond U+FFFF and left a lone surrogate.
 const clean = (s: string): string =>
-  s.replace(/[\p{Cc}\p{Zl}\p{Zp}[\p{Cf}--\p{Emoji_Component}]]/gv, ' ')
+  s.replace(/(?!\p{Emoji_Component})[\p{Cc}\p{Zl}\p{Zp}\p{Cf}]/gu, ' ')
 const firstLine = (s: string): string => clean(s.trim().split('\n')[0] ?? '')
 
 // `s` exactly `w` columns wide on screen: padded, or cut with `…`. Hangul and emoji take two.
