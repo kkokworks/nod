@@ -429,13 +429,20 @@ test("a project's new session takes over the project's tasks and decisions in ls
     const text = new TextDecoder()
     for await (const chunk of watching.stdout) out += text.decode(chunk)
   })()
-  while (!out.includes('which branch?')) {
-    ask(ofHealth, 'which room?')
-    ask(byA, 'which branch?')
-    await Bun.sleep(200)
+  try {
+    // A watch that misses A's decisions would leave the rounds going; they stop well inside the
+    // test's time, and the watch goes with them.
+    for (let round = 0; !out.includes('which branch?'); round += 1) {
+      if (round === 100) throw new Error(`B's watch printed none of A's decisions: ${out}`)
+      ask(ofHealth, 'which room?')
+      ask(byA, 'which branch?')
+      await Bun.sleep(200)
+    }
+    ledger.succeed(running)
+    expect(await watching.exited).toBe(0)
+  } finally {
+    watching.kill()
   }
-  ledger.succeed(running)
-  expect(await watching.exited).toBe(0)
   await reading
   expect(out).not.toContain('which room?')
   // It ended with Health's worker still running.
