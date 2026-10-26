@@ -211,10 +211,15 @@ test('nod open resumes the latest session where it was opened, or starts one: wi
   // Closed before a word was said, it has no transcript, so it starts again where it was opened.
   expect(open(false, there)).toEqual(first)
   expect(key()).toBe(opened)
-  // Once Claude Code keeps one, it is resumed there, wherever nod open runs.
-  const folder = projectFolder(config, here)
-  mkdirSync(folder, { recursive: true })
-  writeFileSync(join(folder, `${opened}.jsonl`), '')
+  // Claude Code keeps a session's transcript where it ran, with a line for each thing said.
+  const keep = (session: string, cwd: string, line: string): void => {
+    const folder = projectFolder(config, cwd)
+    mkdirSync(folder, { recursive: true })
+    writeFileSync(join(folder, `${session}.jsonl`), `${line}\n`)
+  }
+  const said = '{"type":"user","message":{"role":"user","content":"hi"}}'
+  // Once something is said in it, it is resumed there, wherever nod open runs.
+  keep(opened, here, said)
   expect(open(false, there)).toEqual({ argv: ['claude', '--resume', opened], cwd: here })
   expect(open(false, there, 'Release')).toEqual({
     argv: ['claude', '--resume', opened],
@@ -230,11 +235,24 @@ test('nod open resumes the latest session where it was opened, or starts one: wi
   })
   expect(todos.sessionPlace(opened)?.latest).toBe(false)
   expect(open(false, here)).toEqual(second)
-  const newerFolder = projectFolder(config, there)
-  mkdirSync(newerFolder, { recursive: true })
-  writeFileSync(join(newerFolder, `${newer}.jsonl`), '')
+  keep(newer, there, said)
   expect(open(false, here)).toEqual({ argv: ['claude', '--resume', newer], cwd: there })
   expect(key()).toBe(newer)
+  // The folder it was opened in is gone: no session to resume there.
+  rmSync(there, { recursive: true })
+  expect(() => open(false, here)).toThrow(
+    `p${p.id}'s session was opened in ${there}, which is gone; nod open p${p.id} --new opens a new one here`,
+  )
+  // A transcript with nothing said in it, a title alone, opens neither way: a new session instead.
+  open(true, here)
+  const titled = key()
+  keep(titled, here, `{"type":"custom-title","customTitle":"Release","sessionId":"${titled}"}`)
+  const fourth = open(false, here)
+  expect(key()).not.toBe(titled)
+  expect(fourth).toEqual({
+    argv: ['claude', '--name', 'Release', '--session-id', key()],
+    cwd: here,
+  })
   // A long title is cut, with the project's number in front.
   const long = todos.addProject(
     { title: 'Migrate every billing service to the new ledger format', outcome: null },
@@ -242,11 +260,6 @@ test('nod open resumes the latest session where it was opened, or starts one: wi
   )
   expect(open(false, here, `p${long.id}`).argv[2]).toBe(
     `p${long.id} Migrate every billing service to the`,
-  )
-  // The folder it was opened in is gone: no session to resume there.
-  rmSync(there, { recursive: true })
-  expect(() => open(false, here)).toThrow(
-    `p${p.id}'s session was opened in ${there}, which is gone; nod open p${p.id} --new opens a new one here`,
   )
   expect(() => open(false, here, 'p9')).toThrow('no project p9')
 })

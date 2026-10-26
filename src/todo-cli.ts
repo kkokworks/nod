@@ -18,7 +18,7 @@ import {
 import { SCHEDULE_OFF, scheduleEnv, tryWatch } from './triggers'
 import { nudgeLine, STALE_DAYS, type Trust } from './trust'
 import { changeText, indent, oneLine } from './view'
-import { hasTranscript, message } from './worker'
+import { message, transcriptPath } from './worker'
 
 export const TODO_USAGE = `  nod in <what...> [--notes <text>] [--source <channel> --key <id>] [--link <url>]
          [--project <p>]
@@ -155,13 +155,18 @@ export function sessionTitle(p: Project): string {
   return oneLine(name, SESSION_NAME_CHARS).trim()
 }
 
+// A transcript line of something said, by the person or by Claude.
+const SAID = /"type":"(user|assistant)"/
+
 // What `nod open` runs, and in which folder. The project's latest session is resumed in the folder
 // it was opened in; a new one (`fresh`, or none yet) is recorded with `cwd` first and is the
 // project's from then on. Either way the session has the project's tasks and decisions as its own
-// (isMine). Claude Code keeps no transcript of a session closed before its first message, and
-// accounts need not share their projects/ folder, so the account in `config` may have none of the
-// latest: `--resume` then finds no conversation, while `--session-id` refuses an ID it has one of
-// (2.1.310), so the session starts under the same ID and name instead.
+// (isMine). The account in `config` may keep no conversation of the latest: none of a session
+// closed before its first message, and none of one kept in another account's folder, as accounts
+// need not share their projects/ folder. Claude Code (2.1.310) then opens it with neither
+// `--resume` (no conversation found) nor, once a transcript file of it is there, even an empty one
+// or a title alone, `--session-id` (already in use). So a session with no transcript starts again
+// under the same ID and name, and one whose transcript holds nothing said gives way to a new one.
 export function openSession(
   todos: Todos,
   ref: string,
@@ -171,20 +176,27 @@ export function openSession(
 ): { argv: string[]; cwd: string } {
   const project = todos.findProject(ref)
   const last = fresh ? null : todos.latestSession(project.id)
-  if (last !== null && !existsSync(last.cwd)) {
+  const kept = last === null ? null : transcriptPath(config, last.sessionId)
+  // ponytail: reads the whole transcript; a long session's is a few MB, read once per open.
+  const said = kept !== null && SAID.test(readFileSync(kept, 'utf8'))
+  const again = last !== null && (said || kept === null) ? last : null
+  if (again !== null && !existsSync(again.cwd)) {
     throw new Error(
-      `p${project.id}'s session was opened in ${last.cwd}, which is gone; nod open p${project.id} --new opens a new one here`,
+      `p${project.id}'s session was opened in ${again.cwd}, which is gone; nod open p${project.id} --new opens a new one here`,
     )
   }
-  if (last !== null && hasTranscript(config, last.sessionId)) {
-    return { argv: ['claude', '--resume', last.sessionId], cwd: last.cwd }
-  }
+  if (again !== null && said)
+    return { argv: ['claude', '--resume', again.sessionId], cwd: again.cwd }
   if (last !== null) {
+    const why =
+      kept === null
+        ? "closed before a word, or kept in another account's folder), so it starts again under that ID"
+        : 'nothing said in it), which Claude Code opens neither to resume nor anew, so a new one opens here'
     console.error(
-      `nod: this Claude account has no conversation of p${project.id}'s session ${last.sessionId} (closed before a word, or kept in another account's folder), so it starts under that ID`,
+      `nod: this Claude account has no conversation of p${project.id}'s session ${last.sessionId} (${why}`,
     )
   }
-  const session = last ?? todos.addSession(project.id, crypto.randomUUID(), cwd)
+  const session = again ?? todos.addSession(project.id, crypto.randomUUID(), cwd)
   const argv = ['claude', '--name', sessionTitle(project), '--session-id', session.sessionId]
   return { argv, cwd: session.cwd }
 }

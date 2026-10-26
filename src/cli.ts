@@ -87,9 +87,10 @@ const USAGE = `usage:
                                    opened, the work goes in its project, a todo with none
                                    included, and work of another project is refused
   nod open <project> [--new]       Claude Code in this terminal, in the project's session, named
-                                   after it: the latest one nod open opened for it, in the folder
-                                   it was opened in; or, with --new, none yet, or none Claude
-                                   Code kept a conversation of in this account, a new one here.
+                                   after it: the latest one nod open opened for it, resumed in
+                                   the folder it was opened in (started again under its ID while
+                                   this account keeps no transcript of it); or, with --new, none
+                                   yet, or a transcript with nothing said in it, a new one here.
                                    Ends as Claude Code does. Each session of a project has all
                                    its tasks as its own (--mine), whichever session added them,
                                    and nod add there keeps to the project

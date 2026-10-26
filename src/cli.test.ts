@@ -355,6 +355,7 @@ test("a project's new session takes over the project's tasks and decisions in ls
     return id
   }
   const byA = add(A, 'tag the release')
+  const alsoByA = add(A, 'write the changelog')
   const byS = add(S, 'write the release notes', '--project', 'Release')
   const ofHealth = add(Q1, 'book the blood test')
   const loose = add(S, 'tidy the desk')
@@ -368,19 +369,21 @@ test("a project's new session takes over the project's tasks and decisions in ls
       question,
     )
 
-  // watch, as nod watch --mine runs it in B. The decisions open at its first look, and A's task
-  // ends at its second, so B's watch ends while another project's worker still runs.
+  // watch, as nod watch --mine runs it in B. The decisions open at its first look, and A's last
+  // running task ends at its second, so B's watch ends while another project's worker still runs.
   const printed: number[] = []
   let looks = 0
+  let tag = 0
   let notes = 0
   const wait = async (): Promise<void> => {
     looks += 1
     if (looks === 1) {
+      tag = ask(byA, 'which tag?')
       notes = ask(byS, 'which version for the notes?')
       ask(ofHealth, 'which clinic?')
       ask(loose, 'which desk?')
     }
-    if (looks === 2) ledger.succeed(byA)
+    if (looks === 2) ledger.succeed(alsoByA)
   }
   await watch(
     ledger,
@@ -388,17 +391,20 @@ test("a project's new session takes over the project's tasks and decisions in ls
     (d) => printed.push(d.id),
     wait,
   )
-  expect(printed).toEqual([notes])
+  expect(printed).toEqual([tag, notes])
   // Going while A's task ran, then five idle looks: Health's running worker is not B's.
   expect(looks).toBe(6)
   expect(ledger.get(healthToo).status).toBe('running')
 
   const ls = nod(B, 'ls', '--mine')
-  for (const brief of ['tag the release', 'write the release notes']) expect(ls).toContain(brief)
+  for (const brief of ['tag the release', 'write the changelog', 'write the release notes']) {
+    expect(ls).toContain(brief)
+  }
   for (const brief of ['book the blood test', 'tidy the desk', 'call the clinic']) {
     expect(ls).not.toContain(brief)
   }
   const decisions = nod(B, '--mine')
+  expect(decisions).toContain('which tag?')
   expect(decisions).toContain('which version for the notes?')
   expect(decisions).not.toContain('which clinic?')
   expect(decisions).not.toContain('which desk?')
@@ -408,7 +414,11 @@ test("a project's new session takes over the project's tasks and decisions in ls
   expect(ofS).toContain('which desk?')
   expect(ofS).not.toContain('which clinic?')
   expect(nod(Q1, '--mine')).toContain('which clinic?')
-}, 30_000)
+  // Run as a command, B's watch ends too, with Health's worker still running, and prints nothing:
+  // the decisions opened before it.
+  expect(nod(B, 'watch', '--mine')).toBe('')
+  expect(ledger.get(healthToo).status).toBe('running')
+}, 45_000)
 
 test('nod open runs claude in this terminal with its environment and ends as claude does; called again it resumes that session, and after --new the new one', () => {
   const home = tmp.make('nod-open-cli-')
@@ -423,7 +433,8 @@ test('nod open runs claude in this terminal with its environment and ends as cla
     `#!/bin/sh
 echo "$(pwd -P) | $* | $CLAUDE_CONFIG_DIR"
 if [ "$3" = --session-id ]; then
-  mkdir -p "$CLAUDE_CONFIG_DIR/projects/somewhere" && : > "$CLAUDE_CONFIG_DIR/projects/somewhere/$4.jsonl"
+  mkdir -p "$CLAUDE_CONFIG_DIR/projects/somewhere"
+  echo '{"type":"user"}' > "$CLAUDE_CONFIG_DIR/projects/somewhere/$4.jsonl"
 fi
 exit 3
 `,
