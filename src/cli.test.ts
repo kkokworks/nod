@@ -483,20 +483,21 @@ exit 3
     return { code: r.exitCode, out: r.stdout.toString(), err: r.stderr.toString() }
   }
   const key = (): string => todos.latestSession(p.id)?.sessionId ?? ''
+  const told = `--append-system-prompt nod open opened this session for project p1 Release: nod add here puts work in that project, and the project's tasks and decisions are this session's.`
 
   const first = open(here, 'Release')
   expect(first.code).toBe(3)
   const opened = key()
-  expect(first.out).toBe(`${here} | --name Release --session-id ${opened} | ${account}\n`)
+  expect(first.out).toBe(`${here} | --name Release --session-id ${opened} ${told} | ${account}\n`)
   expect(open(there, 'p1')).toMatchObject({
     code: 3,
-    out: `${here} | --resume ${opened} | ${account}\n`,
+    out: `${here} | --resume ${opened} ${told} | ${account}\n`,
   })
   expect(open(there, 'p1', '--new').out).toBe(
-    `${there} | --name Release --session-id ${key()} | ${account}\n`,
+    `${there} | --name Release --session-id ${key()} ${told} | ${account}\n`,
   )
   expect(key()).not.toBe(opened)
-  expect(open(here, 'p1').out).toBe(`${there} | --resume ${key()} | ${account}\n`)
+  expect(open(here, 'p1').out).toBe(`${there} | --resume ${key()} ${told} | ${account}\n`)
 
   const usage = Bun.spawnSync(['bun', cli, 'open'], { cwd: here, env })
   expect(usage.exitCode).not.toBe(0)
