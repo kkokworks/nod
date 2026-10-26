@@ -1,8 +1,12 @@
 # nod
 
+<p align="center"><img src="docs/images/hero.svg" alt="nod: 여러 Claude Code 세션에 일을 맡기고, 사람은 결정에만 고개를 끄덕입니다" width="100%"></p>
+
 여러 Claude Code 세션을 동시에 돌려 일을 처리하고, 사람에게는 결정만 넘기는 오케스트레이터입니다. 사람은 고개만 끄덕이면(nod) 됩니다.
 
 작업마다 tmux 안에 실제 Claude Code 세션을 띄웁니다. 질문·검증 실패·후속 지시가 모두 같은 세션에 들어가서 워커가 맥락을 유지하고, 언제든 `nod attach` 로 들어가 볼 수 있습니다.
+
+![일 하나가 지나는 길: 맡기기, 워커, 검증·리뷰, 결정, 올리기, 정리. 검증이 실패하거나 사람이 답하면 같은 세션으로 돌아갑니다](docs/images/flow.svg)
 
 ## 설치
 
