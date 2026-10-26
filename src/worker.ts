@@ -28,7 +28,7 @@ import {
   type Message,
   type Task,
 } from './ledger'
-import { notify, taskRef } from './notify'
+import { notify, runGroup, taskRef } from './notify'
 import { askedAgain, type Changes, reviewBrief } from './review'
 import { activeRules, hadTrouble, isNoRule, retroBrief } from './rules'
 import { pasted, quote, Terminals } from './tmux'
@@ -2864,26 +2864,19 @@ async function uncommittedChanges(worktree: string): Promise<string> {
   return stdout.trim().slice(-OUTPUT_LIMIT)
 }
 
-// `output` is stdout followed by stderr; their interleaving is lost. A process still running after
-// `timeoutMs` is killed and exits nonzero.
+// `output` is stdout followed by stderr; their interleaving is lost. A command still running after
+// `timeoutMs` is killed with what it started (runGroup) and exits nonzero.
 export async function spawn(
   cmd: string[],
   cwd?: string,
   opts: { stdin?: string; timeoutMs?: number; env?: Record<string, string> } = {},
 ): Promise<{ code: number; stdout: string; output: string }> {
-  const proc = Bun.spawn(cmd, {
+  const { code, stdout, stderr } = await runGroup(cmd, {
     cwd,
     env: opts.env === undefined ? process.env : { ...process.env, ...opts.env },
-    stdin: opts.stdin === undefined ? 'ignore' : new Blob([opts.stdin]),
-    stdout: 'pipe',
-    stderr: 'pipe',
-    timeout: opts.timeoutMs,
+    stdin: opts.stdin,
+    timeoutMs: opts.timeoutMs,
   })
-  const [stdout, stderr, code] = await Promise.all([
-    new Response(proc.stdout).text(),
-    new Response(proc.stderr).text(),
-    proc.exited,
-  ])
   return { code, stdout, output: stdout + stderr }
 }
 

@@ -46,6 +46,7 @@ import {
   resume,
   StopEvent,
   sessionName,
+  spawn,
   startReady,
   startTask,
   tell,
@@ -696,6 +697,13 @@ it('the report line is read from the end, through Markdown emphasis', () => {
   })
   expect(parseReport('no report here')).toBeNull()
 })
+
+it('a command past its time ends with what it started, which holds its output', async () => {
+  // Bun's `timeout` alone ended only `sh`, and the run waited on `sleep`, which holds the output.
+  // That `sleep` goes too is tested on runGroup (notify.test.ts).
+  const run = await spawn(['sh', '-c', 'sleep 30; :'], undefined, { timeoutMs: 1000 })
+  expect(run.code).not.toBe(0)
+}, 10_000)
 
 test('a task that comes after another starts once that one succeeds, and hears its report', async () => {
   const first = await add('ask-first')
