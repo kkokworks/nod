@@ -162,7 +162,13 @@ export async function sendLine(
   const sent = Promise.withResolvers<void>()
   // Settled by whichever comes first; one that comes after is no rejection left unhandled.
   sent.promise.catch(() => {})
+  let gaveUp = false
   const write = (s: Bun.Socket): void => {
+    // Given up on, it counts as not sent and goes again later: no line, or no end of one, goes now.
+    if (gaveUp) {
+      s.terminate()
+      return
+    }
     const n = s.write(rest)
     if (n > 0) rest = rest.subarray(n)
     if (rest.length > 0) return
@@ -170,10 +176,10 @@ export async function sendLine(
     sent.resolve()
   }
   // The time counts from before the connection: one that hangs in connecting is given up too.
-  const timer = setTimeout(
-    () => sent.reject(new Error(`${socket} took no line in ${timeoutMs} ms`)),
-    timeoutMs,
-  )
+  const timer = setTimeout(() => {
+    gaveUp = true
+    sent.reject(new Error(`${socket} took no line in ${timeoutMs} ms`))
+  }, timeoutMs)
   Bun.connect({
     unix: socket,
     socket: {
