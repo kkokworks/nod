@@ -38,6 +38,7 @@ import {
   parseTells,
   restart,
   restartDue,
+  restartMark,
   resume,
   StopEvent,
   sessionName,
@@ -1121,9 +1122,7 @@ test('a task that failed before it started takes no message, and resume tries it
     failure(resume(ledger, home, id)),
   ])
   expect(one).toContain(`nod resume ${id}`)
-  expect(two).toBe(
-    `task ${id} has not started. nod resume (pid ${process.pid}) is starting it again.`,
-  )
+  expect(two).toBe(`task ${id} has not started. ${restartMark(process.pid, id)}.`)
   expect(outcomes(id)).toEqual([
     ['start', 'error'],
     ['start', 'error'],
@@ -1137,13 +1136,16 @@ test('a task that failed before it started takes no message, and resume tries it
   ])
 })
 
+// A process that has ended, for the mark of a resume cut off (restartMark).
+const gone = (): number => Bun.spawnSync(['true']).pid
+
 test('a resume cut off as it starts a task again is taken over by the next one, but not while its process runs', async () => {
   const id = await blocked()
   // As a resume stopped as it starts the task leaves it: running, with no workspace.
-  const gone = Bun.spawnSync(['true']).pid
-  expect(ledger.claimRestart(id, `nod resume (pid ${gone}) is starting it again`, null)).toBe(true)
+  const pid = gone()
+  expect(ledger.claimRestart(id, restartMark(pid, id), null)).toBe(true)
   expect(await failure(tell(ledger, home, id, 'go on'))).toBe(
-    `task ${id} has not started. nod resume (pid ${gone}) is starting it again.`,
+    `task ${id} has not started. nod resume (pid ${pid}) is starting it again; if that process is gone, nod resume ${id} takes over.`,
   )
 
   expect(await failure(resume(ledger, home, id))).toContain(`nod resume ${id}`)
@@ -1152,10 +1154,53 @@ test('a resume cut off as it starts a task again is taken over by the next one, 
     ['start', 'error'],
   ])
 
-  const mark = `nod resume (pid ${process.pid}) is starting it again`
+  const mark = restartMark(process.pid, id)
   expect(ledger.claimRestart(id, mark, null)).toBe(true)
   expect(await failure(resume(ledger, home, id))).toBe(`task ${id} has not started. ${mark}.`)
   expect(outcomes(id)).toHaveLength(2)
+})
+
+test('a resume that takes over a cut-off start clears the worktree and branch it left, but keeps a branch with commits of its own', async () => {
+  const { repo, id } = unfilledLib()
+  await failure(startTask(ledger, home, id))
+  const folder = workspaceOf(home, ledger.get(id))
+  const cutOff = (): void => {
+    expect(ledger.claimRestart(id, restartMark(gone(), id), null)).toBe(true)
+  }
+  const branch = (): string =>
+    Bun.spawnSync(['git', 'branch', '--list', 'feat/lib'], { cwd: repo }).stdout.toString()
+
+  // Cut off as it filled the submodules: the worktree and its branch are there.
+  cutOff()
+  git(repo, 'worktree', 'add', '-q', '-b', 'feat/lib', folder)
+  // So the start fails on what it failed on before, not on what the cut-off start left.
+  expect(await failure(resume(ledger, home, id))).toStartWith('submodule lib')
+  expect([existsSync(folder), branch()]).toEqual([false, ''])
+
+  // Cut off as git made the worktree, which takes its folder away on a signal, but not the branch.
+  cutOff()
+  git(repo, 'branch', 'feat/lib')
+  expect(await failure(resume(ledger, home, id))).toStartWith('submodule lib')
+  expect(branch()).toBe('')
+
+  // A branch by that name with a commit nothing else has is not the cut-off start's.
+  cutOff()
+  git(repo, 'checkout', '-q', '-b', 'feat/lib')
+  git(repo, 'commit', '-q', '--allow-empty', '-m', 'mine')
+  git(repo, 'checkout', '-q', '-')
+  expect(await failure(resume(ledger, home, id))).toContain('already exists')
+  expect(branch()).toBe('  feat/lib\n')
+})
+
+test('a start resume took over drops the mark of the resume once the task has its folder', async () => {
+  const id = await blocked()
+  rmSync(workspaceOf(home, ledger.get(id)))
+  expect(ledger.claimRestart(id, restartMark(gone(), id), null)).toBe(true)
+
+  await startTask(ledger, home, id)
+
+  const task = ledger.get(id)
+  expect([task.workspace, task.error]).toEqual([workspaceOf(home, task), null])
 })
 
 test('resume starts a task that failed before it started again only once the tasks it comes after have succeeded', async () => {

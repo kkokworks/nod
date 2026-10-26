@@ -302,7 +302,15 @@ export async function startTask(ledger: Ledger, home: string, taskId: number): P
   }
   const { cwd, start } = await prepareWorkspace(ledger, home, task).catch(failed)
   const prompt = firstMessage(ledger, task, start)
-  ledger.setRunning(taskId, cwd)
+  ledger.db
+    .transaction(() => {
+      ledger.setRunning(taskId, cwd)
+      // With its folder the task is no longer one a resume starts again (claimRestart), so the
+      // mark of the resume starting it goes, even if that resume is cut off from here.
+      const { error } = ledger.get(taskId)
+      if (error !== null && MARKED.test(error)) ledger.unmark(taskId, error)
+    })
+    .immediate()
   const sessionId = crypto.randomUUID()
   const attemptId = ledger.startAttempt({
     taskId,
@@ -587,9 +595,9 @@ export async function tell(
 
 // A task that failed before its worker started has no conversation to reopen, so it starts anew,
 // under the same number, brief and branch, once the person fixed what stopped it (`started`). nod
-// never does that by itself. While it starts, its error names this process (restartMark), so one
-// cut off before it records how the start went is taken over by the next resume, not left running
-// with no workspace.
+// never does that by itself. Until it has its folder, its error names this process (restartMark),
+// so one cut off before then is taken over by the next resume, not left running with no workspace;
+// what the cut-off start left in the repo goes first (clearCutOff).
 export async function resume(
   ledger: Ledger,
   home: string,
@@ -601,10 +609,10 @@ export async function resume(
   const task = ledger.get(taskId)
   const by = Number(MARKED.exec(task.error ?? '')?.[1])
   const stale = task.status === 'running' && by > 0 && !running(by) ? task.error : null
-  const mark = restartMark(process.pid)
+  const mark = restartMark(process.pid, taskId)
   if (ledger.claimRestart(taskId, mark, stale)) {
+    if (stale !== null) await clearCutOff(ledger, home, task)
     await startTask(ledger, home, taskId)
-    ledger.unmark(taskId, mark)
     return 'started'
   }
   await restore(ledger, home, taskId)
@@ -612,10 +620,41 @@ export async function resume(
   return 'reopened'
 }
 
+// Says so either way, as nothing reading it checks whether the process still runs.
 // ponytail: a pid another process took since counts as the resume still running, so the task waits
 // until that process ends; record the start time with the pid if that bites.
-const restartMark = (pid: number): string => `nod resume (pid ${pid}) is starting it again`
-const MARKED = /^nod resume \(pid (\d+)\) is starting it again$/
+export const restartMark = (pid: number, taskId: number): string =>
+  `nod resume (pid ${pid}) is starting it again; if that process is gone, nod resume ${taskId} takes over`
+const MARKED = /^nod resume \(pid (\d+)\) is starting it again;/
+
+// What a start cut off as it made the task's folder left in its repo: the worktree at the task's
+// path, unless another task works there, and the branch, once it holds no commit another ref lacks,
+// so nothing is lost. One with commits of its own is not the cut-off start's; it stays, and the
+// start fails on it as on any branch by that name.
+async function clearCutOff(ledger: Ledger, home: string, task: Task): Promise<void> {
+  const { repo } = task
+  if (repo === null) return
+  const cwd = workspaceOf(home, task)
+  const branch = branchOf(task)
+  if (!ledger.list().some((t) => t.id !== task.id && t.workspace === cwd)) {
+    await spawn(['git', '-C', repo, 'worktree', 'remove', '--force', cwd])
+  }
+  const ref = `refs/heads/${branch}`
+  const own = await spawn([
+    'git',
+    '-C',
+    repo,
+    'rev-list',
+    '--count',
+    ref,
+    '--not',
+    `--exclude=${ref}`,
+    '--all',
+  ])
+  if (own.code === 0 && own.stdout.trim() === '0') {
+    await spawn(['git', '-C', repo, 'branch', '-D', branch])
+  }
+}
 
 // Why a task with no conversation cannot take a message: it never started. One that failed before
 // it did starts again with `nod resume`, once the tasks it comes after have succeeded.
