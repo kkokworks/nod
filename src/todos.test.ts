@@ -1,7 +1,7 @@
 import { afterAll, expect, setSystemTime, test } from 'bun:test'
 import { tempDirs } from '../test/tmp'
 import { Ledger, type NewTask } from './ledger'
-import { OPEN, parseRef, type TodoEdit, type TodoFilter, Todos } from './todos'
+import { type Found, OPEN, parseRef, type TodoEdit, type TodoFilter, Todos } from './todos'
 
 const tmp = tempDirs()
 afterAll(tmp.removeAll)
@@ -485,7 +485,7 @@ test('a number finds every kind it numbers, a prefix only its own kind, nothing 
   const d = ask(ledger, taskId, 'Which chart?\nA bar or a line.')
   expect([t.id, taskId, ledger.get(retroTask).retroId, p.id, d]).toEqual([1, 1, 1, 1, 1])
 
-  const all = [
+  const all: Found[] = [
     { kind: 'todo', id: 1, ref: 't1', title: 'Write the report', status: 'waiting' },
     { kind: 'task', id: 1, ref: '#1', title: 'Draft the report', status: 'needs_decision', taskId },
     {
