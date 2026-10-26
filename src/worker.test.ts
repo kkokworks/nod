@@ -1,4 +1,4 @@
-import { afterAll, beforeEach, expect, spyOn, test } from 'bun:test'
+import { afterAll, beforeEach, expect, it, spyOn } from 'bun:test'
 import {
   appendFileSync,
   chmodSync,
@@ -14,6 +14,9 @@ import { basename, dirname, join, resolve } from 'node:path'
 import { projectFolder } from '../test/projects'
 import { tempDirs } from '../test/tmp'
 import { testTmux } from '../test/tmux'
+// Most tests here run workers in tmux: `test` skips them where tmux cannot start a server. Those
+// that need none are `it`, bun's own, so they run there too.
+import { tmuxTest as test } from '../test/tmux-server'
 import { setAccountRule } from './account'
 import { collect } from './gc'
 import { Ledger, type Task, type TaskStatus } from './ledger'
@@ -682,7 +685,7 @@ test('a stop from a session nod did not start changes nothing', async () => {
   expect(ledger.list()).toEqual([])
 })
 
-test('the report line is read from the end, through Markdown emphasis', () => {
+it('the report line is read from the end, through Markdown emphasis', () => {
   expect(parseReport('NOD: question | old\nmore\n**NOD: Done** | `shipped`')).toEqual({
     status: 'done',
     text: 'shipped',
@@ -932,7 +935,7 @@ test("the review reads only the task's own commits once its worker moved them on
   expect(reviewOf(next.id)).not.toContain('other.txt')
 })
 
-test('a repo worker is told to have a subagent review its branch from where it starts, and a worker without a repo is not', () => {
+it('a repo worker is told to have a subagent review its branch from where it starts, and a worker without a repo is not', () => {
   const task = (repo: string | null): Task =>
     ledger.get(
       ledger.add({
@@ -1640,7 +1643,7 @@ test('a notify that cannot run changes nothing else', async () => {
   await expect(notify(home, { event: 'cancelled', task })).resolves.toBeUndefined()
 })
 
-test('a retrospective hears the repo and check of its task, that the check runs outside the sandbox, and where each kind of fix goes', () => {
+it('a retrospective hears the repo and check of its task, that the check runs outside the sandbox, and where each kind of fix goes', () => {
   const task = (repo: string | null, checkCmd: string | null): Task =>
     ledger.get(
       ledger.add({
@@ -1734,12 +1737,12 @@ test('a retrospective that sends its fix to the inbox ends as todo, and one that
   expect(inbox()).toEqual(['Fix nod', 'Add a check'])
 })
 
-test('a worker learns its task through NOD_TASK, so the todos it changes name it', () => {
+it('a worker learns its task through NOD_TASK, so the todos it changes name it', () => {
   expect(workerEnv('/h', 5)).toMatchObject({ NOD_HOME: '/h', NOD_TASK: '5' })
   expect(workerEnv('/h', null)).not.toHaveProperty('NOD_TASK')
 })
 
-test('a worker keeps only what it needs of the environment it starts from, and the account it is given', () => {
+it('a worker keeps only what it needs of the environment it starts from, and the account it is given', () => {
   const outer = {
     // What a terminal, an agent host and a person's shell put there for themselves.
     TERM_SESSION_ID: 'w0t0p0:example',
@@ -1784,7 +1787,7 @@ console.log(JSON.stringify(workerEnv('/h', 5, ${JSON.stringify(config)})))`,
   expect(workerEnvIn(null)).not.toHaveProperty('CLAUDE_CONFIG_DIR')
 })
 
-test('a saved environment leaves out secrets, by name or in a URL, and the SSH agent, which moves at each boot', () => {
+it('a saved environment leaves out secrets, by name or in a URL, and the SSH agent, which moves at each boot', () => {
   const outer = {
     HTTPS_PROXY: 'http://user:pass@proxy.example.com:8080',
     https_proxy: 'http://user:pass@proxy.example.com:8080',
@@ -2266,7 +2269,7 @@ test('nod captures the todos a worker reports once its done is accepted, and sen
   ])
 })
 
-test('a report may ask for at most 50 captures, each with JSON nod can read', () => {
+it('a report may ask for at most 50 captures, each with JSON nod can read', () => {
   const line = (n: number) => `NOD: in {"title": "t${n}"}`
   const many = Array.from({ length: 51 }, (_, n) => line(n)).join('\n')
   expect(parseCaptures(many)).toEqual({ error: '51 `NOD: in` lines; report at most 50' })
@@ -2279,7 +2282,7 @@ test('a report may ask for at most 50 captures, each with JSON nod can read', ()
   expect(parseCaptures('**NOD: done | nothing to capture**')).toEqual({ captures: [] })
 })
 
-test('background work the Stop hook cannot read still counts, or counts as none, and never fails the hook', () => {
+it('background work the Stop hook cannot read still counts, or counts as none, and never fails the hook', () => {
   const stop = {
     session_id: 's',
     last_assistant_message: 'NOD: question | ?',
@@ -2292,7 +2295,7 @@ test('background work the Stop hook cannot read still counts, or counts as none,
   expect(StopEvent.parse(stop).background_tasks).toBeUndefined()
 })
 
-test('a report says what to tell other tasks in NOD: tell lines, which nod reads or sends back', () => {
+it('a report says what to tell other tasks in NOD: tell lines, which nod reads or sends back', () => {
   const report = [
     'Found two.',
     'NOD: tell #85 1) a.ts:3 is off by one 2) no test for it',
@@ -3277,7 +3280,7 @@ test('an answer to a decision left open on a task gc collected brings its folder
   expect(ledger.get(id).collectedAt).toBeNull()
 })
 
-test('the review hears what the human told the worker in the middle of a turn, in order with the rest', () => {
+it('the review hears what the human told the worker in the middle of a turn, in order with the rest', () => {
   const id = ledger.add({
     brief: 'write it',
     repo: null,
