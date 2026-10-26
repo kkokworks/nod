@@ -244,7 +244,8 @@ session's inbox socket, which its hooks report as it starts (Claude Code's
 CLAUDE_CODE_MESSAGING_SOCKET), as another Claude session does; Claude Code shows it as from
 another session, not the person. The line's format is Claude Code's own, not documented, and the
 socket answers nothing: a line Claude Code drops counts as sent. A session that skips permission
-prompts holds such messages for the person to approve.
+prompts holds such messages for the person to approve. One reopened with claude --resume instead
+of nod open reports no socket, so it hears nothing until nod open opens it.
 
 When <home>/notify exists, nod runs it with a JSON event on stdin whenever a decision opens, a
 task succeeds or fails to start, a trigger fails, a watch passes or can no longer run, or a
