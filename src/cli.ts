@@ -44,6 +44,7 @@ import {
   tick,
 } from './triggers'
 import {
+  endLine,
   indent,
   type LsTask,
   lsGroups,
@@ -53,6 +54,7 @@ import {
   oneLine,
   owner,
   reopenCommand,
+  taskLabel,
   taskNote,
   taskStatus,
   watch,
@@ -121,8 +123,13 @@ const USAGE = `usage:
   nod attach <task>                open the worker's terminal (tmux)
   nod peek <task>                  print what the worker's terminal shows right now
   nod watch [--issue <key,...>] [--mine]
-                                   print decisions as they open, until no worker is running;
-                                   --issue: only decisions and workers of tasks on these issues;
+                                   print decisions as they open and, each time a task ends
+                                   (succeeded, error, cancelled), a line task #<n> [<todo>]
+                                   [<issue>] <status>: <the worker's last report, or the
+                                   error's first line, else the brief>, until no worker is
+                                   running. Only what opens or ends after it starts; a task
+                                   that runs again and ends again is printed again. --issue:
+                                   only decisions, ends and workers of tasks on these issues;
                                    --mine: only those of this Claude session's tasks, so
                                    several root sessions can each watch their own
   nod link <task> <url...>         record where the task's result went (a pull request, a posted
@@ -278,7 +285,12 @@ switch (command) {
     })
     const keys = issueKeys(values.issue)
     const session = mySession(values.mine)
-    await watch(ledger, (t) => onIssues(keys, t) && isMine(session, t), printDecision)
+    await watch(
+      ledger,
+      (t) => onIssues(keys, t) && isMine(session, t),
+      printDecision,
+      (t) => console.log(endLine(ledger, t)),
+    )
     break
   }
   case 'link': {
@@ -986,8 +998,7 @@ function printDecisions(decisions: Decision[]): void {
 
 function printDecision(d: Decision): void {
   const task = ledger.get(d.taskId)
-  const of = [owner(task), task.issue ?? ''].map((x) => (x === '' ? '' : ` ${x}`)).join('')
-  console.log(`#${d.id}  ${d.reason}  (task #${task.id}${of}: ${oneLine(task.brief, 60)})`)
+  console.log(`#${d.id}  ${d.reason}  (${taskLabel(task)}: ${oneLine(task.brief, 60)})`)
   console.log(`${indent(d.question)}\n`)
 }
 

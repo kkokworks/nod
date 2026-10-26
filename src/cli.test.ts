@@ -4,7 +4,7 @@ import { join, resolve } from 'node:path'
 import { tempDirs } from '../test/tmp'
 import { Ledger } from './ledger'
 import { Todos } from './todos'
-import { watch } from './view'
+import { endLine, watch } from './view'
 import { workspaceOf } from './worker'
 
 const tmp = tempDirs()
@@ -61,6 +61,96 @@ test('watch prints each decision once as it opens, and ends once no worker is ru
   expect(out).not.toContain('open before watching')
   expect(out.split('opened while watching')).toHaveLength(2)
 }, 15_000)
+
+test("watch tells each end of a task it watches once, again after the task runs again, and the last worker's before it stops", async () => {
+  const home = tmp.make('nod-watch-ends-')
+  const ledger = new Ledger(home)
+  const running = (brief: string, issue: string): number => {
+    const taskId = ledger.add({
+      brief,
+      repo: null,
+      branch: null,
+      checkCmd: null,
+      model: null,
+      after: [],
+      triggerId: null,
+      issue,
+    })
+    ledger.setRunning(taskId, home)
+    return taskId
+  }
+  const turn = (taskId: number, kind: 'start' | 'followup' | 'land'): number =>
+    ledger.startAttempt({ taskId, kind, decisionId: null, sessionId: 's', prompt: 'p' })
+  const done = (taskId: number, attemptId: number, summary: string): void => {
+    ledger.endAttempt(attemptId, { outcome: 'succeeded', summary, report: summary })
+    ledger.succeed(taskId)
+  }
+  const before = running('ended before watching', 'MINE')
+  done(before, turn(before, 'start'), 'old news')
+  const ok = running('write the docs', 'MINE')
+  const okTurn = turn(ok, 'start')
+  const bad = running('build it', 'MINE')
+  const dropped = running('ask first', 'MINE')
+  const lands = running('open the pull request', 'MINE')
+  const landsTurn = turn(lands, 'start')
+  const dropsLanding = running('add the feature', 'MINE')
+  const dropsTurn = turn(dropsLanding, 'start')
+  const last = running('last worker', 'MINE')
+  const lastTurn = turn(last, 'start')
+  const theirs = running('their task', 'OTHER')
+  const theirsTurn = turn(theirs, 'start')
+
+  const printed: string[] = []
+  let looks = 0
+  let landTurn = 0
+  let dropsLandTurn = 0
+  const wait = async (): Promise<void> => {
+    looks += 1
+    if (looks === 1) {
+      done(ok, okTurn, 'wrote the docs')
+      ledger.error(bad, 'the worktree could not be made\n  at somewhere')
+      ledger.drop(ledger.ask(dropped, turn(dropped, 'start'), 'question', 'which one?'))
+      // Landing gives this one a turn before watch looks again, so its first end goes unseen.
+      done(lands, landsTurn, 'did the work')
+      ledger.setRunning(lands, home)
+      landTurn = turn(lands, 'land')
+      done(dropsLanding, dropsTurn, 'added the feature')
+      done(theirs, theirsTurn, 'not mine')
+    }
+    // nod tell runs one task again; landing gives another a turn, which the person then drops.
+    if (looks === 2) {
+      ledger.setRunning(ok, home)
+      ledger.setRunning(dropsLanding, home)
+      dropsLandTurn = turn(dropsLanding, 'land')
+    }
+    if (looks === 3) {
+      done(ok, turn(ok, 'followup'), 'fixed the review')
+      done(lands, landTurn, 'wrote the pull request text')
+      ledger.failAttempt(dropsLandTurn, 'dropped')
+      ledger.succeed(dropsLanding)
+    }
+    if (looks === 4) done(last, lastTurn, 'all done')
+  }
+  await watch(
+    ledger,
+    (t) => t.issue === 'MINE',
+    () => {},
+    (t) => printed.push(endLine(ledger, t)),
+    wait,
+  )
+  expect(printed).toEqual([
+    `task #${ok} MINE succeeded: wrote the docs`,
+    `task #${bad} MINE error: the worktree could not be made`,
+    `task #${dropped} MINE cancelled: ask first`,
+    `task #${dropsLanding} MINE succeeded: added the feature`,
+    `task #${ok} MINE succeeded: fixed the review`,
+    `task #${lands} MINE succeeded: wrote the pull request text`,
+    `task #${dropsLanding} MINE succeeded: added the feature`,
+    `task #${last} MINE succeeded: all done`,
+  ])
+  // The look that found the last worker stopped told its end, then five idle looks.
+  expect(looks).toBe(8)
+})
 
 test('watch and the decision list with --issue keep to those issues, so roots split the work', async () => {
   const home = tmp.make('nod-watch-issue-')
@@ -394,6 +484,7 @@ test("a project's new session takes over the project's tasks and decisions in ls
     ledger,
     (t) => todos.isMine(B, t),
     (d) => printed.push(d.id),
+    () => {},
     wait,
   )
   expect(printed).toEqual([tag, notes])
