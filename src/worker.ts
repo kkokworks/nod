@@ -2507,8 +2507,8 @@ async function review(
 // What the branch changed since its own commits start (ownStart, from `base`, where nod rebased it
 // to as it lands it, once there is one), with the diff saved in `dir`. The reviewer reads that file
 // with its Read tool rather than running git: a user's hook may rewrite the shell commands it runs,
-// and one that shortens their output cut lines out of the diff. No color and no external diff tool, whatever the
-// human's git config says, so the diff is plain.
+// and one that shortens their output cut lines out of the diff. No color and no external diff tool,
+// whatever the human's git config says, so the diff is plain.
 async function changesOf(
   worktree: string,
   branch: string,

@@ -255,7 +255,9 @@ test('a branch its worker rebased onto the default branch during its landing tur
   // Its reviewer reads its own commit, not the default branch's it brought in.
   expect(reviews()).toHaveLength(1)
   const read = readFileSync(join(home, 'agent.log'), 'utf8').trim().split('\n').at(-1) ?? '{}'
-  expect(JSON.parse(read).diff).not.toContain('m.txt')
+  const diff = JSON.parse(read).diff
+  expect(diff).toContain('w.txt')
+  expect(diff).not.toContain('m.txt')
   // Moving that commit again would conflict with this one.
   const tip = mainMoves('m.txt', 'm2\n')
 
