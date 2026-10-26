@@ -664,7 +664,17 @@ function reviewed(id: number, cwd: string): (string | undefined)[] {
 test('the reviewer reads the diff from a file nod saves, so a hook on its first message never sees the code', async () => {
   const { id, cwd } = startedInRepo(newRepo(), 'mask')
   commit(cwd, 'mask.test.ts', `expect(mask('${ID_SHAPED}')).toBe('******-*******')\n`)
-  await stopped('mask', 'NOD: done | masked it')
+  // A temp folder behind a link, as macOS keeps it, on any machine.
+  const linked = join(tmp.make('nod-linked-'), 'tmp')
+  symlinkSync(tmp.make('nod-real-tmp-'), linked)
+  const was = process.env.TMPDIR
+  process.env.TMPDIR = linked
+  try {
+    await stopped('mask', 'NOD: done | masked it')
+  } finally {
+    if (was === undefined) delete process.env.TMPDIR
+    else process.env.TMPDIR = was
+  }
   expect(status(id)).toBe('succeeded')
   expect(reviewOf(id)).toContain('Files changed:\n>  mask.test.ts | 1 +')
   expect(reviewOf(id)).not.toContain(ID_SHAPED)
