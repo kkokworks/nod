@@ -1085,6 +1085,9 @@ test('a repo task whose folder is taken leaves no branch of its own behind, and 
   // Left, the branch would keep the task from starting again once the folder is cleared.
   expect(branches()).toBe('  feat/theirs\n')
   expect(readFileSync(join(folder, 'mine.txt'), 'utf8')).toBe('not the task’s')
+  // Starting it again clears nothing either: no start was cut off, so the branch is not one's.
+  expect(await failure(resume(ledger, home, theirs))).toContain('already exists')
+  expect(branches()).toBe('  feat/theirs\n')
 })
 
 // A task without a repo that fails before its worker starts, as long as a file sits where its
@@ -1190,6 +1193,41 @@ test('a resume that takes over a cut-off start clears the worktree and branch it
   git(repo, 'checkout', '-q', '-')
   expect(await failure(resume(ledger, home, id))).toContain('already exists')
   expect(branch()).toBe('  feat/lib\n')
+})
+
+test('a resume that takes over a cut-off start keeps a worktree at the task’s path that is not that start’s', async () => {
+  const { repo, id } = unfilledLib()
+  await failure(startTask(ledger, home, id))
+  const folder = workspaceOf(home, ledger.get(id))
+  const other = ledger.add({
+    brief: 'another task',
+    repo,
+    branch: 'feat/other',
+    checkCmd: null,
+    model: null,
+    after: [],
+    triggerId: null,
+    issue: null,
+  })
+  // A worktree on the task's branch at its path, as a cut-off start leaves it, once `change` is done
+  // to it; it stays, and the start fails on it.
+  const keeps = async (change: () => void): Promise<void> => {
+    expect(ledger.claimRestart(id, restartMark(gone(), id), null)).toBe(true)
+    git(repo, 'worktree', 'add', '-q', '-b', 'feat/lib', folder)
+    change()
+    expect(await failure(resume(ledger, home, id))).toContain('already exists')
+    expect(existsSync(folder)).toBe(true)
+    git(repo, 'worktree', 'remove', '--force', folder)
+    git(repo, 'branch', '-D', 'feat/lib')
+  }
+
+  // Another task works there.
+  await keeps(() => ledger.setRunning(other, folder))
+  ledger.setRunning(other, join(home, 'elsewhere'))
+  // Something in it is not committed.
+  await keeps(() => writeFileSync(join(folder, 'wip.txt'), 'wip'))
+  // The branch has a commit nothing else has; the worktree's own HEAD does not count.
+  await keeps(() => git(folder, 'commit', '-q', '--allow-empty', '-m', 'mine'))
 })
 
 test('a start resume took over drops the mark of the resume once the task has its folder', async () => {

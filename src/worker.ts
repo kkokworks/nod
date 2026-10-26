@@ -627,33 +627,38 @@ export const restartMark = (pid: number, taskId: number): string =>
   `nod resume (pid ${pid}) is starting it again; if that process is gone, nod resume ${taskId} takes over`
 const MARKED = /^nod resume \(pid (\d+)\) is starting it again;/
 
-// What a start cut off as it made the task's folder left in its repo: the worktree at the task's
-// path, unless another task works there, and the branch, once it holds no commit another ref lacks,
-// so nothing is lost. One with commits of its own is not the cut-off start's; it stays, and the
+// What a start cut off as it made the task's folder left in its repo: the branch, and the worktree
+// on it at the task's path. Only while losing them loses nothing: the branch holds no commit another
+// ref lacks (other worktrees' HEADs aside, the one on it among them), and the worktree has nothing
+// uncommitted and is no other task's. Anything else is not the cut-off start's; it stays, and the
 // start fails on it as on any branch by that name.
+// ponytail: a worktree a SIGKILL left locked mid-add stays too, as a git it ran may still be at it.
 async function clearCutOff(ledger: Ledger, home: string, task: Task): Promise<void> {
   const { repo } = task
   if (repo === null) return
   const cwd = workspaceOf(home, task)
   const branch = branchOf(task)
-  if (!ledger.list().some((t) => t.id !== task.id && t.workspace === cwd)) {
-    await spawn(['git', '-C', repo, 'worktree', 'remove', '--force', cwd])
-  }
   const ref = `refs/heads/${branch}`
-  const own = await spawn([
-    'git',
-    '-C',
+  const git = (dir: string, ...args: string[]) => spawn(['git', '-C', dir, ...args])
+  const own = await git(
     repo,
     'rev-list',
     '--count',
     ref,
     '--not',
+    '--single-worktree',
     `--exclude=${ref}`,
     '--all',
-  ])
-  if (own.code === 0 && own.stdout.trim() === '0') {
-    await spawn(['git', '-C', repo, 'branch', '-D', branch])
+  )
+  if (own.code !== 0 || own.stdout.trim() !== '0') return
+  if ((await git(cwd, 'symbolic-ref', '-q', 'HEAD')).stdout.trim() === ref) {
+    if (ledger.list().some((t) => t.id !== task.id && t.workspace === cwd)) return
+    // Submodules aside: the cut-off start may have been filling them.
+    const changed = await git(cwd, 'status', '--porcelain', '--ignore-submodules=all')
+    if (changed.code !== 0 || changed.stdout.trim() !== '') return
+    await git(repo, 'worktree', 'remove', '--force', cwd)
   }
+  await git(repo, 'branch', '-D', branch)
 }
 
 // Why a task with no conversation cannot take a message: it never started. One that failed before
