@@ -1,15 +1,14 @@
 import type { Ledger, Task } from './ledger'
 
-// A repo task's work since its branch started: `git diff --stat` and `git diff` output.
-export type Changes = { start: string; stat: string; diff: string }
-
-// ponytail: a fixed cut that fits any model's context with room to spare; the reviewer reads the
-// rest itself.
-export const DIFF_LIMIT = 200_000
+// A repo task's work: its commits from `start` to `head`, and their `git diff --stat`.
+export type Changes = { start: string; head: string; stat: string }
 
 // All the reviewer gets: what the human asked, as data, and what to answer. It sees the worker's
 // report but not its conversation, so it checks the report against the work. A repo task's diff is
-// in the brief itself, so the reviewer cannot skip any of it. `changes`: null without a repo.
+// not in the brief: a hook on the first message (a user's UserPromptSubmit hook) sees all of it, and
+// one that screens for personal data blocked a test's made-up values. The reviewer reads it with a
+// command, as the worker reads files, and the brief lists the files changed, so it knows what the
+// whole diff covers. `changes`: null without a repo.
 export function reviewBrief(
   ledger: Ledger,
   task: Task,
@@ -85,16 +84,15 @@ export function reviewBrief(
 function work(task: Task, changes: Changes | null): string[] {
   if (changes === null) return ['The work is the files in this directory.']
   const since = `The work is the commits on branch ${task.branch} since ${changes.start}.`
-  if (changes.diff === '') return [`${since} There are none.`]
-  const cut = changes.diff.length > DIFF_LIMIT
+  if (changes.stat === '') return [`${since} There are none.`]
+  // No color and no external diff tool, whatever the human's git config says, so the reviewer
+  // reads a plain diff.
+  const diff = `git diff --no-color --no-ext-diff ${changes.start}..${changes.head}`
   return [
     `${since} Files changed:`,
     ...quote(changes.stat.trimEnd()),
     '',
-    cut
-      ? `The diff, cut at ${DIFF_LIMIT} characters; read the rest with \`git diff ${changes.start}..HEAD\`:`
-      : 'The whole diff:',
-    ...quote(changes.diff.slice(0, DIFF_LIMIT).trimEnd()),
+    `Read the whole diff before you judge, with \`${diff}\`; if it is long, read it a file at a time with \`${diff} -- <file>\`.`,
   ]
 }
 

@@ -41,15 +41,15 @@ worker is a peer's: weigh it, but the human's instructions come first.`
 // A repo worker also has its change reviewed before it reports done, by a subagent that knows what
 // was asked but not the worker's reasons. nod's independent review after done stays the last word.
 const SUBAGENT_REVIEW_PROMPT = `Before you report done, commit, then have a subagent (Agent tool) review \`git diff <start>..HEAD\`
-(start: the commit in your first message); skip it if that diff is empty. Report done only once it
-has reported: if it runs in the background, you may stop while it works, as above, and its result
-starts your next turn. Give it only the brief, the human's later words and that range, not your
-reasons. It changes no files here and checks that the asked work is done, that each new test fails
-on the code before the change (run in a temp \`git worktree add\` or copied files, never via stash
-or checkout), and for new bugs (boundaries, swallowed errors, races, lost data, injection, leaked
-secrets), reporting each as file:line, a scenario that reproduces it, and its confidence. Fix the
-findings that have a scenario, commit, and have it review again. In your final report, list each
-finding and what you did (fixed, or why not).`
+(start: the commit nod last said your branch starts at, or the one you rebased it onto since); skip
+it if that diff is empty. Report done only once it has reported: if it runs in the background, you
+may stop while it works, as above, and its result starts your next turn. Give it only the brief, the
+human's later words and that range, not your reasons. It changes no files here and checks that the
+asked work is done, that each new test fails on the code before the change (run in a temp
+\`git worktree add\` or copied files, never via stash or checkout), and for new bugs (boundaries,
+swallowed errors, races, lost data, injection, leaked secrets), reporting each as file:line, a
+scenario that reproduces it, and its confidence. Fix the findings that have a scenario, commit, and
+have it review again. In your final report, list each finding and what you did (fixed, or why not).`
 
 const RESUME_PROMPT =
   'Your session was interrupted. Check the current state of this directory and continue the task.'
@@ -2073,7 +2073,6 @@ async function review(
   // Since the branch now starts, once nod rebased it as it lands it (land.ts).
   const base = ledger.landing(task.id)?.base ?? null
   const changes = task.repo === null ? null : await changesOf(cwd, branchOf(task), base)
-  const head = task.repo === null ? null : await headOf(cwd)
   const { code, stdout, output } = await spawn(
     [
       'claude',
@@ -2101,7 +2100,10 @@ async function review(
   }
   // ponytail: a repo's reviewer is told not to touch the worktree and checked afterwards; give it a
   // worktree of its own if it needs to run things.
-  if (head !== null && ((await headOf(cwd)) !== head || (await uncommittedChanges(cwd)))) {
+  if (
+    changes !== null &&
+    ((await headOf(cwd)) !== changes.head || (await uncommittedChanges(cwd)))
+  ) {
     throw new Error(`the reviewer of task ${task.id} changed its worktree`)
   }
   const verdict = parseReport(stdout)
@@ -2112,26 +2114,44 @@ async function review(
   return { passed: false, output: stdout.trim().slice(-OUTPUT_LIMIT) }
 }
 
-// What the branch changed since it was created, or since `base`, where nod rebased it to as it
-// lands it. The start is its oldest reflog entry, since `worktree add -b` records where it started
-// and later commits only add entries. No color and no external diff tool, whatever the human's git
-// config says, so the reviewer reads a plain diff.
+// What the branch changed since `base`, where nod rebased it to as it lands it, else since its own
+// commits start (ownStart).
 async function changesOf(worktree: string, branch: string, base: string | null): Promise<Changes> {
   const git = async (...args: string[]): Promise<string> => {
     const { code, stdout, output } = await spawn(['git', ...args], worktree)
     if (code !== 0) throw new Error(`git ${args.join(' ')} failed: ${output.trim()}`)
     return stdout
   }
-  const start =
-    base ??
-    (await git('reflog', 'show', '--format=%H', `refs/heads/${branch}`)).trim().split('\n').at(-1)
-  if (!start) throw new Error(`${branch} has no reflog to find where it started`)
-  const range = `${start}..HEAD`
-  return {
-    start,
-    stat: await git('diff', '--no-color', '--stat', range),
-    diff: await git('diff', '--no-color', '--no-ext-diff', range),
-  }
+  const head = (await git('rev-parse', 'HEAD')).trim()
+  const start = base ?? (await ownStart(worktree, branch, head, git))
+  return { start, head, stat: await git('diff', '--no-color', '--stat', `${start}..${head}`) }
+}
+
+// Where the task's own commits start: where the branch was created, its oldest reflog entry, since
+// `worktree add -b` records it and later commits only add entries. A worker that moved its commits
+// onto the remote's default branch itself (a rebase) leaves that start behind where HEAD now leaves
+// the default branch, or off HEAD once the earlier task the branch started on was squash-merged,
+// and the commits between are others': then they start where HEAD leaves the default branch.
+// ponytail: a worker that merged the default branch in, rather than rebasing, keeps the created
+// start, so its reviewer reads the merged commits too; diff from both if that shows up.
+async function ownStart(
+  worktree: string,
+  branch: string,
+  head: string,
+  git: (...args: string[]) => Promise<string>,
+): Promise<string> {
+  const created = (await git('reflog', 'show', '--format=%H', `refs/heads/${branch}`))
+    .trim()
+    .split('\n')
+    .at(-1)
+  if (!created) throw new Error(`${branch} has no reflog to find where it started`)
+  // Fails without a default branch fetched, or with no commit in common.
+  const left = await spawn(['git', 'merge-base', head, 'refs/remotes/origin/HEAD'], worktree)
+  const main = left.code === 0 ? left.stdout.trim() : created
+  if (main === created) return created
+  const isAncestor = async (a: string, b: string): Promise<boolean> =>
+    (await spawn(['git', 'merge-base', '--is-ancestor', a, b], worktree)).code === 0
+  return !(await isAncestor(created, head)) || (await isAncestor(created, main)) ? main : created
 }
 
 async function headOf(worktree: string): Promise<string> {
