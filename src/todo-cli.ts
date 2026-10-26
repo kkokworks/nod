@@ -168,7 +168,7 @@ const SAID = /"type":"(user|assistant)"/
 // or a title alone, `--session-id` (already in use). So a session with no transcript starts again
 // under the same ID and name, and one whose transcript holds nothing said gives way to a new one.
 // Every way, the session gets the project's name, resumed too (Claude Code 2.1.310 records it in
-// the transcript): a session nod open did not start gets it, and a /rename goes back to it.
+// the transcript): a /rename goes back to it, and a new title shows once the project is retitled.
 export function openSession(
   todos: Todos,
   ref: string,

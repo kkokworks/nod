@@ -225,7 +225,7 @@ test('nod open resumes the latest session where it was opened, or starts one: wi
   const said = '{"type":"user","message":{"role":"user","content":"hi"}}'
   // Once something is said in it, it is resumed there, wherever nod open runs.
   keep(opened, here, said)
-  // Resumed, it is named again: a session nod open did not name, or one renamed, has the name.
+  // Resumed, it is named again, so a /rename goes back to the project's title.
   const resumed = { argv: ['claude', '--resume', opened, '--name', 'Release', ...told], cwd: here }
   expect(open(false, there)).toEqual(resumed)
   expect(open(false, there, 'Release')).toEqual(resumed)
