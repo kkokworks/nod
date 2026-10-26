@@ -93,6 +93,8 @@ test("watch tells each end of a task it watches once, again after the task runs 
   const dropped = running('ask first', 'MINE')
   const lands = running('open the pull request', 'MINE')
   const landsTurn = turn(lands, 'start')
+  const dropsLanding = running('add the feature', 'MINE')
+  const dropsTurn = turn(dropsLanding, 'start')
   const last = running('last worker', 'MINE')
   const lastTurn = turn(last, 'start')
   const theirs = running('their task', 'OTHER')
@@ -101,6 +103,7 @@ test("watch tells each end of a task it watches once, again after the task runs 
   const printed: string[] = []
   let looks = 0
   let landTurn = 0
+  let dropsLandTurn = 0
   const wait = async (): Promise<void> => {
     looks += 1
     if (looks === 1) {
@@ -111,13 +114,20 @@ test("watch tells each end of a task it watches once, again after the task runs 
       done(lands, landsTurn, 'did the work')
       ledger.setRunning(lands, home)
       landTurn = turn(lands, 'land')
+      done(dropsLanding, dropsTurn, 'added the feature')
       done(theirs, theirsTurn, 'not mine')
     }
-    // nod tell runs one task again.
-    if (looks === 2) ledger.setRunning(ok, home)
+    // nod tell runs one task again; landing gives another a turn, which the person then drops.
+    if (looks === 2) {
+      ledger.setRunning(ok, home)
+      ledger.setRunning(dropsLanding, home)
+      dropsLandTurn = turn(dropsLanding, 'land')
+    }
     if (looks === 3) {
       done(ok, turn(ok, 'followup'), 'fixed the review')
       done(lands, landTurn, 'wrote the pull request text')
+      ledger.failAttempt(dropsLandTurn, 'dropped')
+      ledger.succeed(dropsLanding)
     }
     if (looks === 4) done(last, lastTurn, 'all done')
   }
@@ -132,8 +142,10 @@ test("watch tells each end of a task it watches once, again after the task runs 
     `task #${ok} MINE succeeded: wrote the docs`,
     `task #${bad} MINE error: the worktree could not be made`,
     `task #${dropped} MINE cancelled: ask first`,
+    `task #${dropsLanding} MINE succeeded: added the feature`,
     `task #${ok} MINE succeeded: fixed the review`,
     `task #${lands} MINE succeeded: wrote the pull request text`,
+    `task #${dropsLanding} MINE succeeded: added the feature`,
     `task #${last} MINE succeeded: all done`,
   ])
   // The look that found the last worker stopped told its end, then five idle looks.

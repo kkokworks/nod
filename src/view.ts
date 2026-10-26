@@ -45,9 +45,11 @@ export async function watch(
 }
 
 // What `nod watch` prints as a task ends: its number, todo and issue, how it ended, and the worker's
-// last report once it succeeded, else the error's first line, else its brief.
+// last done report once it succeeded (a landing turn dropped after it has none), else the error's
+// first line, else its brief.
 export function endLine(ledger: Ledger, t: Task): string {
-  const note = t.status === 'succeeded' ? ledger.lastAttempt(t.id)?.summary : t.error
+  const done = ledger.attempts(t.id).findLast((a) => a.outcome === 'succeeded')
+  const note = t.status === 'succeeded' ? done?.summary : t.error
   return `${taskLabel(t)} ${t.status}: ${firstLine(note || t.brief)}`
 }
 
