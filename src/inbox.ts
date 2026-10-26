@@ -98,7 +98,7 @@ export async function sendNotices(ledger: Ledger, send = sendLine): Promise<void
       await send(socket, `${JSON.stringify(said)}\n`)
     } catch (error) {
       ledger.unclaimNotices(claimed.ids, claimed.at)
-      const code = (error as { code?: unknown }).code
+      const { code } = Object(error) as { code?: unknown }
       if (code === 'ENOENT' || code === 'ECONNREFUSED') {
         todos.setSocket(session.sessionId, null, socket)
       } else {
