@@ -3,6 +3,7 @@
 import { type CalendarEvent, readEvents } from '../../src/calendar'
 import { localDay, REPEATS } from '../../src/days'
 import {
+  type Found,
   PROJECT_STATUSES,
   type Project,
   TODO_STATUSES,
@@ -207,6 +208,9 @@ export function projectsPage(): ProjectsPage {
     })),
   }
 }
+
+// The sidebar's search, as `nod search` finds.
+export const find = (ref: string): Found[] => todos.find(ref)
 
 export const capture = (title: string): number =>
   todos.capture({ title, notes: null, source: 'ui', sourceKey: null, url: null }, ACTOR).todo.id

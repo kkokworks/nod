@@ -476,6 +476,55 @@ test('a task can be named by the retrospective it runs, as ls shows it', () => {
   expect(() => todos.taskRef('rx')).toThrow('not a retrospective: rx (write r<n>)')
 })
 
+test('a number finds every kind it numbers, a prefix only its own kind, nothing else nothing', () => {
+  const { ledger, todos } = books()
+  const t = captured(todos, 'Write the report')
+  const taskId = todos.delegate(t.id, { ...task, brief: 'Draft the report\nwith the numbers' }, 'h')
+  const retroTask = ledger.addRetro(ledger.get(taskId), 'look back')
+  const p = project(todos, 'Health')
+  const d = ask(ledger, taskId, 'Which chart?\nA bar or a line.')
+  expect([t.id, taskId, ledger.get(retroTask).retroId, p.id, d]).toEqual([1, 1, 1, 1, 1])
+
+  const all = [
+    { kind: 'todo', id: 1, ref: 't1', title: 'Write the report', status: 'waiting' },
+    { kind: 'task', id: 1, ref: '#1', title: 'Draft the report', status: 'needs_decision', taskId },
+    {
+      kind: 'retro',
+      id: 1,
+      ref: 'r1',
+      title: 'of #1: Draft the report',
+      status: 'queued',
+      taskId: retroTask,
+    },
+    { kind: 'project', id: 1, ref: 'p1', title: 'Health', status: 'active' },
+    { kind: 'decision', id: 1, ref: '#1', title: 'Which chart?', status: 'open', taskId },
+  ]
+  expect(todos.find('1')).toEqual(all)
+  expect(todos.find(' 1 ')).toEqual(all)
+  for (const [ref, kind] of [
+    ['t1', 'todo'],
+    ['#1', 'task'],
+    ['r1', 'retro'],
+    ['p1', 'project'],
+  ]) {
+    expect(todos.find(ref ?? '')).toEqual(all.filter((f) => f.kind === kind))
+  }
+  // The retrospective's task numbers nothing else.
+  expect(todos.find(String(retroTask)).map((f) => f.ref)).toEqual([`#${retroTask}`])
+  for (const none of ['9', 't9', '#9', 'r9', 'p9', 'x1', 't', '', 'Write the report']) {
+    expect(todos.find(none)).toEqual([])
+  }
+
+  // A retrospective that ended says how; a decision, whether a person answered it.
+  ledger.endRetro(1, 'declined')
+  ledger.answer(d, 'a bar')
+  const d2 = ask(ledger, taskId, 'And the colour?')
+  ledger.dismiss(d2, 'went on without it')
+  expect(todos.find('r1').map((f) => f.status)).toEqual(['declined'])
+  expect(todos.find('1').at(-1)?.status).toBe('answered')
+  expect(todos.find('2').at(-1)?.status).toBe('closed')
+})
+
 test('a todo whose task was dropped comes back; one waiting on a person or on no task stays', () => {
   const { ledger, todos } = books()
   const t = captured(todos, 'Fix the build')

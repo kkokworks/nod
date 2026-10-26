@@ -130,6 +130,15 @@ export type TodoFilter = {
   // Leaves out the todos that start after this day; null shows them.
   day: string | null
 }
+// What a number names (`nod search`, the UI's search box): the ref it is shown by, a one-line
+// title, its status, and, for what a task page shows, that task.
+export type Found = { id: number; ref: string; title: string; status: string } & (
+  | { kind: 'todo' }
+  | { kind: 'project' }
+  | { kind: 'task' | 'retro' | 'decision'; taskId: number }
+)
+// What a search ref's prefix finds; a bare number finds every kind.
+const FINDS = { t: 'todo', '#': 'task', r: 'retro', p: 'project' } as const
 // What a watch said when it last ran: its exit code and the end of its output.
 export type WatchCheck = { watch: string; at: string; code: number; output: string }
 // What a day holds besides its events, each todo once, in the first group it is in.
@@ -414,6 +423,55 @@ export class Todos {
     if (last === undefined)
       throw new Error(`t${id} has no task; hand it over with nod add --todo t${id}`)
     return last.id
+  }
+
+  // What `t<n>`, `#<n>`, `r<n>` or `p<n>` names, or, for a bare `<n>`, all that n numbers: the todo,
+  // task, retrospective, project and decision, in that order. Anything else names nothing.
+  find(ref: string): Found[] {
+    const m = /^([t#rp]?)(\d+)$/.exec(ref.trim())
+    if (m === null) return []
+    const prefix = m[1] as keyof typeof FINDS | ''
+    const n = Number(m[2])
+    const todo = this.first(q.selectFrom('todos').selectAll().where('id', '=', n))
+    const project = this.first(q.selectFrom('projects').selectAll().where('id', '=', n))
+    const { task, retro, decision } = this.ledger.numbered(n)
+    const firstLine = (s: string) => s.replace(/\n[\s\S]*/, '')
+    const all: (Found | null)[] = [
+      todo && { kind: 'todo', id: n, ref: `t${n}`, title: todo.title, status: todo.status },
+      task && {
+        kind: 'task',
+        id: n,
+        ref: `#${n}`,
+        title: firstLine(task.brief),
+        status: task.status,
+        taskId: n,
+      },
+      retro && {
+        kind: 'retro',
+        id: n,
+        ref: `r${n}`,
+        title: `of #${retro.retro.ofTaskId}: ${firstLine(this.ledger.get(retro.retro.ofTaskId).brief)}`,
+        status: retro.retro.outcome ?? retro.task.status,
+        taskId: retro.task.id,
+      },
+      project && {
+        kind: 'project',
+        id: n,
+        ref: `p${n}`,
+        title: project.title,
+        status: project.status,
+      },
+      decision && {
+        kind: 'decision',
+        id: n,
+        ref: `#${n}`,
+        title: firstLine(decision.question),
+        status:
+          decision.answer === null ? 'open' : decision.answeredAt === null ? 'closed' : 'answered',
+        taskId: decision.taskId,
+      },
+    ]
+    return all.filter((f): f is Found => f !== null && (prefix === '' || f.kind === FINDS[prefix]))
   }
 
   // Moves each todo waiting on nod along once none of its tasks can go on: done when the last one

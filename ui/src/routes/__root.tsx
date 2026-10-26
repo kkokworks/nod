@@ -11,6 +11,7 @@ import { type ReactNode, type Ref, useEffect, useRef } from 'react'
 import { bindKeys, ignoreOnPage, KEYS } from '../keys'
 import { overview } from '../nod.server'
 import { TaskId, TaskItem } from '../parts'
+import { Search } from '../search'
 import css from '../styles.css?url'
 import { focusRow, STATUS_ICONS, UndoBar } from '../todo-parts'
 
@@ -161,6 +162,7 @@ function Sidebar() {
       <Link to="/" className="brand">
         nod
       </Link>
+      <Search />
       <nav className="side-nav">
         <Link to="/focus" className="side-item" activeProps={{ className: 'active' }}>
           <NavIcon name="focus" />

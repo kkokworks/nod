@@ -41,6 +41,7 @@ const R = await import('@tanstack/react-router')
 const tasks = await import('./routes/tasks.$id')
 const todos = await import('./routes/todos_.$id')
 const { TodoRow } = await import('./todo-parts')
+const { Search } = await import('./search')
 if (before === undefined) delete process.env.NOD_HOME
 else process.env.NOD_HOME = before
 
@@ -57,8 +58,11 @@ const rowsRoute = R.createRoute({
     ))
   },
 })
+// The sidebar's search box, on a page of its own.
+const findRoute = R.createRoute({ getParentRoute: () => root, path: '/find', component: Search })
 const router = R.createRouter({
   routeTree: root.addChildren([
+    findRoute,
     tasks.Route.update({
       id: '/tasks/$id',
       path: '/tasks/$id',
@@ -364,4 +368,64 @@ test('a key pressed as the refresh takes its row away does not act on the next r
   expect(focused()).toBe('five')
   await press('KeyX', 'x')
   expect(posted.splice(0)).toEqual([{ id: 5, edit: { status: 'done' } }])
+})
+
+// What the search finds for each ref, as `Todos.find` would; anything else is a task page.
+const found: Record<string, unknown[]> = {
+  r2: [{ kind: 'retro', id: 2, ref: 'r2', title: 'of #4: task 4', status: 'queued', taskId: 5 }],
+  '3': [
+    { kind: 'task', id: 3, ref: '#3', title: 'task 3', status: 'running', taskId: 3 },
+    { kind: 'project', id: 3, ref: 'p3', title: 'Health', status: 'active' },
+  ],
+  '9': [],
+}
+const searchAnswer = (data: unknown) =>
+  typeof data === 'string' ? found[data] : detail(data as number)
+const search = async (ref: string) => {
+  type(field('.side-search input'), ref)
+  await submit('.side-search input')
+}
+const picks = () =>
+  [...document.querySelectorAll('.side-search a')].map((a) => a.getAttribute('href'))
+const at = () =>
+  `${router.state.location.pathname}${router.state.location.hash && '#'}${router.state.location.hash}`
+
+test('a search opens the one match, lists several to pick from, and says when none', async () => {
+  answer = searchAnswer
+  await go('/find')
+  // A retrospective opens the task it runs in.
+  await search('r2')
+  expect(at()).toBe('/tasks/5')
+
+  await go('/find')
+  await search('3')
+  expect(at()).toBe('/find')
+  expect(picks()).toEqual(['/tasks/3', '/projects#p3'])
+  act(() => document.querySelector<HTMLElement>('.side-search a[href="/projects#p3"]')?.click())
+  await settle()
+  expect(at()).toBe('/projects#p3')
+
+  await go('/find')
+  await search('9')
+  expect(picks()).toEqual([])
+  expect(document.querySelector('.side-search')?.textContent).toContain('No match for 9')
+})
+
+test('a search answered after a later one does not take its place', async () => {
+  // The first search's answer is held until the second's has shown.
+  let release: () => void = () => {}
+  answer = (data) =>
+    data === '3'
+      ? new Promise((done) => {
+          release = () => done(found['3'])
+        })
+      : searchAnswer(data)
+  await go('/find')
+  await search('3')
+  await search('9')
+  expect(document.querySelector('.side-search')?.textContent).toContain('No match for 9')
+  await act(async () => release())
+  await settle()
+  expect(picks()).toEqual([])
+  expect(document.querySelector('.side-search')?.textContent).toContain('No match for 9')
 })

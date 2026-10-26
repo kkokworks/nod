@@ -1034,6 +1034,22 @@ export class Ledger {
     return this.run(q.selectFrom('tasks').select(TASK).where('todoId', '=', todoId).orderBy('id'))
   }
 
+  // The task, the retrospective with the task it runs in, and the decision numbered n; null where
+  // there is none (`nod search`).
+  numbered(n: number): {
+    task: Task | null
+    retro: { retro: Retro; task: Task } | null
+    decision: Decision | null
+  } {
+    const retro = this.first(q.selectFrom('retros').selectAll().where('id', '=', n))
+    const retroTask = this.first(q.selectFrom('tasks').select(TASK).where('retroId', '=', n))
+    return {
+      task: this.first(q.selectFrom('tasks').select(TASK).where('id', '=', n)),
+      retro: retro === null || retroTask === null ? null : { retro, task: retroTask },
+      decision: this.first(q.selectFrom('decisions').selectAll().where('id', '=', n)),
+    }
+  }
+
   // The retrospective of a task, if one was started.
   retroFor(taskId: number): Retro | null {
     return this.first(q.selectFrom('retros').selectAll().where('ofTaskId', '=', taskId))

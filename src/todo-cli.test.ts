@@ -4,6 +4,7 @@ import { join, resolve } from 'node:path'
 import { tempDirs } from '../test/tmp'
 import { Ledger } from './ledger'
 import { actorFromEnv, sessionFromEnv } from './todo-cli'
+import { Todos } from './todos'
 
 const tmp = tempDirs()
 afterAll(tmp.removeAll)
@@ -241,6 +242,69 @@ test('a todo delegated with nod add waits on its task, whose decision is listed 
   expect((await ok('todo', 't1')).filter((l) => l.startsWith('  task'))).toEqual([
     '  task #2 needs_decision',
   ])
+})
+
+test('nod search shows the one match as its own command does, and lists several with theirs', async () => {
+  const { ok, fails, home } = runner()
+  await ok('in', 'Write the report')
+  await ok('project', 'add', 'Health')
+  // Task #1 does t1; it is only queued, so no worker runs.
+  const ledger = new Ledger(home)
+  const todos = new Todos(ledger)
+  const taskId = todos.delegate(
+    1,
+    {
+      brief: 'Draft the report\nwith the numbers',
+      repo: null,
+      branch: null,
+      checkCmd: null,
+      model: null,
+      after: [],
+      triggerId: null,
+      issue: null,
+    },
+    'human',
+  )
+  const ask = (question: string) =>
+    ledger.ask(
+      taskId,
+      ledger.startAttempt({ taskId, kind: 'start', decisionId: null, sessionId: 's', prompt: 'p' }),
+      'question',
+      question,
+    )
+  ask('Which chart?')
+
+  expect(await ok('search', '1')).toEqual([
+    't1    todo     waiting        Write the report  · nod todo t1',
+    '#1    task     needs_decision Draft the report  · nod show 1',
+    'p1    project  active         Health  · nod project p1',
+    '#1    decision open           Which chart?  · nod show 1',
+  ])
+  expect(await ok('search', 't1')).toEqual(await ok('todo', 't1'))
+  expect(await ok('search', '#1')).toEqual(await ok('show', '1'))
+  expect(await ok('search', 'p1')).toEqual(await ok('project', 'p1'))
+
+  // Decision 2 alone has the number 2: shown as `nod` lists it, or with its answer once it has one.
+  ledger.answer(1, 'a bar')
+  ask('And the colour?')
+  expect(await ok('search', '2')).toEqual(await ok())
+  ledger.answer(2, 'blue')
+  expect(await ok('search', '2')).toEqual([
+    '#2  question  (task #1 t1: Draft the report with the numbers)',
+    '  And the colour?',
+    '',
+    'answered: blue',
+  ])
+
+  ledger.addRetro(ledger.get(taskId), 'look back')
+  expect(await ok('search', 'r1')).toEqual(await ok('show', 'r1'))
+  expect(await ok('search', '1')).toContain(
+    'r1    retro    queued         of #1: Draft the report  · nod show r1',
+  )
+
+  for (const none of ['9', 't2', 'x1']) {
+    expect(await fails('search', none)).toBe(`no match for ${none}\n`)
+  }
 })
 
 test('nod today shows the day without a calendar here, and later todos stay out of the lists', async () => {
