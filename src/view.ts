@@ -10,6 +10,10 @@ const WATCH_GRACE_SECS = 5
 // time one of those tasks ends, until none of them has had a worker running for WATCH_GRACE_SECS
 // looks. `wait` comes between looks. The look that finds the last worker stopped hands over its end
 // too. An end is a new status and finishedAt, or an ended status seen after one that was not.
+// ponytail: a turn landing gave the worker (land.ts) and a closed decision on landing end the task
+// again too, which the notify event leaves out by the landing's handedAt; telling those apart here
+// would need the ledger to keep it per turn, and leaving them out loses an end that a landing
+// turn started before the next look hides.
 export async function watch(
   ledger: Ledger,
   counts: (t: Task) => boolean,
@@ -32,23 +36,12 @@ export async function watch(
     const tasks = ledger.list()
     for (const t of tasks) {
       const end = endOf(t)
-      if (end !== null && end !== ends.get(t.id) && counts(t) && !landed(ledger, t)) printEnd(t)
+      if (end !== null && end !== ends.get(t.id) && counts(t)) printEnd(t)
       ends.set(t.id, end)
     }
     const running = tasks.some((t) => t.status === 'running' && counts(t))
     idleSecs = running ? 0 : idleSecs + 1
   }
-}
-
-// A task that succeeded again after a turn landing gave its worker (land.ts: a conflict, a failed
-// check, the pull request's text), which the notify event leaves out too: the pull request or the
-// merge tells. A retry after a failed check goes on with the turn before it.
-// ponytail: a decision on landing closed before any landing turn (a refused push) brings the task
-// back to succeeded as if it ended again; leave out ends right after a `land` decision if that
-// turns out noisy.
-function landed(ledger: Ledger, t: Task): boolean {
-  if (t.status !== 'succeeded') return false
-  return ledger.attempts(t.id).findLast((a) => a.kind !== 'retry')?.kind === 'land'
 }
 
 // What `nod watch` prints as a task ends: its number, todo and issue, how it ended, and the worker's

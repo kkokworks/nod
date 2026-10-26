@@ -126,12 +126,12 @@ const USAGE = `usage:
                                    print decisions as they open and, each time a task ends
                                    (succeeded, error, cancelled), a line task #<n> [<todo>]
                                    [<issue>] <status>: <the worker's last report, or the
-                                   error's first line>, until no worker is running. Only what
-                                   opens or ends after it starts, and not a turn landing gave
-                                   the worker; --issue: only decisions, ends and workers of
-                                   tasks on these issues; --mine: only those of this Claude
-                                   session's tasks, so several root sessions can each watch
-                                   their own
+                                   error's first line, else the brief>, until no worker is
+                                   running. Only what opens or ends after it starts; a task
+                                   that runs again and ends again is printed again. --issue:
+                                   only decisions, ends and workers of tasks on these issues;
+                                   --mine: only those of this Claude session's tasks, so
+                                   several root sessions can each watch their own
   nod link <task> <url...>         record where the task's result went (a pull request, a posted
                                    review), so ls and show list it next to the task. Until then
                                    they list the remote branches that hold the task's branch

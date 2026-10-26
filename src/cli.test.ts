@@ -100,23 +100,24 @@ test("watch tells each end of a task it watches once, again after the task runs 
 
   const printed: string[] = []
   let looks = 0
+  let landTurn = 0
   const wait = async (): Promise<void> => {
     looks += 1
     if (looks === 1) {
       done(ok, okTurn, 'wrote the docs')
       ledger.error(bad, 'the worktree could not be made\n  at somewhere')
       ledger.drop(ledger.ask(dropped, turn(dropped, 'start'), 'question', 'which one?'))
+      // Landing gives this one a turn before watch looks again, so its first end goes unseen.
       done(lands, landsTurn, 'did the work')
+      ledger.setRunning(lands, home)
+      landTurn = turn(lands, 'land')
       done(theirs, theirsTurn, 'not mine')
     }
-    // nod tell runs one task again, and landing gives another a turn of its own.
-    if (looks === 2) {
-      ledger.setRunning(ok, home)
-      ledger.setRunning(lands, home)
-    }
+    // nod tell runs one task again.
+    if (looks === 2) ledger.setRunning(ok, home)
     if (looks === 3) {
       done(ok, turn(ok, 'followup'), 'fixed the review')
-      done(lands, turn(lands, 'land'), 'wrote the pull request text')
+      done(lands, landTurn, 'wrote the pull request text')
     }
     if (looks === 4) done(last, lastTurn, 'all done')
   }
@@ -131,8 +132,8 @@ test("watch tells each end of a task it watches once, again after the task runs 
     `task #${ok} MINE succeeded: wrote the docs`,
     `task #${bad} MINE error: the worktree could not be made`,
     `task #${dropped} MINE cancelled: ask first`,
-    `task #${lands} MINE succeeded: did the work`,
     `task #${ok} MINE succeeded: fixed the review`,
+    `task #${lands} MINE succeeded: wrote the pull request text`,
     `task #${last} MINE succeeded: all done`,
   ])
   // The look that found the last worker stopped told its end, then five idle looks.
