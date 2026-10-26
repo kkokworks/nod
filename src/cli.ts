@@ -58,12 +58,14 @@ import {
   watch,
 } from './view'
 import {
+  AUTOCOMPACT_PCT,
   answer,
   branchOf,
   drop,
   keepWorker,
   message,
   NotificationEvent,
+  onCompact,
   onNotification,
   onPrompt,
   onStop,
@@ -73,6 +75,7 @@ import {
   restart,
   restartDue,
   resume,
+  SessionStartEvent,
   StopEvent,
   StopFailureEvent,
   sessionName,
@@ -718,6 +721,9 @@ async function hook(event: string | undefined): Promise<void> {
     await onNotification(ledger, home, NotificationEvent.parse(input))
   } else if (event === 'stop-failure') {
     await onStopFailure(ledger, home, StopFailureEvent.parse(input))
+  } else if (event === 'compact') {
+    const out = onCompact(ledger, SessionStartEvent.parse(input))
+    if (out !== null) console.log(out)
   } else {
     throw new Error(USAGE)
   }
@@ -748,8 +754,8 @@ function attach(taskId: number): void {
   process.exit(result.exitCode)
 }
 
-// Claude Code in this terminal, in the project's session, with this shell's environment; nod ends
-// as it does.
+// Claude Code in this terminal, in the project's session, with this shell's environment and, unless
+// that says, AUTOCOMPACT_PCT; nod ends as it does.
 function open(args: string[]): void {
   const { values, positionals } = parseArgs({
     args,
@@ -766,7 +772,9 @@ function open(args: string[]): void {
     process.cwd(),
     config,
   )
-  const result = Bun.spawnSync(argv, { cwd, stdio: ['inherit', 'inherit', 'inherit'] })
+  const env = { ...process.env }
+  env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE ||= AUTOCOMPACT_PCT
+  const result = Bun.spawnSync(argv, { cwd, env, stdio: ['inherit', 'inherit', 'inherit'] })
   process.exit(result.exitCode ?? 1)
 }
 

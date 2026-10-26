@@ -506,6 +506,30 @@ exit 3
   expect(usage.stderr.toString()).toContain('nod open <project> [--new]')
 })
 
+test('nod open has claude compact at 70% of its window, unless the shell says how early', () => {
+  const home = tmp.make('nod-open-compact-')
+  const bin = tmp.make('nod-open-compact-bin-')
+  writeFileSync(join(bin, 'claude'), '#!/bin/sh\necho "$CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"\n', {
+    mode: 0o755,
+  })
+  new Todos(new Ledger(home)).addProject({ title: 'Release', outcome: null }, 'human')
+  // Whatever the shell running the tests has.
+  const { CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: _, ...shell } = process.env
+  const open = (extra: Record<string, string>): string =>
+    Bun.spawnSync(['bun', cli, 'open', 'p1'], {
+      cwd: home,
+      env: {
+        ...shell,
+        NOD_HOME: home,
+        CLAUDE_CONFIG_DIR: join(home, 'account'),
+        PATH: `${bin}:${process.env.PATH}`,
+        ...extra,
+      },
+    }).stdout.toString()
+  expect(open({})).toBe('70\n')
+  expect(open({ CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: '50' })).toBe('50\n')
+})
+
 test('ls hides tasks gc collected unless --all, and lists links in their row', async () => {
   const home = tmp.make('nod-ls-')
   const ledger = new Ledger(home)

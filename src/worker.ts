@@ -27,7 +27,7 @@ import {
   type Task,
 } from './ledger'
 import { notify, taskRef } from './notify'
-import { type Changes, reviewBrief } from './review'
+import { askedAgain, type Changes, reviewBrief } from './review'
 import { activeRules, hadTrouble, isNoRule, retroBrief } from './rules'
 import { quote, Terminals } from './tmux'
 import { Todos } from './todos'
@@ -36,6 +36,10 @@ import { Todos } from './todos'
 // Claude Code's Stop hook, and answers and follow-ups go into the same live session, so the worker
 // keeps its context for the whole task.
 
+// A subagent's report reaches a turn that still runs between its tool calls (measured on 2.1.310),
+// and background work that ends after the turn starts the next one (2.1.309, docs/design.md), so a
+// worker never needs to sleep for one. The prompt says "agent": "subagent" is the repo worker's
+// review (SUBAGENT_REVIEW_PROMPT), which tests tell apart by that word.
 const WORKER_PROMPT = `You are a nod worker. Do only the task you were given, inside the current directory.
 Shell commands run in a sandbox: writing outside this directory and network access to most hosts
 are blocked. Do not try to get around it.
@@ -52,6 +56,12 @@ A human answers questions later in this same conversation.
 If you stop while background work you started (an agent, a shell, a monitor) still runs, end with
 NOD: question | <what you wait for>: nod then waits for that work instead of asking the human, and
 your next turn starts once it is done.
+Keep long output out of your context: give work whose output is long but whose conclusion is all
+you need (a full test run, a wide search, a long log) to an agent (Agent tool) and take only its
+conclusion, or have the command write its output to a file in your scratchpad directory and read
+only the lines you need. Such an agent runs in the background, and its report comes back by itself,
+between your tool calls or as the message that starts your next turn: go on with other work, or
+stop as above. Never sleep or poll to wait for it.
 To put something in the person's to-do inbox, add one line per item above that last line:
 NOD: in {"title": "<what to do>", "notes": "<optional>", "link": "<optional URL>", "source": "<optional channel>", "key": "<that channel's id for it>"}
 With a source and key, an item goes in only once. To send a message to the worker of another nod
@@ -84,17 +94,29 @@ const restartHint = (taskId: number): string =>
 const CUT_OFF_PROMPT =
   'Your last turn was cut off before it finished. Check what it already did before you do any of it again.'
 
+// How full, in percent of its auto-compact window, a conversation nod starts (a worker's, nod
+// open's) gets before Claude Code (CLAUDE_AUTOCOMPACT_PCT_OVERRIDE) compacts it and goes on from a
+// summary: before a worker that takes on more work for hours fills up. Claude Code's own default
+// with a 1M window is about 967K tokens, and the variable can only lower it. A value the person set
+// stays: their shell's passes on (PASS_ENV), and `env` in their Claude Code settings replaces the
+// environment's. Measured on 2.1.310 with a 1M window: at 70 it compacted once the conversation was
+// between 654,459 and 699,430 tokens; at 10, the turn went on after compacting, in the same session.
+// ponytail: a nod command run inside a session nod started takes the 70 it inherits for the
+// person's, and `nod schedule on` or the UI server's install (savedEnv) there saves it; after
+// changing this, do both again from outside, or mark nod's own value if that bites.
+export const AUTOCOMPACT_PCT = '70'
+
 // What a worker keeps of the environment it starts from: these names only. A terminal or an agent
 // host marks each of its panes with variables of its own, and a worker that kept them would pass
 // itself off as that pane to whatever reads them (one that switches accounts restarted a person's
 // pane as the worker's conversation). No list of such markers is ever complete, so nod lists what
 // a worker needs instead: who it runs as (the login keychain needs USER and HOME), its shell, temp
 // folder, locale and time zone, the XDG folders git and gh read config from, the SSH agent, proxies
-// and CA certificates, and Anthropic API settings, and where nod's own tmux keeps its socket, for
-// its hooks. Anything else goes in Claude Code's own settings (`env` in settings.json), which it
-// applies itself.
+// and CA certificates, and Anthropic API settings, where nod's own tmux keeps its socket, for its
+// hooks, and how early Claude Code compacts (AUTOCOMPACT_PCT). Anything else goes in Claude Code's
+// own settings (`env` in settings.json), which it applies itself.
 const PASS_ENV =
-  /^(HOME|USER|LOGNAME|SHELL|TMPDIR|TZ|LANG|LC_[A-Z]+|XDG_(CONFIG|DATA|CACHE|STATE)_HOME|XDG_RUNTIME_DIR|SSH_AUTH_SOCK|(HTTPS?|ALL|NO)_PROXY|(https?|all|no)_proxy|NODE_EXTRA_CA_CERTS|SSL_CERT_(FILE|DIR)|ANTHROPIC_[A-Z0-9_]+|TMUX_TMPDIR)$/
+  /^(HOME|USER|LOGNAME|SHELL|TMPDIR|TZ|LANG|LC_[A-Z]+|XDG_(CONFIG|DATA|CACHE|STATE)_HOME|XDG_RUNTIME_DIR|SSH_AUTH_SOCK|(HTTPS?|ALL|NO)_PROXY|(https?|all|no)_proxy|NODE_EXTRA_CA_CERTS|SSL_CERT_(FILE|DIR)|ANTHROPIC_[A-Z0-9_]+|TMUX_TMPDIR|CLAUDE_AUTOCOMPACT_PCT_OVERRIDE)$/
 // Bun leaves proxy variables set while it runs out of process.env's keys (1.3.14), and the tick sets
 // the saved environment so, so these are looked up by name as well.
 const PROXY_ENV = ['HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY'].flatMap((n) => [
@@ -263,6 +285,10 @@ export const StopFailureEvent = z.object({ session_id: z.string(), error: z.stri
 // session_id, transcript_path, cwd, prompt_id, permission_mode, hook_event_name, prompt).
 export const PromptEvent = z.object({ session_id: z.string(), prompt: z.string() })
 
+// `source`: why the session starts: startup, resume, clear or compact. A compacted conversation
+// keeps its session ID (2.1.310).
+export const SessionStartEvent = z.object({ session_id: z.string(), source: z.string() })
+
 type Report = { status: 'done' | 'question' | 'failed'; text: string }
 
 // A repo task's worktree is named after its repo and branch, so a folder says what it holds.
@@ -349,8 +375,9 @@ export async function startReady(ledger: Ledger, home: string): Promise<number[]
 // The worker hears the acceptance check up front: a retrospective found workers could not follow
 // a brief that disagreed with a check they only saw after failing it.
 // `start`: the commit a repo task's branch starts at, for the subagent review (SUBAGENT_REVIEW_PROMPT).
-// ponytail: only here, so a conversation Claude Code compacts may lose it, and a worktree restore
-// rebuilds on a new branch keeps the old start; tell the worker again if that bites.
+// A conversation Claude Code compacts hears all of this again (onCompact).
+// ponytail: a worktree restore rebuilds on a new branch keeps the old start; tell the worker again
+// if that bites.
 export function firstMessage(ledger: Ledger, task: Task, start: string | null): string {
   const since = start === null ? '' : `\n\nYour branch starts at commit ${start}.`
   const check =
@@ -840,6 +867,17 @@ export async function onNotification(
     'permission',
     `${event.message}. Answer yes to allow; anything else denies.\n${prompt}`,
   )
+}
+
+// Called by the SessionStart hook once Claude Code has compacted a worker's conversation: what it
+// was asked is a summary there now, while the review goes by the words themselves, so it hears them
+// again (askedAgain). Returns the hook's stdout, which Claude Code adds to the conversation; null
+// for a session of no task, and for any other start: startup and resume still have the words, and
+// a clear is the person's.
+export function onCompact(ledger: Ledger, event: z.infer<typeof SessionStartEvent>): string | null {
+  if (event.source !== 'compact') return null
+  const taskId = ledger.taskOfSession(event.session_id)
+  return taskId === null ? null : askedAgain(ledger, ledger.get(taskId))
 }
 
 // Every decision opens here, so the human hears about each one. Returns whether it opened; a task
@@ -2060,7 +2098,8 @@ export function workerPrompt(ledger: Ledger, task: Task | null): string {
 }
 
 // `started`: a file the SessionStart hook creates, so nod knows the session got past the trust
-// dialog.
+// dialog. Claude Code runs SessionStart hooks again once it has compacted the conversation, with
+// the matcher `compact` (2.1.310), for onCompact.
 function workerSettings(started: string | null): string {
   const hook = (event: string): string => `${quote(process.execPath)} ${quote(CLI)} hook ${event}`
   const touch = (file: string) => [
@@ -2075,7 +2114,10 @@ function workerSettings(started: string | null): string {
       Notification: [{ hooks: [{ type: 'command', command: hook('notification') }] }],
       StopFailure: [{ hooks: [{ type: 'command', command: hook('stop-failure') }] }],
       UserPromptSubmit: [{ hooks: [{ type: 'command', command: hook('prompt') }] }],
-      ...(started === null ? {} : { SessionStart: touch(started) }),
+      SessionStart: [
+        { matcher: 'compact', hooks: [{ type: 'command', command: hook('compact') }] },
+        ...(started === null ? [] : touch(started)),
+      ],
     },
   })
 }
@@ -2084,8 +2126,8 @@ const startedMarker = (home: string, taskId: number): string =>
   join(home, 'work', `.started-${taskId}`)
 
 // The whole environment a worker starts with (Terminals.start passes nothing else): what PASS_ENV
-// keeps of nod's, nod's PATH, and the account `config`. NOD_TASK names the task, so a todo the
-// worker changes records `worker:<task>` (todos.ts).
+// keeps of nod's, nod's PATH, the account `config`, and AUTOCOMPACT_PCT unless nod's says. NOD_TASK
+// names the task, so a todo the worker changes records `worker:<task>` (todos.ts).
 export function workerEnv(
   home: string,
   taskId: number | null,
@@ -2096,6 +2138,7 @@ export function workerEnv(
   env.PATH = process.env.PATH ?? ''
   if (taskId !== null) env.NOD_TASK = String(taskId)
   if (config !== null) env.CLAUDE_CONFIG_DIR = config
+  env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE ||= AUTOCOMPACT_PCT
   return env
 }
 

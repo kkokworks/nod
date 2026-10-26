@@ -21,7 +21,7 @@ import { setAccountRule } from './account'
 import { collect } from './gc'
 import { Ledger, type Task, type TaskStatus } from './ledger'
 import { notify } from './notify'
-import { reviewBrief } from './review'
+import { askedAgain, reviewBrief } from './review'
 import { retroBrief } from './rules'
 import { quote, Terminals } from './tmux'
 import { Todos } from './todos'
@@ -33,6 +33,7 @@ import {
   drop,
   firstMessage,
   lostTurns,
+  onCompact,
   onPrompt,
   onStop,
   overdueWaits,
@@ -119,6 +120,9 @@ type LogEntry = {
   system?: string | null
   config?: string | null
   env?: string[]
+  autocompact?: string | null
+  source?: string
+  context?: string
   diff?: string | null
   addDir?: string | null
   addDirReal?: string | null
@@ -1742,6 +1746,88 @@ it('a worker learns its task through NOD_TASK, so the todos it changes name it',
   expect(workerEnv('/h', null)).not.toHaveProperty('NOD_TASK')
 })
 
+// Runs `body` with no CLAUDE_AUTOCOMPACT_PCT_OVERRIDE in nod's environment, whatever the shell
+// running the tests has.
+async function withoutAutocompact(body: () => unknown): Promise<void> {
+  const ambient = process.env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE
+  delete process.env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE
+  try {
+    await body()
+  } finally {
+    if (ambient === undefined) delete process.env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE
+    else process.env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE = ambient
+  }
+}
+
+test('a worker compacts at 70% of its window, unless the environment nod starts from says how early', () =>
+  withoutAutocompact(() => {
+    expect(workerEnv('/h', 5).CLAUDE_AUTOCOMPACT_PCT_OVERRIDE).toBe('70')
+    process.env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE = '50'
+    expect(workerEnv('/h', 5).CLAUDE_AUTOCOMPACT_PCT_OVERRIDE).toBe('50')
+  }))
+
+test(
+  "the worker's Claude Code compacts early as it starts, and as it starts again",
+  () =>
+    withoutAutocompact(async () => {
+      const id = await add('first')
+      await reaches(id, 'succeeded')
+      await settled(id)
+      endClaude(id) // a crash, a person's /exit: keepWorker starts it again
+      await until(() => entries('launch').length === 2)
+      expect(entries('launch').map((l) => [l.resumed, l.autocompact])).toEqual([
+        [false, '70'],
+        [true, '70'],
+      ])
+    }),
+  30_000,
+)
+
+test("once Claude Code has compacted a worker's conversation, the hook gives back what it was asked, word for word; no other start does", () => {
+  const id = ledger.add({
+    brief: 'write it\nin full',
+    repo: null,
+    branch: null,
+    checkCmd: 'true',
+    model: null,
+    after: [],
+    triggerId: null,
+    issue: null,
+  })
+  const turn = (kind: 'start' | 'followup', prompt: string): number =>
+    ledger.startAttempt({ taskId: id, kind, decisionId: null, sessionId: 's', prompt })
+  const first = turn('start', firstMessage(ledger, ledger.get(id), null))
+  ledger.endAttempt(first, { outcome: 'needs_decision', summary: 'which file?', report: null })
+  const second = turn('followup', 'in a.txt')
+  ledger.addMessage(id, second, 'use tabs')
+  const words = onCompact(ledger, { session_id: 's', source: 'compact' })
+  // The first message whole, with the check nod told it of, and the human's later words.
+  expect(words).toContain('> write it\n> in full\n')
+  expect(words).toContain('acceptance check in this directory and sends any failure back: `true`')
+  expect(words).toContain('later words win:\n- in a.txt\n- use tabs')
+  for (const source of ['startup', 'resume', 'clear']) {
+    expect(onCompact(ledger, { session_id: 's', source })).toBeNull()
+  }
+  expect(onCompact(ledger, { session_id: 'none', source: 'compact' })).toBeNull()
+})
+
+test('Claude Code runs that hook in a worker once it has compacted the conversation, and at no other start', async () => {
+  const id = await add('first')
+  await reaches(id, 'succeeded')
+  await tell(ledger, home, id, 'compact first, then use tabs')
+  await reaches(id, 'succeeded')
+  const words = askedAgain(ledger, ledger.get(id))
+  Terminals.of(home).kill(sessionName(id))
+  await tell(ledger, home, id, 'third')
+  await reaches(id, 'succeeded')
+  expect(entries('session-start').map((s) => [s.source, s.context])).toEqual([
+    ['startup', ''],
+    ['compact', `${words}\n`],
+    ['resume', ''],
+  ])
+  expect(words).toContain('- compact first, then use tabs')
+}, 30_000)
+
 it('a worker keeps only what it needs of the environment it starts from, and the account it is given', () => {
   const outer = {
     // What a terminal, an agent host and a person's shell put there for themselves.
@@ -1801,6 +1887,7 @@ it('a saved environment leaves out secrets, by name or in a URL, and the SSH age
     NO_PROXY: 'localhost,.example.com',
     LC_ALL: 'ko_KR.UTF-8',
     ANTHROPIC_MODEL: 'claude-example@20250101', // an @ that is no user
+    CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: '50', // how early the person has Claude Code compact
   }
   // In a process started with them, as in the workerEnv test above.
   const run = Bun.spawnSync(
@@ -1819,6 +1906,7 @@ console.log(JSON.stringify([savedEnv(), workerEnv('/h', 5, null)]))`,
     NO_PROXY: outer.NO_PROXY,
     LC_ALL: outer.LC_ALL,
     ANTHROPIC_MODEL: outer.ANTHROPIC_MODEL,
+    CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: outer.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE,
   })
   for (const name of [
     'HTTPS_PROXY',
