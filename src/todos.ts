@@ -426,8 +426,10 @@ export class Todos {
   }
 
   // What `t<n>`, `#<n>`, `r<n>` or `p<n>` names, or, for a bare `<n>`, all that n numbers: the todo,
-  // task, retrospective, project and decision, in that order. Anything else names nothing.
-  find(ref: string): Found[] {
+  // task, retrospective, project and decision, in that order. Anything else names nothing. A
+  // decision's ref is its bare number, as `nod <decision> <answer>` takes it. `status` names a
+  // task's state; callers that see the terminals pass taskStatus (view.ts).
+  find(ref: string, status: (t: Task) => string = (t) => t.status): Found[] {
     const m = /^([t#rp]?)(\d+)$/.exec(ref.trim())
     if (m === null) return []
     const prefix = m[1] as keyof typeof FINDS | ''
@@ -443,7 +445,7 @@ export class Todos {
         id: n,
         ref: `#${n}`,
         title: firstLine(task.brief),
-        status: task.status,
+        status: status(task),
         taskId: n,
       },
       retro && {
@@ -451,7 +453,7 @@ export class Todos {
         id: n,
         ref: `r${n}`,
         title: `of #${retro.retro.ofTaskId}: ${firstLine(this.ledger.get(retro.retro.ofTaskId).brief)}`,
-        status: retro.retro.outcome ?? retro.task.status,
+        status: retro.retro.outcome ?? status(retro.task),
         taskId: retro.task.id,
       },
       project && {
@@ -464,7 +466,7 @@ export class Todos {
       decision && {
         kind: 'decision',
         id: n,
-        ref: `#${n}`,
+        ref: String(n),
         title: firstLine(decision.question),
         status:
           decision.answer === null ? 'open' : decision.answeredAt === null ? 'closed' : 'answered',

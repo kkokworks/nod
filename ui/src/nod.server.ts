@@ -12,7 +12,7 @@ import {
   type Trigger,
 } from '../../src/ledger'
 import { Terminals } from '../../src/tmux'
-import { type Project, type Todo, Todos } from '../../src/todos'
+import { type Found, type Project, type Todo, Todos } from '../../src/todos'
 import { taskNote, taskStatus } from '../../src/view'
 import { answer, sessionName, tell } from '../../src/worker'
 
@@ -116,6 +116,10 @@ export function overview(): Overview {
     }).length,
   }
 }
+
+// The sidebar's search, as `nod search` finds.
+export const find = (ref: string): Found[] =>
+  new Todos(ledger).find(ref, (t) => taskStatus(t, terminals))
 
 export const collected = (limit: number): Shown<TaskRow> =>
   latestCollected(new Todos(ledger), ledger.list(), limit)

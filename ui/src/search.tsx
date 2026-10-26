@@ -1,7 +1,13 @@
 import { Link, useNavigate } from '@tanstack/react-router'
+import { createServerFn } from '@tanstack/react-start'
 import { useRef, useState } from 'react'
 import type { Found } from '../../src/todos'
-import { findRef } from './todo-fns'
+import { text } from './input'
+import { find } from './nod.server'
+
+const findRef = createServerFn({ method: 'GET' })
+  .validator((ref: string) => text(ref, 'ref'))
+  .handler(({ data }) => find(data))
 
 // The page that shows what was found: a todo's own, a project's card on Projects, else the page of
 // the task it is or is on.
@@ -35,6 +41,7 @@ export function Search() {
         latest.current += 1
         const n = latest.current
         setError(null)
+        setShown(null)
         findRef({ data: asked }).then(
           (found) => {
             if (n !== latest.current) return

@@ -3,7 +3,6 @@
 import { type CalendarEvent, readEvents } from '../../src/calendar'
 import { localDay, REPEATS } from '../../src/days'
 import {
-  type Found,
   PROJECT_STATUSES,
   type Project,
   TODO_STATUSES,
@@ -194,7 +193,8 @@ export async function focusPage(): Promise<FocusPage> {
 export function projectsPage(): ProjectsPage {
   return {
     today: localDay(new Date()),
-    projects: todos.projects(['active', 'someday']).map((p) => ({
+    // Finished ones too, which the page shows only when a link picks one (the search box).
+    projects: todos.projects([...PROJECT_STATUSES]).map((p) => ({
       ...p,
       todos: todos
         .list({
@@ -208,9 +208,6 @@ export function projectsPage(): ProjectsPage {
     })),
   }
 }
-
-// The sidebar's search, as `nod search` finds.
-export const find = (ref: string): Found[] => todos.find(ref)
 
 export const capture = (title: string): number =>
   todos.capture({ title, notes: null, source: 'ui', sourceKey: null, url: null }, ACTOR).todo.id

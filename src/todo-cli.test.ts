@@ -278,7 +278,7 @@ test('nod search shows the one match as its own command does, and lists several 
     't1    todo     waiting        Write the report  · nod todo t1',
     '#1    task     needs_decision Draft the report  · nod show 1',
     'p1    project  active         Health  · nod project p1',
-    '#1    decision open           Which chart?  · nod show 1',
+    '1     decision open           Which chart?  · nod show 1',
   ])
   expect(await ok('search', 't1')).toEqual(await ok('todo', 't1'))
   expect(await ok('search', '#1')).toEqual(await ok('show', '1'))

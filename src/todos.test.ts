@@ -497,7 +497,7 @@ test('a number finds every kind it numbers, a prefix only its own kind, nothing 
       taskId: retroTask,
     },
     { kind: 'project', id: 1, ref: 'p1', title: 'Health', status: 'active' },
-    { kind: 'decision', id: 1, ref: '#1', title: 'Which chart?', status: 'open', taskId },
+    { kind: 'decision', id: 1, ref: '1', title: 'Which chart?', status: 'open', taskId },
   ]
   expect(todos.find('1')).toEqual(all)
   expect(todos.find(' 1 ')).toEqual(all)
@@ -509,6 +509,17 @@ test('a number finds every kind it numbers, a prefix only its own kind, nothing 
   ]) {
     expect(todos.find(ref ?? '')).toEqual(all.filter((f) => f.kind === kind))
   }
+  // The ref each is shown by finds it again.
+  for (const f of all) expect(todos.find(f.ref)).toContainEqual(f)
+  // A task's state is as the caller names it, such as a running task whose terminal is gone.
+  const ended = todos.find('1', (x) => (x.status === 'queued' ? 'session ended' : x.status))
+  expect(ended.map((f) => f.status)).toEqual([
+    'waiting',
+    'needs_decision',
+    'session ended',
+    'active',
+    'open',
+  ])
   // The retrospective's task numbers nothing else.
   expect(todos.find(String(retroTask)).map((f) => f.ref)).toEqual([`#${retroTask}`])
   for (const none of ['9', 't9', '#9', 'r9', 'p9', 'x1', 't', '', 'Write the report']) {

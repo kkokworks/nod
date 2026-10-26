@@ -18,7 +18,7 @@ mock.module('@tanstack/react-start', () => ({
       validator: () => fn,
       handler:
         () =>
-        async ({ data }: { data: unknown }) => {
+        async ({ data }: { data?: unknown } = {}) => {
           if (method === 'GET') return answer(data)
           posted.push(data)
           onPost(data)
@@ -42,6 +42,7 @@ const tasks = await import('./routes/tasks.$id')
 const todos = await import('./routes/todos_.$id')
 const { TodoRow } = await import('./todo-parts')
 const { Search } = await import('./search')
+const projects = await import('./routes/projects')
 if (before === undefined) delete process.env.NOD_HOME
 else process.env.NOD_HOME = before
 
@@ -71,6 +72,11 @@ const router = R.createRouter({
     todos.Route.update({
       id: '/todos_/$id',
       path: '/todos/$id',
+      getParentRoute: () => root,
+    } as never),
+    projects.Route.update({
+      id: '/projects',
+      path: '/projects',
       getParentRoute: () => root,
     } as never),
     rowsRoute,
@@ -370,17 +376,37 @@ test('a key pressed as the refresh takes its row away does not act on the next r
   expect(posted.splice(0)).toEqual([{ id: 5, edit: { status: 'done' } }])
 })
 
-// What the search finds for each ref, as `Todos.find` would; anything else is a task page.
+// What the search finds for each ref, as `Todos.find` would; a number is a task page, and no data
+// the Projects page, where p3 is done.
 const found: Record<string, unknown[]> = {
   r2: [{ kind: 'retro', id: 2, ref: 'r2', title: 'of #4: task 4', status: 'queued', taskId: 5 }],
   '3': [
     { kind: 'task', id: 3, ref: '#3', title: 'task 3', status: 'running', taskId: 3 },
-    { kind: 'project', id: 3, ref: 'p3', title: 'Health', status: 'active' },
+    { kind: 'project', id: 3, ref: 'p3', title: 'Health', status: 'done' },
   ],
   '9': [],
 }
+const project = (id: number, title: string, status: string) => ({
+  id,
+  title,
+  outcome: null,
+  status,
+  createdAt: AT,
+  statusAt: AT,
+  next: 0,
+  waiting: 0,
+  todos: [],
+})
 const searchAnswer = (data: unknown) =>
-  typeof data === 'string' ? found[data] : detail(data as number)
+  typeof data === 'string'
+    ? found[data]
+    : data === undefined
+      ? {
+          today: '2026-10-23',
+          projects: [project(1, 'Travel', 'active'), project(3, 'Health', 'done')],
+        }
+      : detail(data as number)
+const cards = () => [...document.querySelectorAll('.card')].map((c) => c.className + c.textContent)
 const search = async (ref: string) => {
   type(field('.side-search input'), ref)
   await submit('.side-search input')
@@ -404,11 +430,29 @@ test('a search opens the one match, lists several to pick from, and says when no
   act(() => document.querySelector<HTMLElement>('.side-search a[href="/projects#p3"]')?.click())
   await settle()
   expect(at()).toBe('/projects#p3')
+  // A finished project shows when picked, and only then.
+  expect(cards().filter((c) => c.includes('Health'))).toEqual([
+    expect.stringMatching(/^card picked.*done/),
+  ])
+  await go('/projects')
+  expect(cards().filter((c) => c.includes('Health'))).toEqual([])
+  expect(cards().filter((c) => c.includes('Travel'))).toHaveLength(1)
 
   await go('/find')
   await search('9')
   expect(picks()).toEqual([])
   expect(document.querySelector('.side-search')?.textContent).toContain('No match for 9')
+
+  // A search that fails says why, without the last one's matches.
+  answer = (data) => {
+    if (data === '4') throw new Error('ledger is busy')
+    return searchAnswer(data)
+  }
+  await search('3')
+  expect(picks()).toHaveLength(2)
+  await search('4')
+  expect(picks()).toEqual([])
+  expect(banners()).toEqual(['ledger is busy'])
 })
 
 test('a search answered after a later one does not take its place', async () => {

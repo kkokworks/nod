@@ -17,7 +17,6 @@ import {
   donePage,
   editProject,
   editTodo,
-  find,
   focusPage,
   lists,
   projectsPage,
@@ -37,11 +36,6 @@ export const getTodo = createServerFn({ method: 'GET' })
 export const getFocus = createServerFn({ method: 'GET' }).handler(() => focusPage())
 
 export const getProjects = createServerFn({ method: 'GET' }).handler(() => projectsPage())
-
-export const findRef = createServerFn({ method: 'GET' })
-  .validator((ref: string) => text(ref, 'ref'))
-  .handler(({ data }) => find(data))
-
 export const captureTodo = createServerFn({ method: 'POST' })
   .validator((title: string) => text(title, 'title'))
   .handler(({ data }) => capture(data))

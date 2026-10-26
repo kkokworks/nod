@@ -98,8 +98,7 @@ const USAGE = `usage:
                                    listed under it
   nod show <task>                  history, links, then the worker's last full report. root: is
                                    the Claude session that added it (claude --resume <session>)
-  nod search <ref>                 what t<n>, #<n>, r<n> or p<n> names, or <n>: all of those and
-                                   decision <n>. One match shows as its own command shows it
+  nod search <ref>                 find by number: t<n>, #<n>, r<n>, p<n>, or <n> for every kind
   nod stats
   nod gc [<task...> | --older-than <days>]
                                    close sessions and delete workspaces and worktrees of the named
@@ -809,7 +808,7 @@ async function search(args: string[]): Promise<void> {
   const [ref, ...extra] = args
   if (ref === undefined || extra.length > 0) throw new Error(USAGE)
   const todos = new Todos(ledger)
-  const found = todos.find(ref)
+  const found = todos.find(ref, (t) => taskStatus(t, terminals))
   const [one, ...more] = found
   if (one === undefined) {
     console.error(`no match for ${ref}`)
