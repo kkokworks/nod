@@ -21,6 +21,7 @@ description: 여러 일을 nod 로 Claude Code 세션들에게 병렬로 맡기�
 | 결과 내보내기(push·PR·게시)와 링크, 리뷰 반영, 정리(gc) | [results.md](results.md) |
 | 정해진 때나 새 항목마다 할 일(트리거), 자리를 비울 때 알림 | [triggers.md](triggers.md) |
 | 프로젝트(업무 묶음) 하나를 맡아 nod 로 굴리기 | [project.md](project.md) |
+| 다른 루트 세션(일반·프로젝트)에 말 보내기, 받은 말에 답하기 | [project.md](project.md) 의 "다른 루트 세션에 말 보내기" |
 
 루트 세션은 프로젝트마다 사용자가 `nod open <프로젝트>` 로 열고, 한 세션은 한 프로젝트의 일만 맡깁니다. 다른 프로젝트의 일은 할 일로 넣습니다([delegate.md](delegate.md)).
 
