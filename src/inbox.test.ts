@@ -90,7 +90,7 @@ test("each end of a project's task and each decision opened on one go once, in o
           'task #2 t2 error, attempt 1: the worktree is gone\nnext: nod show 2 says why; settle with the person what to do',
           // Its decision was answered (dropped) before anything went, so only its end goes.
           'task #3 t3 cancelled, attempt 1: Drop me\nnext: tell the person (nod show 3)',
-          'decision #2 question (task #4 t4: Pick a branch)\n  Which branch?\n  main or next\nnext: tell the person; nod 2 <their answer> answers it, nod drop 2 ends the task',
+          'decision #2 question (task #4 t4: Pick a branch)\n  Which branch?\n  main or next\nnext: tell the person; nod 2 <their answer> answers it, nod drop 2 drops it',
         ].join('\n\n'),
       },
     },

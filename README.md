@@ -113,7 +113,7 @@ next: nod show 11, then send its result out
 
 decision #7 question (task #12 t30 PROJ-12: 결제 오류 원인 조사)
   어느 환경의 로그를 볼까요?
-next: tell the person; nod 7 <their answer> answers it, nod drop 7 ends the task
+next: tell the person; nod 7 <their answer> answers it, nod drop 7 drops it
 ```
 
 nod 는 Claude Code 가 세션마다 여는 수신 소켓에 이 메시지를 한 줄로 씁니다. 같은 PC 에서 `SendMessage` 가 쓰는 길입니다. 소켓 경로는 `nod open` 이 세션에 붙이는 SessionStart 훅(`nod hook inbox`)이, Claude Code 가 훅에 주는 `CLAUDE_CODE_MESSAGING_SOCKET` 을 장부에 적고, SessionEnd 훅이 지웁니다. 한계가 있습니다. 줄의 형식은 Claude Code 문서에 없고 실행 파일에서 찾은 것이라 바뀔 수 있고, 소켓은 아무것도 돌려주지 않아 전달을 확인할 수 없습니다. Claude Code 가 형식을 바꿔 조용히 버려도 nod 는 보낸 것으로 칩니다. 권한 확인을 건너뛰는 모드(bypassPermissions)의 세션은 이런 메시지를 사람이 승인할 때까지 붙잡아 둡니다. `claude --resume` 으로 직접 열었거나 이 기능 전에 연 세션은 소켓을 적지 않았으니 `nod open` 으로 다시 엽니다. 자세한 것은 [docs/design.md](docs/design.md) 의 「프로젝트 세션에 직접 알리기」에 있습니다.

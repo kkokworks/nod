@@ -231,6 +231,8 @@ const MAX_TELLS = 4
 // The check and the review both run inside the Stop hook, so the hook outlasts them.
 const REVIEW_TIMEOUT_MS = 600_000
 const STOP_HOOK_TIMEOUT_SECS = 1800
+// Opening the ledger (its busy_timeout, 5 s) and a send (inbox.ts, 5 s), with room to spare.
+const INBOX_HOOK_SECS = 15
 // What `claude -p` prints first when a hook blocks the message it was given (2.1.310).
 const BLOCKED = 'UserPromptSubmit operation blocked by hook:'
 const TRUST_TIMEOUT_MS = 20_000
@@ -2287,9 +2289,10 @@ const hook = (event: string): string => `${quote(process.execPath)} ${quote(CLI)
 
 // What `nod open` gives a project session: hooks that tell nod where the session takes messages as
 // it starts (startup, resume, clear, compact: Claude Code exports the socket to hooks before any
-// runs), and that it takes none once it ends (onInbox in inbox.ts).
+// runs), and that it takes none once it ends (onInbox in inbox.ts). SessionEnd hooks share a
+// budget of 1.5 s unless one sets a longer timeout (docs), less than a busy ledger may wait for.
 export function openSettings(): string {
-  const inbox = [{ hooks: [{ type: 'command', command: hook('inbox') }] }]
+  const inbox = [{ hooks: [{ type: 'command', command: hook('inbox'), timeout: INBOX_HOOK_SECS }] }]
   return JSON.stringify({ hooks: { SessionStart: inbox, SessionEnd: inbox } })
 }
 

@@ -132,7 +132,7 @@ export function noticeText(ledger: Ledger, n: Notice): string {
     return [
       `decision #${d.id} ${d.reason} (${taskLabel(task)}: ${oneLine(task.brief, 60)})`,
       indent(d.question),
-      `next: tell the person; nod ${d.id} <their answer> answers it, nod drop ${d.id} ends the task`,
+      `next: tell the person; nod ${d.id} <their answer> answers it, nod drop ${d.id} drops it`,
     ].join('\n')
   }
   const turn = ledger.attempts(task.id).findIndex((a) => a.id === n.attemptId) + 1
