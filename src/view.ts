@@ -91,16 +91,17 @@ export type LsTask = {
 }
 
 // What needs the person first, then work going on, work waiting its turn, results not yet sent
-// anywhere (no link, no push, not collected by gc), and the rest of what ended.
+// anywhere (no link, no push), and the rest of what ended. What gc collected (--all) the person has
+// dealt with, whatever its status; bringing it back (restore in worker.ts) uncollects it.
 const GROUPS = ['결정 대기 · 오류', '진행 중', '차례 기다림', '끝남 · 내보내기 전', '끝남']
 
 function groupOf(t: LsTask): number {
+  if (t.collectedAt !== null) return 4
   const s = shownStatus(t)
   if (s === 'needs_decision' || s === 'error' || s === 'session ended') return 0
   if (s === 'running') return 1
   if (s === 'queued') return 2
-  const unsent = t.links.length === 0 && t.pushed.length === 0 && t.collectedAt === null
-  return s === 'succeeded' && unsent ? 3 : 4
+  return s === 'succeeded' && t.links.length === 0 && t.pushed.length === 0 ? 3 : 4
 }
 
 const shownStatus = (t: LsTask): string => (t.sessionEnded ? 'session ended' : t.status)
@@ -263,10 +264,12 @@ function shortLink(url: string): string {
   return pr === null ? url.replace(/^https?:\/\//, '') : `${pr[1]}#${pr[2]}`
 }
 
-// A worker's text may carry tabs and terminal escapes, which would break the columns, and bidi
-// controls and line separators, which reorder a row or which Bun.stringWidth counts as a column a
-// terminal does not draw. Not all of \p{Cf}: emoji need the zero-width joiner.
-const clean = (s: string): string => s.replace(/[\p{Cc}\p{Bidi_Control}\p{Zl}\p{Zp}]/gu, ' ')
+// A worker's text may carry tabs and terminal escapes, which would break the columns, and format
+// characters (bidi controls among them) and line separators, which reorder a row or which
+// Bun.stringWidth counts otherwise than a terminal draws them. Emoji keep the joiner and tags
+// (Emoji_Component) they are built from.
+const clean = (s: string): string =>
+  s.replace(/[\p{Cc}\p{Zl}\p{Zp}[\p{Cf}--\p{Emoji_Component}]]/gv, ' ')
 const firstLine = (s: string): string => clean(s.trim().split('\n')[0] ?? '')
 
 // `s` exactly `w` columns wide on screen: padded, or cut with `…`. Hangul and emoji take two.
