@@ -198,6 +198,7 @@ const detail = (id: number) => ({
   place: { todo: null, project: null },
   retro: null,
   screen: 'working',
+  root: null,
 })
 
 test('what is written to one task does not go to another', async () => {
@@ -281,6 +282,23 @@ test('a button does not answer a decision that just took the place of another', 
   setSystemTime(new Date(Date.now() + 1500))
   await click('Yes')
   expect(posted.splice(0)).toEqual([{ taskId: 6, decisionId: 11, text: 'yes' }])
+})
+
+test("a task's root shows as its project session, with the command that reopens it, else as the session's ID", async () => {
+  const project = { id: 3, title: 'Release', outcome: null, status: 'active', createdAt: AT }
+  const rootTag = () =>
+    [...document.querySelectorAll('.tag')].find((t) => t.textContent?.startsWith('root'))
+  answer = (id) => ({
+    ...detail(id as number),
+    root: { project, command: 'nod open p3', addedFrom: 'ffff6666' },
+  })
+  await go('/tasks/8')
+  expect(rootTag()?.textContent).toBe('root p3 Release nod open p3')
+  expect(rootTag()?.getAttribute('title')).toContain('added from session ffff6666')
+  const base = detail(9)
+  answer = () => ({ ...base, task: { ...base.task, rootSession: 'ffff6666' } })
+  await go('/tasks/9')
+  expect(rootTag()?.textContent).toBe('root ffff6666')
 })
 
 test('a change to the todo keeps what is being typed in the form and says so', async () => {

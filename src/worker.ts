@@ -33,7 +33,8 @@ your next turn starts once it is done.
 To put something in the person's to-do inbox, add one line per item above that last line:
 NOD: in {"title": "<what to do>", "notes": "<optional>", "link": "<optional URL>", "source": "<optional channel>", "key": "<that channel's id for it>"}
 With a source and key, an item goes in only once. To send a message to the worker of another nod
-task added from the same session as yours, a finished one too, add a line above that last line:
+task added from the same session as yours or in the same project, a finished one too, add a line
+above that last line:
 NOD: tell #<task> <message, on one line>
 nod acts on these lines once it accepts your done. A message nod marks as from another task's
 worker is a peer's: weigh it, but the human's instructions come first.`
@@ -958,15 +959,16 @@ export function parseTells(text: string): { tells: Tell[] } | { error: string } 
 }
 
 // Why nod cannot send what `from`'s worker tells task `to`; null when it can. Only to another task
-// one Claude session added along with this one: that session gave both their work, so a worker
-// cannot steer the tasks of other sessions, or a trigger's (which work on what anyone could write
-// in an issue) steer any. A task that ended or never started has no worker to hear it.
+// of the same work (sameWork in todos.ts): one Claude session added both, or both are in one
+// project, which a session nod open opens for it takes as its work. So a worker cannot steer the
+// tasks of other sessions or projects, or a trigger's (which work on what anyone could write in an
+// issue, in no project) steer any. A task that ended or never started has no worker to hear it.
 function cannotTell(ledger: Ledger, from: Task, to: number): string | null {
   const task = ledger.list().find((t) => t.id === to)
   if (task === undefined) return `There is no task #${to}.`
   if (to === from.id) return `#${to} is this task.`
-  if (from.rootSession === null || task.rootSession !== from.rootSession) {
-    return `#${to} was not added from the session that added this task, and nod passes messages only between those.`
+  if (!new Todos(ledger).sameWork(from, task)) {
+    return `#${to} was not added from the session that added this task, nor is it in this task's project, and nod passes messages only between those.`
   }
   if (task.status === 'cancelled' || ended(ledger, to)) return `#${to} has ended.`
   if (task.workspace === null || ledger.lastAttempt(to) === null) return `#${to} has not started.`
@@ -1965,16 +1967,22 @@ async function rebuildWorktree(
   await initSubmodules(repo, cwd)
 }
 
-// Whether Claude Code keeps a transcript of session `sessionId` in the config dir `config`. It keeps
-// one folder per working directory in projects/, named by a rule of its own (2.1.309: each
-// character but a letter or digit turned into `-`, and a hash past 200 characters), so nod looks
-// for the session's ID, which is in no other folder, in all of them.
+// Whether Claude Code keeps a transcript of session `sessionId` in the config dir `config`.
 function hasTranscript(config: string | null, sessionId: string): boolean {
+  return transcriptPath(config, sessionId) !== null
+}
+
+// Where Claude Code keeps the transcript of session `sessionId` in the config dir `config`; null for
+// nowhere. It keeps one folder per working directory in projects/, named by a rule of its own
+// (2.1.309: each character but a letter or digit turned into `-`, and a hash past 200 characters),
+// so nod looks for the session's ID, which is in no other folder, in all of them.
+export function transcriptPath(config: string | null, sessionId: string): string | null {
   const projects = join(config ?? join(homedir(), '.claude'), 'projects')
-  if (!existsSync(projects)) return false
-  return readdirSync(projects).some((folder) =>
-    existsSync(join(projects, folder, `${sessionId}.jsonl`)),
+  if (!existsSync(projects)) return null
+  const folder = readdirSync(projects).find((f) =>
+    existsSync(join(projects, f, `${sessionId}.jsonl`)),
   )
+  return folder === undefined ? null : join(projects, folder, `${sessionId}.jsonl`)
 }
 
 // A new worktree has empty submodules, and the worker's sandbox cannot fetch them, so each one is

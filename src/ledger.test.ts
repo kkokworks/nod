@@ -4,6 +4,7 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tempDirs } from '../test/tmp'
 import { Ledger, MIGRATIONS } from './ledger'
+import { Todos } from './todos'
 
 const tmp = tempDirs()
 afterAll(tmp.removeAll)
@@ -24,7 +25,7 @@ test('reopening a ledger keeps its data and does not re-run migrations', () => {
   })
   const reopened = new Ledger(home)
   expect(reopened.get(id).brief).toBe('keep me')
-  expect(reopened.db.query('pragma user_version').get()).toEqual({ user_version: 22 })
+  expect(reopened.db.query('pragma user_version').get()).toEqual({ user_version: 23 })
 })
 
 test('v18 leaves the tasks before it without a root session', () => {
@@ -38,7 +39,23 @@ test('v18 leaves the tasks before it without a root session', () => {
 
   const ledger = new Ledger(home)
   expect(ledger.get(1)).toMatchObject({ brief: 'x', rootSession: null })
-  expect(ledger.db.query('pragma user_version').get()).toEqual({ user_version: 22 })
+  expect(ledger.db.query('pragma user_version').get()).toEqual({ user_version: 23 })
+})
+
+test('v23 gives a ledger of v22 project sessions, none yet, and leaves its projects as they were', () => {
+  const home = freshHome()
+  const old = new Database(join(home, 'nod.db'), { create: true, strict: true })
+  for (const sql of MIGRATIONS.slice(0, 22)) old.exec(sql)
+  old.exec(`pragma user_version = 22;
+    insert into projects (id, title, status, created_at, status_at)
+      values (1, 'Release', 'active', 'at', 'at');`)
+  old.close()
+
+  const todos = new Todos(new Ledger(home))
+  expect(todos.project(1)).toMatchObject({ title: 'Release', status: 'active' })
+  expect(todos.latestSession(1)).toBeNull()
+  const session = todos.addSession(1, 'cccc3333-0000-4000-8000-00000000000c', '/work/release')
+  expect(todos.latestSession(1)).toEqual(session)
 })
 
 test("v21 counts the turns and messages before it as the person's, from no task", () => {

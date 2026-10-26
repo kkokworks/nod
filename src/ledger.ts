@@ -534,6 +534,19 @@ export const MIGRATIONS = [
     updated_at text not null
   );
   `,
+  // v23: the Claude sessions `nod open` opened for a project, each with the folder it was opened
+  // in, where Claude Code keeps its transcript. A project may have several; its latest is the
+  // project's session (todos.ts). The projects table stays as it was.
+  `
+  create table project_sessions (
+    id integer primary key,
+    session_id text not null unique,
+    project_id integer not null references projects(id),
+    cwd text not null,
+    created_at text not null
+  );
+  create index project_sessions_project on project_sessions(project_id);
+  `,
 ]
 // The migration that moves <home>/rules.md into the ledger, numbered as user_version counts.
 const RULES_FILE_MIGRATION = 17

@@ -1,4 +1,5 @@
 import { afterAll, expect, test } from 'bun:test'
+import { Todos } from '../../src/todos'
 import { tempDirs } from '../../test/tmp'
 
 const tmp = tempDirs()
@@ -35,4 +36,49 @@ test('the Settings page lists every rule with its retrospective task, and both p
     { text: 'keep it short', state: 'on', retroId: null, retroTaskId: null, edited: false },
   ])
   expect(detail(retroTask).retro?.rules).toMatchObject([{ id: proposed.id, edited: true }])
+})
+
+test('the task page names as its root the project session whose task it is, with the command that reopens it and who added it', () => {
+  const todos = new Todos(ledger)
+  const p = todos.addProject({ title: 'Release', outcome: null }, 'human')
+  // Made-up session ids: A and then B opened for the project, S never by nod open.
+  const [A, B, S] = [
+    'aaaa1111-0000-4000-8000-00000000000a',
+    'bbbb2222-0000-4000-8000-00000000000b',
+    'ffff6666-0000-4000-8000-00000000000f',
+  ]
+  todos.addSession(p.id, A, '/work/release')
+  const brief = {
+    brief: 'x',
+    repo: null,
+    branch: null,
+    checkCmd: null,
+    model: null,
+    after: [],
+    triggerId: null,
+    issue: null,
+  }
+  // A task in no project, or in the project.
+  const loose = (rootSession: string | null) => ledger.add({ ...brief, rootSession })
+  const inProject = (rootSession: string | null) =>
+    todos.delegateNew({ ...brief, rootSession }, p.id, 'human')
+  const opened = loose(A)
+  const fromA = inProject(A)
+  const fromS = inProject(S)
+
+  const latest = { project: p, command: `nod open p${p.id}` }
+  expect(detail(opened).root).toEqual({ ...latest, addedFrom: null })
+  expect(detail(fromS).root).toEqual({ ...latest, addedFrom: S })
+  expect(detail(inProject(null)).root).toEqual({ ...latest, addedFrom: null })
+  expect(detail(loose(S)).root).toBeNull()
+  expect(detail(loose(null)).root).toBeNull()
+  // A new session of the project carries on with its tasks; one in no project stays with A.
+  todos.addSession(p.id, B, '/work/release 2')
+  expect(detail(fromA).root).toEqual({ ...latest, addedFrom: A })
+  expect(detail(fromS).root).toEqual({ ...latest, addedFrom: S })
+  expect(detail(opened).root).toEqual({
+    project: p,
+    command: `cd '/work/release' && claude --resume ${A}`,
+    addedFrom: null,
+  })
 })

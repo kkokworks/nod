@@ -40,7 +40,7 @@ const KIND_ICON = {
 } as const
 
 function TaskPage() {
-  const { task, status, links, after, attempts, decisions, report, place, retro, screen } =
+  const { task, status, links, after, attempts, decisions, report, place, retro, screen, root } =
     Route.useLoaderData()
   // The brief's first line is the title; the whole brief folds away, as it can run to pages.
   const nl = task.brief.indexOf('\n')
@@ -93,10 +93,23 @@ function TaskPage() {
             </span>
           )}
           {task.triggerId !== null && <span className="tag">trigger #{task.triggerId}</span>}
-          {task.rootSession !== null && (
-            <span className="tag" title="The Claude session that added it: claude --resume <id>">
-              root <code>{task.rootSession}</code>
+          {root !== null ? (
+            <span
+              className="tag"
+              title={`The project session whose task it is, and how to reopen it${root.addedFrom === null ? '' : `; added from session ${root.addedFrom}`}`}
+            >
+              root{' '}
+              <Link to="/projects">
+                p{root.project.id} {root.project.title}
+              </Link>{' '}
+              <code>{root.command}</code>
             </span>
+          ) : (
+            task.rootSession !== null && (
+              <span className="tag" title="The Claude session that added it: claude --resume <id>">
+                root <code>{task.rootSession}</code>
+              </span>
+            )
           )}
           {retro !== null && (
             <span className="tag">

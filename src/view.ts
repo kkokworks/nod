@@ -1,7 +1,39 @@
-import type { Ledger, Task } from './ledger'
-import type { Terminals } from './tmux'
-import type { Change } from './todos'
+import type { Decision, Ledger, Task } from './ledger'
+import { quote, type Terminals } from './tmux'
+import type { Change, SessionPlace } from './todos'
 import { sessionName } from './worker'
+
+// Also covers a decision that opens just as the last worker stops.
+const WATCH_GRACE_SECS = 5
+
+// `nod watch`: hands `print` each decision that opens on a task `counts`, once, until none of those
+// tasks has had a worker running for WATCH_GRACE_SECS looks. `wait` comes between looks.
+export async function watch(
+  ledger: Ledger,
+  counts: (t: Task) => boolean,
+  print: (d: Decision) => void,
+  wait: () => Promise<void> = () => Bun.sleep(1000),
+): Promise<void> {
+  const seen = new Set(ledger.openDecisions().map((d) => d.id))
+  let idleSecs = 0
+  while (idleSecs < WATCH_GRACE_SECS) {
+    await wait()
+    for (const d of ledger.openDecisions()) {
+      if (seen.has(d.id)) continue
+      seen.add(d.id)
+      if (counts(ledger.get(d.taskId))) print(d)
+    }
+    const running = ledger.list().some((t) => t.status === 'running' && counts(t))
+    idleSecs = running ? 0 : idleSecs + 1
+  }
+}
+
+// The command that goes back into a project's session: nod open for the project's latest, else
+// claude --resume in the folder it was opened in, where Claude Code keeps its transcript.
+export function reopenCommand({ session, project, latest }: SessionPlace): string {
+  if (latest) return `nod open p${project.id}`
+  return `cd ${quote(session.cwd)} && claude --resume ${session.sessionId}`
+}
 
 // How ls and the UI name a task's state. A running task without a session lost its terminal (a
 // restart of the machine or of tmux): the tick asks about the turn it was in (lostTurns), and

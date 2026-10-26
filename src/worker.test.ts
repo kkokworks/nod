@@ -1959,6 +1959,59 @@ test('nod sends a worker back a NOD: tell it cannot send, before any check, and 
   for (const id of [other, unrooted, ended, target]) expect(ledger.attempts(id)).toHaveLength(1)
 })
 
+test('the workers of two tasks in one project may tell each other, whichever sessions added them, and not across projects', async () => {
+  const todos = new Todos(ledger)
+  const release = todos.addProject({ title: 'Release', outcome: null }, 'human')
+  const health = todos.addProject({ title: 'Health', outcome: null }, 'human')
+  // Puts a task in a project through a todo of its own, as nod add --project does.
+  const inProject = (id: number, projectId: number): number => {
+    const { todo } = todos.capture(
+      { title: `task ${id}`, notes: null, source: 'cli', sourceKey: null, url: null, projectId },
+      'human',
+    )
+    ledger.linkTodoTask(id, todo.id)
+    return id
+  }
+  // Not started: a tell nod lets through stops at that, so nothing is sent.
+  const queued = (root: string | null, projectId: number): number =>
+    inProject(
+      ledger.add({
+        brief: 'later',
+        repo: null,
+        branch: null,
+        checkCmd: null,
+        model: null,
+        after: [],
+        triggerId: null,
+        issue: null,
+        rootSession: root,
+      }),
+      projectId,
+    )
+  let n = 0
+  const reason = async (root: string, projectId: number, to: number): Promise<string> => {
+    n += 1
+    const session = `in-project-${n}`
+    inProject(started('review', session, root), projectId)
+    const out = await stopped(session, `NOD: tell #${to} hi\nNOD: done | ok`)
+    return JSON.parse(out ?? '{}').reason
+  }
+  const [ofA, ofB, ofShell, ofQ] = [
+    queued('root-a', release.id),
+    queued('root-b', release.id),
+    queued(null, release.id),
+    queued('root-q', health.id),
+  ]
+
+  expect(await reason('root-a', release.id, ofB)).toContain(`#${ofB} has not started.`)
+  expect(await reason('root-b', release.id, ofA)).toContain(`#${ofA} has not started.`)
+  expect(await reason('root-a', release.id, ofShell)).toContain(`#${ofShell} has not started.`)
+  const across = 'was not added from the session that added this task, nor is it in this task'
+  expect(await reason('root-a', release.id, ofQ)).toContain(across)
+  expect(await reason('root-q', health.id, ofA)).toContain(across)
+  for (const id of [ofA, ofB, ofShell, ofQ]) expect(ledger.attempts(id)).toEqual([])
+})
+
 test('two tasks whose workers have sent each other four messages ask the person before a fifth goes', async () => {
   const review = started('review', 'reviewing', 'root-1')
   const fix = started('fix', 'fixing', 'root-1')

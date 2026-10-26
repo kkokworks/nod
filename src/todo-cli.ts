@@ -18,11 +18,13 @@ import {
 import { SCHEDULE_OFF, scheduleEnv, tryWatch } from './triggers'
 import { nudgeLine, STALE_DAYS, type Trust } from './trust'
 import { changeText, indent, oneLine } from './view'
-import { message } from './worker'
+import { message, transcriptPath } from './worker'
 
 export const TODO_USAGE = `  nod in <what...> [--notes <text>] [--source <channel> --key <id>] [--link <url>]
-                                   capture a todo into the inbox. A channel's key is captured
-                                   once; capturing it again prints the todo it became
+         [--project <p>]
+                                   capture a todo into the inbox, in the project when given. A
+                                   channel's key is captured once; capturing it again prints the
+                                   todo it became, left where it is
   nod todo [inbox|next|waiting|someday|reference] [--context <@x>] [--project <p>] [--all]
            [--json]
                                    todos (default: inbox, next and waiting; --all: every status,
@@ -121,6 +123,7 @@ export function capture(todos: Todos, args: string[]): void {
       source: { type: 'string' },
       key: { type: 'string' },
       link: { type: 'string' },
+      project: { type: 'string' },
     },
   })
   const title = positionals.join(' ').trim()
@@ -135,10 +138,99 @@ export function capture(todos: Todos, args: string[]): void {
       source: values.source ?? 'cli',
       sourceKey: values.key ?? null,
       url: values.link ?? null,
+      projectId: values.project === undefined ? null : todos.findProject(values.project).id,
     },
     actorFromEnv(),
   )
   console.log(created ? line(todos, todo) : `${line(todos, todo)}  (already captured)`)
+}
+
+// How long a session's name (`claude --name`) may be: it shows in the prompt box and the terminal
+// title.
+const SESSION_NAME_CHARS = 40
+
+// A project session's name: the project's title, or `p<n>` and the start of it when that is long.
+export function sessionTitle(p: Project): string {
+  const name = p.title.length <= SESSION_NAME_CHARS ? p.title : `p${p.id} ${p.title}`
+  return oneLine(name, SESSION_NAME_CHARS).trim()
+}
+
+// A transcript line of something said, by the person or by Claude.
+const SAID = /"type":"(user|assistant)"/
+
+// What `nod open` runs, and in which folder. The project's latest session is resumed in the folder
+// it was opened in; a new one (`fresh`, or none yet) is recorded with `cwd` first and is the
+// project's from then on. Either way the session has the project's tasks and decisions as its own
+// (isMine). The account in `config` may keep no conversation of the latest: none of a session
+// closed before its first message, and none of one kept in another account's folder, as accounts
+// need not share their projects/ folder. Claude Code (2.1.310) then opens it with neither
+// `--resume` (no conversation found) nor, once a transcript file of it is there, even an empty one
+// or a title alone, `--session-id` (already in use). So a session with no transcript starts again
+// under the same ID and name, and one whose transcript holds nothing said gives way to a new one.
+export function openSession(
+  todos: Todos,
+  ref: string,
+  fresh: boolean,
+  cwd: string,
+  config: string | null,
+): { argv: string[]; cwd: string } {
+  const project = todos.findProject(ref)
+  const last = fresh ? null : todos.latestSession(project.id)
+  const kept = last === null ? null : transcriptPath(config, last.sessionId)
+  // ponytail: reads the whole transcript once per open; one of 69 MB took about 50 ms.
+  const said = kept !== null && SAID.test(readFileSync(kept, 'utf8'))
+  const again = last !== null && (said || kept === null) ? last : null
+  if (again !== null && !existsSync(again.cwd)) {
+    throw new Error(
+      `p${project.id}'s session was opened in ${again.cwd}, which is gone; nod open p${project.id} --new opens a new one here`,
+    )
+  }
+  if (again !== null && said)
+    return { argv: ['claude', '--resume', again.sessionId], cwd: again.cwd }
+  if (last !== null) {
+    const why =
+      kept === null
+        ? "closed before a word, or kept in another account's folder), so it starts again under that ID"
+        : 'nothing said in it), which Claude Code opens neither to resume nor anew, so a new one opens here'
+    console.error(
+      `nod: this Claude account has no conversation of p${project.id}'s session ${last.sessionId} (${why}`,
+    )
+  }
+  const session = again ?? todos.addSession(project.id, crypto.randomUUID(), cwd)
+  const argv = ['claude', '--name', sessionTitle(project), '--session-id', session.sessionId]
+  return { argv, cwd: session.cwd }
+}
+
+// The project `nod add` puts its work in, by the Claude session it runs in (`session`). One nod
+// open opened hands over its project's work only: the work goes in that project, and work of
+// another is refused with where it goes instead. Any other session, and none, puts it where it is
+// told; a Claude session also hears how to keep projects apart.
+export function placeWork(
+  todos: Todos,
+  session: string | null,
+  project: string | undefined,
+  todo: Todo | null,
+): number | null {
+  const given = project === undefined ? null : todos.findProject(project).id
+  const place = session === null ? null : todos.sessionPlace(session)
+  if (place === null) {
+    if (session !== null) {
+      console.error(
+        "hint: nod open <project> opens a Claude session for a project, which keeps each project's work apart",
+      )
+    }
+    return given
+  }
+  const own = place.project
+  const other = todo === null ? given : todo.projectId
+  if (other === null || other === own.id) return own.id
+  const p = todos.project(other)
+  const mine = `this session is for p${own.id} ${own.title}`
+  throw new Error(
+    todo === null
+      ? `${mine}; p${p.id} ${p.title}'s work goes in as a todo (nod in <what...> --project p${p.id}) or is handed over in its session (nod open p${p.id})`
+      : `${mine}, and t${todo.id} is in p${p.id} ${p.title}: hand it over in that project's session (nod open p${p.id})`,
+  )
 }
 
 export async function todoCommand(todos: Todos, home: string, args: string[]): Promise<void> {
