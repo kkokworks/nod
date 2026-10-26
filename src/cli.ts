@@ -42,7 +42,20 @@ import {
   scheduleOn,
   tick,
 } from './triggers'
-import { indent, oneLine, reopenCommand, taskNote, taskStatus, watch } from './view'
+import {
+  indent,
+  type LsTask,
+  lsGroups,
+  lsLine,
+  lsMode,
+  lsTable,
+  oneLine,
+  owner,
+  reopenCommand,
+  taskNote,
+  taskStatus,
+  watch,
+} from './view'
 import {
   answer,
   branchOf,
@@ -107,10 +120,17 @@ const USAGE = `usage:
   nod link <task> <url...>         record where the task's result went (a pull request, a posted
                                    review), so ls and show list it next to the task. Until then
                                    they list the remote branches that hold the task's branch
-  nod ls [--all] [--mine]          tasks not yet collected by gc (--all: every task; --mine: only
+  nod ls [--all] [--mine] [--plain | --json]
+                                   tasks not yet collected by gc (--all: every task; --mine: only
                                    this Claude session's: those it added, or, in a session nod
-                                   open opened, its project's); those with an issue are listed
-                                   under it
+                                   open opened, its project's), as a table the terminal's width:
+                                   what needs you, running, queued, ended with nothing sent
+                                   anywhere, then ended; the latest first in each, with its
+                                   issue, links and the remote branches it was pushed to.
+                                   Into a pipe or with --plain, a tab-separated line a task (its
+                                   number, todo, status, turns, the time its age counts from,
+                                   the note's first line, issue, links, pushes); --json, a JSON
+                                   line a task
   nod show <task>                  history, links, then the worker's last full report. root: is
                                    the Claude session whose task it is: its project's latest
                                    session, by the project and how to reopen it, with the session
@@ -262,12 +282,32 @@ switch (command) {
   case 'ls': {
     const { values } = parseArgs({
       args: rest,
-      options: { all: { type: 'boolean' }, mine: { type: 'boolean' } },
+      options: {
+        all: { type: 'boolean' },
+        mine: { type: 'boolean' },
+        plain: { type: 'boolean' },
+        json: { type: 'boolean' },
+      },
     })
     const session = mySession(values.mine)
-    printTasks(
-      ledger.list().filter((t) => (values.all || t.collectedAt === null) && isMine(session, t)),
-    )
+    const tasks = ledger
+      .list()
+      .filter((t) => (values.all || t.collectedAt === null) && isMine(session, t))
+      .map(lsTask)
+    const listed = lsGroups(tasks).flatMap((g) => g.tasks)
+    const mode = lsMode(values, process.stdout.isTTY, process.env.NO_COLOR)
+    if (mode === 'json') {
+      for (const t of listed) console.log(JSON.stringify(t))
+    } else if (mode === 'plain') {
+      for (const t of listed) console.log(lsLine(t))
+    } else {
+      // Some terminals report no width, or 0.
+      const width = process.stdout.columns || 80
+      console.log(lsTable(tasks, width, mode === 'color', new Date()))
+      const ids = new Set(tasks.map((t) => t.id))
+      const open = ledger.openDecisions().filter((d) => ids.has(d.taskId)).length
+      if (open > 0) console.log(`답할 결정 ${open}개 — nod${values.mine ? ' --mine' : ''}`)
+    }
     break
   }
   case 'show':
@@ -900,12 +940,6 @@ function printDecisions(decisions: Decision[]): void {
   console.log('answer: nod <decision> <answer>   end the task: nod drop <decision>')
 }
 
-// What a task works for: the person's todo (t<n>) or nod's retrospective (r<n>).
-function owner(t: Task): string {
-  if (t.retroId !== null) return `r${t.retroId}`
-  return t.todoId === null ? '' : `t${t.todoId}`
-}
-
 function printDecision(d: Decision): void {
   const task = ledger.get(d.taskId)
   const of = [owner(task), task.issue ?? ''].map((x) => (x === '' ? '' : ` ${x}`)).join('')
@@ -913,26 +947,34 @@ function printDecision(d: Decision): void {
   console.log(`${indent(d.question)}\n`)
 }
 
-// Tasks without an issue first, as they always were; then each issue, in the order it first
-// appeared, with its tasks indented under it.
-function printTasks(tasks: Task[]): void {
-  const byIssue = Map.groupBy(tasks, (t) => t.issue)
-  for (const t of byIssue.get(null) ?? []) printTask(t)
-  for (const [issue, group] of byIssue) {
-    if (issue === null) continue
-    console.log(issue)
-    for (const t of group) printTask(t, '  ')
+function lsTask(t: Task): LsTask {
+  const attempts = ledger.attempts(t.id)
+  return {
+    id: t.id,
+    todoId: t.todoId,
+    retroId: t.retroId,
+    status: t.status,
+    sessionEnded: taskStatus(t, terminals) === 'session ended',
+    turns: attempts.length,
+    createdAt: t.createdAt,
+    startedAt: attempts.at(-1)?.startedAt ?? null,
+    finishedAt: t.finishedAt,
+    collectedAt: t.collectedAt,
+    note: taskNote(ledger, t),
+    issue: t.issue,
+    links: ledger.links(t.id),
+    pushed: unlinkedPushes(t),
   }
 }
 
-function printTask(t: Task, prefix = ''): void {
+function printTask(t: Task): void {
   const turns = ledger.attempts(t.id).length
   const status = taskStatus(t, terminals)
   console.log(
-    `${prefix}#${String(t.id).padEnd(4)} ${owner(t).padEnd(5)} ${status.padEnd(14)} ${String(turns).padStart(2)} turns  ${oneLine(taskNote(ledger, t), 80)}`,
+    `#${String(t.id).padEnd(4)} ${owner(t).padEnd(5)} ${status.padEnd(14)} ${String(turns).padStart(2)} turns  ${oneLine(taskNote(ledger, t), 80)}`,
   )
-  for (const url of ledger.links(t.id)) console.log(`${prefix}      link ${url}`)
-  for (const ref of unlinkedPushes(t)) console.log(`${prefix}      pushed ${ref}`)
+  for (const url of ledger.links(t.id)) console.log(`      link ${url}`)
+  for (const ref of unlinkedPushes(t)) console.log(`      pushed ${ref}`)
 }
 
 // The remote branches holding a succeeded task's branch, while it has no link: its result was
