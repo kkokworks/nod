@@ -1,10 +1,8 @@
 import { existsSync, readdirSync, rmdirSync, rmSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
-import type { Ledger, Task, TaskStatus } from './ledger'
+import { FINISHED, type Ledger, type Task } from './ledger'
 import { Terminals } from './tmux'
 import { branchOf, message, sessionName, spawn } from './worker'
-
-const FINISHED: ReadonlySet<TaskStatus> = new Set(['succeeded', 'cancelled', 'error'])
 
 // `clean`: tasks that had nothing left to remove, because gc or something else already removed it.
 export type GcReport = {
@@ -83,6 +81,8 @@ export async function collect(ledger: Ledger, home: string, pick: GcPick): Promi
         continue
       }
       if (task.workspace === null || !existsSync(task.workspace)) {
+        // Its Claude Code may still be up, in a terminal opened before the folder went.
+        await terminals.close(sessionName(task.id))
         const head = headOf(task)
         if (!ledger.collectedAsRead(judged, head)) {
           skip('told to go on while gc ran')

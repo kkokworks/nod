@@ -1,6 +1,7 @@
 // Stands in for interactive `claude` in tests. Each message is a turn: words in its first line pick
-// the reply, so context nod adds below cannot, then the hooks from --settings run as in Claude
-// Code, and a hook that blocks the stop starts a continuation. Between turns it reads what is typed
+// the reply, so context nod adds below cannot, and the hooks from --settings run as in Claude
+// Code, UserPromptSubmit before it and Stop after, and a hook that blocks the stop starts a
+// continuation. Between turns it reads what is typed
 // into its terminal. Started with no message, it waits for one. Like Claude Code, it keeps a
 // transcript in $CLAUDE_CONFIG_DIR (only when that is set, so a test never writes to the real one),
 // refuses a new session the ID of one it has a transcript of, and an option it does not know.
@@ -169,6 +170,12 @@ function keepTranscript(): void {
 }
 
 async function turn(message: string, continuing: boolean): Promise<void> {
+  // Like Claude Code, for each message it takes in, before the turn; not for a blocked stop's
+  // continuation. What the hook prints would go into the conversation.
+  if (!continuing) {
+    const said = await runHooks('UserPromptSubmit', { session_id: sessionId, prompt: message })
+    if (said !== '') log({ event: 'prompt-hook-said', sessionId, message: said })
+  }
   log({ event: 'turn', sessionId, message })
   keepTranscript()
   const head = message.split('\n')[0] ?? ''

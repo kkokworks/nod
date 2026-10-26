@@ -301,6 +301,25 @@ test("a task's root shows as its project session, with the command that reopens 
   expect(rootTag()?.textContent).toBe('root ffff6666')
 })
 
+test('a finished task whose terminal is closed says a message goes on, where one cut off says to resume it', async () => {
+  // Task 10 is a retrospective that ended, which takes no message.
+  const idle = (id: number, status: string) => {
+    const d = detail(id)
+    const retro = id === 10 ? { id: 1, ofTaskId: 2, outcome: 'none', rules: [] } : null
+    return { ...d, task: { ...d.task, status }, status, retro, screen: null }
+  }
+  answer = (id) => idle(id as number, id === 9 ? 'running' : 'succeeded')
+  const note = () => document.querySelector('.idle-note')?.textContent ?? ''
+  await go('/tasks/8')
+  expect(note()).toContain('a message goes on in the same conversation')
+  expect(note()).not.toContain('nod resume')
+  await go('/tasks/9')
+  expect(note()).toContain('nod resume 9 reopens it')
+  await go('/tasks/10')
+  expect(note()).toContain('No live session')
+  expect(note()).not.toContain('a message goes on')
+})
+
 test('a change to the todo keeps what is being typed in the form and says so', async () => {
   let todo = todoItem(9, 'old title')
   const changes = [{ actor: 'human', at: AT, text: 'captured' }]

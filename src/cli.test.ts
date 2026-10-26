@@ -986,3 +986,159 @@ test('repo sets how far nod lands a repo, records who changed what, and refuses 
   expect(off.err).toContain(`task #${task}'s repo does not let nod land it: nod repo ${repo} pr`)
   expect(await ok('land')).toEqual(['nothing to land'])
 }, 20_000)
+
+test('attach and peek of a finished task whose terminal is closed say a message goes on in its conversation', () => {
+  const home = tmp.make('nod-closed-')
+  const ledger = new Ledger(home)
+  const spec = {
+    brief: 'some task',
+    repo: null,
+    branch: null,
+    checkCmd: null,
+    model: null,
+    after: [],
+    triggerId: null,
+    issue: null,
+  }
+  const started = (id: number): number => {
+    ledger.setRunning(id, home)
+    ledger.startAttempt({
+      taskId: id,
+      kind: 'start',
+      decisionId: null,
+      sessionId: `session-${id}`,
+      prompt: 'some task',
+    })
+    return id
+  }
+  const finished = started(ledger.add(spec))
+  ledger.succeed(finished)
+  const queued = ledger.add({ ...spec, after: [ledger.add(spec)] })
+  // No conversation to go on in: one that failed to start, and a retrospective that ended.
+  const neverStarted = ledger.add(spec)
+  ledger.error(neverStarted, 'git worktree add failed')
+  const retro = started(ledger.addRetro(ledger.get(finished), 'look back'))
+  ledger.endRetro(ledger.get(retro).retroId ?? 0, 'none')
+  ledger.succeed(retro)
+  const nod = (...args: string[]) =>
+    Bun.spawnSync(['bun', cli, ...args], { env: { ...process.env, NOD_HOME: home } })
+
+  for (const command of ['attach', 'peek']) {
+    const closed = nod(command, String(finished))
+    expect(closed.exitCode).not.toBe(0)
+    expect(closed.stderr.toString()).toContain(
+      `task #${finished} finished and its terminal is closed; nod tell ${finished} <message> goes on in the same conversation`,
+    )
+    for (const id of [queued, neverStarted, retro]) {
+      const none = nod(command, String(id))
+      expect(none.exitCode).not.toBe(0)
+      expect(none.stderr.toString()).toContain(`task #${id} has no live session`)
+      expect(none.stderr.toString()).not.toContain('nod tell')
+    }
+  }
+})
+
+test("the prompt hook opens the turn a person types into a worker's terminal, and only that, printing nothing and never failing", () => {
+  const home = tmp.make('nod-prompt-')
+  const ledger = new Ledger(home)
+  const spec = {
+    brief: 'some task',
+    repo: null,
+    branch: null,
+    checkCmd: null,
+    model: null,
+    after: [],
+    triggerId: null,
+    issue: null,
+  }
+  const started = (id: number): number => {
+    ledger.setRunning(id, home)
+    ledger.startAttempt({
+      taskId: id,
+      kind: 'start',
+      decisionId: null,
+      sessionId: `session-${id}`,
+      prompt: 'some task',
+    })
+    return id
+  }
+  const prompt = (session: string, nodHome = home, stdin?: string) =>
+    Bun.spawnSync(['bun', cli, 'hook', 'prompt'], {
+      env: { ...process.env, NOD_HOME: nodHome },
+      stdin: Buffer.from(stdin ?? JSON.stringify({ session_id: session, prompt: 'go on' })),
+    })
+  const quiet = (run: ReturnType<typeof prompt>): void => {
+    expect(run.exitCode).toBe(0)
+    expect(run.stdout.toString()).toBe('')
+  }
+
+  // A finished task: the person's turn opens as the Stop hook would open it, and the task stays
+  // as it is.
+  const finished = started(ledger.add(spec))
+  ledger.endAttempt(ledger.lastAttempt(finished)?.id ?? 0, {
+    outcome: 'succeeded',
+    summary: 'did it',
+    report: 'NOD: done | did it',
+  })
+  ledger.succeed(finished)
+  quiet(prompt(`session-${finished}`))
+  expect(ledger.attempts(finished).map((a) => [a.kind, a.prompt, a.finishedAt])).toEqual([
+    ['start', 'some task', expect.any(String)],
+    ['followup', '(typed into the terminal)', null],
+  ])
+  expect(ledger.get(finished).status).toBe('succeeded')
+  // A task asking a question: only the turn opens. The question stays open and the task waits on
+  // it until the turn's Stop, as before, so a turn the person stops (Escape, no Stop) leaves both.
+  const asking = started(ledger.add(spec))
+  const asked = ledger.lastAttempt(asking)?.id ?? 0
+  ledger.endAttempt(asked, { outcome: 'needs_decision', summary: 'which?', report: 'which?' })
+  ledger.ask(asking, asked, 'question', 'which?')
+  quiet(prompt(`session-${asking}`))
+  expect(ledger.get(asking).status).toBe('needs_decision')
+  expect(ledger.decisions(asking).map((d) => d.answer)).toEqual([null])
+  expect(ledger.openAttempt(asking)?.prompt).toBe('(typed into the terminal)')
+  // The person stopped that turn with Escape, as the transcript records, and types again: the hook
+  // reads only the ledger, so the new message goes on in the turn still open, whose Stop closes
+  // what the stopped one left.
+  const config = tmp.make('nod-prompt-config-')
+  ledger.setAccount(asking, config)
+  mkdirSync(join(config, 'projects', 'work'), { recursive: true })
+  const stop = { role: 'user', content: [{ type: 'text', text: '[Request interrupted by user]' }] }
+  writeFileSync(
+    join(config, 'projects', 'work', `session-${asking}.jsonl`),
+    `${JSON.stringify({ type: 'user', message: stop })}\n`,
+  )
+  quiet(prompt(`session-${asking}`))
+  expect(ledger.attempts(asking).map((a) => [a.outcome, a.error])).toEqual([
+    ['needs_decision', null],
+    [null, null],
+  ])
+  // A message that starts with `/` (a path) is a turn like any other: commands do not come here.
+  const slashed = started(ledger.add(spec))
+  ledger.endAttempt(ledger.lastAttempt(slashed)?.id ?? 0, {
+    outcome: 'succeeded',
+    summary: 'did it',
+    report: 'NOD: done | did it',
+  })
+  ledger.succeed(slashed)
+  const path = { session_id: `session-${slashed}`, prompt: '/src/app.ts: why does it fail?' }
+  quiet(prompt(`session-${slashed}`, home, JSON.stringify(path)))
+  expect(ledger.openAttempt(slashed)?.prompt).toBe('(typed into the terminal)')
+  // A message nod sent has its turn open already: no second one.
+  const told = started(ledger.add(spec))
+  quiet(prompt(`session-${told}`))
+  expect(ledger.attempts(told).map((a) => a.kind)).toEqual(['start'])
+
+  // A session nod did not start, a ledger that cannot open, input it cannot read: still quiet,
+  // and nothing changes.
+  const turns = () => ledger.list().flatMap((t) => ledger.attempts(t.id)).length
+  const before = turns()
+  quiet(prompt('another-session'))
+  const notADir = join(tmp.make('nod-prompt-bad-'), 'file')
+  writeFileSync(notADir, '')
+  const broken = prompt(`session-${finished}`, notADir)
+  quiet(broken)
+  expect(broken.stderr.toString()).toContain('nod: could not record the turn')
+  quiet(prompt('', home, 'not json'))
+  expect(turns()).toBe(before)
+})

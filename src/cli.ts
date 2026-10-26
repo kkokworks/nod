@@ -9,6 +9,7 @@ import { land } from './land'
 import {
   type Attempt,
   type Decision,
+  FINISHED,
   LAND_LEVELS,
   type LandLevel,
   Ledger,
@@ -64,8 +65,10 @@ import {
   message,
   NotificationEvent,
   onNotification,
+  onPrompt,
   onStop,
   onStopFailure,
+  PromptEvent,
   type Restart,
   restart,
   restartDue,
@@ -206,7 +209,8 @@ const USAGE = `usage:
                                    empty means Claude Code's default. With a file or a command,
                                    every nod command and tick restarts the workers that run as
                                    another account than the current one, as nod restart does
-  nod hook stop|notification       called by Claude Code hooks in worker sessions
+  nod hook stop|notification|prompt
+                                   called by Claude Code hooks in worker sessions
   nod run <task> <claude...>       what runs in a worker's terminal: keeps its Claude Code running
 
 A <task> is a task's number, t<n> for the latest task doing todo t<n>, or r<n> for the task
@@ -219,6 +223,8 @@ restart waits for a person attached to the worker. <home> is $NOD_HOME, or ~/.no
 
 const [command, ...rest] = Bun.argv.slice(2)
 const home = nodHome()
+// Before the ledger opens here, as one that cannot open must not fail it either.
+if (command === 'hook' && rest[0] === 'prompt') await promptHook()
 const ledger = new Ledger(home)
 const terminals = Terminals.of(home)
 const taskRef = (ref: string | undefined): number => new Todos(ledger).taskRef(ref ?? '')
@@ -348,7 +354,7 @@ switch (command) {
     break
   case 'tick': {
     // Run by hand, it checks the watches now too, not only on their every fifth minute.
-    const { added, passed, collected, lost, waited, restarted, landed } = await tick(
+    const { added, passed, collected, lost, waited, restarted, closed, landed } = await tick(
       ledger,
       home,
       new Date(),
@@ -360,9 +366,10 @@ switch (command) {
     if (lost.length > 0) console.log(`turn(s) lost with their terminal: ${lost.join(', ')}`)
     if (waited.length > 0) console.log(`waited too long on background work: ${waited.join(', ')}`)
     if (restarted.length > 0) console.log(`restarted task(s) ${restarted.join(', ')}`)
+    if (closed.length > 0) console.log(`closed the terminal(s) of task(s) ${closed.join(', ')}`)
     for (const m of landed) console.log(`landing #${m.id}: ${m.did}`)
-    if ([added, passed, collected, lost, waited, restarted, landed].every((x) => x.length === 0))
-      console.log('nothing due')
+    const did = [added, passed, collected, lost, waited, restarted, closed, landed]
+    if (did.every((x) => x.length === 0)) console.log('nothing due')
     break
   }
   case 'restart':
@@ -715,7 +722,22 @@ async function hook(event: string | undefined): Promise<void> {
   }
 }
 
+// The UserPromptSubmit hook prints nothing, since Claude Code adds what it prints to the
+// conversation, and exits 0 whatever goes wrong, which only goes to stderr: it must not stop or
+// change a message a person types, with other hooks of theirs maybe on the same event.
+async function promptHook(): Promise<never> {
+  console.log = console.error
+  try {
+    const event = PromptEvent.parse(JSON.parse(await Bun.stdin.text()))
+    onPrompt(new Ledger(home), event)
+  } catch (error) {
+    console.error(`nod: could not record the turn: ${message(error)}`)
+  }
+  process.exit(0)
+}
+
 function attach(taskId: number): void {
+  if (!terminals.alive(sessionName(taskId))) throw noTerminal(taskId)
   // Unset TMUX so this also works from inside another tmux session.
   const { TMUX: _outer, ...env } = process.env
   const result = Bun.spawnSync(terminals.attachCommand(sessionName(taskId)), {
@@ -751,15 +773,27 @@ function open(args: string[]): void {
 function peek(taskId: number): void {
   ledger.get(taskId)
   const name = sessionName(taskId)
-  if (!terminals.alive(name)) {
-    throw new Error(`task #${taskId} has no live session; nod show ${taskId} has its history`)
-  }
+  if (!terminals.alive(name)) throw noTerminal(taskId)
   console.log(
     terminals
       .screen(name)
       .replace(/\n\s*\n/g, '\n')
       .trimEnd(),
   )
+}
+
+// A finished task's terminal closes after a while (closeFinished in worker.ts), and a message
+// starts it again in the same conversation: one that started, and no retrospective that ended.
+function noTerminal(taskId: number): Error {
+  const task = ledger.get(taskId)
+  const goesOn =
+    FINISHED.has(task.status) &&
+    ledger.lastAttempt(taskId) !== null &&
+    (task.retroId === null || ledger.retro(task.retroId).outcome === null)
+  const why = goesOn
+    ? `task #${taskId} finished and its terminal is closed; nod tell ${taskId} <message> goes on in the same conversation, and`
+    : `task #${taskId} has no live session;`
+  return new Error(`${why} nod show ${taskId} has its history`)
 }
 
 // Lets a Claude session relay each decision as soon as it opens.

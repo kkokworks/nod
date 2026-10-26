@@ -11,6 +11,7 @@ import { homeId } from './tmux'
 import { type Todo, Todos } from './todos'
 import { oneLine } from './view'
 import {
+  closeFinished,
   lostTurns,
   message,
   overdueWaits,
@@ -79,10 +80,10 @@ export async function addTrigger(
 }
 
 // Runs the triggers due at `now` and starts the tasks they add, asks about the turns whose terminal
-// is gone and the tasks that waited too long on background work, and restarts the workers due a
-// restart (worker.ts), then, with `watches`, the watches and gc of the finished tasks a signal says
-// are done with (done.ts). A run missed while the machine slept happens once, on the first tick
-// after.
+// is gone and the tasks that waited too long on background work, restarts the workers due a
+// restart, and closes the terminals of tasks finished a while ago (worker.ts), then, with
+// `watches`, the watches and gc of the finished tasks a signal says are done with (done.ts). A run
+// missed while the machine slept happens once, on the first tick after.
 export async function tick(
   ledger: Ledger,
   home: string,
@@ -95,6 +96,7 @@ export async function tick(
   lost: number[]
   waited: number[]
   restarted: number[]
+  closed: number[]
   landed: Moved[]
 }> {
   const added: number[] = []
@@ -126,6 +128,7 @@ export async function tick(
     console.error(`nod: could not restart workers: ${message(error)}`)
     return []
   })
+  const closed = await closeFinished(ledger, home, now)
   const passed = watches ? await checkWatches(ledger, home) : []
   // Before the sweep, so a task whose pull request it just merged is collected on the same pass.
   // One repo that cannot land must not stop the sweep.
@@ -142,7 +145,7 @@ export async function tick(
         ...report.clean,
       ])
     : []
-  return { added, passed, collected, lost, waited, restarted, landed }
+  return { added, passed, collected, lost, waited, restarted, closed, landed }
 }
 
 // A watch passes when it exits 0. A command the shell cannot run (126, 127) never will; anything
@@ -333,7 +336,12 @@ export async function tickHome(home: string): Promise<void> {
   const ledger = new Ledger(home)
   const now = new Date()
   const watches = now.getMinutes() % WATCH_EVERY_MINUTES === 0
-  const { added, passed, collected, lost, restarted } = await tick(ledger, home, now, watches)
+  const { added, passed, collected, lost, restarted, closed } = await tick(
+    ledger,
+    home,
+    now,
+    watches,
+  )
   const at = new Date().toISOString()
   if (added.length > 0) console.log(`${at} added task(s) ${added.join(', ')}`)
   if (passed.length > 0)
@@ -341,4 +349,5 @@ export async function tickHome(home: string): Promise<void> {
   if (collected.length > 0) console.log(`${at} collected task(s) ${collected.join(', ')}`)
   if (lost.length > 0) console.log(`${at} turn(s) lost with their terminal: ${lost.join(', ')}`)
   if (restarted.length > 0) console.log(`${at} restarted task(s) ${restarted.join(', ')}`)
+  if (closed.length > 0) console.log(`${at} closed the terminal(s) of task(s) ${closed.join(', ')}`)
 }
