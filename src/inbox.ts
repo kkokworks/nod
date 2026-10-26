@@ -1,4 +1,3 @@
-import { createConnection } from 'node:net'
 import { z } from 'zod'
 import { Ledger, type Notice } from './ledger'
 import { type Project, Todos } from './todos'
@@ -141,26 +140,43 @@ export function noticeText(ledger: Ledger, n: Notice): string {
   return `${taskLabel(task)} ${n.event}${attempt}: ${note}\nnext: ${NEXT[n.event](task.id)}`
 }
 
-// One line into a session's inbox socket, done once it is written and the writing side closed
-// ('finish', which Bun's node:net emits only after the socket connected and took the whole line):
-// Claude Code answers nothing. The connection is left to close as Claude Code closes its side, and
-// keeps no process up meanwhile.
-export function sendLine(socket: string, line: string, timeoutMs = SEND_TIMEOUT_MS): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const conn = createConnection(socket)
-    const timer = setTimeout(
-      () => conn.destroy(new Error(`${socket} took no line in ${timeoutMs} ms`)),
-      timeoutMs,
-    )
-    conn.on('error', (error) => {
-      clearTimeout(timer)
-      reject(error)
-    })
-    conn.on('finish', () => {
-      clearTimeout(timer)
-      conn.unref()
-      resolve()
-    })
-    conn.end(line)
+// One line into a session's inbox socket, done once the socket took all of it and nod closed its
+// side: Claude Code answers nothing. Bun.connect, not node:net, whose failed connect bun test
+// reports as an error even once handled (1.3.14). A write may take part of the line; the rest goes
+// as the socket drains.
+export async function sendLine(
+  socket: string,
+  line: string,
+  timeoutMs = SEND_TIMEOUT_MS,
+): Promise<void> {
+  let rest = Buffer.from(line)
+  const sent = Promise.withResolvers<void>()
+  // Settled by whichever comes first; one that comes after is no rejection left unhandled.
+  sent.promise.catch(() => {})
+  const write = (s: Bun.Socket): void => {
+    const n = s.write(rest)
+    if (n > 0) rest = rest.subarray(n)
+    if (rest.length > 0) return
+    s.end()
+    sent.resolve()
+  }
+  const conn = await Bun.connect({
+    unix: socket,
+    socket: {
+      open: write,
+      drain: write,
+      data: () => {},
+      error: (_, error) => sent.reject(error),
+      close: () => sent.reject(new Error(`${socket} closed before it took the whole line`)),
+    },
   })
+  const timer = setTimeout(() => {
+    conn.terminate()
+    sent.reject(new Error(`${socket} took no line in ${timeoutMs} ms`))
+  }, timeoutMs)
+  try {
+    await sent.promise
+  } finally {
+    clearTimeout(timer)
+  }
 }

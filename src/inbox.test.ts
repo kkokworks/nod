@@ -205,6 +205,29 @@ test('a send that fails keeps the notices for the next and leaves the change it 
   ])
 })
 
+test('notify sends what waits for the project sessions; with no socket file there, the notice waits, the end stands and nothing is said', async () => {
+  const { home, ledger, todos, p, task } = setup()
+  todos.addSession(p.id, A, '/work/one')
+  todos.setSocket(A, join(tmp.make('nod-inbox-gone-'), 'ended.sock'))
+  const id = task('Ship it')
+  ledger.succeed(id)
+  const errors = spyOn(console, 'error').mockImplementation(() => {})
+  try {
+    await notify(home, {
+      event: 'succeeded',
+      task: { id, brief: 'Ship it', issue: null },
+      summary: '',
+    })
+    expect(errors).not.toHaveBeenCalled()
+  } finally {
+    errors.mockRestore()
+  }
+  // It tried the socket, found the session gone, and forgot it.
+  expect(todos.latestSession(p.id)?.socket).toBeNull()
+  expect(ledger.get(id).status).toBe('succeeded')
+  expect(ledger.unsentNotices()).toHaveLength(1)
+})
+
 test('of two sends at once, each notice goes in one', async () => {
   const { ledger, todos, p, task, sent, send } = setup()
   todos.addSession(p.id, A, '/work/one')
