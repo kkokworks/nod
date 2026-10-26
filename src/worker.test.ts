@@ -1224,8 +1224,15 @@ test('a resume that takes over a cut-off start keeps a worktree at the task’s 
   // Another task works there.
   await keeps(() => ledger.setRunning(other, folder))
   ledger.setRunning(other, join(home, 'elsewhere'))
-  // Something in it is not committed.
+  // Something in it is not committed, or is ignored.
   await keeps(() => writeFileSync(join(folder, 'wip.txt'), 'wip'))
+  writeFileSync(join(repo, '.git', 'info', 'exclude'), 'secret.env\n')
+  await keeps(() => writeFileSync(join(folder, 'secret.env'), 'TOKEN=example'))
+  // A submodule in it has a commit only it holds.
+  await keeps(() => {
+    git(folder, '-c', 'protocol.file.allow=always', 'submodule', 'update', '-q', '--init', 'lib')
+    git(join(folder, 'lib'), 'commit', '-q', '--allow-empty', '-m', 'mine')
+  })
   // The branch has a commit nothing else has; the worktree's own HEAD does not count.
   await keeps(() => git(folder, 'commit', '-q', '--allow-empty', '-m', 'mine'))
 })

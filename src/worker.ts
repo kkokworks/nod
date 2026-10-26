@@ -16,6 +16,7 @@ import { homedir, tmpdir } from 'node:os'
 import { basename, join, resolve } from 'node:path'
 import { z } from 'zod'
 import { accountChanged, accountRule, configDir } from './account'
+import { onlyCopy } from './gc'
 import {
   type Attempt,
   type AttemptKind,
@@ -629,9 +630,10 @@ const MARKED = /^nod resume \(pid (\d+)\) is starting it again;/
 
 // What a start cut off as it made the task's folder left in its repo: the branch, and the worktree
 // on it at the task's path. Only while losing them loses nothing: the branch holds no commit another
-// ref lacks (other worktrees' HEADs aside, the one on it among them), and the worktree has nothing
-// uncommitted and is no other task's. Anything else is not the cut-off start's; it stays, and the
-// start fails on it as on any branch by that name.
+// ref lacks (other worktrees' HEADs aside, the one on it among them), and the worktree is no other
+// task's and has nothing uncommitted, ignored files included, nor commits only its submodules hold
+// (onlyCopy, as gc checks). Anything else is not the cut-off start's; it stays, and the start fails
+// on it as on any branch by that name.
 // ponytail: a worktree a SIGKILL left locked mid-add stays too, as a git it ran may still be at it.
 async function clearCutOff(ledger: Ledger, home: string, task: Task): Promise<void> {
   const { repo } = task
@@ -653,9 +655,14 @@ async function clearCutOff(ledger: Ledger, home: string, task: Task): Promise<vo
   if (own.code !== 0 || own.stdout.trim() !== '0') return
   if ((await git(cwd, 'symbolic-ref', '-q', 'HEAD')).stdout.trim() === ref) {
     if (ledger.list().some((t) => t.id !== task.id && t.workspace === cwd)) return
-    // Submodules aside: the cut-off start may have been filling them.
-    const changed = await git(cwd, 'status', '--porcelain', '--ignore-submodules=all')
+    // Submodules' files aside: the cut-off start may have been filling them.
+    const changed = await git(cwd, 'status', '--porcelain', '--ignored', '--ignore-submodules=all')
     if (changed.code !== 0 || changed.stdout.trim() !== '') return
+    try {
+      if (onlyCopy(repo, cwd, branch) !== null) return
+    } catch {
+      return
+    }
     await git(repo, 'worktree', 'remove', '--force', cwd)
   }
   await git(repo, 'branch', '-D', branch)
