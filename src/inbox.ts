@@ -172,8 +172,10 @@ export async function sendLine(
     const n = s.write(rest)
     if (n > 0) rest = rest.subarray(n)
     if (rest.length > 0) return
-    s.end()
+    // Settled first: end() runs the close handler before it returns (measured with a socket server
+    // that reads the whole line, Bun 1.3.14).
     sent.resolve()
+    s.end()
   }
   // The time counts from before the connection: one that hangs in connecting is given up too.
   const timer = setTimeout(() => {
@@ -187,7 +189,10 @@ export async function sendLine(
       drain: write,
       data: () => {},
       error: (_, error) => sent.reject(error),
-      close: () => sent.reject(new Error(`${socket} closed before it took the whole line`)),
+      close: () => {
+        if (rest.length > 0)
+          sent.reject(new Error(`${socket} closed before it took the whole line`))
+      },
     },
   }).then(
     (conn) => sent.promise.catch(() => conn.terminate()),
