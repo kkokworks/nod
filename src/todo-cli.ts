@@ -175,6 +175,13 @@ export function openSession(
   config: string | null,
 ): { argv: string[]; cwd: string } {
   const project = todos.findProject(ref)
+  // The session's name is for the person; Claude in it learns its project from this line alone.
+  // Claude Code keeps a conversation's first system prompt on resume until it compacts, so a
+  // resume passes it too.
+  const told = [
+    '--append-system-prompt',
+    `nod open opened this session for project p${project.id} ${project.title}: nod add here puts work in that project, and the project's tasks and decisions are this session's.`,
+  ]
   const last = fresh ? null : todos.latestSession(project.id)
   const kept = last === null ? null : transcriptPath(config, last.sessionId)
   // ponytail: reads the whole transcript once per open; one of 69 MB took about 50 ms.
@@ -186,7 +193,7 @@ export function openSession(
     )
   }
   if (again !== null && said)
-    return { argv: ['claude', '--resume', again.sessionId], cwd: again.cwd }
+    return { argv: ['claude', '--resume', again.sessionId, ...told], cwd: again.cwd }
   if (last !== null) {
     const why =
       kept === null
@@ -197,7 +204,14 @@ export function openSession(
     )
   }
   const session = again ?? todos.addSession(project.id, crypto.randomUUID(), cwd)
-  const argv = ['claude', '--name', sessionTitle(project), '--session-id', session.sessionId]
+  const argv = [
+    'claude',
+    '--name',
+    sessionTitle(project),
+    '--session-id',
+    session.sessionId,
+    ...told,
+  ]
   return { argv, cwd: session.cwd }
 }
 

@@ -200,12 +200,17 @@ test('nod open resumes the latest session where it was opened, or starts one: wi
   const open = (fresh: boolean, cwd: string, ref = `p${p.id}`) =>
     openSession(todos, ref, fresh, cwd, config)
   const key = (): string => todos.latestSession(p.id)?.sessionId ?? ''
+  // Claude in the session hears its project, opened anew or resumed.
+  const told = [
+    '--append-system-prompt',
+    `nod open opened this session for project p${p.id} Release: nod add here puts work in that project, and the project's tasks and decisions are this session's.`,
+  ]
 
   const first = open(false, here)
   const opened = key()
   expect(opened).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$/)
   expect(first).toEqual({
-    argv: ['claude', '--name', 'Release', '--session-id', opened],
+    argv: ['claude', '--name', 'Release', '--session-id', opened, ...told],
     cwd: here,
   })
   // Closed before a word was said, it has no transcript, so it starts again where it was opened.
@@ -220,9 +225,9 @@ test('nod open resumes the latest session where it was opened, or starts one: wi
   const said = '{"type":"user","message":{"role":"user","content":"hi"}}'
   // Once something is said in it, it is resumed there, wherever nod open runs.
   keep(opened, here, said)
-  expect(open(false, there)).toEqual({ argv: ['claude', '--resume', opened], cwd: here })
+  expect(open(false, there)).toEqual({ argv: ['claude', '--resume', opened, ...told], cwd: here })
   expect(open(false, there, 'Release')).toEqual({
-    argv: ['claude', '--resume', opened],
+    argv: ['claude', '--resume', opened, ...told],
     cwd: here,
   })
   // --new opens another here, which is the project's from now on: nod open opens it after.
@@ -230,13 +235,13 @@ test('nod open resumes the latest session where it was opened, or starts one: wi
   const newer = key()
   expect(newer).not.toBe(opened)
   expect(second).toEqual({
-    argv: ['claude', '--name', 'Release', '--session-id', newer],
+    argv: ['claude', '--name', 'Release', '--session-id', newer, ...told],
     cwd: there,
   })
   expect(todos.sessionPlace(opened)?.latest).toBe(false)
   expect(open(false, here)).toEqual(second)
   keep(newer, there, said)
-  expect(open(false, here)).toEqual({ argv: ['claude', '--resume', newer], cwd: there })
+  expect(open(false, here)).toEqual({ argv: ['claude', '--resume', newer, ...told], cwd: there })
   expect(key()).toBe(newer)
   // The folder it was opened in is gone: no session to resume there.
   rmSync(there, { recursive: true })
@@ -250,7 +255,7 @@ test('nod open resumes the latest session where it was opened, or starts one: wi
   const fourth = open(false, here)
   expect(key()).not.toBe(titled)
   expect(fourth).toEqual({
-    argv: ['claude', '--name', 'Release', '--session-id', key()],
+    argv: ['claude', '--name', 'Release', '--session-id', key(), ...told],
     cwd: here,
   })
   // So does an empty one, and one whose folder is gone: the new session opens here, not there.
@@ -264,7 +269,7 @@ test('nod open resumes the latest session where it was opened, or starts one: wi
   rmSync(gone, { recursive: true })
   const before = key()
   expect(open(false, here)).toEqual({
-    argv: ['claude', '--name', 'Release', '--session-id', key()],
+    argv: ['claude', '--name', 'Release', '--session-id', key(), ...told],
     cwd: here,
   })
   expect(key()).not.toBe(before)
