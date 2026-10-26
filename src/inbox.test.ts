@@ -149,8 +149,12 @@ test('notices wait while the project has no session taking messages, and go in o
   expect(sent[0]?.message.content).toContain('task #1 t1 succeeded: First')
   expect(sent[0]?.message.content).toContain('decision #1 permission (task #2 t2: Second)')
 
-  // Once it ends it takes none, until it starts again, maybe elsewhere.
+  // The same session opened in another terminal since: the end of the first leaves the second's.
+  await start(A, '/socks/b')
   await onInbox(ledger, { session_id: A, hook_event_name: 'SessionEnd' }, '/socks/a', send)
+  expect(todos.latestSession(p.id)?.socket).toBe('/socks/b')
+  // Once it ends it takes none, until it starts again, maybe elsewhere.
+  await onInbox(ledger, { session_id: A, hook_event_name: 'SessionEnd' }, '/socks/b', send)
   expect(todos.latestSession(p.id)?.socket).toBeNull()
   ledger.error(task('Third'), 'boom')
   await sendNotices(ledger, send)
@@ -229,7 +233,7 @@ test('notify sends what waits for the project sessions; with no socket file ther
 })
 
 test('of two sends at once, each notice goes in one', async () => {
-  const { ledger, todos, p, task, sent, send } = setup()
+  const { home, ledger, todos, p, task, sent, send } = setup()
   todos.addSession(p.id, A, '/work/one')
   todos.setSocket(A, '/socks/a')
   ledger.succeed(task('Once'))
@@ -240,6 +244,16 @@ test('of two sends at once, each notice goes in one', async () => {
   })
   expect(sent).toHaveLength(1)
   expect(sent[0]?.message.content).toContain('task #1 t1 succeeded: Once')
+
+  // Two processes that both read a notice as unsent before either marks it: one marks it.
+  ledger.succeed(task('Twice'))
+  const other = new Ledger(home)
+  const [mine, theirs] = [ledger.unsentNotices(), other.unsentNotices()]
+  expect(mine.map((n) => n.id)).toEqual(theirs.map((n) => n.id))
+  const ids = mine.map((n) => n.id)
+  expect(ledger.claimNotices(ids, A).ids).toEqual(ids)
+  expect(other.claimNotices(ids, A).ids).toEqual([])
+  other.db.close()
 })
 
 test("nod tell p<n> sends a person's words into the project's session, or keeps them until it takes messages", async () => {
@@ -259,22 +273,30 @@ test('nod open sessions report their inbox through nod hook inbox, and nod tell 
   const { home, ledger, todos, p } = setup()
   todos.addSession(p.id, A, '/work/one')
   const env = { ...process.env, NOD_HOME: home, NOD_ACTOR: 'human' }
-  const hook = async (event: string, socket: string): Promise<string> => {
+  const run = async (input: string, nodHome = home): Promise<string> => {
     const proc = Bun.spawn(['bun', cli, 'hook', 'inbox'], {
-      env: { ...env, CLAUDE_CODE_MESSAGING_SOCKET: socket },
-      stdin: new Blob([
-        JSON.stringify({ session_id: A, hook_event_name: event, source: 'startup' }),
-      ]),
+      env: { ...env, NOD_HOME: nodHome, CLAUDE_CODE_MESSAGING_SOCKET: '/socks/none' },
+      stdin: new Blob([input]),
       stdout: 'pipe',
+      stderr: 'pipe',
     })
+    // Whatever goes wrong, the session starts and ends: 0, and only stderr says why.
     expect(await proc.exited).toBe(0)
     return new Response(proc.stdout).text()
   }
+  const hook = (event: string): Promise<string> =>
+    run(JSON.stringify({ session_id: A, hook_event_name: event, source: 'startup' }))
   // Nothing on stdout, which Claude Code would add to the session.
-  expect(await hook('SessionStart', '/socks/none')).toBe('')
+  expect(await hook('SessionStart')).toBe('')
   expect(todos.latestSession(p.id)?.socket).toBe('/socks/none')
-  expect(await hook('SessionEnd', '/socks/none')).toBe('')
+  expect(await hook('SessionEnd')).toBe('')
   expect(todos.latestSession(p.id)?.socket).toBeNull()
+  expect(await run('not json')).toBe('')
+  // A ledger that cannot open: its home is a file.
+  const file = join(tmp.make('nod-inbox-file-'), 'home')
+  await Bun.write(file, '')
+  const start = JSON.stringify({ session_id: A, hook_event_name: 'SessionStart' })
+  expect(await run(start, file)).toBe('')
 
   const tell = Bun.spawn(['bun', cli, 'tell', 'p1', 'Hello', 'there'], { env, stdout: 'pipe' })
   expect(await tell.exited).toBe(0)

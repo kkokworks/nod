@@ -245,7 +245,8 @@ CLAUDE_CODE_MESSAGING_SOCKET), as another Claude session does; Claude Code shows
 another session, not the person. The line's format is Claude Code's own, not documented, and the
 socket answers nothing: a line Claude Code drops counts as sent. A session that skips permission
 prompts holds such messages for the person to approve. One reopened with claude --resume instead
-of nod open reports no socket, so it hears nothing until nod open opens it.
+of nod open reports no socket, and /clear goes on under an ID nod open did not open: either hears
+nothing until nod open opens the project's session again.
 
 When <home>/notify exists, nod runs it with a JSON event on stdin whenever a decision opens, a
 task succeeds or fails to start, a trigger fails, a watch passes or can no longer run, or a
@@ -255,6 +256,7 @@ const [command, ...rest] = Bun.argv.slice(2)
 const home = nodHome()
 // Before the ledger opens here, as one that cannot open must not fail it either.
 if (command === 'hook' && rest[0] === 'prompt') await promptHook()
+if (command === 'hook' && rest[0] === 'inbox') await inboxHook()
 const ledger = new Ledger(home)
 const terminals = Terminals.of(home)
 const taskRef = (ref: string | undefined): number => new Todos(ledger).taskRef(ref ?? '')
@@ -762,13 +764,6 @@ async function hook(event: string | undefined): Promise<void> {
   } else if (event === 'compact') {
     const out = onCompact(ledger, SessionStartEvent.parse(input))
     if (out !== null) console.log(out)
-  } else if (event === 'inbox') {
-    // A project session starts and ends whatever becomes of this; stdout would go into it.
-    try {
-      await onInbox(ledger, InboxEvent.parse(input), process.env.CLAUDE_CODE_MESSAGING_SOCKET)
-    } catch (error) {
-      console.error(`nod: could not record the session's inbox: ${message(error)}`)
-    }
   } else {
     throw new Error(USAGE)
   }
@@ -784,6 +779,20 @@ async function promptHook(): Promise<never> {
     onPrompt(new Ledger(home), event)
   } catch (error) {
     console.error(`nod: could not record the turn: ${message(error)}`)
+  }
+  process.exit(0)
+}
+
+// The SessionStart and SessionEnd hook of a session nod open opened (onInbox), the same way: a
+// project session starts and ends whatever becomes of this, and SessionStart's stdout would go
+// into it.
+async function inboxHook(): Promise<never> {
+  console.log = console.error
+  try {
+    const event = InboxEvent.parse(JSON.parse(await Bun.stdin.text()))
+    await onInbox(new Ledger(home), event, process.env.CLAUDE_CODE_MESSAGING_SOCKET)
+  } catch (error) {
+    console.error(`nod: could not record the session's inbox: ${message(error)}`)
   }
   process.exit(0)
 }

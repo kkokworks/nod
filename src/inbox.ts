@@ -21,16 +21,22 @@ export const InboxEvent = z.object({ session_id: z.string(), hook_event_name: z.
 
 // The hooks nod open gives a project session (openSettings in worker.ts): as it starts, where it
 // takes messages (Claude Code exports the socket to its hooks), and what waited for it goes; once it
-// ends, none. A session nod open did not open changes nothing.
+// ends, none, unless the session runs on elsewhere since (nod open of the same session in another
+// terminal). A session nod open did not open changes nothing, so neither does the conversation
+// /clear starts under a new ID: it hears nothing until nod open opens the project's session again.
 export async function onInbox(
   ledger: Ledger,
   event: z.infer<typeof InboxEvent>,
   socket: string | undefined,
   send = sendLine,
 ): Promise<void> {
-  const ended = event.hook_event_name === 'SessionEnd'
-  new Todos(ledger).setSocket(event.session_id, ended ? null : socket || null)
-  if (!ended) await sendNotices(ledger, send)
+  const todos = new Todos(ledger)
+  if (event.hook_event_name === 'SessionEnd') {
+    todos.setSocket(event.session_id, null, socket || undefined)
+    return
+  }
+  todos.setSocket(event.session_id, socket || null)
+  await sendNotices(ledger, send)
 }
 
 // `nod tell p<n>`: a person's words for the project's session, by the same way. Returns whether
@@ -67,6 +73,9 @@ export async function tellSessions(home: string): Promise<void> {
 // of a task in no project, and a decision answered since, goes to none. A project with no session
 // running keeps them. A send that fails keeps them too, and a socket that is gone (the session
 // ended without its SessionEnd hook) is forgotten until the session says it again.
+// ponytail: notices are marked sent before the send, so a process killed between the two loses
+// them; and a session that starts again while another process sends to its old socket hears them
+// only at the next send (a tick, an event). A lease on the mark would close both.
 export async function sendNotices(ledger: Ledger, send = sendLine): Promise<void> {
   const todos = new Todos(ledger)
   const waiting = new Map<number, Notice[]>()
@@ -160,7 +169,12 @@ export async function sendLine(
     s.end()
     sent.resolve()
   }
-  const conn = await Bun.connect({
+  // The time counts from before the connection: one that hangs in connecting is given up too.
+  const timer = setTimeout(
+    () => sent.reject(new Error(`${socket} took no line in ${timeoutMs} ms`)),
+    timeoutMs,
+  )
+  Bun.connect({
     unix: socket,
     socket: {
       open: write,
@@ -169,11 +183,10 @@ export async function sendLine(
       error: (_, error) => sent.reject(error),
       close: () => sent.reject(new Error(`${socket} closed before it took the whole line`)),
     },
-  })
-  const timer = setTimeout(() => {
-    conn.terminate()
-    sent.reject(new Error(`${socket} took no line in ${timeoutMs} ms`))
-  }, timeoutMs)
+  }).then(
+    (conn) => sent.promise.catch(() => conn.terminate()),
+    (error) => sent.reject(error),
+  )
   try {
     await sent.promise
   } finally {

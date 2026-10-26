@@ -2288,8 +2288,8 @@ function workerSettings(started: string | null): string {
 const hook = (event: string): string => `${quote(process.execPath)} ${quote(CLI)} hook ${event}`
 
 // What `nod open` gives a project session: hooks that tell nod where the session takes messages as
-// it starts (startup, resume, clear, compact: Claude Code exports the socket to hooks before any
-// runs), and that it takes none once it ends (onInbox in inbox.ts). SessionEnd hooks share a
+// it starts (startup, resume, compact: Claude Code exports the socket to hooks before any runs), and
+// that it takes none once it ends (onInbox in inbox.ts). SessionEnd hooks share a
 // budget of 1.5 s unless one sets a longer timeout (docs), less than a busy ledger may wait for.
 export function openSettings(): string {
   const inbox = [{ hooks: [{ type: 'command', command: hook('inbox'), timeout: INBOX_HOOK_SECS }] }]
