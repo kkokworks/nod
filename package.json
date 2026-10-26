@@ -3,6 +3,9 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
+  "workspaces": [
+    "ui"
+  ],
   "bin": {
     "nod": "src/cli.ts"
   },

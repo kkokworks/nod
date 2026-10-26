@@ -23,6 +23,8 @@ install)
     echo "bun is not on this shell's PATH; install it (https://bun.sh) or run this from a shell that has it" >&2
     exit 1
   }
+  # ui/ is a workspace of the repo, so this installs the whole repo from the root bun.lock, not
+  # ui/ alone (--filter ./ui): the server imports ../src, which needs the root's dependencies.
   (cd "$ui" && "$bun" install && "$bun" run build)
   mkdir -p "$(dirname "$plist")" "$(dirname "$log")"
   # Made aside and moved in last, so a failure leaves the agent as it was, not half made for the
