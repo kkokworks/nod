@@ -438,8 +438,11 @@ test("a project's new session takes over the project's tasks and decisions in ls
       ask(byA, 'which branch?')
       await Bun.sleep(200)
     }
+    expect(out).not.toContain('which room?')
     ledger.succeed(running)
-    expect(await watching.exited).toBe(0)
+    // It ends once A's task stops, while Health's worker runs on; one that counted Health's would not.
+    const ended = await Promise.race([watching.exited, Bun.sleep(15_000).then(() => 'running')])
+    expect(ended).toBe(0)
   } finally {
     watching.kill()
   }
