@@ -1,5 +1,6 @@
-import { afterAll, beforeEach, expect, test } from 'bun:test'
+import { afterAll, beforeEach, expect, spyOn, test } from 'bun:test'
 import {
+  appendFileSync,
   chmodSync,
   existsSync,
   mkdirSync,
@@ -12,6 +13,7 @@ import {
 import { basename, dirname, join, resolve } from 'node:path'
 import { projectFolder } from '../test/projects'
 import { tempDirs } from '../test/tmp'
+import { testTmux } from '../test/tmux'
 import { setAccountRule } from './account'
 import { collect } from './gc'
 import { Ledger, type Task, type TaskStatus } from './ledger'
@@ -23,9 +25,12 @@ import { Todos } from './todos'
 import { addTrigger, tick } from './triggers'
 import {
   answer,
+  askToLand,
+  closeFinished,
   drop,
   firstMessage,
   lostTurns,
+  onPrompt,
   onStop,
   overdueWaits,
   parseCaptures,
@@ -38,6 +43,7 @@ import {
   startReady,
   startTask,
   tell,
+  transcriptPath,
   trustedFile,
   workerEnv,
   workerPrompt,
@@ -46,8 +52,7 @@ import {
 
 const tmp = tempDirs()
 const homes: string[] = []
-// tmux sockets go in a temp dir too, so test servers leave nothing in the shared tmux dir.
-process.env.TMUX_TMPDIR = tmp.make('nod-tmux-')
+testTmux(tmp)
 afterAll(() => {
   for (const h of homes) Terminals.of(h).killServer()
   tmp.removeAll()
@@ -354,6 +359,191 @@ test('tell continues the same session, and reopens it from the transcript once i
   expect(existsSync(workspaceOf(home, ledger.get(id)))).toBe(true)
   // The review judges against what the human said since the brief, too.
   expect(entries('review').at(-1)?.message).toContain('- second\n- third')
+})
+
+// A task that has succeeded, its Stop hook done.
+async function finished(brief: string): Promise<number> {
+  const id = await add(brief)
+  await reaches(id, 'succeeded')
+  await settled(id)
+  return id
+}
+// Just past the hour a finished task keeps its terminal.
+const hourOn = (id: number): Date =>
+  new Date(Date.parse(ledger.get(id).finishedAt ?? '') + 60 * 60_000 + 1000)
+// What the fake logged of the task's own session, not of a retrospective that follows it.
+const ofSession = (id: number, event: string): LogEntry[] =>
+  entries(event).filter((e) => e.sessionId === ledger.attempts(id)[0]?.sessionId)
+const resumedOf = (id: number) => ofSession(id, 'launch').map((l) => l.resumed)
+const turnsOf = (id: number) => ofSession(id, 'turn').map((t) => t.message)
+
+test('the tick closes the terminal of a task finished an hour ago, and a message goes on in the same conversation', async () => {
+  const id = await finished('first')
+  const name = sessionName(id)
+  expect((await tick(ledger, home, new Date(), false)).closed).toEqual([])
+  expect(Terminals.of(home).alive(name)).toBe(true)
+
+  expect((await tick(ledger, home, hourOn(id), false)).closed).toEqual([id])
+  expect(Terminals.of(home).alive(name)).toBe(false)
+  // Only the terminal goes: the folder and the ledger stay as they were.
+  expect(existsSync(workspaceOf(home, ledger.get(id)))).toBe(true)
+  expect(ledger.get(id)).toMatchObject({ status: 'succeeded', collectedAt: null })
+
+  await tell(ledger, home, id, 'second')
+  await reaches(id, 'succeeded')
+  expect(resumedOf(id)).toEqual([false, true])
+  expect(turnsOf(id)).toEqual(['first', 'second'])
+})
+
+test('a decision a task gets once the tick closed its terminal is answered in the same conversation', async () => {
+  const id = await finished('first')
+  expect(await closeFinished(ledger, home, hourOn(id))).toEqual([id])
+  // As landing asks later (land.ts), when a gate fails on the branch.
+  await askToLand(ledger, home, id, 'check_failed', 'The gate failed: take the name out.')
+  const decision = await until(() => ledger.decisions(id)[0])
+
+  await answer(ledger, home, decision.id, 'take it out', 'human')
+  await reaches(id, 'succeeded')
+  expect(resumedOf(id)).toEqual([false, true])
+  expect(turnsOf(id)).toEqual(['first', 'Human decision: take it out'])
+})
+
+test('the tick leaves the terminal of a finished task a person is attached to, one whose Stop hook still checks, one with a turn open, or one showing a dialog a decision waits on', async () => {
+  const id = await finished('first')
+  const terminals = Terminals.of(home)
+  const name = sessionName(id)
+  const attached = spyOn(Terminals.prototype, 'attached').mockImplementation(() => true)
+  const close = () => closeFinished(ledger, home, hourOn(id))
+  expect(await close().finally(() => attached.mockRestore())).toEqual([])
+  // A person typed in it half an hour after it finished, then left.
+  const used = spyOn(Terminals.prototype, 'lastUsed').mockImplementation(
+    () => Date.parse(ledger.get(id).finishedAt ?? '') + 30 * 60_000,
+  )
+  expect(await close().finally(() => used.mockRestore())).toEqual([])
+  terminals.setOption(name, 'nod_settling', String(process.pid))
+  expect(await close()).toEqual([])
+  terminals.setOption(name, 'nod_settling', null)
+  // As a hook of a turn a person typed in records it (currentAttempt).
+  const typed = ledger.startAttempt({
+    taskId: id,
+    kind: 'followup',
+    decisionId: null,
+    sessionId: ledger.lastAttempt(id)?.sessionId ?? '',
+    prompt: '(typed into the terminal)',
+  })
+  expect(await close()).toEqual([])
+  ledger.failAttempt(typed, 'test')
+  // A task that errored with a permission dialog still up, its decision open.
+  const asked = ledger.ask(id, typed, 'permission', 'Claude needs your permission')
+  ledger.error(id, 'it broke')
+  expect(await close()).toEqual([])
+  expect(terminals.alive(name)).toBe(true)
+
+  ledger.dismiss(asked, 'test')
+  expect(await close()).toEqual([id])
+})
+
+// A person attaches to a task finished long ago, types a long turn in and leaves while it runs.
+test('a turn a person types into a finished task is in the ledger from its start, so its terminal stays past the hour after their last key', async () => {
+  const id = await finished('first')
+  const terminals = Terminals.of(home)
+  const name = sessionName(id)
+  const long = new Date(Date.now() - 2 * 60 * 60_000).toISOString()
+  ledger.db.query('update tasks set finished_at = $at where id = $id').run({ id, at: long })
+  const [tmux = 'tmux', ...attach] = terminals.attachCommand(name)
+  const person = Bun.spawn([tmux, '-C', ...attach], {
+    stdin: 'pipe',
+    stdout: 'ignore',
+    env: process.env,
+  })
+  await until(() => terminals.attached(name))
+  terminals.send(name, 'hang until ended')
+  await until(() => turnsOf(id).length === 2)
+  person.kill()
+  await person.exited
+  await until(() => !terminals.attached(name))
+
+  // Its prompt hook opened the turn, as the Stop hook would have at its end; the task is as it was.
+  expect(ledger.openAttempt(id)).toMatchObject({
+    kind: 'followup',
+    prompt: '(typed into the terminal)',
+  })
+  expect(ledger.get(id).status).toBe('succeeded')
+  // tmux keeps when in seconds.
+  const hourAfter = new Date(Date.now() + 60 * 60_000 + 1000)
+  expect(await closeFinished(ledger, home, hourAfter)).toEqual([])
+  expect(terminals.alive(name)).toBe(true)
+  // Nothing of the hook went into the conversation.
+  expect(entries('prompt-hook-said')).toEqual([])
+
+  // Then they had stopped it with Escape, which Claude Code records in the transcript and runs no
+  // Stop for: the tick ends the turn, and the terminal goes as any idle one.
+  const session = ledger.attempts(id)[0]?.sessionId ?? ''
+  const file = transcriptPath(ledger.get(id).account || null, session)
+  const stop = { role: 'user', content: [{ type: 'text', text: '[Request interrupted by user]' }] }
+  appendFileSync(file ?? '', `${JSON.stringify({ type: 'user', message: stop })}\n`)
+  expect(await closeFinished(ledger, home, hourAfter)).toEqual([id])
+  expect(ledger.attempts(id).at(-1)).toMatchObject({
+    outcome: 'error',
+    error: 'the person stopped it (Escape)',
+  })
+})
+
+test('a terminal that goes while the tick closes the others is not counted, and does not stop it', async () => {
+  const gone = await finished('first')
+  const other = await finished('second')
+  // gc or drop closes it once the tick has listed the terminals.
+  const attached = Terminals.prototype.attached
+  const closing = spyOn(Terminals.prototype, 'attached').mockImplementation(function (
+    this: Terminals,
+    name: string,
+  ) {
+    if (name === sessionName(gone)) this.kill(name)
+    return attached.call(this, name)
+  })
+
+  const closed = await closeFinished(ledger, home, hourOn(other)).finally(() =>
+    closing.mockRestore(),
+  )
+
+  expect(closed).toEqual([other])
+})
+
+test('a task told to go on while the tick closes the terminals before it keeps its own', async () => {
+  const first = await finished('first')
+  const told = await finished('second')
+  // `nod tell` comes as the tick closes the terminal before; its turn goes on past the tick.
+  const close = Terminals.prototype.close
+  const closing = spyOn(Terminals.prototype, 'close').mockImplementation(async function (
+    this: Terminals,
+    name: string,
+  ) {
+    if (name === sessionName(first)) await tell(ledger, home, told, 'hang until ended')
+    return close.call(this, name)
+  })
+
+  const closed = await closeFinished(ledger, home, hourOn(told)).finally(() =>
+    closing.mockRestore(),
+  )
+
+  expect(closed).toEqual([first])
+  expect(Terminals.of(home).alive(sessionName(told))).toBe(true)
+  // In the terminal it had: no second launch.
+  await until(() => turnsOf(told).length === 2)
+  expect(resumedOf(told)).toEqual([false])
+  expect(turnsOf(told)).toEqual(['second', 'hang until ended'])
+})
+
+test('gc of a task whose folder is already gone closes its terminal too', async () => {
+  const id = await finished('first')
+  rmSync(workspaceOf(home, ledger.get(id)), { recursive: true })
+
+  expect(await collect(ledger, home, { ids: [id] })).toEqual({
+    removed: [],
+    clean: [id],
+    skipped: [],
+  })
+  expect(Terminals.of(home).alive(sessionName(id))).toBe(false)
 })
 
 test('a brief or a message that starts with a dash reaches the worker as a message, not an option', async () => {
@@ -1956,6 +2146,124 @@ test('a turn the worker goes on to by itself closes what it asked before, and so
     '(it went on without an answer)',
     null,
   ])
+})
+
+test('a turn a person types in opens at its start, and what it changes of the task waits for its Stop, as before', async () => {
+  const id = started('ask first', 'typed-in')
+  await stopped('typed-in', 'NOD: question | Which one?')
+  // The person types an answer into the terminal instead: its turn opens, the question stays.
+  onPrompt(ledger, { session_id: 'typed-in', prompt: 'the first' })
+  expect(status(id)).toBe('needs_decision')
+  expect(ledger.attempts(id).map((a) => [a.kind, a.finishedAt === null])).toEqual([
+    ['start', false],
+    ['followup', true],
+  ])
+  // Its Stop takes that turn, and closes the question.
+  await stopped('typed-in', 'NOD: done | did the first')
+  expect(status(id)).toBe('succeeded')
+  expect(ledger.attempts(id).map((a) => [a.kind, a.outcome])).toEqual([
+    ['start', 'needs_decision'],
+    ['followup', 'succeeded'],
+  ])
+  expect(ledger.decisions(id).map((d) => d.answer)).toEqual(['(it went on without an answer)'])
+})
+
+test('a typed turn whose transcript shows it ended without a Stop is ended, not taken for cut off; one cut off still is', async () => {
+  const config = tmp.make('nod-transcripts-')
+  mkdirSync(join(config, 'projects', 'work'), { recursive: true })
+  const said = (content: unknown, more: object = {}) => ({
+    type: 'user',
+    message: { role: 'user', content },
+    ...more,
+  })
+  // A task waiting on a question, into whose terminal the person typed; that terminal is gone
+  // since, and its transcript ends with `last`.
+  const typedTurn = (session: string, last: object[]): number => {
+    const id = started(`waits, ${session}`, session)
+    const start = ledger.lastAttempt(id)?.id ?? 0
+    ledger.endAttempt(start, { outcome: 'needs_decision', summary: 'which?', report: 'which?' })
+    ledger.ask(id, start, 'question', 'which?')
+    ledger.setAccount(id, config)
+    onPrompt(ledger, { session_id: session, prompt: 'the first' })
+    const lines = [said('the first'), ...last].map((l) => JSON.stringify(l))
+    writeFileSync(join(config, 'projects', 'work', `${session}.jsonl`), `${lines.join('\n')}\n`)
+    return id
+  }
+  const stop = [{ type: 'text', text: '[Request interrupted by user]' }]
+  const working = { type: 'assistant', message: { content: [{ type: 'text', text: 'On it.' }] } }
+  const stopped = typedTurn('stopped', [
+    working,
+    said(stop),
+    { type: 'system', subtype: 'turn_duration' },
+  ])
+  const heldBack = typedTurn('held-back', [
+    {
+      type: 'system',
+      subtype: 'informational',
+      promptSubmitEnding: { ending: { kind: 'blocked_by_hook' }, promptKept: false },
+    },
+  ])
+  // Not stopped by the person: Claude Code shut down, a tool printed the words, a subagent's.
+  const shutDown = typedTurn('shut-down', [working, said(stop, { interruptedByShutdown: true })])
+  const toolSaid = typedTurn('tool-said', [
+    working,
+    said([{ type: 'tool_result', content: '[Request interrupted by user]' }]),
+  ])
+  const subagent = typedTurn('subagent', [working, said(stop, { isSidechain: true })])
+  // A permission dialog the stopped turn showed: it goes as before, cut off with its terminal.
+  const asked = typedTurn('asked', [working, said(stop)])
+  ledger.ask(
+    asked,
+    ledger.openAttempt(asked)?.id ?? 0,
+    'permission',
+    'Claude needs your permission',
+  )
+
+  const lost = await lostTurns(ledger, home, new Date(Date.now() + 60_000))
+
+  expect(lost).toEqual([shutDown, toolSaid, subagent, asked])
+  const last = (id: number) => {
+    const a = ledger.attempts(id).at(-1)
+    return [a?.outcome, a?.error]
+  }
+  expect([stopped, heldBack].map(last)).toEqual([
+    ['error', 'the person stopped it (Escape)'],
+    ['error', 'a hook held the message back'],
+  ])
+  // Their question is still the person's to answer.
+  for (const id of [stopped, heldBack]) {
+    expect(status(id)).toBe('needs_decision')
+    expect(ledger.decisions(id).map((d) => d.answer)).toEqual([null])
+  }
+})
+
+test('a task waiting on background work that a person typed into and stopped is still asked about once it waited too long', async () => {
+  const config = tmp.make('nod-transcripts-')
+  mkdirSync(join(config, 'projects', 'work'), { recursive: true })
+  const stop = { role: 'user', content: [{ type: 'text', text: '[Request interrupted by user]' }] }
+  // The worker stopped waiting on an agent; the person typed into its terminal and pressed Escape.
+  const waiting = async (session: string): Promise<number> => {
+    const id = started(`waits, ${session}`, session)
+    ledger.setAccount(id, config)
+    await stopped(session, 'NOD: question | which?', ['agent'])
+    onPrompt(ledger, { session_id: session, prompt: 'status?' })
+    const file = join(config, 'projects', 'work', `${session}.jsonl`)
+    writeFileSync(file, `${JSON.stringify({ type: 'user', message: stop })}\n`)
+    return id
+  }
+  const later = new Date(Date.now() + 2 * 60 * 60_000)
+  const asked = (id: number) =>
+    ledger.decisions(id).map((d) => [d.reason, d.question.includes('which?')])
+
+  // The stopped turn still open as the tick looks.
+  const open = await waiting('typed-open')
+  expect(await overdueWaits(ledger, home, later)).toEqual([open])
+  expect(asked(open)).toEqual([['question', true]])
+  // One a tick already ended as its terminal went.
+  const ended = await waiting('typed-ended')
+  expect(await lostTurns(ledger, home, later)).toEqual([])
+  expect(await overdueWaits(ledger, home, later)).toEqual([ended])
+  expect(asked(ended)).toEqual([['question', true]])
 })
 
 test('a turn that stops while background work it started still runs waits for that work, and asks nobody', async () => {

@@ -21,6 +21,8 @@ export type TaskStatus =
   | 'needs_decision'
   | 'cancelled'
   | 'error'
+// The statuses a task ends in, which stamp its finishedAt (setStatus).
+export const FINISHED: ReadonlySet<TaskStatus> = new Set(['succeeded', 'cancelled', 'error'])
 // `waiting`: the turn ended while background work the worker started still ran, which starts its
 // next turn once done, so nobody is asked anything yet (settle in worker.ts).
 export type Outcome = 'succeeded' | 'failed' | 'needs_decision' | 'waiting'
@@ -1309,8 +1311,9 @@ export class Ledger {
 
   // Ends a turn that waited on background work as `outcome`, only while it still waits and no turn
   // has started since, in one statement: of two ticks at once one gets it, and a turn that came
-  // (the work finished) keeps the task going. Returns whether this one did.
-  endWait(id: number, outcome: Outcome): boolean {
+  // (the work finished) keeps the task going. `past`: later attempts that count as no turn (a
+  // person's that ended without a Stop, in worker.ts). Returns whether this one did.
+  endWait(id: number, outcome: Outcome, past: number[] = []): boolean {
     const ended = this.first(
       q
         .updateTable('attempts')
@@ -1323,7 +1326,8 @@ export class Ledger {
               selectFrom('attempts as later')
                 .select('later.id')
                 .whereRef('later.taskId', '=', 'attempts.taskId')
-                .whereRef('later.id', '>', 'attempts.id'),
+                .whereRef('later.id', '>', 'attempts.id')
+                .where('later.id', 'not in', [...past, -1]),
             ),
           ),
         )
@@ -1530,7 +1534,7 @@ export class Ledger {
   }
 
   private setStatus(id: number, status: TaskStatus, error: string | null): void {
-    const finishedAt = ['succeeded', 'cancelled', 'error'].includes(status) ? now() : null
+    const finishedAt = FINISHED.has(status) ? now() : null
     this.run(q.updateTable('tasks').set({ status, error, finishedAt }).where('id', '=', id))
     // A task that waits for a cancelled one can never start. An error is left alone: the task can
     // still be resumed and succeed.

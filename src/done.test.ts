@@ -116,9 +116,37 @@ test('done signals: dropped, taken over, merged into the default branch, every p
   ledger.link(broken, [`${PR}4`])
   const brokenOld = finish(add('lookup fails, old', 'chore/broken-old'), OLD)
   ledger.link(brokenOld, [`${PR}4`])
-  const errored = add('errored')
-  finish(errored, OLD)
-  ledger.error(errored, 'crashed')
+  // An errored task goes with age (or a takeover, in the test below), not with a pull request or
+  // the branch, and never with the only copy of commits or with a queued task on its branch.
+  const error = (id: number, at: string): number => {
+    ledger.error(id, 'crashed')
+    ledger.db.query('update tasks set finished_at = $at where id = $id').run({ id, at })
+    return id
+  }
+  const errored = error(finish(add('errored'), OLD), OLD)
+  const erroredMerged = error(finish(add('errored, its pr merged', 'feat/errored'), RECENT), RECENT)
+  ledger.link(erroredMerged, [`${PR}3`])
+  const erroredUnpushed = error(
+    finish(add('errored, unpushed', 'feat/errored-unpushed'), OLD, true),
+    OLD,
+  )
+  const erroredWaitedOn = error(finish(add('errored, base of a queued task'), OLD), OLD)
+  ledger.add({ ...spec('after the errored base', null), after: [erroredWaitedOn] })
+  // A pull request linked on the task's todo counts as one linked on the task; a link that is no
+  // pull request does not.
+  const linkedTodo = (title: string, url: string): number =>
+    todos.capture({ title, notes: null, source: 'cli', sourceKey: null, url }, 'human').todo.id
+  const merging = linkedTodo('merge it', 'https://chat.example.com/m/1')
+  todos.link(merging, `${PR}3`, null, 'human')
+  const viaTodo = finish(
+    ledger.addTodoTask(spec('pr on its todo', 'feat/via-todo'), merging),
+    RECENT,
+  )
+  const chatOnly = linkedTodo('answer it', 'https://chat.example.com/m/2')
+  const viaChat = finish(
+    ledger.addTodoTask(spec('chat on its todo', 'chore/chat'), chatOnly),
+    RECENT,
+  )
   // A retrospective's report and the answer to it are in the ledger, not its folder.
   const ruled = finish(ledger.addRetro(ledger.get(recent), 'retro, rule added or none'), RECENT)
   const turnedDown = finish(ledger.addRetro(ledger.get(old), 'retro, rule turned down'), RECENT)
@@ -147,14 +175,20 @@ test('done signals: dropped, taken over, merged into the default branch, every p
     { id: landed, reason: 'its changes are in the default branch' },
     { id: old, reason: 'finished 7+ days ago' },
     { id: brokenOld, reason: 'finished 7+ days ago' },
+    { id: errored, reason: 'finished 7+ days ago' },
+    { id: viaTodo, reason: `merged: ${PR}3` },
     { id: ruled, reason: 'retrospective done' },
     { id: turnedDown, reason: 'dropped' },
   ])
   // Not done: a plain workspace not yet old, the newer round, an approval from before the task,
   // changes asked for, a pull request still open, the only copy of commits, a branch a queued task
-  // starts from, an errored task. A failed lookup is reported, not taken as an answer.
+  // starts from, an errored task not yet old, a todo linking no pull request. A failed lookup is
+  // reported, not taken as an answer.
   const ids = done.map((d) => d.id)
   for (const id of [droppedPlain, takeover, earlierRound, changes, oneOfTwo, unpushed, waitedOn]) {
+    expect(ids).not.toContain(id)
+  }
+  for (const id of [erroredMerged, erroredUnpushed, erroredWaitedOn, viaChat]) {
     expect(ids).not.toContain(id)
   }
   expect(ids).not.toContain(recent)
@@ -166,7 +200,7 @@ test('done signals: dropped, taken over, merged into the default branch, every p
   expect(ledger.get(unpushed).collectedAt).toBeNull()
   // Collected tasks are not looked at again.
   expect((await doneTasks(ledger, home, lookup, NOW)).done).toEqual([])
-})
+}, 30_000)
 
 test("a task that never started leaves the branch it was named for alone: it is someone else's", async () => {
   const home = tmp.make('nod-done-')
@@ -310,6 +344,87 @@ test('sweep collects a task only as its signal read it: one that ran again and f
   })
   expect(existsSync(cwd)).toBe(true)
   expect(ledger.get(old).collectedAt).toBeNull()
+})
+
+test("an errored repo task goes once a task added after the error does its todo, its error still shown, unless it keeps the only copy of commits or a queued task's start", async () => {
+  const home = tmp.make('nod-done-')
+  process.env.CLAUDE_CONFIG_DIR = tmp.make('nod-done-claude-')
+  const ledger = new Ledger(home)
+  const repo = join(home, 'repo')
+  mkdirSync(repo)
+  const git = (cwd: string, ...args: string[]): string =>
+    sh(['git', '-c', 'user.email=t@t', '-c', 'user.name=t', ...args], cwd)
+  git(repo, 'init', '-q', '-b', 'main')
+  git(repo, 'commit', '-q', '--allow-empty', '-m', 'init')
+  git(repo, 'update-ref', 'refs/remotes/origin/main', 'HEAD')
+  git(repo, 'symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main')
+  const todos = new Todos(ledger)
+  const spec = (brief: string, branch: string | null): NewTask => ({
+    brief,
+    repo: branch === null ? null : repo,
+    branch,
+    checkCmd: null,
+    model: null,
+    after: [],
+    triggerId: null,
+    issue: null,
+  })
+  // A task for a new todo that errors, and another doing the same todo right after it (the next id).
+  const errorThenRedo = (brief: string, branch: string | null, ran = false): number => {
+    const todo = todos.capture(
+      { title: brief, notes: null, source: 'cli', sourceKey: null, url: null },
+      'human',
+    ).todo.id
+    const id = ledger.addTodoTask(spec(brief, branch), todo)
+    const task = ledger.get(id)
+    if (ran) {
+      const cwd = workspaceOf(home, task)
+      if (branch === null) mkdirSync(cwd, { recursive: true })
+      else {
+        git(repo, 'worktree', 'add', '-q', '-b', branch, cwd)
+        writeFileSync(join(cwd, `${id}.txt`), brief)
+        git(cwd, 'add', '.')
+        git(cwd, 'commit', '-q', '-m', brief)
+      }
+      ledger.setRunning(id, cwd)
+    }
+    ledger.error(id, `${brief}: it broke`)
+    ledger.addTodoTask(spec(`${brief}, again`, branch === null ? null : `${branch}-again`), todo)
+    return id
+  }
+  // As when filling the submodules failed: it never started.
+  const failedStart = errorThenRedo('failed start', 'feat/start')
+  const unpushed = errorThenRedo('unpushed', 'feat/unpushed', true)
+  const waitedOn = errorThenRedo('waited on', 'feat/base')
+  ledger.add({ ...spec('after the base', 'feat/next'), after: [waitedOn] })
+  // A plain workspace's files are its output: only age lets it go.
+  const plain = errorThenRedo('plain', null, true)
+  // A round on the same todo that was there before it errored: nobody has seen the error yet.
+  const unseen = errorThenRedo('unseen', 'feat/unseen')
+  const earlier = new Date(Date.parse(ledger.get(unseen).finishedAt ?? '') - 1000).toISOString()
+  ledger.db
+    .query('update tasks set created_at = $at where id = $id')
+    .run({ id: unseen + 1, at: earlier })
+
+  const swept = await sweep(ledger, home, async () => null, NOW)
+
+  const todoOf = (id: number) => ledger.get(id).todoId
+  expect(swept.done).toEqual([
+    { id: failedStart, reason: `#${failedStart + 1} took over t${todoOf(failedStart)}` },
+  ])
+  expect(swept.report).toEqual({ removed: [], clean: [failedStart], skipped: [] })
+  for (const id of [unpushed, waitedOn, plain, unseen]) {
+    expect(ledger.get(id).collectedAt).toBeNull()
+  }
+  // What went wrong stays on its row.
+  const shown = Bun.spawnSync(
+    ['bun', join(import.meta.dir, 'cli.ts'), 'show', String(failedStart)],
+    {
+      env: { ...process.env, NOD_HOME: home },
+    },
+  )
+  expect(shown.stdout.toString()).toContain('failed start: it broke')
+  expect(shown.stdout.toString()).toContain('collected:')
 })
 
 function sh(cmd: string[], cwd: string): string {

@@ -10,6 +10,7 @@ import {
 import { join, resolve } from 'node:path'
 import { calls, clonedRepo, fakeService, git } from '../test/remote'
 import { tempDirs } from '../test/tmp'
+import { testTmux } from '../test/tmux'
 import { land } from './land'
 import { type LandLevel, Ledger } from './ledger'
 import { Terminals } from './tmux'
@@ -19,7 +20,7 @@ import { answer, drop, onStop, type Send, tell, workspaceOf } from './worker'
 // Landing runs without a terminal here: what nod hands the worker (`send`) starts its turn as
 // deliver does, and each test ends that turn itself through the Stop hook, as the worker would.
 const tmp = tempDirs()
-process.env.TMUX_TMPDIR = tmp.make('nod-tmux-')
+testTmux(tmp)
 const bin = tmp.make('nod-land-bin-')
 // The independent reviewer is `claude -p`: the fake, never the real one.
 const fake = resolve(import.meta.dir, '../test/fake-agent.ts')

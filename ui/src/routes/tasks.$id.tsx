@@ -203,12 +203,18 @@ function TaskPage() {
           {screen === null ? (
             <div className="idle-note">
               <span className="dot" /> No live session
-              {task.collectedAt === null && (
-                <>
-                  {' · '}
-                  <code>nod resume {task.id}</code> reopens it
-                </>
-              )}
+              {/* A finished task's terminal closes after a while, and a message starts it again,
+                  but for a retrospective that ended. FINISHED of the ledger, which the page cannot
+                  import without the ledger. */}
+              {task.collectedAt === null &&
+                (['succeeded', 'cancelled', 'error'].includes(task.status) ? (
+                  retro?.outcome == null && ' · a message goes on in the same conversation'
+                ) : (
+                  <>
+                    {' · '}
+                    <code>nod resume {task.id}</code> reopens it
+                  </>
+                ))}
             </div>
           ) : (
             <div className="window">

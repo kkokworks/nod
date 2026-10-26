@@ -1,6 +1,7 @@
 import { collect, type GcReport, landed } from './gc'
-import type { Ledger, Task } from './ledger'
+import { FINISHED, type Ledger, type Task } from './ledger'
 import { Terminals } from './tmux'
+import { Todos } from './todos'
 import { message, sessionName } from './worker'
 
 // When a finished task is done with, so gc can collect it without the human naming it. gc keeps
@@ -10,7 +11,8 @@ import { message, sessionName } from './worker'
 // go; a retrospective's output is its report and the answer to it, kept in the ledger, so it goes
 // once it ends. Always held back: commits on the branch that no remote has, since collecting hides the only
 // copy from ls; a queued task that starts from this one's branch; a person attached to the
-// session. An errored task waits for the human too.
+// session. An errored task goes only with age, as what went wrong is for the person to see first,
+// or, in a repo, once a newer task took its todo over.
 
 const STALE_DAYS = 7
 const DAY = 86_400_000
@@ -41,7 +43,7 @@ export async function doneTasks(
   const unchecked: Unchecked[] = []
   for (const task of tasks) {
     if (task.collectedAt !== null) continue
-    if (task.status !== 'succeeded' && task.status !== 'cancelled') continue
+    if (!FINISHED.has(task.status)) continue
     // A turn the person types in keeps the status succeeded until it ends.
     if (terminals.attached(sessionName(task.id))) continue
     try {
@@ -85,18 +87,32 @@ async function signal(
   if (task.finishedAt !== null && Date.parse(task.finishedAt) <= now.getTime() - STALE_DAYS * DAY) {
     return `finished ${STALE_DAYS}+ days ago`
   }
+  const sameTodo = (t: Task): boolean =>
+    t.id > task.id && t.todoId !== null && t.todoId === task.todoId
+  const tookOver = (t: Task): string => `#${t.id} took over t${task.todoId}`
+  // An errored task also goes once a newer one does its todo, added after the error: the person
+  // saw what stopped it, fixed it and added the todo again. Its error stays on its row.
+  if (task.status === 'error') {
+    const { finishedAt } = task
+    const again = tasks.find((t) => sameTodo(t) && finishedAt !== null && t.createdAt >= finishedAt)
+    return task.repo === null || again === undefined ? null : tookOver(again)
+  }
   // Its rule added, turned down (cancelled), or none proposed.
   if (task.retroId !== null) return task.status === 'cancelled' ? 'dropped' : 'retrospective done'
   if (task.repo === null) return null
   if (task.status === 'cancelled') return 'dropped'
-  const newer = tasks.find((t) => t.id > task.id && t.todoId !== null && t.todoId === task.todoId)
-  if (newer !== undefined) return `#${newer.id} took over t${task.todoId}`
+  const newer = tasks.find(sameTodo)
+  if (newer !== undefined) return tookOver(newer)
   if (branch?.landed && branch.own > 0) return 'its changes are in the default branch'
   // Done once no linked pull request waits on anything: each merged, closed, or approved by the
   // person since the task was added. An approval from an earlier round does not end a new one, and
-  // one that asked for changes has another round.
+  // one that asked for changes has another round. Links on the task's todo count too (nod in
+  // --link, nod todo set --link); those that are no pull request, a chat message say, do not.
+  // ponytail: a todo's links are all its rounds'; one merged in an earlier round ends a later round
+  // that has not linked its own yet, which costs a rebuild if it goes on.
+  const todoLinks = task.todoId === null ? [] : new Todos(ledger).links(task.todoId)
   const ends: string[] = []
-  for (const url of ledger.links(task.id)) {
+  for (const url of new Set([...ledger.links(task.id), ...todoLinks.map((l) => l.url)])) {
     const pr = await prs(url)
     if (pr === null) continue
     if (pr.state !== 'open') ends.push(`${pr.state}: ${url}`)

@@ -73,6 +73,17 @@ export class Terminals {
     return clients.exitCode === 0 && clients.stdout.toString().trim() !== ''
   }
 
+  // When a person was last at the session, in ms (tmux keeps seconds): their last attach, or the
+  // last key they typed in it, which tmux counts as the session's activity (as lock-after-time
+  // does); 0 once the session is gone.
+  lastUsed(name: string): number {
+    const times = '#{session_activity} #{session_last_attached}'
+    const shown = this.run(['display-message', '-p', '-t', `=${name}:`, times])
+    if (shown.exitCode !== 0) return 0
+    const seconds = shown.stdout.toString().trim().split(' ').map(Number)
+    return Math.max(0, ...seconds.map((s) => s * 1000 || 0))
+  }
+
   // A bracketed paste keeps a multi-line message together; Enter then sends it. Control characters
   // but newline and tab go first: a message may carry text from elsewhere (what a watch printed),
   // and an escape in it (`ESC[201~`) could end the paste early and type the rest as keys.
@@ -97,9 +108,10 @@ export class Terminals {
   }
 
   // Also waits for the process in it to exit: Claude Code still writes its session files while it
-  // shuts down, which would recreate a session folder deleted right after.
-  async close(name: string): Promise<void> {
-    if (!this.alive(name)) return
+  // shuts down, which would recreate a session folder deleted right after. Returns whether there
+  // was a session to close.
+  async close(name: string): Promise<boolean> {
+    if (!this.alive(name)) return false
     const pid = this.panePid(name)
     this.kill(name)
     const deadline = Date.now() + EXIT_TIMEOUT_MS
@@ -108,6 +120,7 @@ export class Terminals {
       await Bun.sleep(100)
     }
     rmSync(this.stopFile(name), { force: true })
+    return true
   }
 
   killServer(): void {

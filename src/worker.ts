@@ -1,9 +1,13 @@
 import {
+  closeSync,
   existsSync,
+  fstatSync,
   mkdirSync,
   mkdtempSync,
+  openSync,
   readdirSync,
   readFileSync,
+  readSync,
   realpathSync,
   rmSync,
   writeFileSync,
@@ -12,7 +16,15 @@ import { homedir, tmpdir } from 'node:os'
 import { basename, join, resolve } from 'node:path'
 import { z } from 'zod'
 import { accountChanged, accountRule, configDir } from './account'
-import type { Attempt, AttemptKind, Decision, DecisionReason, Ledger, Task } from './ledger'
+import {
+  type Attempt,
+  type AttemptKind,
+  type Decision,
+  type DecisionReason,
+  FINISHED,
+  type Ledger,
+  type Task,
+} from './ledger'
 import { notify, taskRef } from './notify'
 import { type Changes, reviewBrief } from './review'
 import { activeRules, hadTrouble, isNoRule, retroBrief } from './rules'
@@ -126,6 +138,8 @@ const RESTART_GRACE_MS = 1000
 const SETTLE_POLL_MS = 1000
 // A turn younger than this may still be launching, its terminal not yet there.
 const LAUNCH_GRACE_MS = 30_000
+// How long a finished task keeps its terminal (closeFinished).
+const IDLE_TERMINAL_MS = 60 * 60_000
 // Kept on a worker's tmux session: the restart it waits to do once its turn ends, the reason the
 // person attached to it was last told about, so they hear it once, and the API error that ended its
 // turn (StopFailure). All three are about the Claude Code running, so each new start clears them.
@@ -157,6 +171,16 @@ const SANDBOX = {
 // things, and close where those end; every decision closes once the task does.
 const ASKED: readonly DecisionReason[] = ['question', 'failed', 'check_failed', 'interrupted']
 const WENT_ON = '(it went on without an answer)'
+// The prompt of a turn nod did not send: one a person typed into the worker's terminal, or one
+// Claude Code went on to by itself. What they typed stays out of the ledger.
+const TYPED = '(typed into the terminal)'
+// How Claude Code marks a turn the person stopped (endTurnWithoutStop), how much of the
+// transcript's end is read for it, and what a typed turn that ended without a Stop ends with in the
+// ledger.
+const STOP_MARK = '[Request interrupted by user'
+const TRANSCRIPT_TAIL = 256 * 1024
+const STOPPED_TURN = 'the person stopped it (Escape)'
+const HELD_BACK = 'a hook held the message back'
 // What a decision a turn showed gets once that turn is cut off with its terminal or Claude Code.
 const CUT = '(the turn was cut off)'
 
@@ -229,6 +253,9 @@ export const NotificationEvent = z.object({
 })
 // Sent instead of Stop when an API error ended the turn: a usage limit, a login (2.1.309).
 export const StopFailureEvent = z.object({ session_id: z.string(), error: z.string() })
+// Sent as Claude Code takes in a message, before its turn (measured on 2.1.310 with `claude -p`:
+// session_id, transcript_path, cwd, prompt_id, permission_mode, hook_event_name, prompt).
+export const PromptEvent = z.object({ session_id: z.string(), prompt: z.string() })
 
 type Report = { status: 'done' | 'question' | 'failed'; text: string }
 
@@ -664,6 +691,23 @@ export async function onStopFailure(
   )
 }
 
+// Called by the UserPromptSubmit hook. A turn a person types into the worker's terminal is in the
+// ledger from its start, as one nod sends is (deliver opens that one before pasting it, so this
+// leaves it as it is): until its Stop, nothing takes the worker for idle (closeFinished, restarts).
+// Only the turn opens here; what it changes of the task waits for its Stop, as before
+// (currentAttempt). Only the ledger, as the person's message waits on this: a turn of theirs still
+// open, one they stopped say, takes this one too, and its Stop closes what the stopped one left.
+// A command (/exit) or bash mode does not come here: it does not go through prompt.submit, as the
+// 2.1.310 binary says of a prompt with no submit outcome. So a message that starts with `/` (a path)
+// is a turn like any other.
+// ponytail: not measured in an interactive session; a command that did come here would open a
+// turn its Stop never closes, read as cut off once Claude Code starts again.
+export function onPrompt(ledger: Ledger, event: z.infer<typeof PromptEvent>): void {
+  const taskId = ledger.taskOfSession(event.session_id)
+  if (taskId === null) return
+  openTurn(ledger, taskId, event.session_id)
+}
+
 // Called by the Notification hook. A permission prompt pauses the worker mid-turn, so it becomes a
 // decision; the other notifications need nothing from nod.
 export async function onNotification(
@@ -1052,19 +1096,113 @@ async function currentAttempt(
   taskId: number,
   sessionId: string,
 ): Promise<number> {
-  const open = ledger.openAttempt(taskId)
-  if (open !== null) return open.id
-  const id = ledger.startAttempt({
-    taskId,
-    kind: 'followup',
-    decisionId: null,
-    sessionId,
-    prompt: '(typed into the terminal)',
-  })
-  const closed = closeDecisions(ledger, taskId, (d) => ASKED.includes(d.reason), WENT_ON)
+  const turn = openTurn(ledger, taskId, sessionId)
+  // A turn nod sent closed these as it started (deliver). One the prompt hook opened leaves them
+  // to here, the turn's end as before it was opened at its start, so a turn the person stops
+  // (Escape, no Stop) leaves the question open and the task waiting on it.
+  if (turn.prompt !== TYPED) return turn.id
+  const asked = (d: Decision) => ASKED.includes(d.reason) && d.attemptId !== turn.id
+  const closed = closeDecisions(ledger, taskId, asked, WENT_ON)
   goesOn(ledger, taskId, closed)
   await announce(home, ledger.get(taskId), closed, WENT_ON)
-  return id
+  return turn.id
+}
+
+// The task's open turn, or one opened as a turn nod did not send. In one transaction with the look,
+// as deliver opens its turns in one, so of a hook and a message at once only one opens it.
+function openTurn(ledger: Ledger, taskId: number, sessionId: string): Attempt {
+  return ledger.db
+    .transaction((): Attempt => {
+      const open = ledger.openAttempt(taskId)
+      if (open !== null) return open
+      const id = ledger.startAttempt({
+        taskId,
+        kind: 'followup',
+        decisionId: null,
+        sessionId,
+        prompt: TYPED,
+      })
+      return ledger.attempt(id)
+    })
+    .immediate()
+}
+
+// Ends the open turn a person typed in once its transcript shows it ended without a Stop hook: they
+// stopped it with Escape (no Stop, measured on 2.1.290), or a hook of theirs held the message back
+// before it became a turn. Open for good, it would keep its terminal, take the next message as one
+// of its own, hold restarts back, and read as cut off once Claude Code starts again. Not one with a
+// decision open, a permission dialog the person stopped say: closing that would leave its task
+// waiting on nothing, so it goes as before, closed by the next turn's Stop, or cut off. Errors only
+// go to stderr: what calls this goes on as before.
+// ponytail: reads the transcript's end, in Claude Code's own format; a format that changes reads as
+// not ended, which leaves the turn open as before.
+function endTurnWithoutStop(ledger: Ledger, home: string, taskId: number): void {
+  const open = ledger.openAttempt(taskId)
+  if (open === null || open.prompt !== TYPED) return
+  if (ledger.decisions(taskId).some((d) => d.answer === null && d.attemptId === open.id)) return
+  let why: string | null = null
+  try {
+    const { account } = ledger.get(taskId)
+    // '' is Claude Code's default folder, null an account nod never recorded.
+    const file = transcriptPath(
+      account === null ? configDir(home) : account || null,
+      open.sessionId,
+    )
+    why = file === null ? null : endedWithoutStop(file)
+  } catch (error) {
+    console.error(`nod: could not read the transcript of task ${taskId}: ${message(error)}`)
+  }
+  if (why !== null) ledger.failOpenAttempt(open.id, why)
+}
+
+// A turn a person typed that ended without a Stop (endTurnWithoutStop): it ran no turn of the
+// worker's, or none that went anywhere.
+const noTurn = (a: Attempt): boolean =>
+  a.prompt === TYPED && (a.error === STOPPED_TURN || a.error === HELD_BACK)
+
+const TranscriptEntry = z.object({
+  type: z.string(),
+  isSidechain: z.boolean().optional(),
+  isMeta: z.boolean().optional(),
+  interruptedByShutdown: z.boolean().optional(),
+  promptSubmitEnding: z.unknown().optional(),
+  message: z.object({ content: z.unknown() }).optional(),
+})
+
+// How the last turn in the transcript `file` ended, if without a Stop hook; null if it did not, or
+// for all this can tell. Read as Claude Code reads its own transcript (2.1.310's binary): the last
+// message of the person's or the worker's, not a subagent's (sidechain), decides. The person's stop
+// is their message `[Request interrupted by user…]`, in a text block, so a tool's output holding
+// the words is none, and not one Claude Code marks as written as it shut down
+// (`interruptedByShutdown`), a turn cut off. A message a hook held back leaves no message of the
+// person's but a system entry with `promptSubmitEnding` (measured on 2.1.310 with `claude -p`).
+function endedWithoutStop(file: string): string | null {
+  const fd = openSync(file, 'r')
+  try {
+    const size = fstatSync(fd).size
+    const end = Buffer.alloc(Math.min(size, TRANSCRIPT_TAIL))
+    readSync(fd, end, 0, end.length, size - end.length)
+    for (const line of end.toString().split('\n').reverse()) {
+      const parsed = TranscriptEntry.safeParse(jsonOrNull(line))
+      if (!parsed.success || parsed.data.isSidechain === true) continue
+      const entry = parsed.data
+      if (entry.type === 'system' && entry.promptSubmitEnding !== undefined) return HELD_BACK
+      if (entry.type === 'assistant') return null
+      if (entry.type !== 'user' || entry.isMeta === true) continue
+      const content = entry.message?.content
+      const texts = Array.isArray(content)
+        ? content.flatMap((b) => (b?.type === 'text' && typeof b.text === 'string' ? [b.text] : []))
+        : [content]
+      // What a local command such as /exit leaves is no turn of its own.
+      if (texts.some((t) => typeof t === 'string' && /^<(command-|local-command-)/.test(t)))
+        continue
+      const stopped = texts.some((t) => typeof t === 'string' && t.startsWith(STOP_MARK))
+      return stopped && entry.interruptedByShutdown !== true ? STOPPED_TURN : null
+    }
+    return null
+  } finally {
+    closeSync(fd)
+  }
 }
 
 // The worker went on past decisions that held its task (`closed`), so the task runs again, unless
@@ -1149,6 +1287,8 @@ async function deliver(
   decisionId: number | null,
   from: number | null = null,
 ): Promise<void> {
+  // A turn the person stopped takes no message: the message starts a turn of its own.
+  endTurnWithoutStop(ledger, home, taskId)
   const task = ledger.get(taskId)
   const last = ledger.lastAttempt(taskId)
   const workspace = task.workspace
@@ -1465,7 +1605,9 @@ export async function keepWorker(
     const asked = restarting
     restarting = false
     if (stopping || terminals.stopped(name) || terminals.pane(name) !== pane) return
-    // The turn open as this one ended, read before a message can open another (deliver).
+    // The turn open as this one ended, read before a message can open another (deliver). Not one a
+    // person typed and had ended before (/exit after Escape): that one was not cut off.
+    endTurnWithoutStop(ledger, home, taskId)
     const open = ledger.openAttempt(taskId)
     // However this one ended, a message pasted before the next is up would reach none: it waits for
     // that start in the prompt file (deliver).
@@ -1637,6 +1779,8 @@ export async function lostTurns(ledger: Ledger, home: string, now: Date): Promis
   for (const t of ledger.list()) {
     if (t.status !== 'running' && t.status !== 'needs_decision') continue
     if (live.has(sessionName(t.id))) continue
+    // A turn a person typed that had ended before its terminal went was not cut off.
+    endTurnWithoutStop(ledger, home, t.id)
     const open = ledger.openAttempt(t.id)
     if (open === null || Date.parse(open.startedAt) > now.getTime() - LAUNCH_GRACE_MS) continue
     if (await cutOff(ledger, home, t.id, open, LOST)) lost.push(t.id)
@@ -1644,10 +1788,50 @@ export async function lostTurns(ledger: Ledger, home: string, now: Date): Promis
   return lost
 }
 
+// Closes the terminals of the finished tasks gc has not collected once they have sat this long: each
+// keeps a Claude Code (70–300MB) that a message can start again in the same conversation (deliver),
+// so a finished one need not wait for gc's signals (up to STALE_DAYS in done.ts). Not one a person
+// is attached to or left less than that long ago, one whose Stop hook still checks its last turn
+// (settling), one with a turn open, or one showing a permission or trust dialog a decision waits
+// on. Its folder, branch and ledger rows stay. The tick runs it.
+export async function closeFinished(ledger: Ledger, home: string, now: Date): Promise<number[]> {
+  const terminals = Terminals.of(home)
+  const live = terminals.sessions()
+  const before = now.getTime() - IDLE_TERMINAL_MS
+  const closed: number[] = []
+  for (const { id } of ledger.list()) {
+    const name = sessionName(id)
+    if (!live.has(name)) continue
+    // One that goes meanwhile (gc, drop) or does not exit must not keep the rest open.
+    try {
+      // Read again as the tick gets to it, as gc does: closing the ones before takes a while, and
+      // `nod tell` sets a task running meanwhile (deliver).
+      // ponytail: a tell between this and the close pastes into a closing terminal; the tick asks
+      // about that turn (lostTurns).
+      const t = ledger.get(id)
+      if (!FINISHED.has(t.status) || t.collectedAt !== null || t.finishedAt === null) continue
+      // A turn a person types in is open from its start (onPrompt), and kept below. The hour counts
+      // from when they last attached or typed too: one who only looked may come back, and a prompt
+      // hook that failed (it never holds up their message) leaves their turn out of the ledger.
+      if (Math.max(Date.parse(t.finishedAt), terminals.lastUsed(name)) > before) continue
+      if (terminals.attached(name) || settling(terminals, name)) continue
+      endTurnWithoutStop(ledger, home, id)
+      if (ledger.openAttempt(id) !== null) continue
+      const dialog = (d: Decision) => d.reason === 'permission' || d.reason === 'trust'
+      if (ledger.decisions(id).some((d) => d.answer === null && dialog(d))) continue
+      // Not one gc or drop closed meanwhile.
+      if (await terminals.close(name)) closed.push(id)
+    } catch (error) {
+      console.error(`nod: could not close task ${id}'s terminal: ${message(error)}`)
+    }
+  }
+  return closed
+}
+
 // When the task began to wait on background work: the end of the first of its finished turns that
 // waited, in a row up to the last one; null when its last finished turn did not wait.
 function waitingSince(ledger: Ledger, taskId: number): number | null {
-  const ended = ledger.attempts(taskId).filter((a) => a.finishedAt !== null)
+  const ended = ledger.attempts(taskId).filter((a) => a.finishedAt !== null && !noTurn(a))
   const first = ended.slice(ended.findLastIndex((a) => a.outcome !== 'waiting') + 1)[0]
   return first?.finishedAt ? Date.parse(first.finishedAt) : null
 }
@@ -1661,8 +1845,13 @@ const waitedNote = (since: number, now = Date.now()): string =>
 export async function overdueWaits(ledger: Ledger, home: string, now: Date): Promise<number[]> {
   const asked: number[] = []
   for (const t of ledger.list()) {
-    if (t.status !== 'running' || ledger.openAttempt(t.id) !== null) continue
-    const last = ledger.lastAttempt(t.id)
+    if (t.status !== 'running') continue
+    endTurnWithoutStop(ledger, home, t.id)
+    if (ledger.openAttempt(t.id) !== null) continue
+    // A turn the person typed that ended without a Stop came while it waited, and changed nothing
+    // of that: the work it waits on still runs or is gone.
+    const turns = ledger.attempts(t.id)
+    const last = turns.filter((a) => !noTurn(a)).at(-1) ?? null
     const since = waitingSince(ledger, t.id)
     if (last === null || last.outcome !== 'waiting' || since === null) continue
     if (now.getTime() - since < WAIT_LIMIT_MS) continue
@@ -1672,7 +1861,8 @@ export async function overdueWaits(ledger: Ledger, home: string, now: Date): Pro
     // (the work finished just now) goes on instead.
     // ponytail: a turn that starts between this and the decision runs with it open, until the
     // task's next question or its success closes it.
-    if (!ledger.endWait(last.id, failed ? 'failed' : 'needs_decision')) continue
+    const past = turns.filter((a) => a.id > last.id && noTurn(a)).map((a) => a.id)
+    if (!ledger.endWait(last.id, failed ? 'failed' : 'needs_decision', past)) continue
     const note = `${waitedNote(since, now.getTime())} No turn has come since it stopped.\n`
     const reason = failed ? 'failed' : 'question'
     await decide(ledger, home, t.id, last.id, reason, note + report.slice(-QUESTION_LIMIT))
@@ -1709,6 +1899,7 @@ export async function restart(
   if (terminals.option(name, RESTARTING_OPTION) !== '') return 'restarted'
   // A turn an API error ended waits for nothing but Claude Code: it goes on in the new start.
   const stalled = terminals.option(name, STALLED_OPTION)
+  endTurnWithoutStop(ledger, home, taskId)
   const busy = ledger.openAttempt(taskId) !== null && !stalled
   if (busy || settling(terminals, name)) {
     terminals.setOption(name, RESTART_OPTION, why)
@@ -1770,6 +1961,7 @@ function workerSettings(started: string | null): string {
       ],
       Notification: [{ hooks: [{ type: 'command', command: hook('notification') }] }],
       StopFailure: [{ hooks: [{ type: 'command', command: hook('stop-failure') }] }],
+      UserPromptSubmit: [{ hooks: [{ type: 'command', command: hook('prompt') }] }],
       ...(started === null ? {} : { SessionStart: touch(started) }),
     },
   })
