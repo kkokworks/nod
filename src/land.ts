@@ -2,7 +2,7 @@ import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { landed } from './gc'
 import type { Landing, Ledger, Repo, Task } from './ledger'
-import { notify, taskRef } from './notify'
+import { notify, runGroup, taskRef } from './notify'
 import { type GitService, type OwnPr, serviceOf } from './prs'
 import { Terminals } from './tmux'
 import {
@@ -11,6 +11,7 @@ import {
   handOff,
   message,
   NOD_GIT,
+  PR_TEXT,
   rebasing,
   restore,
   running,
@@ -33,9 +34,9 @@ import {
 const CHECK_TIMEOUT_MS = 30 * 60_000
 const GATE_TIMEOUT_MS = 5 * 60_000
 // fetch and push reach the remote: a network that hangs, or a login that would ask for a password
-// no one is there to type, must not hold the tick.
+// no one is there to type, must not hold the tick. They run in a process group of their own, so the
+// timeout also ends the remote helper or ssh git starts, which would hold the output open.
 const GIT_TIMEOUT_MS = 2 * 60_000
-const NO_PROMPT = { GIT_TERMINAL_PROMPT: '0' }
 const OUTPUT_LIMIT = 4000
 const GIT = NOD_GIT
 
@@ -102,7 +103,10 @@ async function landRepo(pass: Pass, only: number[] | undefined): Promise<void> {
   const serviceNow = (): GitService => {
     service ??= serviceOf(repo.path)
     // Missing, it would fail at every pass; the person installs it or lands by hand.
-    if (Bun.which(service.name) === null) throw new MissingCli(service.name)
+    // The PATH as it is now: Bun.which alone reads the one this process started with.
+    if (Bun.which(service.name, { PATH: process.env.PATH ?? '' }) === null) {
+      throw new MissingCli(service.name)
+    }
     return service
   }
   for (const t of tasks) {
@@ -253,18 +257,15 @@ async function landTask(
         `origin/${branch} has commits nod did not push. Fold them in or remove them, then answer yes; answer no to stop landing it.`,
       )
     }
-    const push = await spawn(
-      [
-        ...GIT,
-        'push',
-        '--porcelain',
-        `--force-with-lease=refs/heads/${branch}:${expected}`,
-        'origin',
-        `${head}:refs/heads/${branch}`,
-      ],
-      ws,
-      { timeoutMs: GIT_TIMEOUT_MS, env: NO_PROMPT },
-    )
+    // Its CLI before anything goes out: missing, it would stop the landing once pushed.
+    service()
+    const push = await onRemote(ws, [
+      'push',
+      '--porcelain',
+      `--force-with-lease=refs/heads/${branch}:${expected}`,
+      'origin',
+      `${head}:refs/heads/${branch}`,
+    ])
     if (push.code !== 0) {
       return ask(`The push of ${branch} was refused:\n${push.output.trim().slice(-OUTPUT_LIMIT)}`)
     }
@@ -384,8 +385,14 @@ function claim(ledger: Ledger, taskId: number): boolean {
 }
 
 async function fetchTip(repo: string): Promise<Tip> {
-  await git(repo, 'fetch', '-q', 'origin')
-  const head = await git(repo, 'ls-remote', '--symref', 'origin', 'HEAD')
+  const reach = async (args: string[]): Promise<string> => {
+    const r = await onRemote(repo, args)
+    if (r.code !== 0)
+      throw new Error(`git ${args[0]} failed: ${r.output.trim().slice(-OUTPUT_LIMIT)}`)
+    return r.output
+  }
+  await reach(['fetch', '-q', 'origin'])
+  const head = await reach(['ls-remote', '--symref', 'origin', 'HEAD'])
   const branch = /^ref: refs\/heads\/(\S+)\s+HEAD/m.exec(head)?.[1]
   if (branch === undefined) throw new Error('origin names no default branch')
   return {
@@ -404,9 +411,6 @@ async function startOf(ws: string, branch: string): Promise<string | null> {
   const [start, ...subject] = oldest.split(' ')
   return start && subject.join(' ').startsWith('branch: Created from') ? start : null
 }
-
-const PR_TEXT =
-  "nod then opens a pull request for your branch. Above your report line, write it for the repo's readers: its title on the first line, then its body in Markdown (what changed and why, how it was checked, and the conflict table if you resolved any). It goes out as you write it, so leave out anything that must not be published."
 
 function landingMessage(m: {
   tip: Tip
@@ -488,11 +492,18 @@ async function ownPush(ws: string, branch: string, remote: string): Promise<bool
   return false
 }
 
-async function git(cwd: string, ...args: string[]): Promise<string> {
-  const { code, stdout, output } = await spawn([...GIT, ...args], cwd, {
+// git on the remote, which may never answer and must not ask (GIT_TIMEOUT_MS).
+async function onRemote(cwd: string, args: string[]): Promise<{ code: number; output: string }> {
+  const r = await runGroup([...GIT, ...args], {
+    cwd,
+    env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
     timeoutMs: GIT_TIMEOUT_MS,
-    env: NO_PROMPT,
   })
+  return { code: r.code, output: r.stdout + r.stderr }
+}
+
+async function git(cwd: string, ...args: string[]): Promise<string> {
+  const { code, stdout, output } = await spawn([...GIT, ...args], cwd)
   if (code !== 0) throw new Error(`git ${args[0]} failed: ${output.trim().slice(-OUTPUT_LIMIT)}`)
   return stdout.trim()
 }

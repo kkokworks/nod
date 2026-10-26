@@ -410,9 +410,7 @@ export async function answer(
     return true
   }
   if (decision.reason !== 'permission') {
-    await reply(
-      `${decision.reason === 'interrupted' ? `${CUT_OFF_PROMPT}\n` : ''}Human decision: ${text}`,
-    )
+    await reply(answerText(ledger, decision, text))
     return true
   }
   // The permission dialog has "Yes" selected first (measured on 2.1.290).
@@ -431,6 +429,19 @@ export async function answer(
   })
   await reply(`Human decision: permission denied. ${text}`)
   return true
+}
+
+// What the worker hears of an answer. Landing work that still lacks the pull request's text (a gate
+// that failed clears it) gets it from the done after this answer, so the worker hears how to write
+// it too.
+export function answerText(ledger: Ledger, decision: Decision, text: string): string {
+  const cut = decision.reason === 'interrupted' ? `${CUT_OFF_PROMPT}\n` : ''
+  const landing = ledger.landing(decision.taskId)
+  const again =
+    landing?.handedAt != null && landing.pr === null && landing.title === null
+      ? `\n\nFrom nod: ${PR_TEXT}`
+      : ''
+  return `${cut}Human decision: ${text}${again}`
 }
 
 async function waitForScreen(terminals: Terminals, name: string, text: string): Promise<void> {
@@ -2230,6 +2241,10 @@ export async function conflictBrief(ws: string): Promise<string> {
   const listed = files.length > 0 ? files.map((f) => `- ${f}`).join('\n') : '- (see git status)'
   return `The rebase stopped at your commit ${at.code === 0 ? at.stdout.trim() : '?'} with conflicts in:\n${listed}\n${RESOLVE}`
 }
+
+// What a worker is asked when nod needs the pull request's text (land.ts).
+export const PR_TEXT =
+  "nod then opens a pull request for your branch. Above your report line, write it for the repo's readers: its title on the first line, then its body in Markdown (what changed and why, how it was checked, and the conflict table if you resolved any). It goes out as you write it, so leave out anything that must not be published."
 
 const RESOLVE =
   "Resolve them in this worktree: keep what the default branch changed and put your branch's change on top of it, dropping neither side silently. Stage each resolved file with `git add <file>`; do not commit, and do not continue or abort the rebase: nod continues it once you report done, and sends you the next conflict if there is one. Skip the subagent review this turn; nod's independent review reads the result. Report each conflict as a table row: | file and place | what the default branch changed | what your branch changed | what you kept and why |. Where numbers or conditions differ and the right one is not clear, ask with NOD: question instead of choosing."

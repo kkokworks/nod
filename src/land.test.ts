@@ -1,5 +1,12 @@
 import { afterAll, beforeEach, expect, test } from 'bun:test'
-import { chmodSync, existsSync, readFileSync, writeFileSync } from 'node:fs'
+import {
+  chmodSync,
+  existsSync,
+  readdirSync,
+  readFileSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs'
 import { join, resolve } from 'node:path'
 import { calls, clonedRepo, fakeService, git } from '../test/remote'
 import { tempDirs } from '../test/tmp'
@@ -7,7 +14,7 @@ import { land } from './land'
 import { type LandLevel, Ledger } from './ledger'
 import { Terminals } from './tmux'
 import { tick } from './triggers'
-import { answer, drop, onStop, type Send, tell, workspaceOf } from './worker'
+import { answer, answerText, drop, onStop, type Send, tell, workspaceOf } from './worker'
 
 // Landing runs without a terminal here: what nod hands the worker (`send`) starts its turn as
 // deliver does, and each test ends that turn itself through the Stop hook, as the worker would.
@@ -528,4 +535,84 @@ test('a pull request closed without its merge asks the person', async () => {
     'asked: Its pull request was closed without being merged',
   )
   expect(ledger.decisions(id).find((d) => d.answer === null)?.reason).toBe('land')
+}, 30_000)
+
+test('after a gate that failed, the answer tells the worker to write the pull request again', async () => {
+  setRepo('pr', { gateCmd: '! grep -q Secret "$NOD_PR"' })
+  const id = finished('feat/w', { 'w.txt': 'w\n' })
+  await land(ledger, home, { send })
+  await stops(id, 'Secret plan\n\nNOD: done | wrote it')
+  await land(ledger, home, { send })
+  const asked = ledger.decisions(id).find((d) => d.answer === null)
+  if (asked === undefined) throw new Error('no decision')
+  expect(ledger.landing(id)?.title).toBeNull()
+  expect(answerText(ledger, asked, 'take Secret out')).toContain(
+    "Human decision: take Secret out\n\nFrom nod: nod then opens a pull request for your branch. Above your report line, write it for the repo's readers",
+  )
+  // With the text in hand, or outside landing, an answer is only the person's.
+  ledger.setLanding(id, { title: 'Plan' })
+  expect(answerText(ledger, asked, 'go on')).toBe('Human decision: go on')
+})
+
+test('without its service on PATH, nod asks before anything goes out', async () => {
+  setRepo('pr')
+  const id = finished('feat/p', { 'p.txt': 'p\n' })
+  await land(ledger, home, { send })
+  await stops(id, 'Add p\n\nNOD: done | wrote it')
+  // Only git, tmux and the shell, none of gh or tea.
+  const onlyGit = tmp.make('nod-only-git-')
+  for (const tool of ['git', 'tmux']) symlinkSync(Bun.which(tool) ?? tool, join(onlyGit, tool))
+  const path = process.env.PATH
+  process.env.PATH = `${onlyGit}:/usr/bin:/bin`
+  try {
+    expect((await land(ledger, home, { send }))[0]?.did).toBe(
+      'asked: landing this repo needs gh, which is not on PATH where nod lands.',
+    )
+  } finally {
+    process.env.PATH = path
+  }
+  expect(
+    Bun.spawnSync(['git', '-C', origin, 'rev-parse', '-q', '--verify', 'feat/p']).exitCode,
+  ).toBe(1)
+  expect(ledger.decisions(id).find((d) => d.answer === null)?.reason).toBe('land')
+}, 30_000)
+
+test('the next conflict goes on however many retries the last one took', async () => {
+  setRepo('pr')
+  writeFileSync(join(repo, 'f.txt'), 'start\n')
+  git(repo, 'add', '-A')
+  git(repo, 'commit', '-qm', 'add f')
+  git(repo, 'push', '-q', 'origin', 'main')
+  const id = finished('feat/r', { 'f.txt': 'one\n' })
+  writeFileSync(join(ws(id), 'f.txt'), 'two\n')
+  git(ws(id), 'commit', '-qam', 'f two')
+  mainMoves('f.txt', 'main\n')
+  await land(ledger, home, { send })
+  writeFileSync(join(ws(id), 'f.txt'), 'main\none\n')
+  git(ws(id), 'add', 'f.txt')
+  writeFileSync(join(ws(id), 'README'), 'changed\n')
+  await stops(id, 'Change f\n\nNOD: done | resolved')
+  await stops(id, 'Fixed it.', true)
+  expect(ledger.attempts(id).filter((a) => a.kind === 'retry')).toHaveLength(2)
+  // Put right, the rebase stops at the second commit: that conflict goes to the worker too.
+  git(ws(id), 'checkout', '--', 'README')
+  const next = await stops(id, 'Fixed it.', true)
+  expect(JSON.parse(next ?? '{}').reason).toContain('f two')
+  expect(ledger.decisions(id).filter((d) => d.answer === null)).toEqual([])
+}, 30_000)
+
+test('landing work done tells the person nothing; the pull request does', async () => {
+  const events = tmp.make('nod-events-')
+  writeFileSync(join(home, 'notify'), `#!/bin/sh\ncat > ${JSON.stringify(events)}/$$.json\n`)
+  chmodSync(join(home, 'notify'), 0o755)
+  setRepo('pr')
+  const id = finished('feat/n', { 'n.txt': 'n\n' })
+  await land(ledger, home, { send })
+  await stops(id, 'Add n\n\nNOD: done | wrote it')
+  await land(ledger, home, { send })
+  const heard = readdirSync(events).map(
+    (f) => JSON.parse(readFileSync(join(events, f), 'utf8')).event,
+  )
+  expect(heard).not.toContain('succeeded')
+  expect(heard).toContain('pr_opened')
 }, 30_000)

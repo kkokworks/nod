@@ -89,6 +89,8 @@ describe('nod opens and squash merges its pull requests through the repo service
       ['BLOCKED', 'blocked'],
       ['DIRTY', 'conflict'],
       ['UNKNOWN', 'unknown'],
+      // Pre-receive hooks that may yet refuse it: not clean either.
+      ['HAS_HOOKS', 'blocked'],
     ] as const) {
       writeFileSync(join(own, 'merge-state'), status)
       expect((await service.view(pr)).merge).toBe(merge)
