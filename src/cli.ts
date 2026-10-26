@@ -24,6 +24,8 @@ import { Terminals } from './tmux'
 import {
   actorFromEnv,
   capture,
+  openSession,
+  placeWork,
   projectCommand,
   sessionFromEnv,
   TODO_USAGE,
@@ -40,7 +42,7 @@ import {
   scheduleOn,
   tick,
 } from './triggers'
-import { indent, oneLine, taskNote, taskStatus } from './view'
+import { indent, oneLine, reopenCommand, taskNote, taskStatus, watch } from './view'
 import {
   answer,
   branchOf,
@@ -64,7 +66,8 @@ import {
 } from './worker'
 
 const USAGE = `usage:
-  nod [--issue <key,...>]          open decisions (--issue: only those of tasks on these issues)
+  nod [--issue <key,...>] [--mine] open decisions (--issue: only those of tasks on these issues;
+                                   --mine: only those of this Claude session's tasks)
   nod <decision> <answer...>       answer a decision; the worker gets it in its own session
   nod drop <decision>              end the task instead of answering
   nod add <brief> [--repo <path> --branch <name>] [--check <command>] [--model <model>]
@@ -80,7 +83,16 @@ const USAGE = `usage:
                                    left out for the todo's title and notes. Without --todo the
                                    task gets a todo of its own, titled by the brief's first line,
                                    in --project when given. Run in a Claude session, the task
-                                   records that session as its root, for --mine
+                                   records that session as its root. In a session nod open
+                                   opened, the work goes in its project, a todo with none
+                                   included, and work of another project is refused
+  nod open <project> [--new]       Claude Code in this terminal, in the project's session, named
+                                   after it: the latest one nod open opened for it, in the folder
+                                   it was opened in; or, with --new, none yet, or none Claude
+                                   Code kept a conversation of in this account, a new one here.
+                                   Ends as Claude Code does. Each session of a project has all
+                                   its tasks as its own (--mine), whichever session added them,
+                                   and nod add there keeps to the project
   nod tell <task> <message...>     send a follow-up into the task's session
   nod resume <task>                reopen a task whose session ended, from its transcript
   nod attach <task>                open the worker's terminal (tmux)
@@ -88,16 +100,20 @@ const USAGE = `usage:
   nod watch [--issue <key,...>] [--mine]
                                    print decisions as they open, until no worker is running;
                                    --issue: only decisions and workers of tasks on these issues;
-                                   --mine: only those of tasks this Claude session added, so
+                                   --mine: only those of this Claude session's tasks, so
                                    several root sessions can each watch their own
   nod link <task> <url...>         record where the task's result went (a pull request, a posted
                                    review), so ls and show list it next to the task. Until then
                                    they list the remote branches that hold the task's branch
   nod ls [--all] [--mine]          tasks not yet collected by gc (--all: every task; --mine: only
-                                   those this Claude session added); those with an issue are
-                                   listed under it
+                                   this Claude session's: those it added, or, in a session nod
+                                   open opened, its project's); those with an issue are listed
+                                   under it
   nod show <task>                  history, links, then the worker's last full report. root: is
-                                   the Claude session that added it (claude --resume <session>)
+                                   the Claude session whose task it is: its project's latest
+                                   session, by the project and how to reopen it, with the session
+                                   that added it when that was another; else the session that
+                                   added it (claude --resume <session>)
   nod search <ref>                 find by number: t<n>, #<n>, r<n>, p<n>, or <n> for every kind
   nod stats
   nod gc [<task...> | --older-than <days>]
@@ -184,18 +200,23 @@ const home = nodHome()
 const ledger = new Ledger(home)
 const terminals = Terminals.of(home)
 const taskRef = (ref: string | undefined): number => new Todos(ledger).taskRef(ref ?? '')
-// Also covers a decision that opens just as the last worker stops.
-const WATCH_GRACE_SECS = 5
 
 switch (command) {
   case undefined:
-  case '--issue': {
+  case '--issue':
+  case '--mine': {
     const { values } = parseArgs({
       args: Bun.argv.slice(2),
-      options: { issue: { type: 'string' } },
+      options: { issue: { type: 'string' }, mine: { type: 'boolean' } },
     })
     const keys = issueKeys(values.issue)
-    printDecisions(ledger.openDecisions().filter((d) => onIssues(keys, ledger.get(d.taskId))))
+    const session = mySession(values.mine)
+    printDecisions(
+      ledger.openDecisions().filter((d) => {
+        const task = ledger.get(d.taskId)
+        return onIssues(keys, task) && isMine(session, task)
+      }),
+    )
     break
   }
   case 'add':
@@ -212,6 +233,9 @@ switch (command) {
   case 'attach':
     attach(taskRef(rest[0]))
     break
+  case 'open':
+    open(rest)
+    break
   case 'peek':
     peek(taskRef(rest[0]))
     break
@@ -222,7 +246,7 @@ switch (command) {
     })
     const keys = issueKeys(values.issue)
     const session = mySession(values.mine)
-    await watch((t) => onIssues(keys, t) && isMine(session, t))
+    await watch(ledger, (t) => onIssues(keys, t) && isMine(session, t), printDecision)
     break
   }
   case 'link': {
@@ -374,8 +398,9 @@ async function add(args: string[]): Promise<void> {
     throw new Error('--project places a new todo; the one given with --todo keeps its own')
   }
   const todos = new Todos(ledger)
-  const projectId = values.project === undefined ? null : todos.findProject(values.project).id
   const todo = values.todo === undefined ? null : todos.get(parseRef(values.todo, 't'))
+  const rootSession = sessionFromEnv()
+  const projectId = placeWork(todos, rootSession, values.project, todo)
   // A clarified todo already says what to do.
   const brief =
     todo !== null && positionals.length === 0
@@ -393,11 +418,13 @@ async function add(args: string[]): Promise<void> {
     after,
     triggerId: null,
     issue: values.issue ?? null,
-    rootSession: sessionFromEnv(),
+    rootSession,
   }
   const actor = actorFromEnv()
   const id =
-    todo === null ? todos.delegateNew(task, projectId, actor) : todos.delegate(todo.id, task, actor)
+    todo === null
+      ? todos.delegateNew(task, projectId, actor)
+      : todos.delegate(todo.id, task, actor, projectId)
   // A task that comes after others starts here only if they have all succeeded already.
   if (after.length === 0) await startTask(ledger, home, id)
   else await startReady(ledger, home)
@@ -656,6 +683,28 @@ function attach(taskId: number): void {
   process.exit(result.exitCode)
 }
 
+// Claude Code in this terminal, in the project's session, with this shell's environment; nod ends
+// as it does.
+function open(args: string[]): void {
+  const { values, positionals } = parseArgs({
+    args,
+    options: { new: { type: 'boolean' } },
+    allowPositionals: true,
+  })
+  const [ref, ...extra] = positionals
+  if (ref === undefined || extra.length > 0) throw new Error(USAGE)
+  const config = process.env.CLAUDE_CONFIG_DIR || null
+  const { argv, cwd } = openSession(
+    new Todos(ledger),
+    ref,
+    values.new ?? false,
+    process.cwd(),
+    config,
+  )
+  const result = Bun.spawnSync(argv, { cwd, stdio: ['inherit', 'inherit', 'inherit'] })
+  process.exit(result.exitCode ?? 1)
+}
+
 // What the worker shows right now, for a Claude session that cannot attach a terminal.
 function peek(taskId: number): void {
   ledger.get(taskId)
@@ -693,29 +742,14 @@ function mySession(mine: boolean | undefined): string | null {
   if (!mine) return null
   const session = sessionFromEnv()
   if (session === null) {
-    throw new Error('--mine picks the tasks a Claude session added; run it in that session')
+    throw new Error("--mine picks a Claude session's tasks; run it in that session")
   }
   return session
 }
 
+// The session's work (Todos.isMine): in a session nod open opened, its project's tasks.
 function isMine(session: string | null, task: Task): boolean {
-  return session === null || task.rootSession === session
-}
-
-// `counts`: the tasks whose decisions it prints and whose workers keep it going.
-async function watch(counts: (t: Task) => boolean): Promise<void> {
-  const seen = new Set(ledger.openDecisions().map((d) => d.id))
-  let idleSecs = 0
-  while (idleSecs < WATCH_GRACE_SECS) {
-    await Bun.sleep(1000)
-    for (const d of ledger.openDecisions()) {
-      if (seen.has(d.id)) continue
-      seen.add(d.id)
-      if (counts(ledger.get(d.taskId))) printDecision(d)
-    }
-    const running = ledger.list().some((t) => t.status === 'running' && counts(t))
-    idleSecs = running ? 0 : idleSecs + 1
-  }
+  return session === null || new Todos(ledger).isMine(session, task)
 }
 
 async function gc(args: string[]): Promise<void> {
@@ -755,7 +789,19 @@ function show(id: number): void {
   const task = ledger.get(id)
   printTask(task)
   if (task.issue !== null) console.log(`  issue: ${task.issue}`)
-  if (task.rootSession !== null) console.log(`  root: ${task.rootSession}`)
+  // The project session whose work it is now, by its project, with the command that goes back
+  // into it, and the session that added it when that was another.
+  const place = new Todos(ledger).rootPlace(task)
+  if (place !== null) {
+    const { project, session } = place
+    const added =
+      task.rootSession === null || task.rootSession === session.sessionId
+        ? ''
+        : ` · added from ${task.rootSession}`
+    console.log(`  root: p${project.id} ${project.title} · ${reopenCommand(place)}${added}`)
+  } else if (task.rootSession !== null) {
+    console.log(`  root: ${task.rootSession}`)
+  }
   console.log(`  brief: ${task.brief}`)
   if (task.repo) console.log(`  repo: ${task.repo} (branch ${branchOf(task)})`)
   if (task.workspace) console.log(`  workspace: ${task.workspace}`)

@@ -1,9 +1,10 @@
 import { afterAll, expect, test } from 'bun:test'
-import { existsSync } from 'node:fs'
+import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
+import { projectFolder } from '../test/projects'
 import { tempDirs } from '../test/tmp'
 import { Ledger } from './ledger'
-import { actorFromEnv, sessionFromEnv } from './todo-cli'
+import { actorFromEnv, openSession, sessionFromEnv } from './todo-cli'
 import { Todos } from './todos'
 
 const tmp = tempDirs()
@@ -176,6 +177,78 @@ test('captures run at the same time each land once, on a ledger none had opened'
   const n = 20
   await Promise.all(Array.from({ length: n }, (_, i) => ok('in', `item ${i}`)))
   expect(await ok('todo')).toHaveLength(n)
+})
+
+test('nod in --project captures the todo into that project, and a project that is not there captures nothing', async () => {
+  const { ok, fails } = runner()
+  await ok('project', 'add', 'Release')
+  expect(await ok('in', 'Tag', 'it', '--project', 'Release')).toEqual([
+    't1    inbox     Tag it  · p1 Release · since <time>',
+  ])
+  expect(await ok('in', 'Write the notes', '--project', 'p1')).toEqual([
+    't2    inbox     Write the notes  · p1 Release · since <time>',
+  ])
+  expect(await fails('in', 'Draw it', '--project', 'p9')).toContain('no project p9')
+  expect(await ok('todo', 'inbox')).toHaveLength(2)
+})
+
+test('nod open resumes the latest session where it was opened, or starts one: with --new, with none yet, and again under its ID while Claude Code keeps no transcript of it', () => {
+  const todos = new Todos(new Ledger(tmp.make('nod-open-')))
+  const config = tmp.make('nod-open-config-')
+  const [here, there] = [tmp.make('nod-open-here-'), tmp.make('nod-open-there-')]
+  const p = todos.addProject({ title: 'Release', outcome: null }, 'human')
+  const open = (fresh: boolean, cwd: string, ref = `p${p.id}`) =>
+    openSession(todos, ref, fresh, cwd, config)
+  const key = (): string => todos.latestSession(p.id)?.sessionId ?? ''
+
+  const first = open(false, here)
+  const opened = key()
+  expect(opened).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$/)
+  expect(first).toEqual({
+    argv: ['claude', '--name', 'Release', '--session-id', opened],
+    cwd: here,
+  })
+  // Closed before a word was said, it has no transcript, so it starts again where it was opened.
+  expect(open(false, there)).toEqual(first)
+  expect(key()).toBe(opened)
+  // Once Claude Code keeps one, it is resumed there, wherever nod open runs.
+  const folder = projectFolder(config, here)
+  mkdirSync(folder, { recursive: true })
+  writeFileSync(join(folder, `${opened}.jsonl`), '')
+  expect(open(false, there)).toEqual({ argv: ['claude', '--resume', opened], cwd: here })
+  expect(open(false, there, 'Release')).toEqual({
+    argv: ['claude', '--resume', opened],
+    cwd: here,
+  })
+  // --new opens another here, which is the project's from now on: nod open opens it after.
+  const second = open(true, there)
+  const newer = key()
+  expect(newer).not.toBe(opened)
+  expect(second).toEqual({
+    argv: ['claude', '--name', 'Release', '--session-id', newer],
+    cwd: there,
+  })
+  expect(todos.sessionPlace(opened)?.latest).toBe(false)
+  expect(open(false, here)).toEqual(second)
+  const newerFolder = projectFolder(config, there)
+  mkdirSync(newerFolder, { recursive: true })
+  writeFileSync(join(newerFolder, `${newer}.jsonl`), '')
+  expect(open(false, here)).toEqual({ argv: ['claude', '--resume', newer], cwd: there })
+  expect(key()).toBe(newer)
+  // A long title is cut, with the project's number in front.
+  const long = todos.addProject(
+    { title: 'Migrate every billing service to the new ledger format', outcome: null },
+    'human',
+  )
+  expect(open(false, here, `p${long.id}`).argv[2]).toBe(
+    `p${long.id} Migrate every billing service to the`,
+  )
+  // The folder it was opened in is gone: no session to resume there.
+  rmSync(there, { recursive: true })
+  expect(() => open(false, here)).toThrow(
+    `p${p.id}'s session was opened in ${there}, which is gone; nod open p${p.id} --new opens a new one here`,
+  )
+  expect(() => open(false, here, 'p9')).toThrow('no project p9')
 })
 
 test('the actor is NOD_ACTOR if set, else a worker, a Claude session, or a person', () => {

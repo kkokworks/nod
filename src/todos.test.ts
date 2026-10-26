@@ -1,6 +1,6 @@
 import { afterAll, expect, setSystemTime, test } from 'bun:test'
 import { tempDirs } from '../test/tmp'
-import { Ledger, type NewTask } from './ledger'
+import { Ledger, type NewTask, type Task } from './ledger'
 import { type Found, OPEN, parseRef, type TodoEdit, type TodoFilter, Todos } from './todos'
 
 const tmp = tempDirs()
@@ -390,6 +390,117 @@ test('a project is found by p<n> or by its exact title, and only one', () => {
   const b = project(todos, 'Same')
   expect(() => todos.findProject('Same')).toThrow(`p${a.id}, p${b.id} are all titled "Same"`)
   expect(() => todos.findProject('Nope')).toThrow('no project titled "Nope"')
+})
+
+test("a project's latest session is its session, and each session knows its project", () => {
+  const todos = fresh()
+  const p = project(todos, 'Release')
+  const q = project(todos, 'Health')
+  // Made-up session ids.
+  const [A, B, C] = [
+    'aaaa1111-0000-4000-8000-00000000000a',
+    'bbbb2222-0000-4000-8000-00000000000b',
+    'cccc3333-0000-4000-8000-00000000000c',
+  ]
+  expect(todos.latestSession(p.id)).toBeNull()
+  const a = todos.addSession(p.id, A, '/work/one')
+  expect(todos.sessionPlace(A)).toEqual({ session: a, project: p, latest: true })
+  const b = todos.addSession(p.id, B, '/work/two')
+  todos.addSession(q.id, C, '/work/one')
+  expect(todos.latestSession(p.id)).toEqual(b)
+  expect(todos.sessionPlace(A)).toMatchObject({ latest: false, project: { id: p.id } })
+  expect(todos.sessionPlace(B)).toMatchObject({ latest: true, session: { cwd: '/work/two' } })
+  expect(todos.sessionPlace(C)?.project.id).toBe(q.id)
+  expect(todos.sessionPlace('dddd4444-0000-4000-8000-00000000000d')).toBeNull()
+  expect(() => todos.addSession(99, 'eeee', '/work')).toThrow('no project p99')
+  expect(() => todos.addSession(q.id, A, '/work')).toThrow()
+})
+
+test("a session nod open opened has all its project's tasks as its own, whoever added them; any other session, those it added", () => {
+  const { ledger, todos } = books()
+  const p = project(todos, 'Release')
+  const q = project(todos, 'Health')
+  // Made-up session ids: A and then B opened for p, S never opened by nod open.
+  const [A, B, S] = [
+    'aaaa1111-0000-4000-8000-00000000000a',
+    'bbbb2222-0000-4000-8000-00000000000b',
+    'ffff6666-0000-4000-8000-00000000000f',
+  ]
+  todos.addSession(p.id, A, '/work/one')
+  const added = (root: string | null, projectId: number | null): Task => {
+    const id = todos.delegateNew({ ...task, rootSession: root }, projectId, 'human')
+    return ledger.get(id)
+  }
+  const ofA = added(A, p.id)
+  const ofS = added(S, p.id)
+  const shell = added(null, p.id)
+  const health = added(S, q.id)
+  const loose = added(S, null)
+  const retro = ledger.get(ledger.addRetro(ofS, 'look back'))
+  todos.addSession(p.id, B, '/work/two')
+  const mine = (session: string) =>
+    [ofA, ofS, shell, health, loose, retro].filter((t) => todos.isMine(session, t)).map((t) => t.id)
+
+  expect(todos.projectOf(retro)).toBe(p.id)
+  expect(todos.projectOf(loose)).toBeNull()
+  // Both of p's sessions, the newer included, carry on with every task of p, its retrospective's too.
+  expect(mine(B)).toEqual([ofA.id, ofS.id, shell.id, retro.id])
+  expect(mine(A)).toEqual(mine(B))
+  // S, never opened for a project, keeps what it added, whatever project that went in.
+  expect(mine(S)).toEqual([ofS.id, health.id, loose.id, retro.id])
+  // Who added each stays as it was.
+  expect([ofA, ofS, shell].map((t) => ledger.get(t.id).rootSession)).toEqual([A, S, null])
+
+  // Two tasks' workers may tell each other within one project, or one session's work.
+  expect(todos.sameWork(ofA, shell)).toBe(true)
+  expect(todos.sameWork(shell, ofS)).toBe(true)
+  expect(todos.sameWork(ofS, health)).toBe(true)
+  expect(todos.sameWork(ofA, health)).toBe(false)
+  expect(todos.sameWork(health, ofA)).toBe(false)
+  expect(todos.sameWork(ofA, loose)).toBe(false)
+  expect(todos.sameWork(shell, loose)).toBe(false)
+
+  // Its root, as shown: the project's latest session, else the session that added it.
+  expect(todos.rootPlace(ofA)?.session.sessionId).toBe(B)
+  expect(todos.rootPlace(shell)?.session.sessionId).toBe(B)
+  expect(todos.rootPlace(loose)).toBeNull()
+  // A todo moved out of every project stays with the session that added it.
+  todos.set(ofA.todoId ?? 0, { projectId: null }, 'human')
+  expect(todos.rootPlace(ofA)).toMatchObject({ session: { sessionId: A }, latest: false })
+  expect(todos.isMine(B, ofA)).toBe(false)
+  expect(todos.isMine(A, ofA)).toBe(true)
+  // One moved to a project of no session is no session's of p any more.
+  todos.set(ofA.todoId ?? 0, { projectId: q.id }, 'human')
+  expect(todos.rootPlace(ofA)).toBeNull()
+  expect(todos.isMine(A, ofA)).toBe(false)
+})
+
+test('a todo can be captured into a project, and put in one as it is delegated', () => {
+  const { ledger, todos } = books()
+  const p = project(todos, 'Release')
+  const into = todos.capture(
+    { title: 'Tag it', notes: null, source: 'cli', sourceKey: 'k', url: null, projectId: p.id },
+    'human',
+  )
+  expect(into.todo).toMatchObject({ status: 'inbox', projectId: p.id })
+  // Captured again by its key, it stays where it is.
+  const again = todos.capture(
+    { title: 'Tag it', notes: null, source: 'cli', sourceKey: 'k', url: null, projectId: null },
+    'human',
+  )
+  expect(again).toMatchObject({ created: false, todo: { id: into.todo.id, projectId: p.id } })
+  const loose = captured(todos, 'Write the notes')
+  const taskId = todos.delegate(loose.id, task, 'human', p.id)
+  expect(todos.get(loose.id)).toMatchObject({ status: 'waiting', projectId: p.id })
+  expect(ledger.get(taskId).todoId).toBe(loose.id)
+  // A closed project takes no open todo, so nothing is handed over.
+  const closed = project(todos, 'Old')
+  todos.setProject(closed.id, { status: 'done' }, 'human')
+  const before = ledger.list().length
+  const other = captured(todos, 'Clean up')
+  expect(() => todos.delegate(other.id, task, 'human', closed.id)).toThrow(`p${closed.id} is done`)
+  expect(ledger.list().length).toBe(before)
+  expect(todos.get(other.id)).toMatchObject({ status: 'inbox', projectId: null })
 })
 
 test('refs need their prefix: a bare number could be a decision or a task', () => {

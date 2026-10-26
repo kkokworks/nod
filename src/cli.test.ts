@@ -1,8 +1,10 @@
 import { afterAll, expect, test } from 'bun:test'
-import { mkdirSync, writeFileSync } from 'node:fs'
+import { mkdirSync, realpathSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { tempDirs } from '../test/tmp'
 import { Ledger } from './ledger'
+import { Todos } from './todos'
+import { watch } from './view'
 import { workspaceOf } from './worker'
 
 const tmp = tempDirs()
@@ -161,7 +163,7 @@ test('each root session sees in show the tasks it added, and with --mine lists a
   ]) {
     const r = nod(null, ...args)
     expect(r.code).not.toBe(0)
-    expect(r.err).toContain('--mine picks the tasks a Claude session added')
+    expect(r.err).toContain("--mine picks a Claude session's tasks")
   }
 
   // The tasks wait on `never`; running, each counts for watch.
@@ -192,6 +194,271 @@ test('each root session sees in show the tasks it added, and with --mine lists a
   expect(out).not.toContain('for b')
   expect(out).not.toContain('for the shell')
 }, 30_000)
+
+test("in a session nod open opened, add hands over its project's work only, show names it by its project, and other sessions and a shell add as before", () => {
+  const home = tmp.make('nod-open-add-')
+  const ledger = new Ledger(home)
+  const todos = new Todos(ledger)
+  // Made-up session ids.
+  const [A, B, C] = [
+    'aaaa1111-0000-4000-8000-00000000000a',
+    'bbbb2222-0000-4000-8000-00000000000b',
+    'cccc3333-0000-4000-8000-00000000000c',
+  ]
+  const {
+    CLAUDECODE: _,
+    CLAUDE_CODE_SESSION_ID: __,
+    NOD_TASK: ___,
+    NOD_ACTOR: ____,
+    ...shell
+  } = process.env
+  const nod = (session: string | null, ...args: string[]) => {
+    const env =
+      session === null
+        ? { ...shell, NOD_HOME: home }
+        : { ...shell, NOD_HOME: home, CLAUDECODE: '1', CLAUDE_CODE_SESSION_ID: session }
+    const r = Bun.spawnSync(['bun', cli, ...args], { env })
+    return { code: r.exitCode, out: r.stdout.toString(), err: r.stderr.toString() }
+  }
+  const release = todos.addProject({ title: 'Release', outcome: null }, 'human')
+  const health = todos.addProject({ title: 'Health', outcome: null }, 'human')
+  todos.addSession(release.id, A, home)
+  // Each task comes after one that never starts here, so no worker runs.
+  const never = ledger.add({
+    brief: 'never starts',
+    repo: null,
+    branch: null,
+    checkCmd: null,
+    model: null,
+    after: [],
+    triggerId: null,
+    issue: null,
+  })
+  const add = (session: string | null, ...args: string[]) =>
+    nod(session, 'add', ...args, '--after', String(never))
+  const added = (r: { code: number; out: string }): number => {
+    expect(r.code).toBe(0)
+    return Number(r.out.trim())
+  }
+  const projectOf = (taskId: number): number | null =>
+    todos.get(ledger.get(taskId).todoId ?? 0).projectId
+
+  // Without --project, the work goes in the session's project; naming that one is fine too.
+  const tag = add(A, 'tag the release')
+  expect(tag.err).toBe('')
+  const tagged = added(tag)
+  expect(projectOf(tagged)).toBe(release.id)
+  expect(projectOf(added(add(A, 'write the notes', '--project', 'Release')))).toBe(release.id)
+  // A todo in no project goes into it.
+  const loose = todos.capture(
+    { title: 'Update the changelog', notes: null, source: 'cli', sourceKey: null, url: null },
+    'human',
+  ).todo
+  expect(projectOf(added(add(A, '--todo', `t${loose.id}`)))).toBe(release.id)
+
+  // Another project's work is refused, and nothing is added or changed.
+  const before = ledger.list().length
+  const other = add(A, 'book the blood test', '--project', `p${health.id}`)
+  expect(other.code).not.toBe(0)
+  expect(other.err).toContain(
+    `this session is for p${release.id} Release; p${health.id} Health's work goes in as a todo (nod in <what...> --project p${health.id}) or is handed over in its session (nod open p${health.id})`,
+  )
+  const theirs = todos.capture(
+    {
+      title: 'Book the blood test',
+      notes: null,
+      source: 'cli',
+      sourceKey: null,
+      url: null,
+      projectId: health.id,
+    },
+    'human',
+  ).todo
+  const handed = add(A, '--todo', `t${theirs.id}`)
+  expect(handed.code).not.toBe(0)
+  expect(handed.err).toContain(
+    `this session is for p${release.id} Release, and t${theirs.id} is in p${health.id} Health: hand it over in that project's session (nod open p${health.id})`,
+  )
+  expect(ledger.list().length).toBe(before)
+  expect(todos.get(theirs.id)).toMatchObject({ status: 'inbox', projectId: health.id })
+
+  // Another Claude session adds as before, and hears how to keep projects apart.
+  const fromB = add(B, 'book the blood test', '--project', 'Health')
+  expect(fromB.err).toContain('hint: nod open <project>')
+  expect(projectOf(added(fromB))).toBe(health.id)
+  expect(projectOf(added(add(B, 'anything')))).toBeNull()
+  // A shell adds as before, without a word.
+  const fromShell = add(null, 'from the shell', '--project', 'Health')
+  expect(fromShell.err).toBe('')
+  expect(projectOf(added(fromShell))).toBe(health.id)
+
+  // show names a project's session by its project, with the command that reopens it.
+  expect(nod(null, 'show', String(tagged)).out).toContain(
+    `  root: p${release.id} Release · nod open p${release.id}\n`,
+  )
+  expect(nod(null, 'show', String(added(fromB))).out).toContain(`  root: ${B}\n`)
+  expect(nod(null, 'show', String(added(fromShell))).out).not.toContain('root:')
+  // A newer session of the project carries the task on; who added it stays.
+  todos.addSession(release.id, C, '/work/elsewhere')
+  expect(nod(null, 'show', String(tagged)).out).toContain(
+    `  root: p${release.id} Release · nod open p${release.id} · added from ${A}\n`,
+  )
+  // Moved out of every project, it stays with the session that added it, reopened by its ID there.
+  todos.set(ledger.get(tagged).todoId ?? 0, { projectId: null }, 'human')
+  expect(nod(null, 'show', String(tagged)).out).toContain(
+    `  root: p${release.id} Release · cd '${home}' && claude --resume ${A}\n`,
+  )
+}, 30_000)
+
+test("a project's new session takes over the project's tasks and decisions in ls, the decision list and watch with --mine, whoever added them, and nothing of another project or of none", async () => {
+  const home = tmp.make('nod-mine-')
+  const ledger = new Ledger(home)
+  const todos = new Todos(ledger)
+  // Made-up session ids: A opened for p1, then B with --new; Q1 for p2; S never by nod open.
+  const [A, B, Q1, S] = [
+    'aaaa1111-0000-4000-8000-00000000000a',
+    'bbbb2222-0000-4000-8000-00000000000b',
+    'cccc3333-0000-4000-8000-00000000000c',
+    'ffff6666-0000-4000-8000-00000000000f',
+  ]
+  const {
+    CLAUDECODE: _,
+    CLAUDE_CODE_SESSION_ID: __,
+    NOD_TASK: ___,
+    NOD_ACTOR: ____,
+    ...shell
+  } = process.env
+  const nod = (session: string, ...args: string[]): string => {
+    const env = { ...shell, NOD_HOME: home, CLAUDECODE: '1', CLAUDE_CODE_SESSION_ID: session }
+    const r = Bun.spawnSync(['bun', cli, ...args], { env })
+    expect(r.exitCode).toBe(0)
+    return r.stdout.toString()
+  }
+  const release = todos.addProject({ title: 'Release', outcome: null }, 'human')
+  const health = todos.addProject({ title: 'Health', outcome: null }, 'human')
+  todos.addSession(release.id, A, home)
+  todos.addSession(health.id, Q1, home)
+  // Each comes after a task that never starts here, so no worker runs; then it is marked running.
+  const never = ledger.add({
+    brief: 'never starts',
+    repo: null,
+    branch: null,
+    checkCmd: null,
+    model: null,
+    after: [],
+    triggerId: null,
+    issue: null,
+  })
+  const add = (session: string, ...args: string[]): number => {
+    const id = Number(nod(session, 'add', ...args, '--after', String(never)).trim())
+    ledger.setRunning(id, home)
+    return id
+  }
+  const byA = add(A, 'tag the release')
+  const byS = add(S, 'write the release notes', '--project', 'Release')
+  const ofHealth = add(Q1, 'book the blood test')
+  const loose = add(S, 'tidy the desk')
+  const healthToo = add(Q1, 'call the clinic')
+  todos.addSession(release.id, B, home)
+  const ask = (taskId: number, question: string): number =>
+    ledger.ask(
+      taskId,
+      ledger.startAttempt({ taskId, kind: 'start', decisionId: null, sessionId: 's', prompt: 'p' }),
+      'question',
+      question,
+    )
+
+  // watch, as nod watch --mine runs it in B. The decisions open at its first look, and A's task
+  // ends at its second, so B's watch ends while another project's worker still runs.
+  const printed: number[] = []
+  let looks = 0
+  let notes = 0
+  const wait = async (): Promise<void> => {
+    looks += 1
+    if (looks === 1) {
+      notes = ask(byS, 'which version for the notes?')
+      ask(ofHealth, 'which clinic?')
+      ask(loose, 'which desk?')
+    }
+    if (looks === 2) ledger.succeed(byA)
+  }
+  await watch(
+    ledger,
+    (t) => todos.isMine(B, t),
+    (d) => printed.push(d.id),
+    wait,
+  )
+  expect(printed).toEqual([notes])
+  // Going while A's task ran, then five idle looks: Health's running worker is not B's.
+  expect(looks).toBe(6)
+  expect(ledger.get(healthToo).status).toBe('running')
+
+  const ls = nod(B, 'ls', '--mine')
+  for (const brief of ['tag the release', 'write the release notes']) expect(ls).toContain(brief)
+  for (const brief of ['book the blood test', 'tidy the desk', 'call the clinic']) {
+    expect(ls).not.toContain(brief)
+  }
+  const decisions = nod(B, '--mine')
+  expect(decisions).toContain('which version for the notes?')
+  expect(decisions).not.toContain('which clinic?')
+  expect(decisions).not.toContain('which desk?')
+  // S, never opened for a project, still has what it added; a task in no project is only its.
+  const ofS = nod(S, '--mine')
+  expect(ofS).toContain('which version for the notes?')
+  expect(ofS).toContain('which desk?')
+  expect(ofS).not.toContain('which clinic?')
+  expect(nod(Q1, '--mine')).toContain('which clinic?')
+}, 30_000)
+
+test('nod open runs claude in this terminal with its environment and ends as claude does; called again it resumes that session, and after --new the new one', () => {
+  const home = tmp.make('nod-open-cli-')
+  const here = realpathSync(tmp.make('nod-open-here-'))
+  const there = realpathSync(tmp.make('nod-open-there-'))
+  const bin = tmp.make('nod-open-bin-')
+  const account = join(home, 'account')
+  // Stands in for claude: says where it ran, with what, and as which account. A new session keeps
+  // a transcript in that account, as Claude Code does once something is said in it.
+  writeFileSync(
+    join(bin, 'claude'),
+    `#!/bin/sh
+echo "$(pwd -P) | $* | $CLAUDE_CONFIG_DIR"
+if [ "$3" = --session-id ]; then
+  mkdir -p "$CLAUDE_CONFIG_DIR/projects/somewhere" && : > "$CLAUDE_CONFIG_DIR/projects/somewhere/$4.jsonl"
+fi
+exit 3
+`,
+    { mode: 0o755 },
+  )
+  const todos = new Todos(new Ledger(home))
+  const p = todos.addProject({ title: 'Release', outcome: null }, 'human')
+  const env = { ...process.env, NOD_HOME: home, PATH: `${bin}:${process.env.PATH}` }
+  const open = (cwd: string, ...args: string[]) => {
+    const r = Bun.spawnSync(['bun', cli, 'open', ...args], {
+      cwd,
+      env: { ...env, CLAUDE_CONFIG_DIR: account },
+    })
+    return { code: r.exitCode, out: r.stdout.toString(), err: r.stderr.toString() }
+  }
+  const key = (): string => todos.latestSession(p.id)?.sessionId ?? ''
+
+  const first = open(here, 'Release')
+  expect(first.code).toBe(3)
+  const opened = key()
+  expect(first.out).toBe(`${here} | --name Release --session-id ${opened} | ${account}\n`)
+  expect(open(there, 'p1')).toMatchObject({
+    code: 3,
+    out: `${here} | --resume ${opened} | ${account}\n`,
+  })
+  expect(open(there, 'p1', '--new').out).toBe(
+    `${there} | --name Release --session-id ${key()} | ${account}\n`,
+  )
+  expect(key()).not.toBe(opened)
+  expect(open(here, 'p1').out).toBe(`${there} | --resume ${key()} | ${account}\n`)
+
+  const usage = Bun.spawnSync(['bun', cli, 'open'], { cwd: here, env })
+  expect(usage.exitCode).not.toBe(0)
+  expect(usage.stderr.toString()).toContain('nod open <project> [--new]')
+})
 
 test('ls hides tasks gc collected unless --all, and lists links under their task', async () => {
   const home = tmp.make('nod-ls-')

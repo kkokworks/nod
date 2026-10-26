@@ -141,6 +141,18 @@ export type Found = { id: number; ref: string; title: string; status: string } &
 const FINDS = { t: 'todo', '#': 'task', r: 'retro', p: 'project' } as const
 // What a watch said when it last ran: its exit code and the end of its output.
 export type WatchCheck = { watch: string; at: string; code: number; output: string }
+// A Claude session `nod open` opened for a project, and the folder it was opened in, where Claude
+// Code keeps its transcript and so where it is reopened.
+export type ProjectSession = {
+  id: number
+  sessionId: string
+  projectId: number
+  cwd: string
+  createdAt: string
+}
+// The project a session was opened for, and whether it is still that project's latest session,
+// the one `nod open` goes back into.
+export type SessionPlace = { session: ProjectSession; project: Project; latest: boolean }
 // What a day holds besides its events, each todo once, in the first group it is in.
 export type DayTodos = { overdue: Todo[]; scheduled: Todo[]; due: Todo[]; focus: Todo[] }
 
@@ -152,6 +164,7 @@ type Tables = {
   todoChanges: ChangeRow & { todoId: number }
   watchChecks: { todoId: number } & WatchCheck
   projectChanges: ChangeRow & { projectId: number }
+  projectSessions: Omit<ProjectSession, 'id'> & { id: Generated<number> }
 }
 
 const q = queryBuilder<Tables>()
@@ -183,7 +196,8 @@ export class Todos {
     this.db = ledger.db
   }
 
-  // Puts a new todo in the inbox. When the source has already given this key, returns that todo.
+  // Puts a new todo in the inbox, in the project when one is given. When the source has already
+  // given this key, returns that todo as it is.
   capture(
     t: {
       title: string
@@ -191,6 +205,7 @@ export class Todos {
       source: string
       sourceKey: string | null
       url: string | null
+      projectId?: number | null
     },
     actor: string,
   ): { todo: Todo; created: boolean } {
@@ -226,6 +241,8 @@ export class Todos {
       const created = { title: t.title, notes: t.notes, status: 'inbox', source: t.source }
       this.recordTodo(id, actor, diff({}, { ...created, sourceKey: t.sourceKey }), at)
       if (t.url !== null) this.link(id, t.url, null, actor)
+      const { projectId = null } = t
+      if (projectId !== null) this.set(id, { projectId }, actor)
       return { todo: this.get(id), created: true }
     })()
   }
@@ -381,15 +398,17 @@ export class Todos {
   }
 
   // Hands the todo to a new task. It then waits on nod, with no one in `waitingOn` and no watch,
-  // until followTasks moves it on.
-  delegate(id: number, task: NewTask, actor: string): number {
+  // until followTasks moves it on. `projectId` puts it in that project as it goes; null leaves it
+  // where it is.
+  delegate(id: number, task: NewTask, actor: string, projectId: number | null = null): number {
     return this.db.transaction(() => {
       const todo = this.get(id)
       if (todo.status === 'done' || todo.status === 'dropped') {
         throw new Error(`t${id} is ${todo.status}; reopen it before delegating it`)
       }
       const taskId = this.ledger.addTodoTask(task, id)
-      this.set(id, { status: 'waiting', waitingOn: null, watch: null }, actor)
+      const placed = projectId === null ? {} : { projectId }
+      this.set(id, { status: 'waiting', waitingOn: null, watch: null, ...placed }, actor)
       return taskId
     })()
   }
@@ -400,10 +419,9 @@ export class Todos {
     return this.db.transaction(() => {
       const title = task.brief.replace(/\n[\s\S]*/, '')
       const { todo } = this.capture(
-        { title, notes: null, source: 'nod', sourceKey: null, url: null },
+        { title, notes: null, source: 'nod', sourceKey: null, url: null, projectId },
         actor,
       )
-      if (projectId !== null) this.set(todo.id, { projectId }, actor)
       return this.delegate(todo.id, task, actor)
     })()
   }
@@ -752,6 +770,78 @@ export class Todos {
         .where('projectId', '=', id)
         .orderBy('id'),
     ).map(parsed)
+  }
+
+  // ── project sessions (nod open) ──
+
+  // Records a Claude session opened for the project in `cwd`; from now on it is the project's.
+  addSession(projectId: number, sessionId: string, cwd: string): ProjectSession {
+    this.project(projectId)
+    const row = { sessionId, projectId, cwd, createdAt: now() }
+    const id = this.insert(q.insertInto('projectSessions').values(row).returning('id'))
+    return { id, ...row }
+  }
+
+  // The project's latest session; null before nod open opened one.
+  latestSession(projectId: number): ProjectSession | null {
+    return this.first(
+      q
+        .selectFrom('projectSessions')
+        .selectAll()
+        .where('projectId', '=', projectId)
+        .orderBy('id', 'desc')
+        .limit(1),
+    )
+  }
+
+  // Where a Claude session belongs; null for one nod open did not open.
+  sessionPlace(sessionId: string): SessionPlace | null {
+    const session = this.first(
+      q.selectFrom('projectSessions').selectAll().where('sessionId', '=', sessionId),
+    )
+    if (session === null) return null
+    const latest = this.latestSession(session.projectId)
+    return { session, project: this.project(session.projectId), latest: latest?.id === session.id }
+  }
+
+  // ── whose work a task is ──
+
+  // The project a task's work is in: its todo's; a retrospective's is that of the task it looks
+  // back on.
+  projectOf(task: Task): number | null {
+    if (task.todoId !== null) return this.get(task.todoId).projectId
+    if (task.retroId === null) return null
+    return this.projectOf(this.ledger.get(this.ledger.retro(task.retroId).ofTaskId))
+  }
+
+  // Whether a task is the work of Claude session `session`: what --mine lists and watches, and the
+  // session the task page names as its root. For a session nod open opened for a project, every
+  // task in that project, whoever added it, so a new session for the project (another account,
+  // --new, a long context) carries on with its tasks and decisions. Otherwise, and for a task in no
+  // project, a task the session added. rootSession keeps who added a task either way.
+  isMine(session: string, task: Task): boolean {
+    const project = this.projectOf(task)
+    const place = this.sessionPlace(session)
+    if (place !== null && project !== null) return project === place.project.id
+    return task.rootSession === session
+  }
+
+  // Whether the workers of two tasks may tell each other (NOD: tell): both in one project, which is
+  // all one work for any session of it (isMine), or both added by one session.
+  sameWork(a: Task, b: Task): boolean {
+    const project = this.projectOf(a)
+    if (project !== null && project === this.projectOf(b)) return true
+    return a.rootSession !== null && a.rootSession === b.rootSession
+  }
+
+  // The session whose work a task is now, as nod show and the task page name its root: the latest
+  // session of its project, else the session that added it while the task is still its work; null
+  // when that is no session nod open opened.
+  rootPlace(task: Task): SessionPlace | null {
+    const project = this.projectOf(task)
+    const session = (project === null ? null : this.latestSession(project))?.sessionId
+    const root = session ?? task.rootSession
+    return root !== null && this.isMine(root, task) ? this.sessionPlace(root) : null
   }
 
   // The todo as the edit leaves it, checked: a known status, a title, a project that is not

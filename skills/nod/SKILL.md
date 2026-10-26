@@ -22,6 +22,8 @@ description: 여러 일을 nod 로 Claude Code 세션들에게 병렬로 맡기�
 | 정해진 때나 새 항목마다 할 일(트리거), 자리를 비울 때 알림 | [triggers.md](triggers.md) |
 | 프로젝트(업무 묶음) 하나를 맡아 nod 로 굴리기 | [project.md](project.md) |
 
+루트 세션은 프로젝트마다 사용자가 `nod open <프로젝트>` 로 열고, 한 세션은 한 프로젝트의 일만 맡깁니다. 다른 프로젝트의 일은 할 일로 넣습니다([delegate.md](delegate.md)).
+
 할 일을 받아 적고 정리하는 일(GTD)은 gtd 스킬(`gtd:*`)이 합니다. nod 는 거기 쌓인 할 일을 `nod add --todo t<번호>` 로 맡아 워커에게 시킵니다.
 
 ## 늘 지키는 것

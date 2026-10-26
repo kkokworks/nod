@@ -13,7 +13,7 @@ import {
 } from '../../src/ledger'
 import { Terminals } from '../../src/tmux'
 import { type Found, type Project, type Todo, Todos } from '../../src/todos'
-import { taskNote, taskStatus } from '../../src/view'
+import { reopenCommand, taskNote, taskStatus } from '../../src/view'
 import { answer, sessionName, tell } from '../../src/worker'
 
 export const home = nodHome()
@@ -82,6 +82,10 @@ export type Detail = {
   retro: (Retro & { rules: RuleNow[] }) | null
   // The worker's terminal right now, while its session is alive.
   screen: string | null
+  // The project session whose task it is now (Todos.rootPlace), with the command that goes back
+  // into it, and the session that added the task when that was another; null when it is no
+  // session nod open opened.
+  root: { project: Project; command: string; addedFrom: string | null } | null
 }
 
 export function overview(): Overview {
@@ -136,6 +140,9 @@ export function detail(id: number): Detail {
   const task = ledger.get(id)
   const attempts = ledger.attempts(id)
   const name = sessionName(id)
+  const todos = new Todos(ledger)
+  const root = todos.rootPlace(task)
+  const added = task.rootSession === root?.session.sessionId ? null : task.rootSession
   return {
     task,
     status: taskStatus(task, terminals),
@@ -144,9 +151,13 @@ export function detail(id: number): Detail {
     attempts: attempts.map(({ prompt: _, ...a }) => a),
     decisions: ledger.decisions(id),
     report: attempts.filter((a) => a.report).at(-1)?.report ?? null,
-    place: place(new Todos(ledger), task),
+    place: place(todos, task),
     retro: task.retroId === null ? null : retroOf(task.retroId),
     screen: terminals.alive(name) ? terminals.screen(name).trimEnd() : null,
+    root:
+      root === null
+        ? null
+        : { project: root.project, command: reopenCommand(root), addedFrom: added },
   }
 }
 
