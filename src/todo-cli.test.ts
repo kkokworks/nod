@@ -253,6 +253,21 @@ test('nod open resumes the latest session where it was opened, or starts one: wi
     argv: ['claude', '--name', 'Release', '--session-id', key()],
     cwd: here,
   })
+  // So does an empty one, and one whose folder is gone: the new session opens here, not there.
+  const emptied = key()
+  writeFileSync(join(projectFolder(config, here), `${emptied}.jsonl`), '')
+  open(false, here)
+  expect(key()).not.toBe(emptied)
+  const gone = tmp.make('nod-open-gone-')
+  open(true, gone)
+  keep(key(), gone, `{"type":"custom-title","customTitle":"Release","sessionId":"${key()}"}`)
+  rmSync(gone, { recursive: true })
+  const before = key()
+  expect(open(false, here)).toEqual({
+    argv: ['claude', '--name', 'Release', '--session-id', key()],
+    cwd: here,
+  })
+  expect(key()).not.toBe(before)
   // A long title is cut, with the project's number in front.
   const long = todos.addProject(
     { title: 'Migrate every billing service to the new ledger format', outcome: null },

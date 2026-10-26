@@ -328,9 +328,14 @@ test("a project's new session takes over the project's tasks and decisions in ls
     NOD_ACTOR: ____,
     ...shell
   } = process.env
+  const envOf = (session: string) => ({
+    ...shell,
+    NOD_HOME: home,
+    CLAUDECODE: '1',
+    CLAUDE_CODE_SESSION_ID: session,
+  })
   const nod = (session: string, ...args: string[]): string => {
-    const env = { ...shell, NOD_HOME: home, CLAUDECODE: '1', CLAUDE_CODE_SESSION_ID: session }
-    const r = Bun.spawnSync(['bun', cli, ...args], { env })
+    const r = Bun.spawnSync(['bun', cli, ...args], { env: envOf(session) })
     expect(r.exitCode).toBe(0)
     return r.stdout.toString()
   }
@@ -414,9 +419,26 @@ test("a project's new session takes over the project's tasks and decisions in ls
   expect(ofS).toContain('which desk?')
   expect(ofS).not.toContain('which clinic?')
   expect(nod(Q1, '--mine')).toContain('which clinic?')
-  // Run as a command, B's watch ends too, with Health's worker still running, and prints nothing:
-  // the decisions opened before it.
-  expect(nod(B, 'watch', '--mine')).toBe('')
+  // Run as a command too: B's watch keeps going while A's task in p1 runs, and prints the decisions
+  // on A's tasks, not Health's. It takes in only decisions that open after it starts, which nothing
+  // marks, so each round opens one more of each until it prints A's.
+  const running = add(A, 'tag the next release')
+  const watching = Bun.spawn(['bun', cli, 'watch', '--mine'], { env: envOf(B), stdout: 'pipe' })
+  let out = ''
+  const reading = (async () => {
+    const text = new TextDecoder()
+    for await (const chunk of watching.stdout) out += text.decode(chunk)
+  })()
+  while (!out.includes('which branch?')) {
+    ask(ofHealth, 'which room?')
+    ask(byA, 'which branch?')
+    await Bun.sleep(200)
+  }
+  ledger.succeed(running)
+  expect(await watching.exited).toBe(0)
+  await reading
+  expect(out).not.toContain('which room?')
+  // It ended with Health's worker still running.
   expect(ledger.get(healthToo).status).toBe('running')
 }, 45_000)
 

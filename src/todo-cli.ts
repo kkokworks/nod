@@ -177,7 +177,7 @@ export function openSession(
   const project = todos.findProject(ref)
   const last = fresh ? null : todos.latestSession(project.id)
   const kept = last === null ? null : transcriptPath(config, last.sessionId)
-  // ponytail: reads the whole transcript; a long session's is a few MB, read once per open.
+  // ponytail: reads the whole transcript once per open; one of 69 MB took about 50 ms.
   const said = kept !== null && SAID.test(readFileSync(kept, 'utf8'))
   const again = last !== null && (said || kept === null) ? last : null
   if (again !== null && !existsSync(again.cwd)) {
