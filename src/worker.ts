@@ -612,6 +612,8 @@ export async function resume(
   return 'reopened'
 }
 
+// ponytail: a pid another process took since counts as the resume still running, so the task waits
+// until that process ends; record the start time with the pid if that bites.
 const restartMark = (pid: number): string => `nod resume (pid ${pid}) is starting it again`
 const MARKED = /^nod resume \(pid (\d+)\) is starting it again$/
 
