@@ -1,14 +1,15 @@
 import type { Ledger, Task } from './ledger'
 
-// A repo task's work: its commits from `start` to `head`, and their `git diff --stat`.
-export type Changes = { start: string; head: string; stat: string }
+// A repo task's work: its commits from `start` to `head`, their `git diff --stat`, and the file nod
+// saved their diff in (`saved`).
+export type Changes = { start: string; head: string; stat: string; saved: string }
 
 // All the reviewer gets: what the human asked, as data, and what to answer. It sees the worker's
 // report but not its conversation, so it checks the report against the work. A repo task's diff is
 // not in the brief: a hook on the first message (a user's UserPromptSubmit hook) sees all of it, and
-// one that screens for personal data blocked a test's made-up values. The reviewer reads it with a
-// command, as the worker reads files, and the brief lists the files changed, so it knows what the
-// whole diff covers. `changes`: null without a repo.
+// one that screens for personal data blocked a test's made-up values. The reviewer reads it from a
+// file with its Read tool, as the worker reads files, and the brief lists the files changed, so it
+// knows what the whole diff covers. `changes`: null without a repo.
 export function reviewBrief(
   ledger: Ledger,
   task: Task,
@@ -85,14 +86,12 @@ function work(task: Task, changes: Changes | null): string[] {
   if (changes === null) return ['The work is the files in this directory.']
   const since = `The work is the commits on branch ${task.branch} since ${changes.start}.`
   if (changes.stat === '') return [`${since} There are none.`]
-  // No color and no external diff tool, whatever the human's git config says, so the reviewer
-  // reads a plain diff.
-  const diff = `git diff --no-color --no-ext-diff ${changes.start}..${changes.head}`
+  const command = `git diff --no-color --no-ext-diff ${changes.start}..${changes.head}`
   return [
     `${since} Files changed:`,
     ...quote(changes.stat.trimEnd()),
     '',
-    `Read the whole diff before you judge, with \`${diff}\`; if it is long, read it a file at a time with \`${diff} -- <file>\`.`,
+    `nod saved their diff, what \`${command}\` prints, in \`${changes.saved}\`. Read all of it with the Read tool before you judge, in parts if it is long. Read the file rather than run the command: a hook may shorten what a shell command prints.`,
   ]
 }
 
