@@ -142,13 +142,15 @@ const FINDS = { t: 'todo', '#': 'task', r: 'retro', p: 'project' } as const
 // What a watch said when it last ran: its exit code and the end of its output.
 export type WatchCheck = { watch: string; at: string; code: number; output: string }
 // A Claude session `nod open` opened for a project, and the folder it was opened in, where Claude
-// Code keeps its transcript and so where it is reopened.
+// Code keeps its transcript and so where it is reopened. `socket`: where it takes messages while it
+// runs, as its hooks last said (inbox.ts); null before they said, and once it ended.
 export type ProjectSession = {
   id: number
   sessionId: string
   projectId: number
   cwd: string
   createdAt: string
+  socket: string | null
 }
 // The project a session was opened for, and whether it is still that project's latest session,
 // the one `nod open` goes back into.
@@ -777,9 +779,17 @@ export class Todos {
   // Records a Claude session opened for the project in `cwd`; from now on it is the project's.
   addSession(projectId: number, sessionId: string, cwd: string): ProjectSession {
     this.project(projectId)
-    const row = { sessionId, projectId, cwd, createdAt: now() }
+    const row = { sessionId, projectId, cwd, createdAt: now(), socket: null }
     const id = this.insert(q.insertInto('projectSessions').values(row).returning('id'))
     return { id, ...row }
+  }
+
+  // Where a project session takes messages now; null once it ended. Nothing for a session nod open
+  // did not open. With `from`, only while it is still that: one that started again since keeps the
+  // socket it has now.
+  setSocket(sessionId: string, socket: string | null, from?: string): void {
+    const set = q.updateTable('projectSessions').set({ socket }).where('sessionId', '=', sessionId)
+    this.run(from === undefined ? set : set.where('socket', '=', from))
   }
 
   // The project's latest session; null before nod open opened one.

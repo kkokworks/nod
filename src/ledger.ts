@@ -227,6 +227,24 @@ export type Decision = {
   answeredAt: string | null
 }
 
+// What a project's session hears (inbox.ts): a task's end (a status in FINISHED, with the worker's
+// last done summary or the error as `note`), a decision that opened, or a person's words (`tell`,
+// in `note` as said, with `projectId`). `attemptId`: the task's latest turn as it happened.
+// `sessionId` and `sentAt`: the session it went to and when; null and set for one that went to none.
+export type NoticeEvent = 'succeeded' | 'error' | 'cancelled' | 'decision' | 'tell'
+export type Notice = {
+  id: number
+  taskId: number | null
+  projectId: number | null
+  decisionId: number | null
+  attemptId: number | null
+  event: NoticeEvent
+  note: string | null
+  createdAt: string
+  sessionId: string | null
+  sentAt: string | null
+}
+
 export type Stats = {
   tasks: Record<TaskStatus, number>
   succeededWithoutDecision: number
@@ -549,6 +567,26 @@ export const MIGRATIONS = [
   );
   create index project_sessions_project on project_sessions(project_id);
   `,
+  // v24: where each project session takes messages (its inbox socket), and what nod has to tell a
+  // project's session (inbox.ts): a task's end or a decision, recorded with the change itself, or a
+  // person's `nod tell p<n>`. A notice stays unsent until a send to that session's socket went
+  // through; one nod has no session to send to is marked sent to none.
+  `
+  alter table project_sessions add column socket text;
+  create table notices (
+    id integer primary key,
+    task_id integer references tasks(id),
+    project_id integer references projects(id),
+    decision_id integer references decisions(id),
+    attempt_id integer references attempts(id),
+    event text not null,
+    note text,
+    created_at text not null,
+    session_id text,
+    sent_at text
+  );
+  create index notices_unsent on notices(id) where sent_at is null;
+  `,
 ]
 // The migration that moves <home>/rules.md into the ledger, numbered as user_version counts.
 const RULES_FILE_MIGRATION = 17
@@ -570,6 +608,7 @@ type Tables = {
   repos: Repo & { lander: number | null }
   repoChanges: { id: Generated<number>; repo: string; actor: string; change: string; at: string }
   landings: Landing
+  notices: Omit<Notice, 'id'> & { id: Generated<number> }
 }
 
 // Kysely only builds and type-checks the queries; bun:sqlite runs them (runQuery), so the ledger
@@ -1473,12 +1512,14 @@ export class Ledger {
   ask(taskId: number, attemptId: number, reason: DecisionReason, question: string): number {
     return this.db.transaction(() => {
       this.setStatus(taskId, 'needs_decision', null)
-      return this.insert(
+      const decisionId = this.insert(
         q
           .insertInto('decisions')
           .values({ taskId, attemptId, reason, question, createdAt: now() })
           .returning('id'),
       )
+      this.addNotice({ taskId, decisionId, attemptId, event: 'decision' })
+      return decisionId
     })()
   }
 
@@ -1534,6 +1575,58 @@ export class Ledger {
     return this.run(q.selectFrom('decisions').selectAll().where('answer', 'is', null).orderBy('id'))
   }
 
+  // ── notices (inbox.ts) ──
+
+  // A person's words for a project's session, or, from setStatus and ask, a task's end or decision.
+  addNotice(
+    n: Partial<Omit<Notice, 'id' | 'createdAt' | 'sessionId' | 'sentAt'>> & {
+      event: NoticeEvent
+    },
+  ): number {
+    return this.insert(
+      q
+        .insertInto('notices')
+        .values({ ...n, createdAt: now() })
+        .returning('id'),
+    )
+  }
+
+  notice(id: number): Notice {
+    const n = this.first(q.selectFrom('notices').selectAll().where('id', '=', id))
+    if (!n) throw new Error(`notice ${id} not found`)
+    return n
+  }
+
+  unsentNotices(): Notice[] {
+    return this.run(q.selectFrom('notices').selectAll().where('sentAt', 'is', null).orderBy('id'))
+  }
+
+  // Marks sent to `sessionId` (null: to none) those of `ids` still unsent, in one statement, so of
+  // two processes sending at once only one sends each. Returns the ones this call marked, and when.
+  claimNotices(ids: number[], sessionId: string | null): { ids: number[]; at: string } {
+    const at = now()
+    const claimed = this.run(
+      q
+        .updateTable('notices')
+        .set({ sessionId, sentAt: at })
+        .where('id', 'in', [...ids, -1])
+        .where('sentAt', 'is', null)
+        .returning('id'),
+    )
+    return { ids: claimed.map((n) => n.id), at }
+  }
+
+  // Unsent again: the send of what claimNotices marked at `at` did not go through.
+  unclaimNotices(ids: number[], at: string): void {
+    this.run(
+      q
+        .updateTable('notices')
+        .set({ sessionId: null, sentAt: null })
+        .where('id', 'in', [...ids, -1])
+        .where('sentAt', '=', at),
+    )
+  }
+
   // ── reporting ──
 
   stats(): Stats {
@@ -1585,15 +1678,29 @@ export class Ledger {
     }
   }
 
+  // Each end is a notice for the task's project session, in one transaction with it: the ends `nod
+  // watch` prints, with what it prints of them (endLine in view.ts) as they are now.
   private setStatus(id: number, status: TaskStatus, error: string | null): void {
-    const finishedAt = FINISHED.has(status) ? now() : null
-    this.run(q.updateTable('tasks').set({ status, error, finishedAt }).where('id', '=', id))
-    // A task that waits for a cancelled one can never start. An error is left alone: the task can
-    // still be resumed and succeed.
-    if (status !== 'cancelled') return
-    for (const w of this.waiting(id)) {
-      this.setStatus(w, 'cancelled', `task #${id} it waits for was cancelled`)
-    }
+    this.db.transaction(() => {
+      const finishedAt = FINISHED.has(status) ? now() : null
+      this.run(q.updateTable('tasks').set({ status, error, finishedAt }).where('id', '=', id))
+      if (FINISHED.has(status)) {
+        const attempts = this.attempts(id)
+        const done = attempts.findLast((a) => a.outcome === 'succeeded')
+        this.addNotice({
+          taskId: id,
+          attemptId: attempts.at(-1)?.id ?? null,
+          event: status as NoticeEvent,
+          note: status === 'succeeded' ? (done?.summary ?? null) : error,
+        })
+      }
+      // A task that waits for a cancelled one can never start. An error is left alone: the task can
+      // still be resumed and succeed.
+      if (status !== 'cancelled') return
+      for (const w of this.waiting(id)) {
+        this.setStatus(w, 'cancelled', `task #${id} it waits for was cancelled`)
+      }
+    })()
   }
 
   private insert(query: Compilable<{ id: number }>): number {
