@@ -2618,6 +2618,8 @@ it('a message its worker had not taken in by the end of the turn it was told in 
   keep('late', [queue('dequeue', wrapped(tabs)), queue('dequeue', 'peer note')])
   const back = await stopped('late', 'NOD: done | did it')
   expect(back).toContain(JSON.stringify(capture).slice(1, -1))
+  // Not taken either, so the lines of this report go again too.
+  expect(back).toContain('every `NOD: in` and `NOD: tell` line of the report you just wrote')
   expect(status(late)).toBe('running')
   expect(await stopped('late', `${capture}\nNOD: done | did it`)).toBeNull()
   expect(status(late)).toBe('succeeded')

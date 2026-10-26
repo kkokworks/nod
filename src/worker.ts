@@ -1783,7 +1783,8 @@ function holdLines(home: string, taskId: number, report: string): void {
 }
 
 // The held lines `report` leaves out, as what goes back to the worker, once: it puts those it
-// still wants in its report again, where nod reads them as any. Null when there are none.
+// still wants in its report again, where nod reads them as any, with the lines of `report`, which
+// nod does not take either as it sends this back. Null when there are none.
 function heldBack(home: string, taskId: number, report: string): string | null {
   const file = heldFile(home, taskId)
   if (!existsSync(file)) return null
@@ -1792,7 +1793,7 @@ function heldBack(home: string, taskId: number, report: string): string | null {
   const kept = new Set([...nodLines(report, 'in'), ...nodLines(report, 'tell')])
   const left = held.filter((l) => !kept.has(l))
   if (left.length === 0) return null
-  return `Your report before a message you had not read yet had these lines, and nod did not act on them, since it took no done before you read that message:\n${left.join('\n')}\nPut those you still want in your report again.`
+  return `Your report before a message you had not read yet had these lines, and nod did not act on them, since it took no done before you read that message:\n${left.join('\n')}\nReport again with those you still want and every \`NOD: in\` and \`NOD: tell\` line of the report you just wrote: nod acts only on the lines of the report it takes.`
 }
 
 function takePrompt(home: string, taskId: number): string | null {
