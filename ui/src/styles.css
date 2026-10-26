@@ -1154,10 +1154,6 @@ details summary {
   font-variant-numeric: tabular-nums;
 }
 
-.fold-label {
-  cursor: pointer;
-}
-
 .change {
   margin: 0.3rem 0;
   font-size: 13px;
@@ -1236,23 +1232,6 @@ details summary {
   font-weight: 600;
   letter-spacing: 0;
   font-variant-numeric: tabular-nums;
-}
-
-.fold-label {
-  list-style: none;
-}
-
-.fold-label::-webkit-details-marker {
-  display: none;
-}
-
-.fold-label::before {
-  content: "▸";
-  font-size: 10px;
-}
-
-.fold[open] > .fold-label::before {
-  content: "▾";
 }
 
 .list {
@@ -1835,7 +1814,7 @@ a.task-line:hover {
   align-self: flex-start;
 }
 
-/* A project's tasks on the home page fold under its title, the chevron pointing down while open. */
+/* A project's tasks on the home page, and Focus's Reference, fold under their title, the chevron pointing down while open. */
 .fold > summary.section {
   list-style: none;
   cursor: pointer;

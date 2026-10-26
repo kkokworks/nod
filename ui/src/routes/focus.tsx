@@ -99,7 +99,7 @@ function Reference({ ts, today }: { ts: TodoItem[]; today: string }) {
   if (ts.length === 0) return null
   return (
     <details className="fold">
-      <summary className="section fold-label">
+      <summary className="section">
         Reference
         <span className="count">{ts.length}</span>
       </summary>
