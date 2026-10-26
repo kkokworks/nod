@@ -240,6 +240,32 @@ test('a branch its worker rebased onto the default branch itself lands only its 
   expect(ledger.landing(id)?.base).toBe(tip)
 }, 30_000)
 
+test('a branch its worker rebased onto the default branch during its landing turn lands only its own commits', async () => {
+  setRepo('pr')
+  const id = finished('feat/w', { 'w.txt': 'w\n' })
+  mainMoves('n.txt', 'n\n')
+  expect(await land(ledger, home, { send })).toEqual([
+    { id, did: 'its worker writes the pull request' },
+  ])
+  // In that turn the worker brings in the default branch as it moved since.
+  mainMoves('m.txt', 'm\n')
+  git(ws(id), 'fetch', '-q', 'origin')
+  git(ws(id), 'rebase', '-q', 'origin/main')
+  await stops(id, 'Add w\n\nNOD: done | wrote it')
+  // Its reviewer reads its own commit, not the default branch's it brought in.
+  expect(reviews()).toHaveLength(1)
+  const read = readFileSync(join(home, 'agent.log'), 'utf8').trim().split('\n').at(-1) ?? '{}'
+  expect(JSON.parse(read).diff).not.toContain('m.txt')
+  // Moving that commit again would conflict with this one.
+  const tip = mainMoves('m.txt', 'm2\n')
+
+  expect(await land(ledger, home, { send })).toEqual([
+    { id, did: 'pull request open, waiting for its merge: https://github.com/o/r/pull/1' },
+  ])
+  expect(git(ws(id), 'log', '--format=%s', `${tip}..HEAD`)).toBe('change w.txt')
+  expect(ledger.landing(id)?.base).toBe(tip)
+}, 30_000)
+
 test('a conflict goes to the worker, which stages its resolution; nod goes on with the rebase, sends the next one, then checks and reviews the result', async () => {
   setRepo('pr')
   writeFileSync(join(repo, 'f.txt'), 'start\n')
