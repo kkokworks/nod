@@ -506,7 +506,7 @@ exit 3
   expect(usage.stderr.toString()).toContain('nod open <project> [--new]')
 })
 
-test('ls hides tasks gc collected unless --all, and lists links under their task', async () => {
+test('ls hides tasks gc collected unless --all, and lists links in their row', async () => {
   const home = tmp.make('nod-ls-')
   const ledger = new Ledger(home)
   const add = (brief: string): number =>
@@ -524,18 +524,23 @@ test('ls hides tasks gc collected unless --all, and lists links under their task
   ledger.collected(done, null)
   const shipped = add('shipped')
   ledger.link(shipped, ['https://example.com/pr/7'])
-  const ls = async (...args: string[]): Promise<string[]> => {
+  const ls = async (...args: string[]): Promise<string[][]> => {
     const p = Bun.spawn(['bun', cli, 'ls', ...args], { env: { ...process.env, NOD_HOME: home } })
     expect(await p.exited).toBe(0)
     const out = await new Response(p.stdout).text()
+    // Number, status, note and results; the latest first.
     return out
-      .trimEnd()
+      .replace(/\n$/, '')
       .split('\n')
-      .map((l) => l.replace(/\s+queued\s+0 turns\s+/, ' ').trim())
+      .map((l) => l.split('\t'))
+      .map(([id, , status, , , note, results]) => [`${id}`, `${status}`, `${note}`, `${results}`])
   }
 
-  expect(await ls()).toEqual(['#2 shipped', 'link https://example.com/pr/7'])
-  expect(await ls('--all')).toEqual(['#1 done', '#2 shipped', 'link https://example.com/pr/7'])
+  expect(await ls()).toEqual([['2', 'queued', 'shipped', 'https://example.com/pr/7']])
+  expect(await ls('--all')).toEqual([
+    ['2', 'queued', 'shipped', 'https://example.com/pr/7'],
+    ['1', 'queued', 'done', ''],
+  ])
 })
 
 test('ls shows where an unlinked task was pushed, under any name, until it is linked', async () => {
@@ -572,22 +577,19 @@ test('ls shows where an unlinked task was pushed, under any name, until it is li
   git('branch', 'local/work')
   git('update-ref', 'refs/remotes/origin/feat/work', 'local/work')
   git('symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/feat/work')
-  const ls = async (): Promise<string[]> => {
+  // The issue and results, the last field.
+  const ls = async (): Promise<string | undefined> => {
     const p = Bun.spawn(['bun', cli, 'ls'], { env: { ...process.env, NOD_HOME: home } })
     expect(await p.exited).toBe(0)
-    return (await new Response(p.stdout).text())
-      .trimEnd()
-      .split('\n')
-      .slice(1)
-      .map((l) => l.trim())
+    return (await new Response(p.stdout).text()).replace(/\n$/, '').split('\t').at(-1)
   }
 
-  expect(await ls()).toEqual(['pushed origin/feat/work'])
+  expect(await ls()).toBe('origin/feat/work')
   ledger.link(task, ['https://example.com/pr/1'])
-  expect(await ls()).toEqual(['link https://example.com/pr/1'])
+  expect(await ls()).toBe('https://example.com/pr/1')
 })
 
-test('ls lists tasks without an issue first, then each issue with its tasks under it', async () => {
+test('ls keeps tasks of one status together and gives each its issue; --plain and --json for scripts', async () => {
   const home = tmp.make('nod-ls-')
   const ledger = new Ledger(home)
   const add = (brief: string, issue: string | null): number =>
@@ -602,21 +604,58 @@ test('ls lists tasks without an issue first, then each issue with its tasks unde
       issue,
     })
   add('first', 'PROJ-1')
-  add('loose', null)
+  const loose = add('loose\nwith a second line', null)
   add('second', 'PROJ-2')
-  add('third', 'PROJ-1')
-  const ls = Bun.spawn(['bun', cli, 'ls'], { env: { ...process.env, NOD_HOME: home } })
+  const done = add('third', 'PROJ-1')
+  ledger.setRunning(done, home)
+  ledger.link(done, ['https://example.com/acme/app/pull/9'])
+  ledger.succeed(done)
+  const ls = async (...args: string[]): Promise<string> => {
+    const p = Bun.spawn(['bun', cli, 'ls', ...args], {
+      env: { ...process.env, NOD_HOME: home, FORCE_COLOR: '1' },
+    })
+    expect(await p.exited).toBe(0)
+    return (await new Response(p.stdout).text()).replace(/\n$/, '')
+  }
 
-  expect(await ls.exited).toBe(0)
-  const lines = (await new Response(ls.stdout).text()).trimEnd().split('\n')
-  expect(lines.map((l) => l.replace(/\s+queued\s+0 turns\s+/, ' '))).toEqual([
-    '#2 loose',
-    'PROJ-1',
-    '  #1 first',
-    '  #4 third',
-    'PROJ-2',
-    '  #3 second',
+  // Into a pipe: a plain line a task, the queued latest first, then what ended.
+  const piped = await ls()
+  expect(piped).not.toContain('\x1b')
+  expect(
+    piped.split('\n').map((l) => l.split('\t').filter((_, i) => [0, 2, 5, 6].includes(i))),
+  ).toEqual([
+    ['3', 'queued', 'second', 'PROJ-2'],
+    ['2', 'queued', 'loose', ''],
+    ['1', 'queued', 'first', 'PROJ-1'],
+    ['4', 'succeeded', 'third', 'PROJ-1 https://example.com/acme/app/pull/9'],
   ])
+  expect(await ls('--plain')).toBe(piped)
+
+  const json = (await ls('--json')).split('\n').map((l) => JSON.parse(l))
+  expect(json.map((t) => t.id)).toEqual([3, 2, 1, 4])
+  const task = ledger.get(loose)
+  expect(json[1]).toEqual({
+    id: loose,
+    todoId: null,
+    retroId: null,
+    status: 'queued',
+    sessionEnded: false,
+    turns: 0,
+    createdAt: task.createdAt,
+    startedAt: null,
+    finishedAt: null,
+    note: 'loose\nwith a second line',
+    issue: null,
+    links: [],
+    pushed: [],
+  })
+  expect(json[3]).toMatchObject({
+    status: 'succeeded',
+    issue: 'PROJ-1',
+    links: ['https://example.com/acme/app/pull/9'],
+    finishedAt: ledger.get(done).finishedAt,
+  })
+  expect(new Date(json[3].finishedAt).toISOString()).toBe(json[3].finishedAt)
 })
 
 test('account sets which account workers run as and shows the one current now; restart with no worker says so', () => {
