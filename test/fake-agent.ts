@@ -11,7 +11,14 @@
 // start, as Claude Code waiting on a first-run screen. Every launch, with its account and the names
 // in its environment, every turn, and what a turn takes in while it runs is logged to
 // $NOD_HOME/agent.log.
-import { appendFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs'
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  writeFileSync,
+} from 'node:fs'
 import { dirname, join } from 'node:path'
 import { projectFolder } from './projects'
 
@@ -65,10 +72,30 @@ const prompt =
 
 // Like `claude -p`, which nod runs as the reviewer: the prompt comes on stdin and the reply is
 // printed once. A brief with `review-strict` fails until ok.txt exists; `review-mute` gives no
-// verdict; `review-slow` takes a while.
+// verdict; `review-slow` takes a while. Like Claude Code under a user's UserPromptSubmit hook that
+// screens for personal data, a brief with a value shaped like a national ID number is blocked
+// before any model runs: it prints why, then the whole brief, and exits 0 (2.1.310). It logs the
+// diff file its brief names as it reads it then, and the folder it may read (--add-dir), as given
+// and with its links resolved.
 if (args.includes('-p')) {
   const stdin = await Bun.stdin.text()
-  log({ event: 'review', sessionId, message: stdin })
+  const saved = /`([^`]+\.diff)`/.exec(stdin)?.[1]
+  log({
+    event: 'review',
+    sessionId,
+    message: stdin,
+    diff: saved !== undefined && existsSync(saved) ? readFileSync(saved, 'utf8') : null,
+    addDir: flag('--add-dir'),
+    addDirReal: existsSync(flag('--add-dir') ?? '') ? realpathSync(flag('--add-dir') ?? '') : null,
+  })
+  if (/\d{6}-\d{7}/.test(stdin)) {
+    // Claude Code names the hook by its command, which may be a long inline script.
+    const hook = `node -e '${'x'.repeat(5000)}' screen-pii`
+    console.log(
+      `UserPromptSubmit operation blocked by hook:\n[${hook}]: looks like a national ID number\n\n\nOriginal prompt: ${stdin}`,
+    )
+    process.exit(0)
+  }
   if (stdin.includes('review-slow')) await Bun.sleep(3000)
   let reply = 'NOD: done | looks right'
   if (stdin.includes('review-strict') && !existsSync('ok.txt')) {

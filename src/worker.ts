@@ -1,5 +1,14 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { homedir } from 'node:os'
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs'
+import { homedir, tmpdir } from 'node:os'
 import { basename, join, resolve } from 'node:path'
 import { z } from 'zod'
 import { accountChanged, accountRule, configDir } from './account'
@@ -41,15 +50,15 @@ worker is a peer's: weigh it, but the human's instructions come first.`
 // A repo worker also has its change reviewed before it reports done, by a subagent that knows what
 // was asked but not the worker's reasons. nod's independent review after done stays the last word.
 const SUBAGENT_REVIEW_PROMPT = `Before you report done, commit, then have a subagent (Agent tool) review \`git diff <start>..HEAD\`
-(start: the commit in your first message); skip it if that diff is empty. Report done only once it
-has reported: if it runs in the background, you may stop while it works, as above, and its result
-starts your next turn. Give it only the brief, the human's later words and that range, not your
-reasons. It changes no files here and checks that the asked work is done, that each new test fails
-on the code before the change (run in a temp \`git worktree add\` or copied files, never via stash
-or checkout), and for new bugs (boundaries, swallowed errors, races, lost data, injection, leaked
-secrets), reporting each as file:line, a scenario that reproduces it, and its confidence. Fix the
-findings that have a scenario, commit, and have it review again. In your final report, list each
-finding and what you did (fixed, or why not).`
+(start: the commit nod last said your branch starts at, or the one you rebased it onto since); skip
+it if that diff is empty. Report done only once it has reported: if it runs in the background, you
+may stop while it works, as above, and its result starts your next turn. Give it only the brief, the
+human's later words and that range, not your reasons. It changes no files here and checks that the
+asked work is done, that each new test fails on the code before the change (run in a temp
+\`git worktree add\` or copied files, never via stash or checkout), and for new bugs (boundaries,
+swallowed errors, races, lost data, injection, leaked secrets), reporting each as file:line, a
+scenario that reproduces it, and its confidence. Fix the findings that have a scenario, commit, and
+have it review again. In your final report, list each finding and what you did (fixed, or why not).`
 
 const RESUME_PROMPT =
   'Your session was interrupted. Check the current state of this directory and continue the task.'
@@ -168,6 +177,8 @@ const MAX_TELLS = 4
 // The check and the review both run inside the Stop hook, so the hook outlasts them.
 const REVIEW_TIMEOUT_MS = 600_000
 const STOP_HOOK_TIMEOUT_SECS = 1800
+// What `claude -p` prints first when a hook blocks the message it was given (2.1.310).
+const BLOCKED = 'UserPromptSubmit operation blocked by hook:'
 const TRUST_TIMEOUT_MS = 20_000
 const TRUST_POLL_MS = 500
 const TRUST_DIALOG = 'Yes, I trust this folder'
@@ -2070,57 +2081,109 @@ async function review(
 ): Promise<{ passed: boolean; output: string }> {
   // Since the branch now starts, once nod rebased it as it lands it (land.ts).
   const base = ledger.landing(task.id)?.base ?? null
-  const changes = task.repo === null ? null : await changesOf(cwd, branchOf(task), base)
-  const head = task.repo === null ? null : await headOf(cwd)
-  const { code, stdout, output } = await spawn(
-    [
-      'claude',
-      '-p',
-      '--settings',
-      JSON.stringify({ sandbox: SANDBOX }),
-      ...(task.model === null ? [] : ['--model', task.model]),
-      '--disallowedTools',
-      'Edit',
-      'Write',
-      'NotebookEdit',
-    ],
-    cwd,
-    { stdin: reviewBrief(ledger, task, report, changes), timeoutMs: REVIEW_TIMEOUT_MS },
-  )
-  if (code !== 0) throw new Error(`the review exited with ${code}: ${output.slice(-OUTPUT_LIMIT)}`)
-  // ponytail: a repo's reviewer is told not to touch the worktree and checked afterwards; give it a
-  // worktree of its own if it needs to run things.
-  if (head !== null && ((await headOf(cwd)) !== head || (await uncommittedChanges(cwd)))) {
-    throw new Error(`the reviewer of task ${task.id} changed its worktree`)
+  // A folder of the review's own for the diff it reads (changesOf), which it is let read. Through no
+  // link (macOS keeps temp folders behind one), so the folder it is let read and the file in it are
+  // one path however Claude Code compares them.
+  const dir = task.repo === null ? null : realpathSync(mkdtempSync(join(tmpdir(), 'nod-review-')))
+  try {
+    const changes = dir === null ? null : await changesOf(cwd, branchOf(task), base, dir)
+    const { code, stdout, output } = await spawn(
+      [
+        'claude',
+        '-p',
+        '--settings',
+        JSON.stringify({ sandbox: SANDBOX }),
+        ...(task.model === null ? [] : ['--model', task.model]),
+        ...(dir === null ? [] : ['--add-dir', dir]),
+        '--disallowedTools',
+        'Edit',
+        'Write',
+        'NotebookEdit',
+      ],
+      cwd,
+      { stdin: reviewBrief(ledger, task, report, changes), timeoutMs: REVIEW_TIMEOUT_MS },
+    )
+    if (code !== 0) {
+      throw new Error(`the review exited with ${code}: ${output.slice(-OUTPUT_LIMIT)}`)
+    }
+    // A hook that blocks the first message (a user's UserPromptSubmit hook): no model runs, and
+    // Claude Code exits 0 with why, then the whole message (2.1.310), which only brings back the
+    // brief and the report, so the error has why alone. Why ends it, after the hook's command.
+    if (stdout.startsWith(BLOCKED)) {
+      const why = stdout.slice(BLOCKED.length).split('\nOriginal prompt: ')[0]?.trim() ?? ''
+      throw new Error(
+        `the reviewer's first message was blocked by a hook, so no review ran: ${why.slice(-OUTPUT_LIMIT)}`,
+      )
+    }
+    // ponytail: a repo's reviewer is told not to touch the worktree and checked afterwards; give it
+    // a worktree of its own if it needs to run things.
+    if (
+      changes !== null &&
+      ((await headOf(cwd)) !== changes.head || (await uncommittedChanges(cwd)))
+    ) {
+      throw new Error(`the reviewer of task ${task.id} changed its worktree`)
+    }
+    const verdict = parseReport(stdout)
+    if (verdict === null || verdict.status === 'question') {
+      throw new Error(`the review gave no verdict: ${stdout.slice(-OUTPUT_LIMIT)}`)
+    }
+    if (verdict.status === 'done') return { passed: true, output: verdict.text }
+    return { passed: false, output: stdout.trim().slice(-OUTPUT_LIMIT) }
+  } finally {
+    if (dir !== null) rmSync(dir, { recursive: true, force: true })
   }
-  const verdict = parseReport(stdout)
-  if (verdict === null || verdict.status === 'question') {
-    throw new Error(`the review gave no verdict: ${stdout.slice(-OUTPUT_LIMIT)}`)
-  }
-  if (verdict.status === 'done') return { passed: true, output: verdict.text }
-  return { passed: false, output: stdout.trim().slice(-OUTPUT_LIMIT) }
 }
 
-// What the branch changed since it was created, or since `base`, where nod rebased it to as it
-// lands it. The start is its oldest reflog entry, since `worktree add -b` records where it started
-// and later commits only add entries. No color and no external diff tool, whatever the human's git
-// config says, so the reviewer reads a plain diff.
-async function changesOf(worktree: string, branch: string, base: string | null): Promise<Changes> {
+// What the branch changed since `base`, where nod rebased it to as it lands it, else since its own
+// commits start (ownStart), with the diff saved in `dir`. The reviewer reads that file with its Read
+// tool rather than running git: a user's hook may rewrite the shell commands it runs, and one that
+// shortens their output cut lines out of the diff. No color and no external diff tool, whatever the
+// human's git config says, so the diff is plain.
+async function changesOf(
+  worktree: string,
+  branch: string,
+  base: string | null,
+  dir: string,
+): Promise<Changes> {
   const git = async (...args: string[]): Promise<string> => {
     const { code, stdout, output } = await spawn(['git', ...args], worktree)
     if (code !== 0) throw new Error(`git ${args.join(' ')} failed: ${output.trim()}`)
     return stdout
   }
-  const start =
-    base ??
-    (await git('reflog', 'show', '--format=%H', `refs/heads/${branch}`)).trim().split('\n').at(-1)
-  if (!start) throw new Error(`${branch} has no reflog to find where it started`)
-  const range = `${start}..HEAD`
-  return {
-    start,
-    stat: await git('diff', '--no-color', '--stat', range),
-    diff: await git('diff', '--no-color', '--no-ext-diff', range),
-  }
+  const head = (await git('rev-parse', 'HEAD')).trim()
+  const start = base ?? (await ownStart(worktree, branch, head, git))
+  const range = `${start}..${head}`
+  const saved = join(dir, 'changes.diff')
+  writeFileSync(saved, await git('diff', '--no-color', '--no-ext-diff', range))
+  return { start, head, stat: await git('diff', '--no-color', '--stat', range), saved }
+}
+
+// Where the task's own commits start: where the branch was created, its oldest reflog entry, since
+// `worktree add -b` records it and later commits only add entries. A worker that brought the remote's
+// default branch in itself (a rebase onto it, or a merge) leaves that start behind where HEAD now
+// leaves the default branch, or off HEAD once the earlier task the branch started on was
+// squash-merged, and the commits between are others': then they start where HEAD leaves it.
+// ponytail: a branch started on an earlier task's branch that merged the default branch in, rather
+// than rebasing onto it, keeps the created start, so its reviewer reads the merged commits too;
+// diff from both if that shows up.
+async function ownStart(
+  worktree: string,
+  branch: string,
+  head: string,
+  git: (...args: string[]) => Promise<string>,
+): Promise<string> {
+  const created = (await git('reflog', 'show', '--format=%H', `refs/heads/${branch}`))
+    .trim()
+    .split('\n')
+    .at(-1)
+  if (!created) throw new Error(`${branch} has no reflog to find where it started`)
+  // Fails without a default branch fetched, or with no commit in common.
+  const left = await spawn(['git', 'merge-base', head, 'refs/remotes/origin/HEAD'], worktree)
+  const main = left.code === 0 ? left.stdout.trim() : created
+  if (main === created) return created
+  const isAncestor = async (a: string, b: string): Promise<boolean> =>
+    (await spawn(['git', 'merge-base', '--is-ancestor', a, b], worktree)).code === 0
+  return !(await isAncestor(created, head)) || (await isAncestor(created, main)) ? main : created
 }
 
 async function headOf(worktree: string): Promise<string> {

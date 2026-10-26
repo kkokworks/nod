@@ -9,14 +9,14 @@ import {
   symlinkSync,
   writeFileSync,
 } from 'node:fs'
-import { basename, join, resolve } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 import { projectFolder } from '../test/projects'
 import { tempDirs } from '../test/tmp'
 import { setAccountRule } from './account'
 import { collect } from './gc'
 import { Ledger, type Task, type TaskStatus } from './ledger'
 import { notify } from './notify'
-import { DIFF_LIMIT, reviewBrief } from './review'
+import { reviewBrief } from './review'
 import { retroBrief } from './rules'
 import { quote, Terminals } from './tmux'
 import { Todos } from './todos'
@@ -109,6 +109,9 @@ type LogEntry = {
   system?: string | null
   config?: string | null
   env?: string[]
+  diff?: string | null
+  addDir?: string | null
+  addDirReal?: string | null
 }
 const entries = (event: string): LogEntry[] =>
   existsSync(log)
@@ -266,6 +269,23 @@ test('a review that gives no verdict errors the task instead of passing it', asy
   const id = await add('review-mute')
   await until(() => status(id) === 'error')
   expect(ledger.get(id).error).toContain('the review gave no verdict')
+})
+
+// Shaped like a national ID number, as a masking test's input is; the fake reviewer blocks a first
+// message with one, as a user's hook that screens for personal data does (fake-agent.ts).
+const ID_SHAPED = `${'9'.repeat(6)}-${'1'.repeat(7)}`
+
+test("a reviewer whose first message a hook blocks errors the task with the hook's reason, not the message", async () => {
+  const id = started(`mask ${ID_SHAPED} in the log`, 'blocked')
+  await stopped('blocked', 'NOD: done | did it')
+  expect(status(id)).toBe('error')
+  const error = ledger.get(id).error ?? ''
+  expect(error).toContain("the reviewer's first message was blocked by a hook")
+  // Why comes last, after the hook's command, however long that is.
+  expect(error).toEndWith(' screen-pii]: looks like a national ID number')
+  // The message would only bring back the brief and the report.
+  expect(error).not.toContain('Original prompt')
+  expect(error).not.toContain(ID_SHAPED)
 })
 
 test('a worker that gives up, or stops without a report, becomes a decision', async () => {
@@ -566,12 +586,12 @@ test('in a repo, done needs the work committed, and the next task starts from th
   expect(existsSync(join(worktree, 'ok.txt'))).toBe(true)
   const message = entries('turn').find((t) => t.message?.startsWith('build on it'))?.message
   expect(message).toContain(`starts from task #${first}'s branch`)
-  // A review gets the files changed and the whole diff in its brief.
+  // A review gets the files changed in its brief, and reads the diff itself.
   const review = (brief: string): string | undefined =>
     entries('review').find((r) => r.message?.includes(`> ${brief}`))?.message
   expect(review('make ok')).toContain('>  ok.txt | 1 +')
-  expect(review('make ok')).toContain('The whole diff:')
-  expect(review('make ok')).toContain('> +ok')
+  expect(review('make ok')).toContain('Read all of it with the Read tool before you judge')
+  expect(review('make ok')).not.toContain('> +ok')
   // A task's changes start where the earlier task's branch ended, so here there are none.
   const base = Bun.spawnSync(['git', 'rev-parse', 'feat/ok'], { cwd: repo }).stdout.toString()
   expect(review('build on it')).toContain(`since ${base.trim()}. There are none.`)
@@ -582,28 +602,142 @@ test('in a repo, done needs the work committed, and the next task starts from th
   expect((await until(() => retroTask(first))).brief).not.toContain('subagent')
 }, 30_000)
 
-test('a diff too long for the review brief is cut, and the reviewer is told where', () => {
+// A repo task as startTask starts it, but without its terminal: a worktree on a new branch made
+// from `from` (else the repo's HEAD), for a test that plays its worker's turn with git itself.
+function startedInRepo(
+  repo: string,
+  session: string,
+  from: string[] = [],
+): { id: number; cwd: string } {
+  const brief = `work in ${session}`
   const id = ledger.add({
-    brief: 'big change',
-    repo: '/repo',
-    branch: 'feat/big',
+    brief,
+    repo,
+    branch: `feat/${session}`,
     checkCmd: null,
     model: null,
     after: [],
     triggerId: null,
     issue: null,
   })
-  const diff = `+${'x'.repeat(DIFF_LIMIT)}`
-  const brief = reviewBrief(ledger, ledger.get(id), 'NOD: done | ok', {
-    start: 'abc123',
-    stat: ' big.txt | 1 +\n',
-    diff,
+  const cwd = workspaceOf(home, ledger.get(id))
+  git(repo, 'worktree', 'add', '-q', '-b', `feat/${session}`, cwd, ...from)
+  ledger.setRunning(id, cwd)
+  ledger.startAttempt({
+    taskId: id,
+    kind: 'start',
+    decisionId: null,
+    sessionId: session,
+    prompt: brief,
   })
-  expect(brief).toContain(
-    `The diff, cut at ${DIFF_LIMIT} characters; read the rest with \`git diff abc123..HEAD\`:`,
-  )
-  expect(brief).toContain(`> ${diff.slice(0, DIFF_LIMIT)}\n`)
-  expect(brief).not.toContain(diff)
+  return { id, cwd }
+}
+
+function commit(cwd: string, file: string, text = `${file}\n`): void {
+  writeFileSync(join(cwd, file), text)
+  git(cwd, 'add', '-A')
+  git(cwd, 'commit', '-qm', file)
+}
+
+// The remote's default branch, as the last fetch left it: where the main clone is now.
+function publish(repo: string): void {
+  git(repo, 'update-ref', 'refs/remotes/origin/main', 'HEAD')
+  git(repo, 'symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main')
+}
+
+const reviewEntry = (id: number): LogEntry | undefined =>
+  entries('review').find((r) => r.message?.includes(`nod task #${id}.`))
+const reviewOf = (id: number): string => reviewEntry(id)?.message ?? ''
+
+// The files task `id`'s reviewer read in the diff nod saved for it, which is what the command its
+// brief names prints, run in `cwd`.
+function reviewed(id: number, cwd: string): (string | undefined)[] {
+  const command = /`(git diff [^`]+)`/.exec(reviewOf(id))?.[1]
+  if (command === undefined) throw new Error(`no diff command in:\n${reviewOf(id)}`)
+  const run = Bun.spawnSync(command.split(' '), { cwd })
+  if (run.exitCode !== 0) throw new Error(`${command}: ${run.stderr.toString()}`)
+  const diff = reviewEntry(id)?.diff
+  expect(diff).toBe(run.stdout.toString())
+  return [...(diff ?? '').matchAll(/^diff --git a\/(\S+)/gm)].map((m) => m[1])
+}
+
+test('the reviewer reads the diff from a file nod saves, so a hook on its first message never sees the code', async () => {
+  const { id, cwd } = startedInRepo(newRepo(), 'mask')
+  commit(cwd, 'mask.test.ts', `expect(mask('${ID_SHAPED}')).toBe('******-*******')\n`)
+  // A temp folder behind a link, as macOS keeps it, on any machine.
+  const linked = join(tmp.make('nod-linked-'), 'tmp')
+  symlinkSync(tmp.make('nod-real-tmp-'), linked)
+  const was = process.env.TMPDIR
+  process.env.TMPDIR = linked
+  try {
+    await stopped('mask', 'NOD: done | masked it')
+  } finally {
+    if (was === undefined) delete process.env.TMPDIR
+    else process.env.TMPDIR = was
+  }
+  expect(status(id)).toBe('succeeded')
+  expect(reviewOf(id)).toContain('Files changed:\n>  mask.test.ts | 1 +')
+  expect(reviewOf(id)).not.toContain(ID_SHAPED)
+  expect(reviewed(id, cwd)).toEqual(['mask.test.ts'])
+  // With the Read tool, in a folder it is given, since a hook may shorten what a shell command
+  // prints; the folder goes once the review ends.
+  const saved = /`([^`]+\.diff)`/.exec(reviewOf(id))?.[1] ?? ''
+  expect(reviewOf(id)).toContain('Read all of it with the Read tool before you judge')
+  expect(reviewEntry(id)?.addDir).toBe(dirname(saved))
+  // Through no link (macOS keeps temp folders behind one), so the folder it may read and the file
+  // it reads are one path however Claude Code compares them.
+  expect(reviewEntry(id)?.addDir).toBe(reviewEntry(id)?.addDirReal)
+  expect(existsSync(dirname(saved))).toBe(false)
+})
+
+test("the review reads the task's own commits, from where its branch started on the default branch or on an earlier task's branch", async () => {
+  const repo = newRepo()
+  publish(repo)
+  const plain = startedInRepo(repo, 'plain')
+  commit(plain.cwd, 'own.txt')
+  const first = startedInRepo(repo, 'first')
+  commit(first.cwd, 'first.txt')
+  // As `--after` starts it: on the earlier task's branch, with its commits.
+  const next = startedInRepo(repo, 'next', ['feat/first'])
+  commit(next.cwd, 'next.txt')
+  // Another pull request lands meanwhile, and neither worker moves onto it.
+  commit(repo, 'other.txt')
+  publish(repo)
+  await stopped('plain', 'NOD: done | did it')
+  await stopped('next', 'NOD: done | did it')
+  expect(reviewed(plain.id, plain.cwd)).toEqual(['own.txt'])
+  expect(reviewed(next.id, next.cwd)).toEqual(['next.txt'])
+})
+
+test("the review reads only the task's own commits once its worker moved them onto the default branch, also after the earlier task was squash-merged", async () => {
+  const repo = newRepo()
+  publish(repo)
+  const moved = startedInRepo(repo, 'moved')
+  commit(moved.cwd, 'own.txt')
+  const merged = startedInRepo(repo, 'merged')
+  commit(merged.cwd, 'mine.txt')
+  const first = startedInRepo(repo, 'first')
+  commit(first.cwd, 'first.txt')
+  const next = startedInRepo(repo, 'next', ['feat/first'])
+  commit(next.cwd, 'next.txt')
+  // Another pull request lands, then the earlier task, squashed into a new commit.
+  commit(repo, 'other.txt')
+  commit(repo, 'first.txt')
+  publish(repo)
+  // Each worker moves its own commits onto the default branch itself, as a brief may tell it to.
+  git(moved.cwd, 'rebase', '-q', 'origin/main')
+  git(next.cwd, 'rebase', '-q', '--onto', 'origin/main', 'feat/first')
+  // Or brings it in with a merge.
+  git(merged.cwd, 'merge', '-q', '--no-edit', 'origin/main')
+  await stopped('moved', 'NOD: done | did it')
+  await stopped('next', 'NOD: done | did it')
+  await stopped('merged', 'NOD: done | did it')
+  expect(reviewed(moved.id, moved.cwd)).toEqual(['own.txt'])
+  expect(reviewed(next.id, next.cwd)).toEqual(['next.txt'])
+  expect(reviewed(merged.id, merged.cwd)).toEqual(['mine.txt'])
+  // Nor do the files changed in the brief name the default branch's.
+  expect(reviewOf(moved.id)).not.toContain('other.txt')
+  expect(reviewOf(next.id)).not.toContain('other.txt')
 })
 
 test('a repo worker is told to have a subagent review its branch from where it starts, and a worker without a repo is not', () => {
@@ -624,6 +758,10 @@ test('a repo worker is told to have a subagent review its branch from where it s
   // Read as one line, so rewrapping the prompt does not break the checks.
   const prompt = workerPrompt(ledger, inRepo).replaceAll('\n', ' ')
   expect(prompt).toContain('have a subagent (Agent tool) review `git diff <start>..HEAD`')
+  // nod tells a new start as it lands the branch, and a worker that moves the branch knows its own.
+  expect(prompt).toContain(
+    'start: the commit nod last said your branch starts at, or the one you rebased it onto since',
+  )
   // A review-only task has nothing to review.
   expect(prompt).toContain('skip it if that diff is empty')
   // Where the Agent tool runs only in the background, a worker cannot keep its turn open until the
