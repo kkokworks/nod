@@ -3,6 +3,7 @@ import { join } from 'node:path'
 import { z } from 'zod'
 import { localTime } from './days'
 import { sweep } from './done'
+import { land, type Moved } from './land'
 import { Ledger, type Trigger } from './ledger'
 import { notify, runGroup, taskRef } from './notify'
 import { pullRequests } from './prs'
@@ -94,6 +95,7 @@ export async function tick(
   lost: number[]
   waited: number[]
   restarted: number[]
+  landed: Moved[]
 }> {
   const added: number[] = []
   for (const t of ledger.triggers()) {
@@ -125,6 +127,14 @@ export async function tick(
     return []
   })
   const passed = watches ? await checkWatches(ledger, home) : []
+  // Before the sweep, so a task whose pull request it just merged is collected on the same pass.
+  // One repo that cannot land must not stop the sweep.
+  const landed = watches
+    ? await land(ledger, home).catch((error) => {
+        console.error(`nod: could not land: ${message(error)}`)
+        return []
+      })
+    : []
   // Clean: one whose workspace was gone already, collected all the same.
   const collected = watches
     ? await sweep(ledger, home, pullRequests(home), now).then(({ report }) => [
@@ -132,7 +142,7 @@ export async function tick(
         ...report.clean,
       ])
     : []
-  return { added, passed, collected, lost, waited, restarted }
+  return { added, passed, collected, lost, waited, restarted, landed }
 }
 
 // A watch passes when it exits 0. A command the shell cannot run (126, 127) never will; anything

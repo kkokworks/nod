@@ -269,8 +269,8 @@ export function landed(repo: string, ref: string): boolean {
   return files.length === 0 || same().exitCode === 0
 }
 
-// The remote branches holding `ref`'s commits. Only as fresh as the repo's last fetch; nod does
-// not fetch.
+// The remote branches holding `ref`'s commits. Only as fresh as the repo's last fetch; nod fetches
+// only as it lands a repo's tasks (land.ts).
 export function remotesHolding(repo: string, ref: string): string[] {
   const refs = Bun.spawnSync([
     'git',

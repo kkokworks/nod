@@ -5,11 +5,16 @@ import { parseArgs } from 'node:util'
 import { accountRule, configDir, describeRule, setAccountRule } from './account'
 import { sweep } from './done'
 import { collect, type GcPick, type GcReport, remotesHolding } from './gc'
+import { land } from './land'
 import {
   type Attempt,
   type Decision,
+  LAND_LEVELS,
+  type LandLevel,
   Ledger,
   nodHome,
+  type Repo,
+  type RepoEdit,
   type Rule,
   type Task,
   type Trigger,
@@ -122,12 +127,31 @@ const USAGE = `usage:
   nod rule off|on <rule>           stop or start giving a rule to workers. Nothing deletes a rule,
                                    so where one came from stays known. Each change records who
                                    made it, as a todo's do; a worker cannot make one
+  nod repo [<path> [off | pr | merge] [--check <command>] [--gate <command>]]
+                                   how far nod takes a repo's tasks once they succeed: off (the
+                                   default: the person pushes), pr (rebase onto the default
+                                   branch, check, push and open a pull request) or merge (and
+                                   squash merge it). Only tasks added after it goes up from off
+                                   land on their own; nod land names older ones. --check: the full
+                                   check after each rebase (else the task's own); --gate: a command
+                                   run before each push, with NOD_BASE..NOD_HEAD the commits and
+                                   NOD_PR a file with the pull request's title and body, that must
+                                   exit 0. With a path only, the setting and who changed it when;
+                                   with none, every repo set. A worker cannot change it, and a
+                                   Claude session can only turn a repo off
+  nod land [<task...>]             land now what the repos let nod land (the schedule does it every
+                                   fifth minute), or only these tasks, ones added before their repo
+                                   went up and ones whose landing stopped too. What needs judgment
+                                   (a conflict, a check that fails once rebased, the pull request's
+                                   text) goes to the task's worker, and what only you can clear
+                                   becomes a decision
   nod schedule [on | off]          whether the OS scheduler runs the tick every minute; on, it
                                    runs with this shell's PATH and Claude config dir, which the
                                    triggers' workers and the watches use. It stays on until off
-  nod tick                         run the triggers that are due and the watches, and gc the
-                                   finished tasks a signal says are done with (as nod gc does);
-                                   the scheduled tick does the watches and gc every fifth minute.
+  nod tick                         run the triggers that are due and the watches, land what the
+                                   repos let nod land, and gc the finished tasks a signal says
+                                   are done with (as nod gc does); the scheduled tick does the
+                                   watches, landing and gc every fifth minute.
                                    It also asks about turns whose terminal is gone (a restart of
                                    the machine or tmux) and about tasks that have waited an hour
                                    on background work, and restarts the workers due a restart
@@ -222,11 +246,15 @@ switch (command) {
   case 'show':
     show(taskRef(rest[0]))
     break
-  case 'drop':
-    console.log(
-      (await drop(ledger, home, Number(rest[0]))) ? 'dropped' : 'closed; its task had ended',
-    )
+  case 'drop': {
+    const said = {
+      dropped: 'dropped',
+      closed: 'closed; its task had ended',
+      'landing stopped': 'stopped landing it; the task stays succeeded',
+    }
+    console.log(said[await drop(ledger, home, Number(rest[0]))])
     break
+  }
   case 'gc':
     await gc(rest)
     break
@@ -239,12 +267,18 @@ switch (command) {
   case 'rule':
     rule(rest)
     break
+  case 'repo':
+    repoCommand(rest)
+    break
+  case 'land':
+    await landCommand(rest.map(taskRef))
+    break
   case 'schedule':
     await schedule(rest)
     break
   case 'tick': {
     // Run by hand, it checks the watches now too, not only on their every fifth minute.
-    const { added, passed, collected, lost, waited, restarted } = await tick(
+    const { added, passed, collected, lost, waited, restarted, landed } = await tick(
       ledger,
       home,
       new Date(),
@@ -256,7 +290,8 @@ switch (command) {
     if (lost.length > 0) console.log(`turn(s) lost with their terminal: ${lost.join(', ')}`)
     if (waited.length > 0) console.log(`waited too long on background work: ${waited.join(', ')}`)
     if (restarted.length > 0) console.log(`restarted task(s) ${restarted.join(', ')}`)
-    if ([added, passed, collected, lost, waited, restarted].every((ids) => ids.length === 0))
+    for (const m of landed) console.log(`landing #${m.id}: ${m.did}`)
+    if ([added, passed, collected, lost, waited, restarted, landed].every((x) => x.length === 0))
       console.log('nothing due')
     break
   }
@@ -295,12 +330,16 @@ switch (command) {
     if (process.env.NOD_TASK !== undefined && ledger.decision(id).reason === 'rule') {
       throw new Error('a worker cannot change the rules')
     }
-    const taskId = ledger.decision(id).taskId
-    console.log(
-      (await answer(ledger, home, id, words(rest), actorFromEnv()))
-        ? `answered; sent to task #${taskId}`
-        : `closed; task #${taskId} had ended`,
-    )
+    const { taskId, reason } = ledger.decision(id)
+    const said = words(rest)
+    const took = await answer(ledger, home, id, said, actorFromEnv())
+    if (reason === 'land') {
+      console.log(/^y(es)?$/i.test(said) ? 'landing it again' : 'stopped landing it')
+      // Yes tries again now, not at the next fifth minute.
+      if (/^y(es)?$/i.test(said)) await landCommand([taskId])
+    } else {
+      console.log(took ? `answered; sent to task #${taskId}` : `closed; task #${taskId} had ended`)
+    }
   }
 }
 
@@ -429,6 +468,83 @@ function ruleId(ref: string | undefined): number {
 function printRule(r: Rule): void {
   const from = r.retroId === null ? '' : `r${r.retroId}`
   console.log(`${String(r.id).padEnd(4)} ${r.state.padEnd(3)} ${from.padEnd(5)} ${r.text}`)
+}
+
+// What nod may do in a repo reaches outside this machine, so a worker cannot change it, and a Claude
+// session, which could otherwise grant itself a merge, can only turn it off. The person runs it in
+// a shell of their own.
+// ponytail: both are told apart by their environment, which keeps out mistakes rather than an
+// agent set on it; the sandbox is what keeps a worker off the ledger.
+function repoCommand(args: string[]): void {
+  const { values, positionals } = parseArgs({
+    args,
+    options: { check: { type: 'string' }, gate: { type: 'string' } },
+    allowPositionals: true,
+  })
+  const [path, level, ...extra] = positionals
+  if (path === undefined) {
+    if (level !== undefined || values.check !== undefined || values.gate !== undefined) {
+      throw new Error(USAGE)
+    }
+    for (const r of ledger.repos()) printRepo(r)
+    return
+  }
+  if (extra.length > 0) throw new Error(USAGE)
+  const repo = repoPath(path) ?? path
+  const edit: RepoEdit = {}
+  if (level !== undefined) {
+    if (!LAND_LEVELS.includes(level as LandLevel)) throw new Error(`not off, pr or merge: ${level}`)
+    edit.land = level as LandLevel
+  }
+  // An empty command clears it.
+  if (values.check !== undefined) edit.checkCmd = values.check.trim() || null
+  if (values.gate !== undefined) edit.gateCmd = values.gate.trim() || null
+  if (Object.keys(edit).length === 0) {
+    const r = ledger.repo(repo)
+    if (r === null) console.log(`${repo}  off (never set)`)
+    else printRepo(r)
+    for (const c of ledger.repoChanges(repo)) {
+      const what = Object.entries(c.change)
+        .map(([k, [from, to]]) => `${k} ${String(from ?? '—')} → ${String(to ?? '—')}`)
+        .join(', ')
+      console.log(`  ${c.at} ${c.actor}: ${what}`)
+    }
+    return
+  }
+  if (process.env.NOD_TASK !== undefined) {
+    throw new Error('a worker cannot change what nod may do in a repo')
+  }
+  if (process.env.CLAUDECODE && !(edit.land === 'off' && Object.keys(edit).length === 1)) {
+    throw new Error('a Claude session can only turn a repo off; change it from a shell of your own')
+  }
+  const r = ledger.setRepo(repo, edit, actorFromEnv())
+  printRepo(r)
+  if (r.land !== 'off' && scheduleEnv(home) === null) {
+    console.log('the schedule is off, so tasks land only when you run nod land (nod schedule on)')
+  }
+}
+
+// Lands now what the schedule would on its next fifth minute, or the tasks named, ones added
+// before their repo went up from off too, and one whose landing stopped again.
+async function landCommand(ids: number[]): Promise<void> {
+  for (const id of ids) {
+    const { repo } = ledger.get(id)
+    if (repo === null || (ledger.repo(repo)?.land ?? 'off') === 'off') {
+      throw new Error(
+        `task #${id}'s repo does not let nod land it: nod repo ${repo ?? '<path>'} pr`,
+      )
+    }
+    if (ledger.landing(id)?.stopped) ledger.setLanding(id, { stopped: null, note: null })
+  }
+  const moved = await land(ledger, home, ids.length > 0 ? { only: ids } : {})
+  for (const m of moved) console.log(`#${m.id} ${m.did}`)
+  if (moved.length === 0) console.log('nothing to land')
+}
+
+function printRepo(r: Repo): void {
+  console.log(`${r.path}  ${r.land}`)
+  if (r.checkCmd !== null) console.log(`  check: ${r.checkCmd}`)
+  if (r.gateCmd !== null) console.log(`  gate: ${r.gateCmd}`)
 }
 
 async function schedule([sub, ...extra]: string[]): Promise<void> {
@@ -654,6 +770,16 @@ function show(id: number): void {
   if (task.todoId !== null) console.log(`  todo: t${task.todoId}`)
   for (const url of ledger.links(id)) console.log(`  link: ${url}`)
   for (const ref of unlinkedPushes(task)) console.log(`  pushed: ${ref}`)
+  const landing = ledger.landing(id)
+  if (landing !== null) {
+    const short = (sha: string | null): string => sha?.slice(0, 12) ?? '—'
+    const at = landing.mergedAt
+      ? `merged ${landing.mergedAt}`
+      : landing.stopped
+        ? `stopped: ${landing.stopped}`
+        : (landing.note ?? 'going on')
+    console.log(`  landing: ${at} (on ${short(landing.base)}, pushed ${short(landing.pushed)})`)
+  }
   if (task.collectedAt !== null) console.log(`  collected: ${task.collectedAt}`)
   const after = ledger.after(id)
   if (after.length > 0) {
@@ -719,7 +845,7 @@ function printTask(t: Task, prefix = ''): void {
 
 // The remote branches holding a succeeded task's branch, while it has no link: its result was
 // pushed, maybe under another name, and is waiting to be linked. Only as fresh as the repo's last
-// fetch; nod does not fetch.
+// fetch; nod fetches only as it lands a repo's tasks (land.ts).
 function unlinkedPushes(t: Task): string[] {
   const { repo } = t
   if (repo === null || t.status !== 'succeeded' || ledger.links(t.id).length > 0) return []

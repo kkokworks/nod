@@ -30,7 +30,14 @@ export const Route = createFileRoute('/tasks/$id')({
 // About what fits in the title's three lines; a longer first line also gets "Full brief".
 const TITLE_CHARS = 120
 
-const KIND_ICON = { start: '▶', retry: '↻', answer: '↩', resume: '⏵', followup: '✎' } as const
+const KIND_ICON = {
+  start: '▶',
+  retry: '↻',
+  answer: '↩',
+  resume: '⏵',
+  followup: '✎',
+  land: '⤴',
+} as const
 
 function TaskPage() {
   const { task, status, links, after, attempts, decisions, report, place, retro, screen } =
@@ -223,9 +230,9 @@ function TaskPage() {
   )
 }
 
-// These decisions take yes or no; for trust and rule anything but yes ends the task, so they get
-// buttons instead of a text box.
-const YES_OR_NO = new Set(['permission', 'trust', 'rule'])
+// These decisions take yes or no; for trust and rule anything but yes ends the task, and for land
+// it stops landing the task, so they get buttons instead of a text box.
+const YES_OR_NO = new Set(['permission', 'trust', 'rule', 'land'])
 // How long the buttons wait after the open decision changed under them.
 const CHANGED_MS = 1000
 

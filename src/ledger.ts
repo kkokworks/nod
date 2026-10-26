@@ -24,7 +24,9 @@ export type TaskStatus =
 // `waiting`: the turn ended while background work the worker started still ran, which starts its
 // next turn once done, so nobody is asked anything yet (settle in worker.ts).
 export type Outcome = 'succeeded' | 'failed' | 'needs_decision' | 'waiting'
-export type AttemptKind = 'start' | 'retry' | 'answer' | 'resume' | 'followup'
+// `land`: a turn nod gave the worker as it lands the task (land.ts): a conflict, a failed check,
+// the pull request's text.
+export type AttemptKind = 'start' | 'retry' | 'answer' | 'resume' | 'followup' | 'land'
 export type DecisionReason =
   | 'question'
   | 'failed'
@@ -34,6 +36,9 @@ export type DecisionReason =
   | 'rule'
   // The worker's Claude Code ended in the middle of a turn, or kept exiting as it started.
   | 'interrupted'
+  // Landing the task stopped on something only the person can clear (a push or merge the git
+  // service refused, say): yes tries again, anything else stops landing it.
+  | 'land'
 
 export type Task = {
   id: number
@@ -103,6 +108,46 @@ export type RuleEdit = Partial<Pick<Rule, 'text' | 'state'>>
 export type RuleNow = Rule & { edited: boolean }
 // Each field a change set, as [before, after], the way todo_changes keeps it (todos.ts).
 type Changed = Record<string, [unknown, unknown]>
+
+// How far nod takes a repo task's work once it succeeds (land.ts): not at all, as before; up to a
+// pull request on the default branch; or through its squash merge. Only the person sets it.
+export type LandLevel = 'off' | 'pr' | 'merge'
+export const LAND_LEVELS: readonly LandLevel[] = ['off', 'pr', 'merge']
+// A repo as nod may land its tasks, keyed by the path tasks record (`tasks.repo`). `checkCmd`: the
+// full check after each rebase, else the task's own; `gateCmd`: the person's check before each push.
+// `raisedAt`: when `land` last went up from off; tasks added since land on their own.
+export type Repo = {
+  path: string
+  land: LandLevel
+  checkCmd: string | null
+  gateCmd: string | null
+  raisedAt: string | null
+  changedAt: string
+}
+export type RepoEdit = Partial<Pick<Repo, 'land' | 'checkCmd' | 'gateCmd'>>
+export type RepoChange = { actor: string; change: Changed; at: string }
+// How far a task's landing has got (land.ts). `base`: the commit its own work sits on, moved by
+// each rebase; `ready`: the head that passed the check on that base; `pushed`: what nod last
+// pushed to its branch; `pr`: the pull request nod opened. `handedAt`: since when the worker has
+// landing work (a conflict, a failed check, the pull request's text) it has not finished; `busy`:
+// the process working in its worktree right now. `stopped`: why landing stopped, null while it goes
+// on; `note`: what it waits for or last failed on, which the person hears once each time it changes.
+export type Landing = {
+  taskId: number
+  base: string | null
+  ready: string | null
+  title: string | null
+  body: string | null
+  pushed: string | null
+  pr: string | null
+  handedAt: string | null
+  busy: number | null
+  stopped: string | null
+  note: string | null
+  mergedAt: string | null
+  updatedAt: string
+}
+export type LandingEdit = Partial<Omit<Landing, 'taskId' | 'updatedAt'>>
 
 // Adds tasks on a schedule. With a source command, each line it prints that the trigger has not
 // seen before becomes a task.
@@ -453,6 +498,42 @@ export const MIGRATIONS = [
   alter table attempts add column from_task integer references tasks(id);
   alter table messages add column from_task integer references tasks(id);
   `,
+  // v22: how far nod may take each repo's tasks once they succeed, who changed that and when, the
+  // process landing a repo's tasks now (`lander`), and how far each task's landing has got.
+  `
+  create table repos (
+    path text primary key,
+    land text not null default 'off',
+    check_cmd text,
+    gate_cmd text,
+    raised_at text,
+    changed_at text not null,
+    lander integer
+  );
+  create table repo_changes (
+    id integer primary key,
+    repo text not null references repos(path),
+    actor text not null,
+    change text not null,
+    at text not null
+  );
+  create index repo_changes_repo on repo_changes(repo);
+  create table landings (
+    task_id integer primary key references tasks(id),
+    base text,
+    ready text,
+    title text,
+    body text,
+    pushed text,
+    pr text,
+    handed_at text,
+    busy integer,
+    stopped text,
+    note text,
+    merged_at text,
+    updated_at text not null
+  );
+  `,
 ]
 // The migration that moves <home>/rules.md into the ledger, numbered as user_version counts.
 const RULES_FILE_MIGRATION = 17
@@ -471,6 +552,9 @@ type Tables = {
   retros: Omit<Retro, 'id'> & { id: Generated<number> }
   rules: Omit<Rule, 'id'> & { id: Generated<number> }
   ruleChanges: { id: Generated<number>; ruleId: number; actor: string; change: string; at: string }
+  repos: Repo & { lander: number | null }
+  repoChanges: { id: Generated<number>; repo: string; actor: string; change: string; at: string }
+  landings: Landing
 }
 
 // Kysely only builds and type-checks the queries; bun:sqlite runs them (runQuery), so the ledger
@@ -540,6 +624,20 @@ const ATTEMPT = [
   'finishedAt',
   'fromTask',
 ] as const
+const REPO = ['path', 'land', 'checkCmd', 'gateCmd', 'raisedAt', 'changedAt'] as const
+const EMPTY_LANDING: Omit<Landing, 'taskId' | 'updatedAt'> = {
+  base: null,
+  ready: null,
+  title: null,
+  body: null,
+  pushed: null,
+  pr: null,
+  handedAt: null,
+  busy: null,
+  stopped: null,
+  note: null,
+  mergedAt: null,
+}
 const count = q.fn.countAll<number>().as('n')
 
 export const nodHome = (): string => process.env.NOD_HOME ?? join(homedir(), '.nod')
@@ -1006,6 +1104,105 @@ export class Ledger {
     this.run(q.insertInto('ruleChanges').values(row))
   }
 
+  // ── repos ──
+
+  // Null for a repo nobody set, which nod does not land.
+  repo(path: string): Repo | null {
+    return this.first(q.selectFrom('repos').select(REPO).where('path', '=', path))
+  }
+
+  repos(): Repo[] {
+    return this.run(q.selectFrom('repos').select(REPO).orderBy('path'))
+  }
+
+  // Changes what the edit names and records who changed what, as setRule does. Going up from off
+  // marks when, so only the tasks added from then on land without being named.
+  setRepo(path: string, edit: RepoEdit, actor: string): Repo {
+    return this.db.transaction(() => {
+      const at = now()
+      const before = this.repo(path)
+      if (before === null) {
+        this.run(q.insertInto('repos').values({ path, land: 'off', changedAt: at }))
+      }
+      const was: Repo = before ?? {
+        path,
+        land: 'off',
+        checkCmd: null,
+        gateCmd: null,
+        raisedAt: null,
+        changedAt: at,
+      }
+      const change = Object.fromEntries(
+        (['land', 'checkCmd', 'gateCmd'] as const)
+          .filter((k) => edit[k] !== undefined && edit[k] !== was[k])
+          .map((k): [string, Changed[string]] => [k, [was[k], edit[k]]]),
+      )
+      if (Object.keys(change).length === 0) return was
+      const raised = was.land === 'off' && edit.land !== undefined && edit.land !== 'off'
+      this.run(
+        q
+          .updateTable('repos')
+          .set({ ...edit, changedAt: at, ...(raised ? { raisedAt: at } : {}) })
+          .where('path', '=', path),
+      )
+      const row = { repo: path, actor, change: JSON.stringify(change), at }
+      this.run(q.insertInto('repoChanges').values(row))
+      return this.repo(path) ?? was
+    })()
+  }
+
+  repoChanges(path: string): RepoChange[] {
+    return this.run(
+      q
+        .selectFrom('repoChanges')
+        .select(['actor', 'change', 'at'])
+        .where('repo', '=', path)
+        .orderBy('id'),
+    ).map((c) => ({ ...c, change: JSON.parse(c.change) as Changed }))
+  }
+
+  // Takes the repo for the process `pid` to land its tasks, unless a live one has it: two ticks at
+  // once would rebase and push the same branches. One that died (a killed tick) leaves it to take.
+  // ponytail: a pid the OS gave out again reads as alive until that process ends.
+  claimRepo(path: string, pid: number, alive: (pid: number) => boolean): boolean {
+    return this.db.transaction(() => {
+      const row = this.first(q.selectFrom('repos').select('lander').where('path', '=', path))
+      if (row === null) return false
+      if (row.lander !== null && row.lander !== pid && alive(row.lander)) return false
+      this.run(q.updateTable('repos').set({ lander: pid }).where('path', '=', path))
+      return true
+    })()
+  }
+
+  releaseRepo(path: string, pid: number): void {
+    this.run(
+      q
+        .updateTable('repos')
+        .set({ lander: null })
+        .where('path', '=', path)
+        .where('lander', '=', pid),
+    )
+  }
+
+  // ── landings ──
+
+  landing(taskId: number): Landing | null {
+    return this.first(q.selectFrom('landings').selectAll().where('taskId', '=', taskId))
+  }
+
+  setLanding(taskId: number, edit: LandingEdit): Landing {
+    const updatedAt = now()
+    this.run(
+      q
+        .insertInto('landings')
+        .values({ ...EMPTY_LANDING, ...edit, taskId, updatedAt })
+        .onConflict((oc) => oc.column('taskId').doUpdateSet({ ...edit, updatedAt })),
+    )
+    const landing = this.landing(taskId)
+    if (landing === null) throw new Error(`task ${taskId} has no landing`)
+    return landing
+  }
+
   // Moves each line of <home>/rules.md, where approved rules were kept before v17, into the rules
   // table without its leading `- `, tied to the added retrospective that proposed the same words.
   // The file is renamed, not deleted, so it plainly no longer counts. Run inside the migration's
@@ -1207,6 +1404,12 @@ export class Ledger {
   // The human ends the task instead of answering, so nothing counts it a success.
   drop(decisionId: number): void {
     this.close(decisionId, '(dropped)', 'cancelled', now())
+  }
+
+  // The person answers or drops a decision on landing the task (land.ts), which leaves it `status`:
+  // succeeded, since its work stands either way.
+  closeAnswered(decisionId: number, answer: string, status: TaskStatus): void {
+    this.close(decisionId, answer, status, now())
   }
 
   // Closes a decision no turn waits on: one nod closes as its worker goes on without it, or one a
