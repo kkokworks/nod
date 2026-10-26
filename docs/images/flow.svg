@@ -1,0 +1,109 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 800" width="1200" height="800" font-family="-apple-system, BlinkMacSystemFont, 'Apple SD Gothic Neo', 'Noto Sans KR', 'Malgun Gothic', sans-serif">
+  <title>nod 에서 일 하나가 지나는 길: 맡기기, 워커, 검증·리뷰, 결정, 올리기, 정리</title>
+  <defs>
+    <style>
+      .bg { fill: #ffffff; stroke: #d1d9e0; }
+      .box { fill: #f6f8fa; stroke: #d1d9e0; stroke-width: 1.5; }
+      .hot { stroke: #bf8700; stroke-width: 2.5; }
+      .t { fill: #1f2328; font-size: 26px; font-weight: 700; }
+      .m { fill: #59636e; font-size: 18px; }
+      .c { fill: #0969da; font-size: 17px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+      .n { fill: #1f2328; }
+      .nt { fill: #ffffff; font-size: 17px; font-weight: 700; }
+      .a { stroke: #8c959f; stroke-width: 2.5; fill: none; }
+      .ah { fill: #8c959f; }
+      .loop { stroke: #bf8700; stroke-width: 2.5; fill: none; stroke-dasharray: 7 6; }
+      .lh { fill: #bf8700; }
+      .lt { fill: #9a6700; font-size: 17px; font-weight: 600; }
+      .h { fill: #1f2328; font-size: 30px; font-weight: 700; }
+      .ledger { fill: #f6f8fa; stroke: #d1d9e0; stroke-width: 1.5; stroke-dasharray: 6 5; }
+      @media (prefers-color-scheme: dark) {
+        .bg { fill: #0d1117; stroke: #30363d; }
+        .box { fill: #161b22; stroke: #30363d; }
+        .hot { stroke: #d29922; }
+        .t, .h { fill: #e6edf3; }
+        .m { fill: #9198a1; }
+        .c { fill: #79c0ff; }
+        .n { fill: #e6edf3; }
+        .nt { fill: #0d1117; }
+        .a { stroke: #6e7681; }
+        .ah { fill: #6e7681; }
+        .loop { stroke: #d29922; }
+        .lh { fill: #d29922; }
+        .lt { fill: #e3b341; }
+        .ledger { fill: #161b22; stroke: #30363d; }
+      }
+    </style>
+    <marker id="ah" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah" d="M0 0L10 5L0 10z"/></marker>
+    <marker id="lh" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="lh" d="M0 0L10 5L0 10z"/></marker>
+  </defs>
+  <rect class="bg" x="1" y="1" width="1198" height="798" rx="24" stroke-width="1.5"/>
+  <text class="h" x="48" y="70">일 하나가 지나는 길</text>
+
+  <!-- 1행: 맡기기 → 워커 → 검증·리뷰 -->
+  <rect class="box" x="48" y="150" width="330" height="214" rx="16"/>
+  <circle class="n" cx="84" cy="190" r="17"/><text class="nt" x="84" y="196" text-anchor="middle">1</text>
+  <text class="t" x="114" y="199">맡기기</text>
+  <text class="c" x="72" y="244">nod add '…' --check</text>
+  <text class="m" x="72" y="284">/nod 가 일을 나눠 맡김</text>
+  <text class="m" x="72" y="314">--after 로 순서 잇기</text>
+  <text class="m" x="72" y="344">할 일·트리거로도 맡김</text>
+
+  <rect class="box" x="435" y="150" width="330" height="214" rx="16"/>
+  <circle class="n" cx="471" cy="190" r="17"/><text class="nt" x="471" y="196" text-anchor="middle">2</text>
+  <text class="t" x="501" y="199">워커</text>
+  <text class="c" x="459" y="244">tmux 칸 = Claude Code</text>
+  <text class="m" x="459" y="284">작업마다 worktree·브랜치</text>
+  <text class="m" x="459" y="314">백그라운드 기다림은 대기로</text>
+  <text class="m" x="459" y="344">NOD: tell 로 워커끼리</text>
+
+  <rect class="box" x="822" y="150" width="330" height="214" rx="16"/>
+  <circle class="n" cx="858" cy="190" r="17"/><text class="nt" x="858" y="196" text-anchor="middle">3</text>
+  <text class="t" x="888" y="199">검증·리뷰</text>
+  <text class="c" x="846" y="244">--check 'bun test'</text>
+  <text class="m" x="846" y="284">멈추면 nod 가 검증 실행</text>
+  <text class="m" x="846" y="314">독립 리뷰어가 지시와 대조</text>
+  <text class="m" x="846" y="344">통과해야 성공</text>
+
+  <!-- 2행(오른쪽에서 왼쪽): 결정 → 올리기 → 정리 -->
+  <rect class="box hot" x="822" y="478" width="330" height="214" rx="16"/>
+  <circle class="n" cx="858" cy="518" r="17"/><text class="nt" x="858" y="524" text-anchor="middle">4</text>
+  <text class="t" x="888" y="527">결정</text>
+  <text class="c" x="846" y="572">nod 3 '그렇게 해'</text>
+  <text class="m" x="846" y="612">질문·실패·권한만 사람에게</text>
+  <text class="m" x="846" y="642">nod watch 가 바로 알림</text>
+  <text class="m" x="846" y="672">답이 없으면 기다림</text>
+
+  <rect class="box" x="435" y="478" width="330" height="214" rx="16"/>
+  <circle class="n" cx="471" cy="518" r="17"/><text class="nt" x="471" y="524" text-anchor="middle">5</text>
+  <text class="t" x="501" y="527">올리기</text>
+  <text class="c" x="459" y="572">nod repo &lt;레포&gt; merge</text>
+  <text class="m" x="459" y="612">기본 브랜치로 rebase --onto</text>
+  <text class="m" x="459" y="642">검증·점검 뒤 PR·squash 머지</text>
+  <text class="m" x="459" y="672">충돌은 그 워커가 풂</text>
+
+  <rect class="box" x="48" y="478" width="330" height="214" rx="16"/>
+  <circle class="n" cx="84" cy="518" r="17"/><text class="nt" x="84" y="524" text-anchor="middle">6</text>
+  <text class="t" x="114" y="527">정리</text>
+  <text class="c" x="72" y="572">nod gc · 5분마다 tick</text>
+  <text class="m" x="72" y="612">머지·승인·7일 지난 작업</text>
+  <text class="m" x="72" y="642">칸·worktree 를 지움</text>
+  <text class="m" x="72" y="672">대화는 남아 nod resume</text>
+
+  <!-- 앞으로 가는 화살표 -->
+  <path class="a" d="M382 257H429" marker-end="url(#ah)"/>
+  <path class="a" d="M769 257H816" marker-end="url(#ah)"/>
+  <path class="a" d="M1080 368V472" marker-end="url(#ah)"/>
+  <path class="a" d="M818 585H771" marker-end="url(#ah)"/>
+  <path class="a" d="M431 585H384" marker-end="url(#ah)"/>
+
+  <!-- 같은 세션으로 되돌아가는 길 -->
+  <path class="loop" d="M987 146C987 96 600 96 600 146" marker-end="url(#lh)"/>
+  <text class="lt" x="793" y="100" text-anchor="middle">실패하면 같은 세션으로</text>
+  <path class="loop" d="M880 474C880 420 640 420 640 370" marker-end="url(#lh)"/>
+  <text class="lt" x="744" y="456" text-anchor="end">답도 같은 세션으로</text>
+
+  <!-- 장부 -->
+  <rect class="ledger" x="48" y="722" width="1104" height="50" rx="12"/>
+  <text class="m" x="600" y="754" text-anchor="middle">장부(SQLite 하나): 작업·차례·결정·할 일·회고와 규칙 — nod ls·웹 화면·데스크톱 앱이 같은 장부를 봅니다</text>
+</svg>

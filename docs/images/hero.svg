@@ -1,0 +1,74 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 640" width="1280" height="640" font-family="-apple-system, BlinkMacSystemFont, 'Apple SD Gothic Neo', 'Noto Sans KR', 'Malgun Gothic', sans-serif">
+  <title>nod — 여러 Claude Code 세션에 일을 맡기고, 사람은 결정에만 고개를 끄덕입니다</title>
+  <defs>
+    <style>
+      .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+      .card { fill: #262c36; stroke: #3d444d; stroke-width: 1.5; }
+      .title { fill: #e6edf3; font-size: 19px; font-weight: 600; }
+      .line { fill: #9198a1; font-size: 16px; }
+      .chip { font-size: 15px; font-weight: 600; }
+    </style>
+  </defs>
+  <rect width="1280" height="640" rx="28" fill="#1f2328"/>
+
+  <!-- 왼쪽: 로고·이름·한 줄 소개·터미널 -->
+  <rect x="96" y="128" width="104" height="104" rx="24" fill="#f0f3f6"/>
+  <path d="M127 182l22 22 44-49" fill="none" stroke="#1f2328" stroke-width="15" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="228" y="214" fill="#f0f3f6" font-size="104" font-weight="700" letter-spacing="-2">nod</text>
+  <text x="96" y="304" fill="#e6edf3" font-size="31">여러 Claude Code 세션에 일을 맡기고,</text>
+  <text x="96" y="348" fill="#e6edf3" font-size="31">사람은 결정에만 고개를 끄덕입니다.</text>
+
+  <rect x="96" y="398" width="476" height="146" rx="14" fill="#161b22" stroke="#3d444d" stroke-width="1.5"/>
+  <g class="mono" font-size="19">
+    <text x="120" y="440"><tspan fill="#58a6ff">$</tspan><tspan fill="#e6edf3"> nod</tspan></text>
+    <text x="120" y="472" fill="#9198a1">  7  #13 리뷰 · 이 설계로 갈까요?</text>
+    <text x="120" y="508"><tspan fill="#58a6ff">$</tspan><tspan fill="#e6edf3"> nod 7 '그렇게 해'</tspan></text>
+  </g>
+  <text x="120" y="532" class="mono" font-size="16" fill="#3fb950">✓ #13 의 같은 세션에 전했습니다</text>
+
+  <!-- 오른쪽: tmux 칸마다 하나씩 도는 워커 -->
+  <g>
+    <rect class="card" x="652" y="96" width="268" height="168" rx="14"/>
+    <circle cx="674" cy="120" r="5.5" fill="#ff5f57"/><circle cx="692" cy="120" r="5.5" fill="#febc2e"/><circle cx="710" cy="120" r="5.5" fill="#28c840"/>
+    <text class="title mono" x="672" y="166">#12 fix/login</text>
+    <text class="line mono" x="672" y="200">테스트 고치는 중</text>
+    <text class="line mono" x="672" y="226">check: bun test</text>
+    <rect x="808" y="108" width="96" height="26" rx="13" fill="#3fb950" fill-opacity="0.18"/>
+    <text class="chip" x="856" y="126" text-anchor="middle" fill="#3fb950">돌고 있음</text>
+  </g>
+  <g>
+    <rect class="card" x="940" y="96" width="268" height="168" rx="14" stroke="#d29922" stroke-width="2"/>
+    <circle cx="962" cy="120" r="5.5" fill="#ff5f57"/><circle cx="980" cy="120" r="5.5" fill="#febc2e"/><circle cx="998" cy="120" r="5.5" fill="#28c840"/>
+    <text class="title mono" x="960" y="166">#13 리뷰</text>
+    <text class="line mono" x="960" y="200">NOD: question</text>
+    <text class="line mono" x="960" y="226">이 설계로 갈까요?</text>
+    <rect x="1096" y="108" width="96" height="26" rx="13" fill="#d29922" fill-opacity="0.2"/>
+    <text class="chip" x="1144" y="126" text-anchor="middle" fill="#e3b341">결정 대기</text>
+  </g>
+  <g>
+    <rect class="card" x="652" y="284" width="268" height="168" rx="14"/>
+    <circle cx="674" cy="308" r="5.5" fill="#ff5f57"/><circle cx="692" cy="308" r="5.5" fill="#febc2e"/><circle cx="710" cy="308" r="5.5" fill="#28c840"/>
+    <text class="title mono" x="672" y="354">#14 docs/guide</text>
+    <text class="line mono" x="672" y="388">서브 에이전트 리뷰를</text>
+    <text class="line mono" x="672" y="414">기다리는 차례</text>
+    <rect x="808" y="296" width="96" height="26" rx="13" fill="#58a6ff" fill-opacity="0.18"/>
+    <text class="chip" x="856" y="314" text-anchor="middle" fill="#58a6ff">기다리는 중</text>
+  </g>
+  <g>
+    <rect class="card" x="940" y="284" width="268" height="168" rx="14"/>
+    <circle cx="962" cy="308" r="5.5" fill="#ff5f57"/><circle cx="980" cy="308" r="5.5" fill="#febc2e"/><circle cx="998" cy="308" r="5.5" fill="#28c840"/>
+    <text class="title mono" x="960" y="354">#15 feat/export</text>
+    <text class="line mono" x="960" y="388">rebase · 검증 · PR</text>
+    <text class="line mono" x="960" y="414">squash 머지 끝</text>
+    <rect x="1096" y="296" width="96" height="26" rx="13" fill="#a371f7" fill-opacity="0.2"/>
+    <text class="chip" x="1144" y="314" text-anchor="middle" fill="#bc8cff">머지됨</text>
+  </g>
+
+  <!-- 워커끼리 말하기: #13 리뷰가 #12 에 지적을 보냄 -->
+  <rect x="836" y="259" width="188" height="30" rx="15" fill="#1f2328" stroke="#3d444d" stroke-width="1.5"/>
+  <text x="930" y="279" text-anchor="middle" class="mono" font-size="15" fill="#c9d1d9">#13 → #12 NOD: tell</text>
+
+  <!-- 아래: 일 하나가 지나는 길 -->
+  <text x="652" y="512" font-size="17" fill="#9198a1" xml:space="preserve">맡기기  <tspan fill="#6e7681">›</tspan>  워커  <tspan fill="#6e7681">›</tspan>  검증·리뷰  <tspan fill="#6e7681">›</tspan>  <tspan fill="#e3b341">결정</tspan>  <tspan fill="#6e7681">›</tspan>  올리기  <tspan fill="#6e7681">›</tspan>  정리</text>
+  <text x="652" y="548" font-size="15" fill="#6e7681">작업마다 tmux 안의 실제 Claude Code 세션 하나 · 장부는 SQLite 하나</text>
+</svg>
