@@ -5,6 +5,7 @@ import { parseArgs } from 'node:util'
 import { accountRule, configDir, describeRule, setAccountRule } from './account'
 import { sweep } from './done'
 import { collect, type GcPick, type GcReport, remotesHolding } from './gc'
+import { InboxEvent, onInbox, tellProject } from './inbox'
 import { land } from './land'
 import {
   type Attempt,
@@ -115,8 +116,11 @@ const USAGE = `usage:
                                    or a transcript with nothing said in it, a new one here. Ends
                                    as Claude Code does. Each session of a project has all its
                                    tasks as its own (--mine), whichever session added them, and
-                                   nod add there keeps to the project
+                                   nod add there keeps to the project. nod tells it each of
+                                   them that ends and each decision that opens (see below)
   nod tell <task> <message...>     send a follow-up into the task's session
+  nod tell p<project> <message...> send a message into the project's session, as nod tells it of
+                                   its tasks; kept until that session takes messages
   nod resume <task>                reopen a task whose session ended, from its transcript; one that
                                    failed before its worker started starts again under the same
                                    number and branch, once you fixed what stopped it
@@ -131,7 +135,8 @@ const USAGE = `usage:
                                    that runs again and ends again is printed again. --issue:
                                    only decisions, ends and workers of tasks on these issues;
                                    --mine: only those of this Claude session's tasks, so
-                                   several root sessions can each watch their own
+                                   several root sessions can each watch their own. A session nod
+                                   open opened needs no watch: nod tells it (see below)
   nod link <task> <url...>         record where the task's result went (a pull request, a posted
                                    review), so ls and show list it next to the task. Until then
                                    they list the remote branches that hold the task's branch
@@ -221,13 +226,27 @@ const USAGE = `usage:
                                    empty means Claude Code's default. With a file or a command,
                                    every nod command and tick restarts the workers that run as
                                    another account than the current one, as nod restart does
-  nod hook stop|notification|prompt
-                                   called by Claude Code hooks in worker sessions
+  nod hook stop|notification|prompt|inbox
+                                   called by Claude Code hooks in worker sessions, and (inbox) in
+                                   the sessions nod open opens
   nod run <task> <claude...>       what runs in a worker's terminal: keeps its Claude Code running
 
 A <task> is a task's number, t<n> for the latest task doing todo t<n>, or r<n> for the task
 retrospective r<n> runs in.
 ${TODO_USAGE}
+
+A project's session (the latest nod open opened) hears from nod itself, with no watch running: a
+message when each of the project's tasks ends (succeeded, error, cancelled, once its check and
+review are done) and when a decision opens on one, with the task's number and attempt or the
+decision's, and what to do next. The ledger keeps each until it went, so what comes while the
+session is closed goes, in one message, once nod open opens it again. nod writes a line into the
+session's inbox socket, which its hooks report as it starts (Claude Code's
+CLAUDE_CODE_MESSAGING_SOCKET), as another Claude session does; Claude Code shows it as from
+another session, not the person. The line's format is Claude Code's own, not documented, and the
+socket answers nothing: a line Claude Code drops counts as sent. A session that skips permission
+prompts holds such messages for the person to approve. One reopened with claude --resume instead
+of nod open reports no socket, and /clear goes on under an ID nod open did not open: either hears
+nothing until nod open opens the project's session again.
 
 When <home>/notify exists, nod runs it with a JSON event on stdin whenever a decision opens, a
 task succeeds or fails to start, a trigger fails, a watch passes or can no longer run, or a
@@ -237,6 +256,7 @@ const [command, ...rest] = Bun.argv.slice(2)
 const home = nodHome()
 // Before the ledger opens here, as one that cannot open must not fail it either.
 if (command === 'hook' && rest[0] === 'prompt') await promptHook()
+if (command === 'hook' && rest[0] === 'inbox') await inboxHook()
 const ledger = new Ledger(home)
 const terminals = Terminals.of(home)
 const taskRef = (ref: string | undefined): number => new Todos(ledger).taskRef(ref ?? '')
@@ -263,6 +283,14 @@ switch (command) {
     await add(rest)
     break
   case 'tell':
+    if (/^p\d+$/.test(rest[0] ?? '')) {
+      const p = parseRef(rest[0] ?? '', 'p')
+      const sent = await tellProject(ledger, p, words(rest.slice(1)), actorFromEnv())
+      console.log(
+        sent ? 'sent' : `not sent yet: p${p} has no session taking messages; it goes once one does`,
+      )
+      break
+    }
     await tell(ledger, home, taskRef(rest[0]), words(rest.slice(1)))
     console.log('sent')
     break
@@ -751,6 +779,20 @@ async function promptHook(): Promise<never> {
     onPrompt(new Ledger(home), event)
   } catch (error) {
     console.error(`nod: could not record the turn: ${message(error)}`)
+  }
+  process.exit(0)
+}
+
+// The SessionStart and SessionEnd hook of a session nod open opened (onInbox), the same way: a
+// project session starts and ends whatever becomes of this, and SessionStart's stdout would go
+// into it.
+async function inboxHook(): Promise<never> {
+  console.log = console.error
+  try {
+    const event = InboxEvent.parse(JSON.parse(await Bun.stdin.text()))
+    await onInbox(new Ledger(home), event, process.env.CLAUDE_CODE_MESSAGING_SOCKET)
+  } catch (error) {
+    console.error(`nod: could not record the session's inbox: ${message(error)}`)
   }
   process.exit(0)
 }

@@ -25,7 +25,7 @@ test('reopening a ledger keeps its data and does not re-run migrations', () => {
   })
   const reopened = new Ledger(home)
   expect(reopened.get(id).brief).toBe('keep me')
-  expect(reopened.db.query('pragma user_version').get()).toEqual({ user_version: 23 })
+  expect(reopened.db.query('pragma user_version').get()).toEqual({ user_version: 24 })
 })
 
 test('v18 leaves the tasks before it without a root session', () => {
@@ -39,7 +39,7 @@ test('v18 leaves the tasks before it without a root session', () => {
 
   const ledger = new Ledger(home)
   expect(ledger.get(1)).toMatchObject({ brief: 'x', rootSession: null })
-  expect(ledger.db.query('pragma user_version').get()).toEqual({ user_version: 23 })
+  expect(ledger.db.query('pragma user_version').get()).toEqual({ user_version: 24 })
 })
 
 test('v23 gives a ledger of v22 project sessions, none yet, and leaves its projects as they were', () => {
@@ -56,6 +56,27 @@ test('v23 gives a ledger of v22 project sessions, none yet, and leaves its proje
   expect(todos.latestSession(1)).toBeNull()
   const session = todos.addSession(1, 'cccc3333-0000-4000-8000-00000000000c', '/work/release')
   expect(todos.latestSession(1)).toEqual(session)
+})
+
+test('v24 keeps the project sessions of a v23 ledger, with no socket yet, and has no notices of what ended before it', () => {
+  const home = freshHome()
+  const old = new Database(join(home, 'nod.db'), { create: true, strict: true })
+  for (const sql of MIGRATIONS.slice(0, 23)) old.exec(sql)
+  old.exec(`pragma user_version = 23;
+    insert into projects (id, title, status, created_at, status_at)
+      values (1, 'Release', 'active', 'at', 'at');
+    insert into project_sessions (session_id, project_id, cwd, created_at)
+      values ('cccc3333-0000-4000-8000-00000000000c', 1, '/work/release', 'at');
+    insert into tasks (id, brief, status, created_at, finished_at)
+      values (1, 'x', 'succeeded', 'at', 'at');`)
+  old.close()
+
+  const ledger = new Ledger(home)
+  const todos = new Todos(ledger)
+  expect(todos.latestSession(1)).toMatchObject({ cwd: '/work/release', socket: null })
+  expect(ledger.unsentNotices()).toEqual([])
+  ledger.error(1, 'boom')
+  expect(ledger.unsentNotices()).toMatchObject([{ taskId: 1, event: 'error', note: 'boom' }])
 })
 
 test("v21 counts the turns and messages before it as the person's, from no task", () => {

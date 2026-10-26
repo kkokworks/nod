@@ -36,8 +36,9 @@ nod                  # 결정할 것
 nod open p1          # 프로젝트 p1 의 Claude 세션을 이 터미널에서 열기 (있으면 이어서, 없으면 새로)
 nod open p1 --new    # p1 의 세션을 새로 열기 (앞 세션의 작업·결정은 그대로 이어받음)
 nod --mine           # 이 Claude 세션의 작업에 열린 결정
-nod watch --mine     # 이 Claude 세션의 작업의 결정과 끝난 작업만 생기는 대로 (루트 세션을 여럿 둘 때)
+nod watch --mine     # 이 Claude 세션의 작업의 결정과 끝난 작업만 생기는 대로 (nod open 으로 연 세션은 nod 가 알려 줘서 필요 없음)
 nod watch --issue PROJ-12,PROJ-13   # 이 이슈들의 결정과 끝난 작업만 생기는 대로
+nod tell p1 '배포 전에 로그부터 봐 줘'   # 프로젝트 p1 의 세션에 말 보내기 (꺼져 있으면 열릴 때 감)
 nod 3 '그렇게 해'     # 결정 3에 답하기 (같은 세션에 들어감)
 nod tell 1 '테스트도 추가해 줘'   # 작업 1의 세션에 후속 지시
 nod attach 1         # 작업 1의 화면 열기
@@ -102,9 +103,24 @@ task #11 t29 PROJ-12 succeeded: 원인은 만료된 토큰 재사용, 고친 커
 task #13 error: the worktree could not be made: …
 ```
 
+`nod open` 으로 연 프로젝트 세션에는 nod 가 직접 알리므로 `nod watch` 를 걸지 않아도 됩니다. 그 프로젝트의 작업이 성공·오류·취소로 끝날 때(검증과 독립 리뷰가 끝난 뒤, watch 가 끝을 내는 그때)와 결정이 열릴 때, nod 가 그 프로젝트의 마지막 세션(`nod open` 이 다시 여는 세션)에 메시지를 넣습니다. 받는 세션에는 다른 Claude 세션이 보낸 메시지로 보이고, 사람의 승인으로 치지 않습니다. 글은 watch 의 줄과 같은 정보에 시도 번호(결정이면 결정 번호)와 다음에 할 일을 붙여, 같은 알림이 두 번 와도 알아볼 수 있습니다. 알림은 상태가 바뀌는 그 자리에서 장부에 먼저 적고 그다음 보냅니다. 세션이 꺼져 있으면 못 보낸 채 남았다가, 그 세션을 `nod open` 으로 다시 열면(계정을 바꿔 열어도) 쌓인 것을 한 메시지로 보냅니다. 보내는 때는 알림 이벤트마다(`<홈>/notify` 를 돌리는 그때)와 tick(매분)입니다. 그 사이 답한 결정은 보내지 않고, 프로젝트가 없는 작업은 어느 세션에도 보내지 않습니다. `nod tell p<번호> '<말>'` 로 사람도 같은 길로 프로젝트 세션에 말을 보낼 수 있고, 꺼져 있으면 열릴 때 갑니다.
+
+```
+nod, project p1 Release: 2 notices, oldest first
+
+task #11 t29 PROJ-12 succeeded, attempt 2: 원인은 만료된 토큰 재사용, 고친 커밋 2개
+next: nod show 11, then send its result out
+
+decision #7 question (task #12 t30 PROJ-12: 결제 오류 원인 조사)
+  어느 환경의 로그를 볼까요?
+next: tell the person; nod 7 <their answer> answers it, nod drop 7 drops it
+```
+
+nod 는 Claude Code 가 세션마다 여는 수신 소켓에 이 메시지를 한 줄로 씁니다. 같은 PC 에서 `SendMessage` 가 쓰는 길입니다. 소켓 경로는 `nod open` 이 세션에 붙이는 SessionStart 훅(`nod hook inbox`)이, Claude Code 가 훅에 주는 `CLAUDE_CODE_MESSAGING_SOCKET` 을 장부에 적고, SessionEnd 훅이 지웁니다. 한계가 있습니다. 줄의 형식은 Claude Code 문서에 없고 실행 파일에서 찾은 것이라 바뀔 수 있고, 소켓은 아무것도 돌려주지 않아 전달을 확인할 수 없습니다. Claude Code 가 형식을 바꿔 조용히 버려도 nod 는 보낸 것으로 칩니다. 권한 확인을 건너뛰는 모드(bypassPermissions)의 세션은 이런 메시지를 사람이 승인할 때까지 붙잡아 둡니다. `claude --resume` 으로 직접 열었거나 이 기능 전에 연 세션은 소켓을 적지 않았으니 `nod open` 으로 다시 엽니다. `/clear` 하면 대화가 새 세션 ID 로 이어져 `nod open` 으로 다시 열 때까지 알림을 받지 못합니다(알림은 장부에 남음). 자세한 것은 [docs/design.md](docs/design.md) 의 「프로젝트 세션에 직접 알리기」에 있습니다.
+
 `--issue` 로 이슈를 주면 `nod ls` 의 이슈·결과 칸과 결정 목록, 알림에 이슈가 붙습니다. 한 이슈를 여러 작업으로 나눠도 같은 키를 주면 그 결정들은 `nod --issue <키>` 로, 결정과 끝난 작업은 `nod watch --issue <키>` 로 함께 거를 수 있습니다.
 
-Claude 세션에서 `nod add` 를 하면 작업에 그 세션(루트 세션)의 ID 가 남습니다. 루트 세션은 프로젝트마다 `nod open <프로젝트>` 로 엽니다. 프로젝트는 `p<n>` 으로 부르고, 제목은 사람이 읽는 이름(한글·공백도 됨)이며 그대로 세션 이름이 됩니다(40자가 넘으면 `p<n> <제목 앞부분>`). 프로젝트 제목이 이름인 Claude 세션이 이 터미널에서 열리고, 다음 `nod open` 은 그 세션을 연 폴더에서 같은 세션으로 이어 갑니다(`--new` 면 지금 폴더에서 새로). 이어 열 때도 이름을 다시 붙이므로, `/rename` 으로 바꾼 이름은 다음에 열 때 프로젝트 제목으로 돌아가고 제목을 바꾸면(`nod project set --title`) 새 제목이 붙습니다. 첫 메시지 없이 닫은 세션처럼 지금 계정에 대화 기록이 없으면 같은 세션 ID 로 새로 시작하고, 기록 파일은 있지만 한 말이 없으면 Claude Code 가 그 ID 로는 열지 않으므로 새 세션을 엽니다. 이렇게 연 세션의 `nod add` 는 `--project` 를 빼면 그 프로젝트로 넣고, 다른 프로젝트의 일은 거절하며 `nod in … --project <p>` 로 할 일로 넣거나 그 프로젝트의 세션에서 맡기라고 알립니다. `nod ls --mine`·`nod --mine`·`nod watch --mine` 은 그 세션의 작업만 보고 그 결정과 끝만 받습니다. 프로젝트 세션의 작업은 할 일이 그 프로젝트에 든 작업 전부라서, 계정을 바꾸거나 `--new` 로 새 세션을 열어도 앞 세션(또는 다른 세션·셸)이 맡긴 그 프로젝트의 작업과 결정을 그대로 이어받습니다. 그 밖의 세션, 그리고 프로젝트가 없는 작업은 그 작업을 넣은 세션만 봅니다. 회고 작업은 돌아보는 작업의 루트 세션과 프로젝트를 따릅니다. `nod show` 와 웹 화면의 작업 상세에는 루트가 그 작업을 맡은 프로젝트 세션으로(`root: p1 Release · nod open p1`, 넣은 세션이 다르면 `added from <세션 ID>`), 아니면 `root: <세션 ID>` 로 보이고 `claude --resume <세션 ID>` 로 다시 열 수 있습니다. 셸·트리거에서 맡긴 작업에는 루트 세션이 없고, Claude 세션 밖에서 `--mine` 을 쓰면 오류로 멈춥니다.
+Claude 세션에서 `nod add` 를 하면 작업에 그 세션(루트 세션)의 ID 가 남습니다. 루트 세션은 프로젝트마다 `nod open <프로젝트>` 로 엽니다. 프로젝트는 `p<n>` 으로 부르고, 제목은 사람이 읽는 이름(한글·공백도 됨)이며 그대로 세션 이름이 됩니다(40자가 넘으면 `p<n> <제목 앞부분>`). 프로젝트 제목이 이름인 Claude 세션이 이 터미널에서 열리고, 다음 `nod open` 은 그 세션을 연 폴더에서 같은 세션으로 이어 갑니다(`--new` 면 지금 폴더에서 새로). 이어 열 때도 이름을 다시 붙이므로, `/rename` 으로 바꾼 이름은 다음에 열 때 프로젝트 제목으로 돌아가고 제목을 바꾸면(`nod project set --title`) 새 제목이 붙습니다. 첫 메시지 없이 닫은 세션처럼 지금 계정에 대화 기록이 없으면 같은 세션 ID 로 새로 시작하고, 기록 파일은 있지만 한 말이 없으면 Claude Code 가 그 ID 로는 열지 않으므로 새 세션을 엽니다. 이렇게 연 세션의 `nod add` 는 `--project` 를 빼면 그 프로젝트로 넣고, 다른 프로젝트의 일은 거절하며 `nod in … --project <p>` 로 할 일로 넣거나 그 프로젝트의 세션에서 맡기라고 알립니다. `nod ls --mine`·`nod --mine`·`nod watch --mine` 은 그 세션의 작업만 보고 그 결정과 끝만 받고, 그 결정과 끝은 nod 가 그 세션에 직접 알립니다(위). 프로젝트 세션의 작업은 할 일이 그 프로젝트에 든 작업 전부라서, 계정을 바꾸거나 `--new` 로 새 세션을 열어도 앞 세션(또는 다른 세션·셸)이 맡긴 그 프로젝트의 작업과 결정을 그대로 이어받습니다. 그 밖의 세션, 그리고 프로젝트가 없는 작업은 그 작업을 넣은 세션만 봅니다. 회고 작업은 돌아보는 작업의 루트 세션과 프로젝트를 따릅니다. `nod show` 와 웹 화면의 작업 상세에는 루트가 그 작업을 맡은 프로젝트 세션으로(`root: p1 Release · nod open p1`, 넣은 세션이 다르면 `added from <세션 ID>`), 아니면 `root: <세션 ID>` 로 보이고 `claude --resume <세션 ID>` 로 다시 열 수 있습니다. 셸·트리거에서 맡긴 작업에는 루트 세션이 없고, Claude 세션 밖에서 `--mine` 을 쓰면 오류로 멈춥니다.
 
 정해진 때나 새 항목마다 할 일은 트리거로 맡깁니다. `nod schedule on` 으로 한 번 켜 두면 OS 스케줄러(macOS launchd, Linux crontab)가 매분 `nod tick` 을 돌립니다. 켠 셸의 `PATH`·`CLAUDE_CONFIG_DIR` 와, 워커가 받는 변수 가운데 비밀이 아닌 것(계정이 들지 않은 프록시·언어·`TMUX_TMPDIR` 등, 아래 「워커가 끊기지 않게」)을 `<홈>/schedule.json` 에 남겨 그 환경으로 돌기 때문에, 워커가 쓸 Claude 설정이 있는 터미널에서 켭니다(`nod account` 로 계정 규칙을 정했으면 트리거 워커는 그 규칙의 계정으로 뜹니다). 이름에 `KEY`·`TOKEN`·`SECRET`·`PASSWORD`·`HEADER` 가 든 변수와, `http://user:pass@proxy:8080`·`user:pass@proxy:8080` 처럼 주소에 계정이 든 값은 파일에 남기지 않으니, API 키와 그런 프록시·`ANTHROPIC_BASE_URL` 은 Claude Code 설정의 `env` 에 둡니다. 부팅마다 바뀌는 `SSH_AUTH_SOCK` 도 남기지 않습니다. 스케줄러의 환경에 있으면 그 값을 워커가 받습니다. 트리거 워커가 스케줄러의 것과 다른, 경로가 바뀌지 않는 SSH 에이전트를 써야 하면(Linux crontab 의 환경에는 `SSH_AUTH_SOCK` 가 아예 없습니다) 그것도 Claude Code 설정의 `env` 에 둡니다. 웹 화면(`desktop/launchd/ui.sh`)도 같습니다. 예전 버전으로 켰다면 `nod schedule on`(웹 화면은 `ui.sh install`)을 다시 해야 파일에 남은 값이 지워집니다.
 

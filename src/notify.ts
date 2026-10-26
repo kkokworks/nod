@@ -1,5 +1,6 @@
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
+import { tellSessions } from './inbox'
 import type { DecisionReason, Task } from './ledger'
 
 const NOTIFY_TIMEOUT_MS = 10_000
@@ -35,15 +36,17 @@ export type NotifyEvent =
 
 export const taskRef = (t: Task): TaskRef => ({ id: t.id, brief: t.brief, issue: t.issue })
 
-// Runs `<home>/notify`, if the human made one, with the event as JSON on stdin: how a person hears
-// about a decision while away from the Claude session. A notification that fails, or cannot run at
-// all (not executable, no #! line), is reported on stderr and changes nothing else, since the
-// ledger already holds the event.
+// First sends the project sessions what the ledger holds for them, this event's end or decision
+// among it (inbox.ts). Then runs `<home>/notify`, if the human made one, with the event as JSON on
+// stdin: how a person hears about a decision while away from the Claude session. A notification
+// that fails, or cannot run at all (not executable, no #! line), is reported on stderr and changes
+// nothing else, since the ledger already holds the event.
 export async function notify(
   home: string,
   event: NotifyEvent,
   timeoutMs = NOTIFY_TIMEOUT_MS,
 ): Promise<void> {
+  await tellSessions(home)
   const script = join(home, 'notify')
   if (!existsSync(script)) return
   try {

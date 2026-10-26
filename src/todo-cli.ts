@@ -18,7 +18,7 @@ import {
 import { SCHEDULE_OFF, scheduleEnv, tryWatch } from './triggers'
 import { nudgeLine, STALE_DAYS, type Trust } from './trust'
 import { changeText, indent, oneLine } from './view'
-import { message, transcriptPath } from './worker'
+import { message, openSettings, transcriptPath } from './worker'
 
 export const TODO_USAGE = `  nod in <what...> [--notes <text>] [--source <channel> --key <id>] [--link <url>]
          [--project <p>]
@@ -179,10 +179,12 @@ export function openSession(
   const project = todos.findProject(ref)
   // The session's name is for the person; Claude in it learns its project from this line alone.
   // Claude Code keeps a conversation's first system prompt on resume until it compacts, so a
-  // resume passes it too.
+  // resume passes it too. Its hooks tell nod where it takes the project's notices (inbox.ts).
   const told = [
     '--append-system-prompt',
     `nod open opened this session for project p${project.id} ${project.title}: nod add here puts work in that project, and the project's tasks and decisions are this session's.`,
+    '--settings',
+    openSettings(),
   ]
   const last = fresh ? null : todos.latestSession(project.id)
   const kept = last === null ? null : transcriptPath(config, last.sessionId)

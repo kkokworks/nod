@@ -5,7 +5,7 @@ import { tempDirs } from '../test/tmp'
 import { Ledger } from './ledger'
 import { Todos } from './todos'
 import { endLine, watch } from './view'
-import { workspaceOf } from './worker'
+import { openSettings, workspaceOf } from './worker'
 
 const tmp = tempDirs()
 afterAll(tmp.removeAll)
@@ -574,7 +574,7 @@ exit 3
     return { code: r.exitCode, out: r.stdout.toString(), err: r.stderr.toString() }
   }
   const key = (): string => todos.latestSession(p.id)?.sessionId ?? ''
-  const told = `--append-system-prompt nod open opened this session for project p1 Release: nod add here puts work in that project, and the project's tasks and decisions are this session's.`
+  const told = `--append-system-prompt nod open opened this session for project p1 Release: nod add here puts work in that project, and the project's tasks and decisions are this session's. --settings ${openSettings()}`
 
   const first = open(here, 'Release')
   expect(first.code).toBe(3)
