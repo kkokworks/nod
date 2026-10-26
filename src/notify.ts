@@ -59,19 +59,45 @@ export async function notify(
   }
 }
 
+// The groups of the commands running now (runGroup). Out of this process's group, they would outlive
+// a signal that ends it, and their limit with it: a Stop hook's check ran on after its session
+// closed (review). Such a signal goes to them first, as it did in this process's group.
+const running = new Set<number>()
+const ENDING = ['SIGHUP', 'SIGTERM', 'SIGINT'] as const
+
+function killGroup(pid: number, signal: NodeJS.Signals = 'SIGKILL'): void {
+  try {
+    process.kill(-pid, signal)
+  } catch {
+    // The group has ended already.
+  }
+}
+
+function endRunning(signal: NodeJS.Signals): void {
+  // A process with a handler of its own decides what the signal ends (the keeper ignores Ctrl-C).
+  if (process.listenerCount(signal) > 1) return
+  // The signal itself, not SIGKILL, so git removes its lock as it goes (review).
+  for (const pid of running) killGroup(pid, signal)
+  running.clear()
+  for (const s of ENDING) process.off(s, endRunning)
+  // The process ends on the signal, as it did without this handler.
+  process.kill(process.pid, signal)
+}
+
 // Runs a command in a process group of its own, so the timeout ends all of a pipeline: killing only
 // the first process leaves the rest holding its output open, and the wait goes on (measured). Once
 // the command has ended, killed or not, what still holds its output (one it put in the background,
 // one that left the group with setsid and outlived the kill) is not waited for past a short grace:
 // the run returns what it read by then, and what was left keeps running. The sources and watches
-// run here too (shell).
+// (shell) and the worker's commands (spawn) run here too.
 export async function runGroup(
   cmd: string[],
   opts: {
     cwd?: string
     env: Record<string, string | undefined>
     stdin?: string
-    timeoutMs: number
+    // Without it, the command is not killed.
+    timeoutMs?: number
     // How long output is waited on once the command has ended; a test sets it.
     graceMs?: number
   },
@@ -84,6 +110,8 @@ export async function runGroup(
     stderr: 'pipe',
     detached: true,
   })
+  if (running.size === 0) for (const s of ENDING) process.on(s, endRunning)
+  running.add(proc.pid)
   // Readers, not Response.text(): a read that is let go must be cancelled, or Bun stays up until the
   // process holding the pipe ends (measured). What each has read is kept as it comes.
   const read = { stdout: '', stderr: '' }
@@ -97,18 +125,15 @@ export async function runGroup(
       read[key] += decoder.decode()
     }),
   )
-  const timer = setTimeout(() => {
-    try {
-      process.kill(-proc.pid, 'SIGKILL')
-    } catch {
-      // The group has ended already.
-    }
-  }, opts.timeoutMs)
+  const timer =
+    opts.timeoutMs === undefined ? undefined : setTimeout(() => killGroup(proc.pid), opts.timeoutMs)
   let grace: ReturnType<typeof setTimeout> | undefined
   try {
     const code = await proc.exited
-    // Ended in time, it is not killed while its output is waited on.
+    // Ended in time, it is not killed while its output is waited on, nor is what it left.
     clearTimeout(timer)
+    running.delete(proc.pid)
+    if (running.size === 0) for (const s of ENDING) process.off(s, endRunning)
     await Promise.race([
       output,
       new Promise((resolve) => {
