@@ -223,6 +223,7 @@ async function turn(message: string, continuing: boolean): Promise<void> {
     deaf = head.startsWith('deaf')
     while (inputs.length + lost === 0 || !existsSync('end.txt')) await Bun.sleep(50)
     deaf = false
+    lost = 0
     for (const input of head.startsWith('slow') ? inputs.splice(0) : []) {
       log({ event: 'heard', sessionId, message: input })
       queue('remove', input)

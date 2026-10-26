@@ -2552,12 +2552,23 @@ it('a message its worker had not taken in by the end of the turn it was told in 
     [['go on', null]],
     [{ type: 'user', message: { role: 'user', content: 'earlier\n\ngo on' } }],
   )
-  // Never in Claude Code's queue (no terminal here to send it again to).
+  // Never in Claude Code's queue.
   const lost = told('lost', [['go on', null]], [])
   // Still queued as the worker asked a question.
   const asked = told('asked', [['the first', null]], [queue('enqueue', 'the first')])
+  // Still queued, and a message during the hook opened the next turn already (deliver).
+  const during = told('during', [['use tabs', null]], [queue('enqueue', 'use tabs')])
+  ledger.startAttempt({
+    taskId: during,
+    kind: 'followup',
+    decisionId: null,
+    sessionId: 'during',
+    prompt: 'no, spaces',
+  })
 
-  for (const session of ['late', 'heard', 'restarted', 'lost']) {
+  const capture = 'NOD: in {"title": "Ask Kim again"}'
+  expect(await stopped('late', `${capture}\nNOD: done | did it`)).toBeNull()
+  for (const session of ['heard', 'restarted', 'lost', 'during']) {
     expect(await stopped(session, 'NOD: done | did it')).toBeNull()
   }
   expect(await stopped('asked', 'NOD: question | Which one?')).toBeNull()
@@ -2591,12 +2602,34 @@ it('a message its worker had not taken in by the end of the turn it was told in 
   const reviewed = () =>
     entries('review').map((r) => /nod task #(\d+)\./.exec(r.message ?? '')?.[1])
   expect(reviewed()).toEqual([String(heard), String(restarted)])
+  // With no terminal, as once Claude Code is gone, they wait for its next start.
+  const left = (id: number) => readFileSync(join(home, 'work', `.prompt-${id}`), 'utf8')
+  expect(left(late)).toBe(`${tabs}\n\npeer note`)
+  expect(left(lost)).toBe('go on')
+  // The message of the hook's turn came after: what came before stays before it.
+  const before = ledger.attempts(during)[0]?.id ?? 0
+  expect(ledger.messages(during).map((m) => [m.attemptId, m.text])).toEqual([[before, 'use tabs']])
+  expect(reviewBrief(ledger, ledger.get(during), 'NOD: done | ok', null)).toContain(
+    'later words win:\n- use tabs\n- no, spaces\n',
+  )
 
-  // Claude Code runs both as the next turn, whose stop decides; its review hears each once.
+  // Claude Code runs both as the next turn, whose stop decides. The capture of the done it did not
+  // take goes back once to the worker, which reports it again; its review hears each message once.
   keep('late', [queue('dequeue', wrapped(tabs)), queue('dequeue', 'peer note')])
-  expect(await stopped('late', 'NOD: done | did it')).toBeNull()
+  const back = await stopped('late', 'NOD: done | did it')
+  expect(back).toContain(JSON.stringify(capture).slice(1, -1))
+  expect(status(late)).toBe('running')
+  expect(await stopped('late', `${capture}\nNOD: done | did it`)).toBeNull()
   expect(status(late)).toBe('succeeded')
-  expect(ledger.attempts(late)).toHaveLength(2)
+  expect(ledger.attempts(late).map((a) => a.kind)).toEqual(['start', 'followup', 'retry'])
+  const inbox = new Todos(ledger).list({
+    statuses: ['inbox'],
+    context: null,
+    projectId: null,
+    hideSomedayProjects: false,
+    day: null,
+  })
+  expect(inbox.map((t) => t.title)).toEqual(['Ask Kim again'])
   expect(reviewed().at(-1)).toBe(String(late))
   const review = entries('review').at(-1)?.message ?? ''
   expect(review).toContain('later words win:\n- use tabs, not spaces\n')
