@@ -168,6 +168,8 @@ const MAX_TELLS = 4
 // The check and the review both run inside the Stop hook, so the hook outlasts them.
 const REVIEW_TIMEOUT_MS = 600_000
 const STOP_HOOK_TIMEOUT_SECS = 1800
+// What `claude -p` prints first when a hook blocks the message it was given (2.1.310).
+const BLOCKED = 'UserPromptSubmit operation blocked by hook:'
 const TRUST_TIMEOUT_MS = 20_000
 const TRUST_POLL_MS = 500
 const TRUST_DIALOG = 'Yes, I trust this folder'
@@ -2088,6 +2090,15 @@ async function review(
     { stdin: reviewBrief(ledger, task, report, changes), timeoutMs: REVIEW_TIMEOUT_MS },
   )
   if (code !== 0) throw new Error(`the review exited with ${code}: ${output.slice(-OUTPUT_LIMIT)}`)
+  // A hook that blocks the first message (a user's UserPromptSubmit hook): no model runs, and
+  // Claude Code exits 0 with why, then the whole message (2.1.310), which only brings back the
+  // brief and the report, so the error has why alone.
+  if (stdout.startsWith(BLOCKED)) {
+    const why = stdout.slice(BLOCKED.length).split('\nOriginal prompt: ')[0]?.trim() ?? ''
+    throw new Error(
+      `the reviewer's first message was blocked by a hook, so no review ran: ${why.slice(0, OUTPUT_LIMIT)}`,
+    )
+  }
   // ponytail: a repo's reviewer is told not to touch the worktree and checked afterwards; give it a
   // worktree of its own if it needs to run things.
   if (head !== null && ((await headOf(cwd)) !== head || (await uncommittedChanges(cwd)))) {

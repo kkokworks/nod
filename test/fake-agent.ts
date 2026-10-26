@@ -65,10 +65,18 @@ const prompt =
 
 // Like `claude -p`, which nod runs as the reviewer: the prompt comes on stdin and the reply is
 // printed once. A brief with `review-strict` fails until ok.txt exists; `review-mute` gives no
-// verdict; `review-slow` takes a while.
+// verdict; `review-slow` takes a while. Like Claude Code under a user's UserPromptSubmit hook that
+// screens for personal data, a brief with a value shaped like a national ID number is blocked
+// before any model runs: it prints why, then the whole brief, and exits 0 (2.1.310).
 if (args.includes('-p')) {
   const stdin = await Bun.stdin.text()
   log({ event: 'review', sessionId, message: stdin })
+  if (/\d{6}-\d{7}/.test(stdin)) {
+    console.log(
+      `UserPromptSubmit operation blocked by hook:\n[screen-pii]: looks like a national ID number\n\n\nOriginal prompt: ${stdin}`,
+    )
+    process.exit(0)
+  }
   if (stdin.includes('review-slow')) await Bun.sleep(3000)
   let reply = 'NOD: done | looks right'
   if (stdin.includes('review-strict') && !existsSync('ok.txt')) {

@@ -268,6 +268,22 @@ test('a review that gives no verdict errors the task instead of passing it', asy
   expect(ledger.get(id).error).toContain('the review gave no verdict')
 })
 
+// Shaped like a national ID number, as a masking test's input is; the fake reviewer blocks a first
+// message with one, as a user's hook that screens for personal data does (fake-agent.ts).
+const ID_SHAPED = `${'9'.repeat(6)}-${'1'.repeat(7)}`
+
+test("a reviewer whose first message a hook blocks errors the task with the hook's reason, not the message", async () => {
+  const id = started(`mask ${ID_SHAPED} in the log`, 'blocked')
+  await stopped('blocked', 'NOD: done | did it')
+  expect(status(id)).toBe('error')
+  const error = ledger.get(id).error ?? ''
+  expect(error).toContain("the reviewer's first message was blocked by a hook")
+  expect(error).toContain('[screen-pii]: looks like a national ID number')
+  // The message would only bring back the brief and the report.
+  expect(error).not.toContain('Original prompt')
+  expect(error).not.toContain(ID_SHAPED)
+})
+
 test('a worker that gives up, or stops without a report, becomes a decision', async () => {
   const gaveUp = await add('give-up')
   const silent = await add('silent')
