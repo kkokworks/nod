@@ -301,7 +301,7 @@ function shortLink(url: string): string {
 // Bun 1.3's nested v class matched half of a character beyond U+FFFF and left a lone surrogate.
 const clean = (s: string): string =>
   s.replace(/(?!\p{Emoji_Component})[\p{Cc}\p{Zl}\p{Zp}\p{Cf}]/gu, ' ')
-const firstLine = (s: string): string => clean(s.trim().split('\n')[0] ?? '')
+export const firstLine = (s: string): string => clean(s.trim().split('\n')[0] ?? '')
 
 // `s` exactly `w` columns wide on screen: padded, or cut with `…`. Hangul and emoji take two.
 function fit(s: string, w: number): string {

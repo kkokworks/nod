@@ -2262,7 +2262,6 @@ export function workerPrompt(ledger: Ledger, task: Task | null): string {
 // dialog. Claude Code runs SessionStart hooks again once it has compacted the conversation, with
 // the matcher `compact` (2.1.310), for onCompact.
 function workerSettings(started: string | null): string {
-  const hook = (event: string): string => `${quote(process.execPath)} ${quote(CLI)} hook ${event}`
   const touch = (file: string) => [
     { hooks: [{ type: 'command', command: `touch ${quote(file)}` }] },
   ]
@@ -2281,6 +2280,17 @@ function workerSettings(started: string | null): string {
       ],
     },
   })
+}
+
+// The command a Claude Code hook runs: `nod hook <event>`, by this nod.
+const hook = (event: string): string => `${quote(process.execPath)} ${quote(CLI)} hook ${event}`
+
+// What `nod open` gives a project session: hooks that tell nod where the session takes messages as
+// it starts (startup, resume, clear, compact: Claude Code exports the socket to hooks before any
+// runs), and that it takes none once it ends (onInbox in inbox.ts).
+export function openSettings(): string {
+  const inbox = [{ hooks: [{ type: 'command', command: hook('inbox') }] }]
+  return JSON.stringify({ hooks: { SessionStart: inbox, SessionEnd: inbox } })
 }
 
 const startedMarker = (home: string, taskId: number): string =>

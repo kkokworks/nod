@@ -6,6 +6,7 @@ import { tempDirs } from '../test/tmp'
 import { Ledger } from './ledger'
 import { actorFromEnv, openSession, sessionFromEnv } from './todo-cli'
 import { Todos } from './todos'
+import { openSettings } from './worker'
 
 const tmp = tempDirs()
 afterAll(tmp.removeAll)
@@ -204,6 +205,9 @@ test('nod open resumes the latest session where it was opened, or starts one: wi
   const told = [
     '--append-system-prompt',
     `nod open opened this session for project p${p.id} Release: nod add here puts work in that project, and the project's tasks and decisions are this session's.`,
+    // Its hooks tell nod where it takes the project's notices.
+    '--settings',
+    openSettings(),
   ]
 
   const first = open(false, here)

@@ -1,0 +1,166 @@
+import { createConnection } from 'node:net'
+import { z } from 'zod'
+import { Ledger, type Notice } from './ledger'
+import { type Project, Todos } from './todos'
+import { firstLine, indent, oneLine, taskLabel } from './view'
+import { message } from './worker'
+
+// nod tells a project's session, the one nod open opened for it last, what `nod watch` would print
+// for it: each of the project's tasks that ends (once its check and review are done) and each of
+// its decisions that opens, and what a person sends it with `nod tell p<n>`. The ledger records
+// each as a notice with the change itself (ledger.ts); sendNotices sends what is unsent into the
+// session's inbox socket, as another Claude session on this machine does (SendMessage), after each
+// notify and on each tick. What finds no session running, or a send that fails, waits for the next.
+// ponytail: the line is Claude Code's own (2.1.310), not documented, and Claude Code answers
+// nothing: one it drops (a format it no longer reads, an id it does not know) counts as sent.
+
+// A local socket takes far less; a hook waits on it.
+const SEND_TIMEOUT_MS = 5000
+
+// What a session's SessionStart and SessionEnd hooks pass on stdin; only what nod reads.
+export const InboxEvent = z.object({ session_id: z.string(), hook_event_name: z.string() })
+
+// The hooks nod open gives a project session (openSettings in worker.ts): as it starts, where it
+// takes messages (Claude Code exports the socket to its hooks), and what waited for it goes; once it
+// ends, none. A session nod open did not open changes nothing.
+export async function onInbox(
+  ledger: Ledger,
+  event: z.infer<typeof InboxEvent>,
+  socket: string | undefined,
+  send = sendLine,
+): Promise<void> {
+  const ended = event.hook_event_name === 'SessionEnd'
+  new Todos(ledger).setSocket(event.session_id, ended ? null : socket || null)
+  if (!ended) await sendNotices(ledger, send)
+}
+
+// `nod tell p<n>`: a person's words for the project's session, by the same way. Returns whether
+// they went now; else they wait for the session as a notice does.
+export async function tellProject(
+  ledger: Ledger,
+  projectId: number,
+  text: string,
+  actor: string,
+  send = sendLine,
+): Promise<boolean> {
+  new Todos(ledger).project(projectId)
+  const note = `nod tell from ${actor}:\n${text}`
+  const id = ledger.addNotice({ projectId, event: 'tell', note })
+  await sendNotices(ledger, send)
+  return ledger.notice(id).sentAt !== null
+}
+
+// What notify does after an event: sends what waits, with a ledger of its own, and tells only
+// stderr what went wrong, as nothing else may stop on it.
+export async function tellSessions(home: string): Promise<void> {
+  let ledger: Ledger | null = null
+  try {
+    ledger = new Ledger(home)
+    await sendNotices(ledger)
+  } catch (error) {
+    console.error(`nod: could not tell the project sessions: ${message(error)}`)
+  } finally {
+    ledger?.db.close()
+  }
+}
+
+// Sends each project's unsent notices, oldest first, to its latest session, all in one message. One
+// of a task in no project, and a decision answered since, goes to none. A project with no session
+// running keeps them. A send that fails keeps them too, and a socket that is gone (the session
+// ended without its SessionEnd hook) is forgotten until the session says it again.
+export async function sendNotices(ledger: Ledger, send = sendLine): Promise<void> {
+  const todos = new Todos(ledger)
+  const waiting = new Map<number, Notice[]>()
+  for (const n of ledger.unsentNotices()) {
+    const project =
+      n.projectId ?? (n.taskId === null ? null : todos.projectOf(ledger.get(n.taskId)))
+    const answered = n.decisionId !== null && ledger.decision(n.decisionId).answer !== null
+    if (project === null || answered) ledger.claimNotices([n.id], null)
+    else waiting.set(project, [...(waiting.get(project) ?? []), n])
+  }
+  for (const [projectId, notices] of waiting) {
+    const session = todos.latestSession(projectId)
+    const socket = session?.socket ?? null
+    if (session === null || socket === null) continue
+    const claimed = ledger.claimNotices(
+      notices.map((n) => n.id),
+      session.sessionId,
+    )
+    const these = notices.filter((n) => claimed.ids.includes(n.id))
+    if (these.length === 0) continue
+    try {
+      const content = noticesText(ledger, todos.project(projectId), these)
+      const said = {
+        type: 'user',
+        session_id: session.sessionId,
+        message: { role: 'user', content },
+      }
+      await send(socket, `${JSON.stringify(said)}\n`)
+    } catch (error) {
+      ledger.unclaimNotices(claimed.ids, claimed.at)
+      const code = (error as { code?: unknown }).code
+      if (code === 'ENOENT' || code === 'ECONNREFUSED') {
+        todos.setSocket(session.sessionId, null, socket)
+      } else {
+        console.error(`nod: could not tell p${projectId}'s session: ${message(error)}`)
+      }
+    }
+  }
+}
+
+// One message for a project's session: which project, then each notice.
+export function noticesText(ledger: Ledger, project: Project, notices: Notice[]): string {
+  const count = notices.length === 1 ? 'a notice' : `${notices.length} notices, oldest first`
+  const head = `nod, project p${project.id} ${project.title}: ${count}`
+  return [head, ...notices.map((n) => noticeText(ledger, n))].join('\n\n')
+}
+
+// What the session does with each end, as it does with `nod watch`'s line.
+const NEXT = {
+  succeeded: (id: number) => `nod show ${id}, then send its result out`,
+  error: (id: number) => `nod show ${id} says why; settle with the person what to do`,
+  cancelled: (id: number) => `tell the person (nod show ${id})`,
+}
+
+// A notice as `nod watch` prints it, with the turn it came on (its attempt, counted from 1, or the
+// decision's number) to tell one sent twice, and what to do next.
+export function noticeText(ledger: Ledger, n: Notice): string {
+  if (n.event === 'tell') return n.note ?? ''
+  const task = ledger.get(n.taskId ?? 0)
+  if (n.event === 'decision') {
+    const d = ledger.decision(n.decisionId ?? 0)
+    return [
+      `decision #${d.id} ${d.reason} (${taskLabel(task)}: ${oneLine(task.brief, 60)})`,
+      indent(d.question),
+      `next: tell the person; nod ${d.id} <their answer> answers it, nod drop ${d.id} ends the task`,
+    ].join('\n')
+  }
+  const turn = ledger.attempts(task.id).findIndex((a) => a.id === n.attemptId) + 1
+  const attempt = turn === 0 ? '' : `, attempt ${turn}`
+  const note = firstLine(n.note || task.brief)
+  return `${taskLabel(task)} ${n.event}${attempt}: ${note}\nnext: ${NEXT[n.event](task.id)}`
+}
+
+// One line into a session's inbox socket, done once it is written and the writing side closed
+// ('finish', which Bun's node:net emits only after the socket connected and took the whole line):
+// Claude Code answers nothing. The connection is left to close as Claude Code closes its side, and
+// keeps no process up meanwhile.
+export function sendLine(socket: string, line: string, timeoutMs = SEND_TIMEOUT_MS): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const conn = createConnection(socket)
+    const timer = setTimeout(
+      () => conn.destroy(new Error(`${socket} took no line in ${timeoutMs} ms`)),
+      timeoutMs,
+    )
+    conn.on('error', (error) => {
+      clearTimeout(timer)
+      reject(error)
+    })
+    conn.on('finish', () => {
+      clearTimeout(timer)
+      conn.unref()
+      resolve()
+    })
+    conn.end(line)
+  })
+}

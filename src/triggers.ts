@@ -3,6 +3,7 @@ import { join } from 'node:path'
 import { z } from 'zod'
 import { localTime } from './days'
 import { sweep } from './done'
+import { sendNotices } from './inbox'
 import { land, type Moved } from './land'
 import { Ledger, type Trigger } from './ledger'
 import { notify, runGroup, taskRef } from './notify'
@@ -145,6 +146,11 @@ export async function tick(
         ...report.clean,
       ])
     : []
+  // What no notify sent yet: a session that was not running, a send that failed, an end no event
+  // follows (a landing turn's).
+  await sendNotices(ledger).catch((error) =>
+    console.error(`nod: could not tell the project sessions: ${message(error)}`),
+  )
   return { added, passed, collected, lost, waited, restarted, closed, landed }
 }
 
