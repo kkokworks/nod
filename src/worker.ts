@@ -2504,11 +2504,11 @@ async function review(
   }
 }
 
-// What the branch changed since `base`, where nod rebased it to as it lands it, else since its own
-// commits start (ownStart), with the diff saved in `dir`. The reviewer reads that file with its Read
-// tool rather than running git: a user's hook may rewrite the shell commands it runs, and one that
-// shortens their output cut lines out of the diff. No color and no external diff tool, whatever the
-// human's git config says, so the diff is plain.
+// What the branch changed since its own commits start (ownStart, from `base`, where nod rebased it
+// to as it lands it, once there is one), with the diff saved in `dir`. The reviewer reads that file
+// with its Read tool rather than running git: a user's hook may rewrite the shell commands it runs,
+// and one that shortens their output cut lines out of the diff. No color and no external diff tool,
+// whatever the human's git config says, so the diff is plain.
 async function changesOf(
   worktree: string,
   branch: string,
@@ -2521,7 +2521,7 @@ async function changesOf(
     return stdout
   }
   const head = (await git('rev-parse', 'HEAD')).trim()
-  const start = base ?? (await ownStart(worktree, branch, head, 'refs/remotes/origin/HEAD'))
+  const start = await ownStart(worktree, branch, head, 'refs/remotes/origin/HEAD', base)
   if (start === null) throw new Error(`${branch}'s reflog no longer says where it was created`)
   const range = `${start}..${head}`
   const saved = join(dir, 'changes.diff')
@@ -2542,12 +2542,13 @@ export async function createdFrom(worktree: string, branch: string): Promise<str
     : null
 }
 
-// Where the task's own commits start, for its review and where landing first rebases it from:
-// where the branch was created (createdFrom). A worker that brought the remote's default branch
-// (`defaultBranch`) in itself (a rebase onto it, or a merge) leaves that start behind where HEAD now
-// leaves the default branch, or off HEAD once the earlier task the branch started on was
+// Where the task's own commits start, for its review and where landing rebases it from: where
+// landing last recorded them to start (`recorded`), else where the branch was created
+// (createdFrom). A worker that brought the remote's default branch (`defaultBranch`) in itself (a
+// rebase onto it, or a merge), before landing or in a landing turn, leaves that start behind where
+// HEAD now leaves the default branch, or off HEAD once the earlier task the branch started on was
 // squash-merged, and the commits between are others': then they start where HEAD leaves it. Null
-// once the created start is gone.
+// with none recorded once the created start is gone.
 // ponytail: a branch started on an earlier task's branch that merged the default branch in, rather
 // than rebasing onto it, keeps the created start, so its reviewer reads the merged commits too;
 // diff from both if that shows up.
@@ -2556,16 +2557,17 @@ export async function ownStart(
   branch: string,
   head: string,
   defaultBranch: string,
+  recorded: string | null,
 ): Promise<string | null> {
-  const created = await createdFrom(worktree, branch)
-  if (created === null) return null
+  const start = recorded ?? (await createdFrom(worktree, branch))
+  if (start === null) return null
   // Fails without a default branch fetched, or with no commit in common.
   const left = await spawn(['git', 'merge-base', head, defaultBranch], worktree)
-  const main = left.code === 0 ? left.stdout.trim() : created
-  if (main === created) return created
+  const main = left.code === 0 ? left.stdout.trim() : start
+  if (main === start) return start
   const isAncestor = async (a: string, b: string): Promise<boolean> =>
     (await spawn(['git', 'merge-base', '--is-ancestor', a, b], worktree)).code === 0
-  return !(await isAncestor(created, head)) || (await isAncestor(created, main)) ? main : created
+  return !(await isAncestor(start, head)) || (await isAncestor(start, main)) ? main : start
 }
 
 async function headOf(worktree: string): Promise<string> {

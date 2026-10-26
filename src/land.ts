@@ -153,16 +153,17 @@ async function landTask(
   // Before its start is read from HEAD: mid-rebase, HEAD is not where the branch is.
   if (rebasing(ws)) return noteFor(pass, task, 'a rebase is in progress in its worktree')
   let head = await git(ws, 'rev-parse', 'HEAD')
-  // As its review reads it, so what the worker brought in of the default branch is not moved again.
+  // As its review reads it, so what the worker brought in of the default branch is not moved again,
+  // in a landing turn too.
   // ponytail: a branch gc deleted and resume made again starts at its last head, so its commits
   // read as none of its own; landings record the start before gc can get to them.
-  const base = l.base ?? (await ownStart(ws, branch, head, tip.commit))
+  const base = await ownStart(ws, branch, head, tip.commit, l.base)
   if (base === null) {
     return ask(
       `Where its own commits start is unknown: its branch's reflog is gone. Rebase ${branch} onto origin/${tip.branch} by hand and answer yes, or answer no to land it yourself.`,
     )
   }
-  if (l.base === null) l = ledger.setLanding(task.id, { base })
+  if (l.base !== base) l = ledger.setLanding(task.id, { base })
   if (l.pr === null && (await git(ws, 'rev-list', '--count', `${base}..${head}`)) === '0') {
     ledger.setLanding(task.id, { stopped: 'nothing to land: its branch has no commits of its own' })
     return 'nothing to land'
