@@ -285,7 +285,7 @@ test('a review that gives no verdict errors the task instead of passing it', asy
 // message with one, as a user's hook that screens for personal data does (fake-agent.ts).
 const ID_SHAPED = `${'9'.repeat(6)}-${'1'.repeat(7)}`
 
-test("a reviewer whose first message a hook blocks errors the task with the hook's reason, not the message", async () => {
+it("a reviewer whose first message a hook blocks errors the task with the hook's reason, not the message", async () => {
   const id = started(`mask ${ID_SHAPED} in the log`, 'blocked')
   await stopped('blocked', 'NOD: done | did it')
   expect(status(id)).toBe('error')
@@ -675,7 +675,7 @@ test('a message pastes without control characters, which could end the paste and
   expect(entries('turn').map((t) => t.message)).toEqual(['first', 'see[201~ this\nand\tthat'])
 }, 30_000)
 
-test('a stop from a session nod did not start changes nothing', async () => {
+it('a stop from a session nod did not start changes nothing', async () => {
   const out = await onStop(ledger, home, {
     session_id: 'not-ours',
     last_assistant_message: 'NOD: done | x',
@@ -856,7 +856,7 @@ function reviewed(id: number, cwd: string): (string | undefined)[] {
   return [...(diff ?? '').matchAll(/^diff --git a\/(\S+)/gm)].map((m) => m[1])
 }
 
-test('the reviewer reads the diff from a file nod saves, so a hook on its first message never sees the code', async () => {
+it('the reviewer reads the diff from a file nod saves, so a hook on its first message never sees the code', async () => {
   const { id, cwd } = startedInRepo(newRepo(), 'mask')
   commit(cwd, 'mask.test.ts', `expect(mask('${ID_SHAPED}')).toBe('******-*******')\n`)
   // A temp folder behind a link, as macOS keeps it, on any machine.
@@ -885,7 +885,7 @@ test('the reviewer reads the diff from a file nod saves, so a hook on its first 
   expect(existsSync(dirname(saved))).toBe(false)
 })
 
-test("the review reads the task's own commits, from where its branch started on the default branch or on an earlier task's branch", async () => {
+it("the review reads the task's own commits, from where its branch started on the default branch or on an earlier task's branch", async () => {
   const repo = newRepo()
   publish(repo)
   const plain = startedInRepo(repo, 'plain')
@@ -904,7 +904,7 @@ test("the review reads the task's own commits, from where its branch started on 
   expect(reviewed(next.id, next.cwd)).toEqual(['next.txt'])
 })
 
-test("the review reads only the task's own commits once its worker moved them onto the default branch, also after the earlier task was squash-merged", async () => {
+it("the review reads only the task's own commits once its worker moved them onto the default branch, also after the earlier task was squash-merged", async () => {
   const repo = newRepo()
   publish(repo)
   const moved = startedInRepo(repo, 'moved')
@@ -1042,7 +1042,7 @@ const failure = (start: Promise<unknown>): Promise<string> =>
     (error: Error) => error.message,
   )
 
-test('a repo task whose submodules cannot be filled leaves no worktree or branch behind, and says how to fill them', async () => {
+it('a repo task whose submodules cannot be filled leaves no worktree or branch behind, and says how to fill them', async () => {
   const { repo, id } = unfilledLib()
 
   const error = await failure(startTask(ledger, home, id))
@@ -1562,7 +1562,7 @@ test('dropping a task that gave up starts a retrospective, and declining its rul
   expect(ledger.list().filter((t) => t.retroId !== null)).toHaveLength(1)
 })
 
-test('a retrospective that finds no general rule just succeeds', async () => {
+it('a retrospective that finds no general rule just succeeds', async () => {
   const of = ledger.add({
     brief: 'x',
     repo: null,
@@ -1593,7 +1593,7 @@ test('a retrospective that finds no general rule just succeeds', async () => {
   await expect(tell(ledger, home, retro, 'look again')).rejects.toThrow('which ended (none)')
 })
 
-test('yes to a rule closes its decision only as the rule goes in', async () => {
+it('yes to a rule closes its decision only as the rule goes in', async () => {
   const of = ledger.add({
     brief: 'x',
     repo: null,
@@ -1637,7 +1637,7 @@ test('yes to a rule closes its decision only as the rule goes in', async () => {
   expect(status(retro)).toBe('succeeded')
 })
 
-test('a notify that cannot run changes nothing else', async () => {
+it('a notify that cannot run changes nothing else', async () => {
   writeFileSync(join(home, 'notify'), '') // not executable
   const task = { id: 1, brief: 'x', issue: null }
   await expect(notify(home, { event: 'cancelled', task })).resolves.toBeUndefined()
@@ -1681,7 +1681,7 @@ it('a retrospective hears the repo and check of its task, that the check runs ou
   expect(alone).toContain('Acceptance check: none')
 })
 
-test('a retrospective that sends its fix to the inbox ends as todo, and one that also proposes a rule keeps the todo', async () => {
+it('a retrospective that sends its fix to the inbox ends as todo, and one that also proposes a rule keeps the todo', async () => {
   const todos = new Todos(ledger)
   const inbox = (): string[] =>
     todos
@@ -2376,7 +2376,7 @@ const stopped = (session: string, report: string, running: string[] = []): Promi
     background_tasks: running.map((description) => ({ type: 'subagent', description })),
   })
 
-test('a message that comes while nod checks a turn it closed starts the next turn, and that turn decides', async () => {
+it('a message that comes while nod checks a turn it closed starts the next turn, and that turn decides', async () => {
   // As `nod tell` opens a turn while the Stop hook checks the last one (deliver); Claude Code runs it
   // once the hook ends.
   const tellWhileChecked = async (id: number, session: string): Promise<void> => {
@@ -2411,7 +2411,7 @@ test('a message that comes while nod checks a turn it closed starts the next tur
   ])
 }, 30_000)
 
-test('a turn the worker goes on to by itself closes what it asked before, and so does its success', async () => {
+it('a turn the worker goes on to by itself closes what it asked before, and so does its success', async () => {
   const events = listen()
   const id = started('wait for the agents', 'went-on')
   await stopped('went-on', 'Started two agents.\nNOD: question | Wait for them?')
@@ -2575,7 +2575,7 @@ test('a task waiting on background work that a person typed into and stopped is 
   expect(asked(ended)).toEqual([['question', true]])
 })
 
-test('a turn that stops while background work it started still runs waits for that work, and asks nobody', async () => {
+it('a turn that stops while background work it started still runs waits for that work, and asks nobody', async () => {
   const events = listen()
   const id = started('review it', 'waits')
   await stopped('waits', 'The review runs.\nNOD: question | Waiting for the review', ['review'])
@@ -2609,7 +2609,7 @@ test('a turn that stops while background work it started still runs waits for th
   expect(status(done)).toBe('succeeded')
 })
 
-test('a task that has waited on background work past the limit asks the person, at its next stop or at the tick', async () => {
+it('a task that has waited on background work past the limit asks the person, at its next stop or at the tick', async () => {
   const id = started('review it', 'waits-long')
   await stopped('waits-long', 'NOD: question | Waiting for the review', ['review'])
   const minutes = (n: number): Date => new Date(Date.now() + n * 60_000)
@@ -2653,7 +2653,7 @@ test('a task that has waited on background work past the limit asks the person, 
   expect(ledger.decisions(back)).toEqual([])
 })
 
-test("a worker's NOD: tell reaches another task of its session once nod takes its done, a finished task too, as a peer's", async () => {
+it("a worker's NOD: tell reaches another task of its session once nod takes its done, a finished task too, as a peer's", async () => {
   const fix = started('fix it', 'fixer', 'root-1')
   await stopped('fixer', 'NOD: done | fixed')
   const review = started(`review #${fix}`, 'reviewer', 'root-1')
@@ -2675,7 +2675,7 @@ test("a worker's NOD: tell reaches another task of its session once nod takes it
   )
 })
 
-test('nod sends a worker back a NOD: tell it cannot send, before any check, and sends nothing', async () => {
+it('nod sends a worker back a NOD: tell it cannot send, before any check, and sends nothing', async () => {
   const other = started('other session', 'other', 'root-2')
   const unrooted = started('no session', 'unrooted')
   const queued = ledger.add({
@@ -2714,7 +2714,7 @@ test('nod sends a worker back a NOD: tell it cannot send, before any check, and 
   for (const id of [other, unrooted, ended, target]) expect(ledger.attempts(id)).toHaveLength(1)
 })
 
-test('the workers of two tasks in one project may tell each other, whichever sessions added them, and not across projects', async () => {
+it('the workers of two tasks in one project may tell each other, whichever sessions added them, and not across projects', async () => {
   const todos = new Todos(ledger)
   const release = todos.addProject({ title: 'Release', outcome: null }, 'human')
   const health = todos.addProject({ title: 'Health', outcome: null }, 'human')
@@ -2767,7 +2767,7 @@ test('the workers of two tasks in one project may tell each other, whichever ses
   for (const id of [ofA, ofB, ofShell, ofQ]) expect(ledger.attempts(id)).toEqual([])
 })
 
-test('two tasks whose workers have sent each other four messages ask the person before a fifth goes', async () => {
+it('two tasks whose workers have sent each other four messages ask the person before a fifth goes', async () => {
   const review = started('review', 'reviewing', 'root-1')
   const fix = started('fix', 'fixing', 'root-1')
   const turnOf = (id: number): number => ledger.openAttempt(id)?.id ?? 0
@@ -2804,7 +2804,7 @@ test('two tasks whose workers have sent each other four messages ask the person 
   expect(ledger.attempts(done)).toHaveLength(1)
 })
 
-test('a message a worker told a task the person drops while nod checks it does not bring that task back', async () => {
+it('a message a worker told a task the person drops while nod checks it does not bring that task back', async () => {
   const events = listen()
   const target = started('fix', 'drop-target', 'root-1')
   await stopped('drop-target', 'NOD: done | fixed')
@@ -2870,7 +2870,7 @@ test('a review tells the fixer its findings, and the fixer tells it back once fi
   expect(ledger.openDecisions()).toEqual([])
 }, 30_000)
 
-test("a permission answered in the worker's terminal does not stay open once its turn ends", async () => {
+it("a permission answered in the worker's terminal does not stay open once its turn ends", async () => {
   const id = started('fetch it', 'answered-there')
   const attempt = ledger.openAttempt(id)
   if (attempt === null) throw new Error('no turn')
@@ -2889,7 +2889,7 @@ function slowNotify(): void {
   chmodSync(join(home, 'notify'), 0o755)
 }
 
-test('a turn that asks as a message opens the next one leaves its question to that turn', async () => {
+it('a turn that asks as a message opens the next one leaves its question to that turn', async () => {
   slowNotify()
   const id = started('fetch it', 'asked-told')
   const attempt = ledger.openAttempt(id)
@@ -2912,7 +2912,7 @@ test('a turn that asks as a message opens the next one leaves its question to th
   expect(status(id)).toBe('running')
 })
 
-test('a task that succeeds leaves no decision open', async () => {
+it('a task that succeeds leaves no decision open', async () => {
   const id = started('fetch it', 'all-closed')
   const first = ledger.openAttempt(id)
   if (first === null) throw new Error('no turn')
@@ -2931,7 +2931,7 @@ test('a task that succeeds leaves no decision open', async () => {
   expect(ledger.openDecisions()).toEqual([])
 })
 
-test('a dropped retrospective ends before what it closes is heard of, so no message goes on in it', async () => {
+it('a dropped retrospective ends before what it closes is heard of, so no message goes on in it', async () => {
   slowNotify()
   const of = ledger.add({
     brief: 'x',
@@ -2964,7 +2964,7 @@ test('a dropped retrospective ends before what it closes is heard of, so no mess
   expect(status(retro)).toBe('cancelled')
 })
 
-test('an answer to a decision already answered on a task gc collected brings nothing back', async () => {
+it('an answer to a decision already answered on a task gc collected brings nothing back', async () => {
   const id = started('first', 'answered-collected')
   await stopped('answered-collected', 'NOD: question | Which one?')
   const decision = ledger.decisions(id)[0]
@@ -2983,7 +2983,7 @@ test('an answer to a decision already answered on a task gc collected brings not
   expect(ledger.get(id).collectedAt).not.toBeNull()
 })
 
-test('a retrospective that proposes again replaces its open rule decision', async () => {
+it('a retrospective that proposes again replaces its open rule decision', async () => {
   const of = ledger.add({
     brief: 'x',
     repo: null,
@@ -3017,7 +3017,7 @@ test('a retrospective that proposes again replaces its open rule decision', asyn
   expect(ledger.retroFor(of)).toMatchObject({ rule: 'rule B', outcome: 'added' })
 })
 
-test('a yes to a rule decision adds the rule that decision proposed, and one left open once its retrospective ended only closes', async () => {
+it('a yes to a rule decision adds the rule that decision proposed, and one left open once its retrospective ended only closes', async () => {
   const of = ledger.add({
     brief: 'x',
     repo: null,
@@ -3062,7 +3062,7 @@ test('a yes to a rule decision adds the rule that decision proposed, and one lef
   expect(status(retro)).toBe(before)
 })
 
-test('a decision left open on a task that ended only closes, answered or dropped', async () => {
+it('a decision left open on a task that ended only closes, answered or dropped', async () => {
   const id = started('wait for the agents', 'ended-open')
   await stopped('ended-open', 'NOD: question | Wait for them?')
   const asked = ledger.decisions(id)[0]
@@ -3093,7 +3093,7 @@ test('a decision left open on a task that ended only closes, answered or dropped
   expect(ledger.attempts(id)).toHaveLength(1)
 })
 
-test("a trust decision answered in the worker's terminal closes once its first turn ends", async () => {
+it("a trust decision answered in the worker's terminal closes once its first turn ends", async () => {
   const id = started('work here', 'trusted-there')
   const attempt = ledger.openAttempt(id)
   if (attempt === null) throw new Error('no turn')
@@ -3105,7 +3105,7 @@ test("a trust decision answered in the worker's terminal closes once its first t
   ])
 })
 
-test('a review that fails on a task dropped while its Stop hook checked leaves it dropped', async () => {
+it('a review that fails on a task dropped while its Stop hook checked leaves it dropped', async () => {
   const id = started('review-mute: write it', 'mute-dropped')
   const attempt = ledger.openAttempt(id)
   if (attempt === null) throw new Error('no turn')
@@ -3116,7 +3116,7 @@ test('a review that fails on a task dropped while its Stop hook checked leaves i
   expect(ledger.attempts(id).map((a) => a.outcome)).toEqual(['error'])
 })
 
-test("a permission answered in the worker's terminal leaves the task running into the retry its turn gets", async () => {
+it("a permission answered in the worker's terminal leaves the task running into the retry its turn gets", async () => {
   const id = started('review-strict: write it', 'answered-retry')
   const attempt = ledger.openAttempt(id)
   if (attempt === null) throw new Error('no turn')
@@ -3127,7 +3127,7 @@ test("a permission answered in the worker's terminal leaves the task running int
   expect(ledger.openDecisions()).toEqual([])
 })
 
-test('a turn that ends after its retrospective did changes nothing of what became of it', async () => {
+it('a turn that ends after its retrospective did changes nothing of what became of it', async () => {
   const retroOf = (session: string): { of: number; retro: number } => {
     const of = ledger.add({
       brief: 'x',
@@ -3181,7 +3181,7 @@ test('a turn that ends after its retrospective did changes nothing of what becam
   expect(ledger.decisions(added.retro)).toHaveLength(1)
 })
 
-test('what nod closes by itself is no answer, so the wait for answers leaves it out', async () => {
+it('what nod closes by itself is no answer, so the wait for answers leaves it out', async () => {
   started('wait', 'unanswered')
   await stopped('unanswered', 'NOD: question | Wait for them?')
   // Claude Code goes on by itself, which closes the question.
@@ -3189,7 +3189,7 @@ test('what nod closes by itself is no answer, so the wait for answers leaves it 
   expect(ledger.stats().decisions).toEqual({ total: 2, open: 1, medianWaitSecs: null })
 })
 
-test('a rule decision takes no yes while its retrospective proposes again, and a yes closes what else is open', async () => {
+it('a rule decision takes no yes while its retrospective proposes again, and a yes closes what else is open', async () => {
   const of = ledger.add({
     brief: 'x',
     repo: null,
@@ -3229,7 +3229,7 @@ test('a rule decision takes no yes while its retrospective proposes again, and a
   ])
 })
 
-test("a message that finds a turn gone with its terminal closes that turn's decisions", async () => {
+it("a message that finds a turn gone with its terminal closes that turn's decisions", async () => {
   const id = started('fetch it', 'gone-dialog')
   const attempt = ledger.openAttempt(id)
   if (attempt === null) throw new Error('no turn')
@@ -3245,7 +3245,7 @@ test("a message that finds a turn gone with its terminal closes that turn's deci
   ])
 })
 
-test('two ticks that find the same lost turn at once raise one decision for it', async () => {
+it('two ticks that find the same lost turn at once raise one decision for it', async () => {
   const id = started('fetch it', 'lost-twice')
   const attempt = ledger.openAttempt(id)
   if (attempt === null) throw new Error('no turn')
@@ -3260,7 +3260,7 @@ test('two ticks that find the same lost turn at once raise one decision for it',
   ])
 })
 
-test('an answer to a decision left open on a task gc collected brings its folder back first, as tell does', async () => {
+it('an answer to a decision left open on a task gc collected brings its folder back first, as tell does', async () => {
   const id = started('first', 'collected-session')
   await stopped('collected-session', 'NOD: question | Which one?')
   const decision = ledger.decisions(id)[0]

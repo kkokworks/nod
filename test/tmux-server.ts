@@ -25,6 +25,7 @@ export function tmuxSkip(
 
 // A session on a socket of its own, in a dir of its own, so it meets no other server.
 function probe(): { up: boolean; stderr: string } {
+  if (Bun.which('tmux') === null) return { up: false, stderr: 'tmux is not on PATH' }
   const dir = mkdtempSync(join(tmpdir(), 'nod-tmux-probe-'))
   const env = { ...process.env, TMUX_TMPDIR: dir }
   const tmux = (...args: string[]) => Bun.spawnSync(['tmux', '-L', 'probe', ...args], { env })
@@ -40,8 +41,9 @@ function probe(): { up: boolean; stderr: string } {
 }
 
 const { up, stderr } = probe()
-const skip = tmuxSkip(up, stderr, process.env)
-if (skip !== null) console.warn(skip)
+// What `tmuxSkip` said for this run.
+export const tmuxSkipped = tmuxSkip(up, stderr, process.env)
+if (tmuxSkipped !== null) console.warn(tmuxSkipped)
 
 // For a test that needs a tmux server: skipped where `tmuxSkip` says so, without waiting on one.
-export const tmuxTest = test.skipIf(skip !== null)
+export const tmuxTest = test.skipIf(tmuxSkipped !== null)
