@@ -84,11 +84,9 @@ export class Terminals {
     return Math.max(0, ...seconds.map((s) => s * 1000 || 0))
   }
 
-  // A bracketed paste keeps a multi-line message together; Enter then sends it. Control characters
-  // but newline and tab go first: a message may carry text from elsewhere (what a watch printed),
-  // and an escape in it (`ESC[201~`) could end the paste early and type the rest as keys.
+  // A bracketed paste keeps a multi-line message together; Enter then sends it.
   send(name: string, text: string): void {
-    this.tmux(['load-buffer', '-b', name, '-'], text.replace(/[^\P{Cc}\n\t]/gu, ''))
+    this.tmux(['load-buffer', '-b', name, '-'], pasted(text))
     this.tmux(['paste-buffer', '-p', '-r', '-d', '-b', name, '-t', `=${name}:`])
     this.keys(name, 'Enter')
   }
@@ -162,6 +160,11 @@ export class Terminals {
     })
   }
 }
+
+// What of `text` send pastes. Control characters but newline and tab go: a message may carry text
+// from elsewhere (what a watch printed), and an escape in it (`ESC[201~`) could end the paste early
+// and type the rest as keys.
+export const pasted = (text: string): string => text.replace(/[^\P{Cc}\n\t]/gu, '')
 
 // For sh: inside single quotes everything is literal.
 export function quote(s: string): string {
