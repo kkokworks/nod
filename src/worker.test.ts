@@ -965,7 +965,7 @@ test('a repo worker is told to have a subagent review its branch from where it s
   // shared .git is one the sandbox will not let the reviewer remove.
   expect(prompt).toContain('It changes no files here')
   expect(prompt).toContain(
-    'run in <start> unpacked by `git archive` into the scratchpad, never via worktree, stash or checkout',
+    'run in <start> unpacked by `git archive` into the scratchpad, never via `git worktree`, stash or checkout',
   )
   expect(prompt).not.toContain('git worktree add')
   expect(prompt).toContain('file:line')

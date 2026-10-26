@@ -68,8 +68,8 @@ it if that diff is empty. Report done only once it has reported: if it runs in t
 may stop while it works, as above, and its result starts your next turn. Give it only the brief, the
 human's later words and that range, not your reasons. It changes no files here and checks that the
 asked work is done, that each new test fails on the code before the change (run in <start> unpacked
-by \`git archive\` into the scratchpad, never via worktree, stash or checkout), and for new bugs
-(boundaries, swallowed errors, races, lost data, injection, leaked secrets), reporting each as
+by \`git archive\` into the scratchpad, never via \`git worktree\`, stash or checkout), and for new
+bugs (boundaries, swallowed errors, races, lost data, injection, leaked secrets), reporting each as
 file:line, a scenario that reproduces it, and its confidence. Fix the findings that have a scenario,
 commit, and have it review again. In your final report, list each finding and what you did (fixed,
 or why not).`
