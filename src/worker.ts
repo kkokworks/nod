@@ -4,6 +4,7 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   rmSync,
   writeFileSync,
 } from 'node:fs'
@@ -2080,8 +2081,10 @@ async function review(
 ): Promise<{ passed: boolean; output: string }> {
   // Since the branch now starts, once nod rebased it as it lands it (land.ts).
   const base = ledger.landing(task.id)?.base ?? null
-  // A folder of the review's own for the diff it reads (changesOf), which it is let read.
-  const dir = task.repo === null ? null : mkdtempSync(join(tmpdir(), 'nod-review-'))
+  // A folder of the review's own for the diff it reads (changesOf), which it is let read. Through no
+  // link (macOS keeps temp folders behind one), so the folder it is let read and the file in it are
+  // one path however Claude Code compares them.
+  const dir = task.repo === null ? null : realpathSync(mkdtempSync(join(tmpdir(), 'nod-review-')))
   try {
     const changes = dir === null ? null : await changesOf(cwd, branchOf(task), base, dir)
     const { code, stdout, output } = await spawn(

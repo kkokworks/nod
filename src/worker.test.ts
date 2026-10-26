@@ -111,6 +111,7 @@ type LogEntry = {
   env?: string[]
   diff?: string | null
   addDir?: string | null
+  addDirReal?: string | null
 }
 const entries = (event: string): LogEntry[] =>
   existsSync(log)
@@ -673,6 +674,9 @@ test('the reviewer reads the diff from a file nod saves, so a hook on its first 
   const saved = /`([^`]+\.diff)`/.exec(reviewOf(id))?.[1] ?? ''
   expect(reviewOf(id)).toContain('Read all of it with the Read tool before you judge')
   expect(reviewEntry(id)?.addDir).toBe(dirname(saved))
+  // Through no link (macOS keeps temp folders behind one), so the folder it may read and the file
+  // it reads are one path however Claude Code compares them.
+  expect(reviewEntry(id)?.addDir).toBe(reviewEntry(id)?.addDirReal)
   expect(existsSync(dirname(saved))).toBe(false)
 })
 
