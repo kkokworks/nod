@@ -1,4 +1,6 @@
 node_modules/
+# TMPDIR and BUN_INSTALL_CACHE_DIR for `bun install` where the sandbox blocks the usual ones
+.cache/
 *.db
 *.db-shm
 *.db-wal
