@@ -14,7 +14,7 @@ import { land } from './land'
 import { type LandLevel, Ledger } from './ledger'
 import { Terminals } from './tmux'
 import { tick } from './triggers'
-import { answer, answerText, drop, onStop, type Send, tell, workspaceOf } from './worker'
+import { answer, drop, onStop, type Send, tell, workspaceOf } from './worker'
 
 // Landing runs without a terminal here: what nod hands the worker (`send`) starts its turn as
 // deliver does, and each test ends that turn itself through the Stop hook, as the worker would.
@@ -537,7 +537,7 @@ test('a pull request closed without its merge asks the person', async () => {
   expect(ledger.decisions(id).find((d) => d.answer === null)?.reason).toBe('land')
 }, 30_000)
 
-test('after a gate that failed, the answer tells the worker to write the pull request again', async () => {
+test('after a gate that failed, the words that answer it are no pull request text; nod asks for the text again', async () => {
   setRepo('pr', { gateCmd: '! grep -q Secret "$NOD_PR"' })
   const id = finished('feat/w', { 'w.txt': 'w\n' })
   await land(ledger, home, { send })
@@ -546,24 +546,33 @@ test('after a gate that failed, the answer tells the worker to write the pull re
   const asked = ledger.decisions(id).find((d) => d.answer === null)
   if (asked === undefined) throw new Error('no decision')
   expect(ledger.landing(id)?.title).toBeNull()
-  expect(answerText(ledger, asked, 'take Secret out')).toContain(
-    "Human decision: take Secret out\n\nFrom nod: nod then opens a pull request for your branch. Above your report line, write it for the repo's readers",
-  )
-  // With the text in hand, or outside landing, an answer is only the person's.
-  ledger.setLanding(id, { title: 'Plan' })
-  expect(answerText(ledger, asked, 'go on')).toBe('Human decision: go on')
-})
+  // The person's answer starts a turn, as deliver records it, or a tell would.
+  ledger.answer(asked.id, 'take Secret out')
+  ledger.startAttempt({
+    taskId: id,
+    kind: 'answer',
+    decisionId: asked.id,
+    sessionId: `s${id}`,
+    prompt: 'Human decision: take Secret out',
+  })
+  const back = await stops(id, 'Done: I took the word out.\nNOD: done | fixed')
+  expect(JSON.parse(back ?? '{}').reason).toContain("write it for the repo's readers")
+  expect(ledger.landing(id)?.title).toBeNull()
+  expect(await stops(id, 'Plan\n\nAdds w.\nNOD: done | wrote it again', true)).toBeNull()
+  expect(ledger.landing(id)).toMatchObject({ title: 'Plan', body: 'Adds w.' })
+  expect((await land(ledger, home, { send }))[0]?.did).toStartWith('pull request open')
+}, 30_000)
 
 test('without its service on PATH, nod asks before anything goes out', async () => {
   setRepo('pr')
   const id = finished('feat/p', { 'p.txt': 'p\n' })
   await land(ledger, home, { send })
   await stops(id, 'Add p\n\nNOD: done | wrote it')
-  // Only git, tmux and the shell, none of gh or tea.
-  const onlyGit = tmp.make('nod-only-git-')
-  for (const tool of ['git', 'tmux']) symlinkSync(Bun.which(tool) ?? tool, join(onlyGit, tool))
+  // Only what landing runs besides the service: git, tmux and the shell, wherever gh may live.
+  const tools = tmp.make('nod-only-git-')
+  for (const tool of ['git', 'tmux', 'sh']) symlinkSync(Bun.which(tool) ?? tool, join(tools, tool))
   const path = process.env.PATH
-  process.env.PATH = `${onlyGit}:/usr/bin:/bin`
+  process.env.PATH = tools
   try {
     expect((await land(ledger, home, { send }))[0]?.did).toBe(
       'asked: landing this repo needs gh, which is not on PATH where nod lands.',

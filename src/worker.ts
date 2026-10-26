@@ -410,7 +410,9 @@ export async function answer(
     return true
   }
   if (decision.reason !== 'permission') {
-    await reply(answerText(ledger, decision, text))
+    await reply(
+      `${decision.reason === 'interrupted' ? `${CUT_OFF_PROMPT}\n` : ''}Human decision: ${text}`,
+    )
     return true
   }
   // The permission dialog has "Yes" selected first (measured on 2.1.290).
@@ -429,19 +431,6 @@ export async function answer(
   })
   await reply(`Human decision: permission denied. ${text}`)
   return true
-}
-
-// What the worker hears of an answer. Landing work that still lacks the pull request's text (a gate
-// that failed clears it) gets it from the done after this answer, so the worker hears how to write
-// it too.
-export function answerText(ledger: Ledger, decision: Decision, text: string): string {
-  const cut = decision.reason === 'interrupted' ? `${CUT_OFF_PROMPT}\n` : ''
-  const landing = ledger.landing(decision.taskId)
-  const again =
-    landing?.handedAt != null && landing.pr === null && landing.title === null
-      ? `\n\nFrom nod: ${PR_TEXT}`
-      : ''
-  return `${cut}Human decision: ${text}${again}`
 }
 
 async function waitForScreen(terminals: Terminals, name: string, text: string): Promise<void> {
@@ -796,7 +785,7 @@ async function settle(
     unread !== null
       ? { passed: false, output: unread }
       : lands
-        ? await verifyLanding(ledger, task, text, report !== null)
+        ? await verifyLanding(ledger, task, text, report !== null, ledger.attempt(attemptId).prompt)
         : await verify(ledger, task, text)
   if (check !== null) ledger.recordCheck(attemptId, check.passed, check.output)
   if (newer()) return null
@@ -2136,20 +2125,23 @@ async function headOf(worktree: string): Promise<string> {
 // worker resolved goes on, and stops again at the next one. What the worker changed since the head
 // nod last checked passes the check (the repo's full one, else the task's) and the independent
 // review, both on the commits since the branch now starts. Until nod opens the pull request, the
-// done brings its text, kept from a done with its report line: one that follows a blocked stop
-// often leaves the line out, and the text with it.
+// done brings its text: from a done with its report line (one that follows a blocked stop often
+// leaves the line out, and the text with it), in a turn nod asked for the text (`prompt`). Other
+// words that end landing work (an answer, a tell, a fixed check) report on that work; their first
+// line would be no title.
 async function verifyLanding(
   ledger: Ledger,
   task: Task,
   report: string,
   reported: boolean,
+  prompt: string,
 ): Promise<Check | null> {
   const ws = task.workspace
   if (ws === null) throw new Error(`task ${task.id} has no workspace`)
   if (task.repo === null) return verify(ledger, task, report)
   // Only while there is none: a later done of the same landing (a second conflict, a fixed check)
   // reports on that work, not on the pull request. A gate that fails clears it (land.ts).
-  const pr = reported ? prText(report) : null
+  const pr = reported && prompt.includes(PR_TEXT) ? prText(report) : null
   const had = ledger.landing(task.id)
   if (pr !== null && had?.pr === null && had.title === null) ledger.setLanding(task.id, pr)
   if (rebasing(ws)) {
@@ -2179,11 +2171,7 @@ async function verifyLanding(
   }
   const landing = ledger.landing(task.id)
   if (landing?.pr === null && landing.title === null) {
-    return {
-      passed: false,
-      output:
-        'Write the pull request above your report line: its title on the first line, then its body.',
-    }
+    return { passed: false, output: PR_TEXT }
   }
   const head = await headOf(ws)
   if (head === landing?.ready && (await uncommittedChanges(ws)) === '') {

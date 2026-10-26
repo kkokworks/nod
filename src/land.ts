@@ -205,9 +205,14 @@ async function landTask(
   if (conflict === null && l.ready !== head) {
     if (check !== null) {
       if (!claim(ledger, task.id)) return noteFor(pass, task, 'its worker is busy')
-      const run = await spawn(['sh', '-c', check], ws, { timeoutMs: CHECK_TIMEOUT_MS })
+      // In a group of its own, as the remote's git calls, so the timeout ends what it started.
+      const run = await runGroup(['sh', '-c', check], {
+        cwd: ws,
+        env: process.env,
+        timeoutMs: CHECK_TIMEOUT_MS,
+      })
       ledger.setLanding(task.id, { busy: null })
-      if (run.code !== 0) failed = run.output.slice(-OUTPUT_LIMIT)
+      if (run.code !== 0) failed = (run.stdout + run.stderr).slice(-OUTPUT_LIMIT)
     }
     if (failed === null) l = ledger.setLanding(task.id, { ready: head })
   }
@@ -454,7 +459,7 @@ async function runGate(
   const file = join(home, 'work', `.pr-${task.id}`)
   mkdirSync(join(home, 'work'), { recursive: true })
   writeFileSync(file, `${title}\n\n${body}\n`)
-  const proc = Bun.spawn(['sh', '-c', gate], {
+  const { code, stdout, stderr } = await runGroup(['sh', '-c', gate], {
     cwd: ws,
     env: {
       ...process.env,
@@ -463,17 +468,10 @@ async function runGate(
       NOD_PR: file,
       NOD_TASK: String(task.id),
     },
-    stdout: 'pipe',
-    stderr: 'pipe',
-    timeout: GATE_TIMEOUT_MS,
+    timeoutMs: GATE_TIMEOUT_MS,
   })
-  const [out, err, code] = await Promise.all([
-    new Response(proc.stdout).text(),
-    new Response(proc.stderr).text(),
-    proc.exited,
-  ])
   rmSync(file, { force: true })
-  return code === 0 ? null : (out + err).trim().slice(-OUTPUT_LIMIT) || `exited ${code}`
+  return code === 0 ? null : (stdout + stderr).trim().slice(-OUTPUT_LIMIT) || `exited ${code}`
 }
 
 // Whether `remote`, the branch as origin has it, holds only the task's own commits: past where the
