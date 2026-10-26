@@ -2522,7 +2522,7 @@ async function changesOf(
   }
   const head = (await git('rev-parse', 'HEAD')).trim()
   const start = base ?? (await ownStart(worktree, branch, head, 'refs/remotes/origin/HEAD'))
-  if (start === null) throw new Error(`${branch} has no reflog to find where it started`)
+  if (start === null) throw new Error(`${branch}'s reflog no longer says where it was created`)
   const range = `${start}..${head}`
   const saved = join(dir, 'changes.diff')
   writeFileSync(saved, await git('diff', '--no-color', '--no-ext-diff', range))
