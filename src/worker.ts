@@ -587,7 +587,9 @@ export async function tell(
 
 // A task that failed before its worker started has no conversation to reopen, so it starts anew,
 // under the same number, brief and branch, once the person fixed what stopped it (`started`). nod
-// never does that by itself.
+// never does that by itself. While it starts, its error names this process (restartMark), so one
+// cut off before it records how the start went is taken over by the next resume, not left running
+// with no workspace.
 export async function resume(
   ledger: Ledger,
   home: string,
@@ -596,8 +598,13 @@ export async function resume(
   if (Terminals.of(home).alive(sessionName(taskId))) {
     throw new Error(`task ${taskId}'s session is still open; send it a message with \`nod tell\``)
   }
-  if (ledger.claimRestart(taskId)) {
+  const task = ledger.get(taskId)
+  const by = Number(MARKED.exec(task.error ?? '')?.[1])
+  const stale = task.status === 'running' && by > 0 && !running(by) ? task.error : null
+  const mark = restartMark(process.pid)
+  if (ledger.claimRestart(taskId, mark, stale)) {
     await startTask(ledger, home, taskId)
+    ledger.unmark(taskId, mark)
     return 'started'
   }
   await restore(ledger, home, taskId)
@@ -605,11 +612,24 @@ export async function resume(
   return 'reopened'
 }
 
+const restartMark = (pid: number): string => `nod resume (pid ${pid}) is starting it again`
+const MARKED = /^nod resume \(pid (\d+)\) is starting it again$/
+
 // Why a task with no conversation cannot take a message: it never started. One that failed before
-// it did starts again with `nod resume`.
-function notStarted(task: Task): Error {
-  const again = task.status === 'error' ? ` ${restartHint(task.id)}` : ''
-  return new Error(`task ${task.id} has not started.${again}`)
+// it did starts again with `nod resume`, once the tasks it comes after have succeeded.
+function notStarted(ledger: Ledger, task: Task): Error {
+  const said = `task ${task.id} has not started.`
+  // Not failed: waiting, or being started (restartMark says by whom).
+  if (task.status !== 'error')
+    return new Error(task.error === null ? said : `${said} ${task.error}.`)
+  const waits = ledger
+    .after(task.id)
+    .filter((a) => a.status !== 'succeeded')
+    .map((a) => `#${a.id}`)
+  if (waits.length === 0) return new Error(`${said} ${restartHint(task.id)}`)
+  return new Error(
+    `${said} It comes after ${waits.join(', ')}, which must succeed before \`nod resume ${task.id}\` can start it again.`,
+  )
 }
 
 // How a landing turn reaches the worker: deliver, but in tests, which have no terminal for it.
@@ -1329,7 +1349,7 @@ async function deliver(
   const task = ledger.get(taskId)
   const last = ledger.lastAttempt(taskId)
   const workspace = task.workspace
-  if (last === null || workspace === null) throw notStarted(task)
+  if (last === null || workspace === null) throw notStarted(ledger, task)
   const terminals = Terminals.of(home)
   const name = sessionName(taskId)
   const live = terminals.alive(name)
@@ -2187,7 +2207,7 @@ export async function restore(ledger: Ledger, home: string, taskId: number): Pro
   refuseEnded(ledger, task)
   if (task.collectedAt === null) return
   const last = ledger.lastAttempt(taskId)
-  if (last === null || task.workspace === null) throw notStarted(task)
+  if (last === null || task.workspace === null) throw notStarted(ledger, task)
   if (!hasTranscript(configDir(home), last.sessionId)) {
     throw new Error(
       `task ${taskId}'s session transcript is gone (gc deleted transcripts before nod kept them): ${last.sessionId}.jsonl`,

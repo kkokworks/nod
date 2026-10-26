@@ -1086,20 +1086,31 @@ test('a repo task whose folder is taken leaves no branch of its own behind, and 
   expect(readFileSync(join(folder, 'mine.txt'), 'utf8')).toBe('not the task’s')
 })
 
-test('a task that failed before it started takes no message, and resume tries it again, once for two at once', async () => {
+// A task without a repo that fails before its worker starts, as long as a file sits where its
+// folder goes. Returns it once it failed.
+async function blocked(after: number[] = []): Promise<number> {
   const id = ledger.add({
     brief: 'first',
     repo: null,
     branch: null,
     checkCmd: null,
     model: null,
-    after: [],
+    after,
     triggerId: null,
     issue: null,
   })
-  // A file where its folder goes stops it before its worker starts.
   writeFileSync(workspaceOf(home, ledger.get(id)), '')
   expect(await failure(startTask(ledger, home, id))).toContain(`nod resume ${id}`)
+  return id
+}
+
+const outcomes = (id: number): (string | null)[][] =>
+  ledger.attempts(id).map((a) => [a.kind, a.outcome])
+
+test('a task that failed before it started takes no message, and resume tries it again, once for two at once', async () => {
+  const id = await blocked()
+  // gc collected it, recording a head of a branch by its name, which is not the task's.
+  ledger.collected(id, 'abc123')
 
   expect(await failure(tell(ledger, home, id, 'go on'))).toBe(
     `task ${id} has not started. Fix what stopped it, then \`nod resume ${id}\` starts it again.`,
@@ -1110,13 +1121,67 @@ test('a task that failed before it started takes no message, and resume tries it
     failure(resume(ledger, home, id)),
   ])
   expect(one).toContain(`nod resume ${id}`)
-  expect(two).toStartWith(`task ${id} has not started.`)
-  expect(ledger.attempts(id).map((a) => [a.kind, a.outcome])).toEqual([
+  expect(two).toBe(
+    `task ${id} has not started. nod resume (pid ${process.pid}) is starting it again.`,
+  )
+  expect(outcomes(id)).toEqual([
     ['start', 'error'],
     ['start', 'error'],
   ])
-  expect(ledger.get(id).status).toBe('error')
-  expect(ledger.get(id).workspace).toBeNull()
+  const task = ledger.get(id)
+  expect([task.status, task.workspace, task.collectedAt, task.head]).toEqual([
+    'error',
+    null,
+    null,
+    null,
+  ])
+})
+
+test('a resume cut off as it starts a task again is taken over by the next one, but not while its process runs', async () => {
+  const id = await blocked()
+  // As a resume stopped as it starts the task leaves it: running, with no workspace.
+  const gone = Bun.spawnSync(['true']).pid
+  expect(ledger.claimRestart(id, `nod resume (pid ${gone}) is starting it again`, null)).toBe(true)
+  expect(await failure(tell(ledger, home, id, 'go on'))).toBe(
+    `task ${id} has not started. nod resume (pid ${gone}) is starting it again.`,
+  )
+
+  expect(await failure(resume(ledger, home, id))).toContain(`nod resume ${id}`)
+  expect(outcomes(id)).toEqual([
+    ['start', 'error'],
+    ['start', 'error'],
+  ])
+
+  const mark = `nod resume (pid ${process.pid}) is starting it again`
+  expect(ledger.claimRestart(id, mark, null)).toBe(true)
+  expect(await failure(resume(ledger, home, id))).toBe(`task ${id} has not started. ${mark}.`)
+  expect(outcomes(id)).toHaveLength(2)
+})
+
+test('resume starts a task that failed before it started again only once the tasks it comes after have succeeded', async () => {
+  const before = ledger.add({
+    brief: 'before',
+    repo: null,
+    branch: null,
+    checkCmd: null,
+    model: null,
+    after: [],
+    triggerId: null,
+    issue: null,
+  })
+  ledger.succeed(before)
+  const id = await blocked([before])
+  // A message sent the task it comes after back to work.
+  ledger.setRunning(before, home)
+
+  expect(await failure(resume(ledger, home, id))).toBe(
+    `task ${id} has not started. It comes after #${before}, which must succeed before \`nod resume ${id}\` can start it again.`,
+  )
+  expect(outcomes(id)).toHaveLength(1)
+
+  ledger.succeed(before)
+  expect(await failure(resume(ledger, home, id))).toContain(`nod resume ${id}`)
+  expect(outcomes(id)).toHaveLength(2)
 })
 
 test('a task that failed before it started starts again with resume, under the same number and branch, and keeps why it failed', async () => {
