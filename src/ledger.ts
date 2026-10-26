@@ -1415,6 +1415,17 @@ export class Ledger {
     return this.run(q.selectFrom('messages').selectAll().where('taskId', '=', taskId).orderBy('id'))
   }
 
+  // Messages whose turn ended before its worker took them in start the next turn, `attemptId`
+  // (carryUnheard in worker.ts): the first is that turn's prompt, so no longer a message, and the
+  // rest go into it.
+  carryMessages(ids: number[], attemptId: number): void {
+    const [first, ...rest] = ids
+    if (first === undefined) return
+    this.run(q.deleteFrom('messages').where('id', '=', first))
+    if (rest.length === 0) return
+    this.run(q.updateTable('messages').set({ attemptId }).where('id', 'in', rest))
+  }
+
   recordCheck(id: number, passed: boolean, output: string): void {
     this.run(
       q

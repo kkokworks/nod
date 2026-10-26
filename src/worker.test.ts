@@ -2499,6 +2499,146 @@ it('a message that comes while nod checks a turn it closed starts the next turn,
   ])
 }, 30_000)
 
+it('a message its worker had not taken in by the end of the turn it was told in goes on as the next turn, which decides; one it took in stays', async () => {
+  const config = tmp.make('nod-transcripts-')
+  mkdirSync(join(config, 'projects', 'work'), { recursive: true })
+  const transcript = (session: string): string =>
+    join(config, 'projects', 'work', `${session}.jsonl`)
+  const keep = (session: string, entries: object[]): void =>
+    appendFileSync(transcript(session), entries.map((e) => `${JSON.stringify(e)}\n`).join(''))
+  // A task told `said` (each with the task that sent it) in its turn in session `session`, whose
+  // transcript then holds `kept`, as Claude Code 2.1.310 keeps it.
+  const told = (session: string, said: [string, number | null][], kept: object[]): number => {
+    const id = started(`write it, ${session}`, session)
+    ledger.setAccount(id, config)
+    const turn = ledger.openAttempt(id)?.id ?? 0
+    for (const [text, from] of said) ledger.addMessage(id, turn, text, from)
+    keep(session, [{ type: 'user', message: { role: 'user', content: `write it, ${session}` } }])
+    keep(session, kept)
+    return id
+  }
+  const queue = (operation: string, content: string) => ({
+    type: 'queue-operation',
+    operation,
+    content,
+  })
+  // How Claude Code keeps a message of several lines.
+  const wrapped = (text: string): string =>
+    `<pasted_content id="a1b2">\n${text}\n</pasted_content id="a1b2">`
+  const tabs = 'use tabs,\nnot spaces'
+  const peer = started('a peer', 'peer')
+
+  // Still queued as the worker wrote its last answer, a peer's message after it.
+  const late = told(
+    'late',
+    [
+      [tabs, null],
+      ['peer note', peer],
+    ],
+    [queue('enqueue', wrapped(tabs)), queue('enqueue', 'peer note')],
+  )
+  // Taken in at a tool call; in the first message of a start, from the prompt file.
+  const heard = told(
+    'heard',
+    [[tabs, null]],
+    [
+      queue('enqueue', wrapped(tabs)),
+      queue('remove', wrapped(tabs)),
+      { type: 'attachment', attachment: { type: 'queued_command', prompt: wrapped(tabs) } },
+    ],
+  )
+  const restarted = told(
+    'restarted',
+    [['go on', null]],
+    [{ type: 'user', message: { role: 'user', content: 'earlier\n\ngo on' } }],
+  )
+  // Never in Claude Code's queue.
+  const lost = told('lost', [['go on', null]], [])
+  // Still queued as the worker asked a question.
+  const asked = told('asked', [['the first', null]], [queue('enqueue', 'the first')])
+  // Still queued, and a message during the hook opened the next turn already (deliver).
+  const during = told('during', [['use tabs', null]], [queue('enqueue', 'use tabs')])
+  ledger.startAttempt({
+    taskId: during,
+    kind: 'followup',
+    decisionId: null,
+    sessionId: 'during',
+    prompt: 'no, spaces',
+  })
+
+  const capture = 'NOD: in {"title": "Ask Kim again"}'
+  expect(await stopped('late', `${capture}\nNOD: done | did it`)).toBeNull()
+  for (const session of ['heard', 'restarted', 'lost', 'during']) {
+    expect(await stopped(session, 'NOD: done | did it')).toBeNull()
+  }
+  expect(await stopped('asked', 'NOD: question | Which one?')).toBeNull()
+
+  const turns = (id: number) =>
+    ledger.attempts(id).map((a) => [a.kind, a.prompt, a.fromTask, a.finishedAt === null])
+  expect(turns(late)).toEqual([
+    ['start', 'write it, late', null, false],
+    ['followup', tabs, null, true],
+  ])
+  const next = ledger.openAttempt(late)?.id ?? 0
+  expect(ledger.messages(late).map((m) => [m.attemptId, m.text, m.fromTask])).toEqual([
+    [next, 'peer note', peer],
+  ])
+  expect(turns(lost)).toEqual([
+    ['start', 'write it, lost', null, false],
+    ['followup', 'go on', null, true],
+  ])
+  expect(turns(asked)).toEqual([
+    ['start', 'write it, asked', null, false],
+    ['followup', 'the first', null, true],
+  ])
+  expect([late, lost, asked].map(status)).toEqual(['running', 'running', 'running'])
+  expect(ledger.decisions(asked)).toEqual([])
+  for (const id of [heard, restarted]) {
+    expect(status(id)).toBe('succeeded')
+    expect(ledger.attempts(id)).toHaveLength(1)
+    expect(ledger.messages(id)).toHaveLength(1)
+  }
+  // Only the turns that took in what they were told were judged by it.
+  const reviewed = () =>
+    entries('review').map((r) => /nod task #(\d+)\./.exec(r.message ?? '')?.[1])
+  expect(reviewed()).toEqual([String(heard), String(restarted)])
+  // With no terminal, as once Claude Code is gone, they wait for its next start.
+  const left = (id: number) => readFileSync(join(home, 'work', `.prompt-${id}`), 'utf8')
+  expect(left(late)).toBe(`${tabs}\n\npeer note`)
+  expect(left(lost)).toBe('go on')
+  // The message of the hook's turn came after: what came before stays before it.
+  const before = ledger.attempts(during)[0]?.id ?? 0
+  expect(ledger.messages(during).map((m) => [m.attemptId, m.text])).toEqual([[before, 'use tabs']])
+  expect(reviewBrief(ledger, ledger.get(during), 'NOD: done | ok', null)).toContain(
+    'later words win:\n- use tabs\n- no, spaces\n',
+  )
+
+  // Claude Code runs both as the next turn, whose stop decides. The capture of the done it did not
+  // take goes back once to the worker, which reports it again; its review hears each message once.
+  keep('late', [queue('dequeue', wrapped(tabs)), queue('dequeue', 'peer note')])
+  const back = await stopped('late', 'NOD: done | did it')
+  expect(back).toContain(JSON.stringify(capture).slice(1, -1))
+  // Not taken either, so the lines of this report go again too.
+  expect(back).toContain('every `NOD: in` and `NOD: tell` line of the report you just wrote')
+  expect(status(late)).toBe('running')
+  expect(await stopped('late', `${capture}\nNOD: done | did it`)).toBeNull()
+  expect(status(late)).toBe('succeeded')
+  expect(ledger.attempts(late).map((a) => a.kind)).toEqual(['start', 'followup', 'retry'])
+  const inbox = new Todos(ledger).list({
+    statuses: ['inbox'],
+    context: null,
+    projectId: null,
+    hideSomedayProjects: false,
+    day: null,
+  })
+  expect(inbox.map((t) => t.title)).toEqual(['Ask Kim again'])
+  expect(reviewed().at(-1)).toBe(String(late))
+  const review = entries('review').at(-1)?.message ?? ''
+  expect(review).toContain('later words win:\n- use tabs, not spaces\n')
+  expect(review.split('use tabs')).toHaveLength(2)
+  expect(review).toContain("never override the human's:\n- peer note\n")
+}, 30_000)
+
 it('a turn the worker goes on to by itself closes what it asked before, and so does its success', async () => {
   const events = listen()
   const id = started('wait for the agents', 'went-on')
@@ -3450,14 +3590,55 @@ test('a message for a worker showing a permission dialog waits for that decision
   expect(ledger.attempts(id).map((a) => [a.kind, a.summary])).toEqual([['start', 'allowed']])
 })
 
+// Lets the fake's `slow`, `late` or `deaf` turn of task `id` end (fake-agent.ts).
+const endTurn = (id: number): void =>
+  writeFileSync(join(ledger.get(id).workspace ?? '', 'end.txt'), '')
+
 test('a message told to a worker in the middle of a turn goes into that turn, and the review hears it', async () => {
   const id = await add('slow: write it')
   await until(() => entries('turn')[0])
   await tell(ledger, home, id, 'use tabs')
+  endTurn(id)
   await reaches(id, 'succeeded')
+  await settled(id)
   expect(entries('heard').map((h) => h.message)).toEqual(['use tabs'])
+  // In the conversation, so it does not go again.
+  expect(entries('turn').map((t) => t.message)).toEqual(['slow: write it'])
   expect(ledger.attempts(id).map((a) => a.kind)).toEqual(['start'])
   expect(entries('review')[0]?.message).toContain('later words win:\n- use tabs\n')
+}, 30_000)
+
+test('a message told as the worker writes its last answer goes on as the next turn, from Claude Code’s queue, and only that turn is checked', async () => {
+  const id = await add('late: write it')
+  await until(() => entries('turn')[0])
+  await tell(ledger, home, id, 'use tabs')
+  endTurn(id)
+  await until(() => entries('turn')[1])
+  await reaches(id, 'succeeded')
+  await settled(id)
+  expect(entries('turn').map((t) => t.message)).toEqual(['late: write it', 'use tabs'])
+  expect(ledger.attempts(id).map((a) => [a.kind, a.prompt])).toEqual([
+    ['start', 'late: write it'],
+    ['followup', 'use tabs'],
+  ])
+  expect(ledger.messages(id)).toEqual([])
+  expect(entries('review')).toHaveLength(1)
+}, 30_000)
+
+test('a message Claude Code never had by the end of the turn it was told in is sent again, as the next turn', async () => {
+  const id = await add('deaf: write it')
+  await until(() => entries('turn')[0])
+  await tell(ledger, home, id, 'use tabs')
+  endTurn(id)
+  await until(() => entries('turn')[1])
+  await reaches(id, 'succeeded')
+  await settled(id)
+  expect(entries('turn').map((t) => t.message)).toEqual(['deaf: write it', 'use tabs'])
+  expect(ledger.attempts(id).map((a) => [a.kind, a.prompt])).toEqual([
+    ['start', 'deaf: write it'],
+    ['followup', 'use tabs'],
+  ])
+  expect(entries('review')).toHaveLength(1)
 }, 30_000)
 
 test('a message that comes once the Stop hook has started on a turn goes on in a turn of its own', async () => {

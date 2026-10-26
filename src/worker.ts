@@ -1,4 +1,5 @@
 import {
+  appendFileSync,
   closeSync,
   existsSync,
   fstatSync,
@@ -24,12 +25,13 @@ import {
   type DecisionReason,
   FINISHED,
   type Ledger,
+  type Message,
   type Task,
 } from './ledger'
 import { notify, taskRef } from './notify'
 import { askedAgain, type Changes, reviewBrief } from './review'
 import { activeRules, hadTrouble, isNoRule, retroBrief } from './rules'
-import { quote, Terminals } from './tmux'
+import { pasted, quote, Terminals } from './tmux'
 import { Todos } from './todos'
 
 // Each worker is an interactive Claude Code session in tmux. It reports when it stops through
@@ -927,8 +929,9 @@ async function settle(
   // A worker that keeps going after a failed check often drops the report line; the check decides.
   const done = report?.status === 'done' || (report === null && event.stop_hook_active)
   // A message that came while this hook ran started another turn, which Claude Code runs once the
-  // hook ends: that turn's stop decides, not this one. Asked again in the transaction that acts on
-  // a check, as deliver starts a turn in one, with whether the task ended meanwhile (ended).
+  // hook ends: that turn's stop decides, not this one. So does one that came in the turn but that
+  // the worker had not taken in by its end (carryUnheard). Asked again in the transaction that acts
+  // on a check, as deliver starts a turn in one, with whether the task ended meanwhile (ended).
   const newer = (): boolean => ledger.openAttempt(task.id) !== null
   // A permission dialog of this turn went with it: one a person answered in the worker's own
   // terminal waits on nothing.
@@ -958,6 +961,7 @@ async function settle(
       report: text,
     })
     await dialogs()
+    carryUnheard(ledger, home, task, attemptId, event.session_id)
     if (waiting || newer()) return null
     const still = work.map((w) => w.description ?? w.type ?? '?').join(', ')
     const note = work.length > 0 ? `${waitedNote(since)} Still running: ${still}.\n` : ''
@@ -967,15 +971,22 @@ async function settle(
   }
   ledger.endAttempt(attemptId, { outcome: 'succeeded', summary, report: text })
   await dialogs()
-  // Lines nod cannot read or send go back like a failed check, before the slower checks run.
+  carryUnheard(ledger, home, task, attemptId, event.session_id)
+  // That turn decides, and the lines of this done go back to the worker at its done (heldBack).
+  if (newer()) {
+    holdLines(home, task.id, text)
+    return null
+  }
+  // Lines nod cannot read or send go back like a failed check, before the slower checks run. So do
+  // the lines of a done nod did not take that this report leaves out.
   const captured = parseCaptures(text)
   const told = parseTells(text)
   const unread =
-    'error' in captured
+    ('error' in captured
       ? captured.error
       : 'error' in told
         ? told.error
-        : unsendable(ledger, task, told.tells)
+        : unsendable(ledger, task, told.tells)) ?? heldBack(home, task.id, text)
   const tells = 'error' in told ? [] : told.tells
   // Two tasks that keep telling each other go to the person, before any check runs on it.
   const over = unread === null ? overTold(ledger, task, tells) : null
@@ -1291,17 +1302,24 @@ function endTurnWithoutStop(ledger: Ledger, home: string, taskId: number): void 
   if (ledger.decisions(taskId).some((d) => d.answer === null && d.attemptId === open.id)) return
   let why: string | null = null
   try {
-    const { account } = ledger.get(taskId)
-    // '' is Claude Code's default folder, null an account nod never recorded.
-    const file = transcriptPath(
-      account === null ? configDir(home) : account || null,
-      open.sessionId,
-    )
+    const file = transcriptOf(ledger, home, taskId, open.sessionId)
     why = file === null ? null : endedWithoutStop(file)
   } catch (error) {
     console.error(`nod: could not read the transcript of task ${taskId}: ${message(error)}`)
   }
   if (why !== null) ledger.failOpenAttempt(open.id, why)
+}
+
+// Where Claude Code keeps the transcript of the task's session `sessionId`: in the account its
+// worker runs as, where '' is Claude Code's default folder and null an account nod never recorded.
+function transcriptOf(
+  ledger: Ledger,
+  home: string,
+  taskId: number,
+  sessionId: string,
+): string | null {
+  const { account } = ledger.get(taskId)
+  return transcriptPath(account === null ? configDir(home) : account || null, sessionId)
 }
 
 // A turn a person typed that ended without a Stop (endTurnWithoutStop): it ran no turn of the
@@ -1316,6 +1334,10 @@ const TranscriptEntry = z.object({
   interruptedByShutdown: z.boolean().optional(),
   promptSubmitEnding: z.unknown().optional(),
   message: z.object({ content: z.unknown() }).optional(),
+  // Of Claude Code's queue (heardOf); an entry they do not fit still reads.
+  operation: z.string().optional().catch(undefined),
+  content: z.unknown().optional(),
+  attachment: z.object({ type: z.string(), prompt: z.unknown() }).optional().catch(undefined),
 })
 
 // How the last turn in the transcript `file` ended, if without a Stop hook; null if it did not, or
@@ -1338,10 +1360,7 @@ function endedWithoutStop(file: string): string | null {
       if (entry.type === 'system' && entry.promptSubmitEnding !== undefined) return HELD_BACK
       if (entry.type === 'assistant') return null
       if (entry.type !== 'user' || entry.isMeta === true) continue
-      const content = entry.message?.content
-      const texts = Array.isArray(content)
-        ? content.flatMap((b) => (b?.type === 'text' && typeof b.text === 'string' ? [b.text] : []))
-        : [content]
+      const texts = textsOf(entry.message?.content)
       // What a local command such as /exit leaves is no turn of its own.
       if (texts.some((t) => typeof t === 'string' && /^<(command-|local-command-)/.test(t)))
         continue
@@ -1351,6 +1370,124 @@ function endedWithoutStop(file: string): string | null {
     return null
   } finally {
     closeSync(fd)
+  }
+}
+
+// What became of a message pasted into a worker's Claude Code while a turn ran (heardOf).
+type Fate = 'heard' | 'queued' | 'lost'
+
+// What became of `text`, pasted into a worker's Claude Code while a turn ran, as the transcript
+// `lines` show it (2.1.310, read from nod's own workers). Claude Code queues it (a
+// `queue-operation` entry, `enqueue`, one of several lines wrapped in `<pasted_content>`), and
+// takes it out of the queue (`remove`) as it gives it to the worker at the turn's next tool call,
+// in an `attachment` entry of type `queued_command`, or (`dequeue`) as it runs it as a turn of its
+// own once the turn ends. One that waited in the prompt file while Claude Code started again
+// (deliver) is in the first message of that start, a `user` entry, with no queue. The last entry
+// with the words decides, so words sent again count from their last. 'lost': no entry, so Claude
+// Code never had it.
+// ponytail: reads the whole transcript, parsing only the lines with the words; words inside other
+// words count as those, and words Claude Code changed read as lost and go twice.
+function heardOf(lines: string[], text: string): Fate {
+  const sent = pasted(text).trim()
+  // Claude Code takes no blank message.
+  if (sent === '') return 'heard'
+  const words = JSON.stringify(sent).slice(1, -1)
+  let fate: Fate = 'lost'
+  for (const line of lines) {
+    if (!line.includes(words)) continue
+    const parsed = TranscriptEntry.safeParse(jsonOrNull(line))
+    if (!parsed.success || parsed.data.isSidechain === true || parsed.data.isMeta === true) continue
+    const { type, operation, content, attachment, message } = parsed.data
+    const said =
+      type === 'queue-operation'
+        ? [content]
+        : type === 'user'
+          ? textsOf(message?.content)
+          : attachment?.type === 'queued_command'
+            ? [attachment.prompt]
+            : []
+    if (!said.some((s) => typeof s === 'string' && s.includes(sent))) continue
+    fate = type === 'queue-operation' && operation === 'enqueue' ? 'queued' : 'heard'
+  }
+  return fate
+}
+
+// The text of a transcript message's `content`: a string, or the text blocks of a list.
+const textsOf = (content: unknown): unknown[] =>
+  Array.isArray(content)
+    ? content.flatMap((b) => (b?.type === 'text' && typeof b.text === 'string' ? [b.text] : []))
+    : [content]
+
+// Messages sent into a turn that Claude Code had not given its worker when the turn ended go on as
+// the next turn, as its transcript shows (heardOf). Claude Code gives a message sent while a turn
+// runs to the worker only at the turn's next tool call, so one sent as the worker writes its last
+// answer is still queued once the turn ends: the worker never saw it, and the turn's review would
+// judge the work by it. Claude Code runs it once the Stop hook ends, as one sent during the hook,
+// so it is not sent again; one Claude Code never had (its Enter went to a dialog, say) is pasted
+// again, which Claude Code queues the same way. If Claude Code is gone or starting again, its
+// queue went with it, so each waits for the next start, as deliver leaves a message then. The first
+// starts the turn, the rest go into it, each with its sender; a turn a message opened during the
+// hook (deliver) came after them, so they stay where they are, before its words in the review. A
+// transcript that cannot be read leaves them in the turn that ended, as before.
+function carryUnheard(
+  ledger: Ledger,
+  home: string,
+  task: Task,
+  attemptId: number,
+  sessionId: string,
+): void {
+  const told = ledger.messages(task.id).filter((m) => m.attemptId === attemptId)
+  if (told.length === 0) return
+  let unheard: { said: Message; fate: Fate }[]
+  try {
+    const file = transcriptOf(ledger, home, task.id, sessionId)
+    if (file === null) return
+    const lines = readFileSync(file, 'utf8').split('\n')
+    unheard = told
+      .map((said) => ({ said, fate: heardOf(lines, said.text) }))
+      .filter((u) => u.fate !== 'heard')
+  } catch (error) {
+    console.error(`nod: could not read the transcript of task ${task.id}: ${message(error)}`)
+    return
+  }
+  const [first] = unheard
+  if (first === undefined) return
+  // The turn opened here; null for one open already.
+  const carried = ledger.db
+    .transaction((): { next: number | null } | null => {
+      if (ended(ledger, task.id)) return null
+      if (ledger.openAttempt(task.id) !== null) return { next: null }
+      if (task.workspace !== null) ledger.setRunning(task.id, task.workspace)
+      const next = ledger.startAttempt({
+        taskId: task.id,
+        kind: 'followup',
+        decisionId: null,
+        sessionId,
+        prompt: first.said.text,
+        fromTask: first.said.fromTask,
+      })
+      ledger.carryMessages(
+        unheard.map((u) => u.said.id),
+        next,
+      )
+      return { next }
+    })
+    .immediate()
+  if (carried === null) return
+  const terminals = Terminals.of(home)
+  const name = sessionName(task.id)
+  const live = terminals.alive(name)
+  const claude = live ? Number(terminals.option(name, CLAUDE_OPTION)) : 0
+  const gone =
+    !live || terminals.option(name, RESTARTING_OPTION) !== '' || (claude !== 0 && !running(claude))
+  try {
+    for (const { said, fate } of unheard) {
+      if (gone) leavePrompt(home, task.id, said.text)
+      else if (fate === 'lost') terminals.send(name, said.text)
+    }
+  } catch (error) {
+    if (carried.next !== null) ledger.failAttempt(carried.next, message(error))
+    throw error
   }
 }
 
@@ -1633,6 +1770,30 @@ function leavePrompt(home: string, taskId: number, text: string, ahead = false):
   let all = text
   if (kept !== null) all = ahead ? `${text}\n\n${kept}` : `${kept}\n\n${text}`
   writeFileSync(file, all, { mode: 0o600 })
+}
+
+// The `NOD: in` and `NOD: tell` lines of a done nod did not take, as the next turn opened before
+// its checks (settle), kept for the worker's next done.
+const heldFile = (home: string, taskId: number): string => join(home, 'work', `.held-${taskId}`)
+
+function holdLines(home: string, taskId: number, report: string): void {
+  const lines = [...nodLines(report, 'in'), ...nodLines(report, 'tell')]
+  if (lines.length === 0) return
+  appendFileSync(heldFile(home, taskId), lines.map((l) => `${l}\n`).join(''), { mode: 0o600 })
+}
+
+// The held lines `report` leaves out, as what goes back to the worker, once: it puts those it
+// still wants in its report again, where nod reads them as any, with the lines of `report`, which
+// nod does not take either as it sends this back. Null when there are none.
+function heldBack(home: string, taskId: number, report: string): string | null {
+  const file = heldFile(home, taskId)
+  if (!existsSync(file)) return null
+  const held = readFileSync(file, 'utf8').split('\n').filter(Boolean)
+  rmSync(file)
+  const kept = new Set([...nodLines(report, 'in'), ...nodLines(report, 'tell')])
+  const left = held.filter((l) => !kept.has(l))
+  if (left.length === 0) return null
+  return `Your report before a message you had not read yet had these lines, and nod did not act on them, since it took no done before you read that message:\n${left.join('\n')}\nReport again with those you still want and every \`NOD: in\` and \`NOD: tell\` line of the report you just wrote: nod acts only on the lines of the report it takes.`
 }
 
 function takePrompt(home: string, taskId: number): string | null {

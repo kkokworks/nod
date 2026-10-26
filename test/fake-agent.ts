@@ -4,7 +4,9 @@
 // continuation. Between turns it reads what is typed
 // into its terminal. Started with no message, it waits for one. Like Claude Code, it keeps a
 // transcript in $CLAUDE_CONFIG_DIR (only when that is set, so a test never writes to the real one),
-// refuses a new session the ID of one it has a transcript of, and an option it does not know.
+// refuses a new session the ID of one it has a transcript of, and an option it does not know. Like
+// Claude Code (2.1.310), it queues each message typed, in the transcript too, and takes it out as a
+// turn takes it in (`slow`) or runs it as a turn of its own.
 // nod gives a worker a fixed environment, so the fake takes its switches from files in $NOD_HOME:
 // with `fake-untrusted`, a new session first shows the trust dialog, and with `fake-untrusted-again`
 // a resumed one does, as Claude Code asks about a repo once per account; with `fake-exit`, it exits
@@ -115,13 +117,20 @@ if (args.includes('-p')) {
 const inputs: string[] = []
 let typed = ''
 let wake: () => void = () => {}
+// While a turn is `deaf`, what is typed goes nowhere, as into a dialog that takes the keys.
+let deaf = false
+let lost = 0
 process.stdin.setRawMode(true)
 process.stdin.on('data', (chunk: Buffer) => {
   // An arrow key arrives as an escape sequence; read it as one key, not Escape and text.
   for (const ch of chunk.toString().replaceAll(DOWN, '\0')) {
     if (ch === '\0') {
       inputs.push(DOWN)
+    } else if (ch === ENTER && deaf) {
+      lost++
+      typed = ''
     } else if (ch === ENTER) {
+      if (typed !== '') queue('enqueue', typed)
       inputs.push(typed === '' ? ENTER : typed)
       typed = ''
     } else if (ch === ESCAPE) {
@@ -169,12 +178,16 @@ function transcript(): string | null {
   return config ? join(projectFolder(config, process.cwd()), `${sessionId}.jsonl`) : null
 }
 
-function keepTranscript(): void {
+function keepTranscript(entry: object = {}): void {
   const file = transcript()
   if (file === null) return
   mkdirSync(dirname(file), { recursive: true })
-  appendFileSync(file, '{}\n')
+  appendFileSync(file, `${JSON.stringify(entry)}\n`)
 }
+
+// A change to the queue of typed messages, kept as Claude Code keeps it.
+const queue = (operation: string, content: string): void =>
+  keepTranscript({ type: 'queue-operation', operation, content })
 
 // Runs the SessionStart hooks for `source` and logs what they print, which Claude Code adds to the
 // conversation.
@@ -202,10 +215,20 @@ async function turn(message: string, continuing: boolean): Promise<void> {
     // Like Claude Code at a usage limit: the turn ends with StopFailure in place of Stop.
     await runHooks('StopFailure', { session_id: sessionId, error: 'rate_limit' })
     return
-  } else if (head.startsWith('slow')) {
-    // A turn that takes a while and, like Claude Code, takes in what is typed meanwhile.
-    await Bun.sleep(3000)
-    for (const input of inputs.splice(0)) log({ event: 'heard', sessionId, message: input })
+  } else if (['slow', 'late', 'deaf'].some((w) => head.startsWith(w))) {
+    // A turn that goes on until something is typed and the test makes end.txt. A `slow` one then
+    // takes in what was typed, as Claude Code does at the turn's next tool call. A `late` one,
+    // writing its last answer, ends with it still queued, as Claude Code gives the worker nothing
+    // typed before that call. A `deaf` one loses it, as a dialog that takes the keys.
+    deaf = head.startsWith('deaf')
+    while (inputs.length + lost === 0 || !existsSync('end.txt')) await Bun.sleep(50)
+    deaf = false
+    lost = 0
+    for (const input of head.startsWith('slow') ? inputs.splice(0) : []) {
+      log({ event: 'heard', sessionId, message: input })
+      queue('remove', input)
+      keepTranscript({ type: 'attachment', attachment: { type: 'queued_command', prompt: input } })
+    }
   } else if (head.includes('need-permission')) {
     await runHooks('Notification', {
       session_id: sessionId,
@@ -313,4 +336,8 @@ if (existsSync(join(home, resumed === null ? 'fake-untrusted' : 'fake-untrusted-
 }
 await sessionStart(resumed === null ? 'startup' : 'resume')
 if (prompt !== null) await turn(prompt, false)
-while (true) await turn(await nextInput(), false)
+while (true) {
+  const input = await nextInput()
+  queue('dequeue', input)
+  await turn(input, false)
+}
