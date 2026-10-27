@@ -1,5 +1,13 @@
 import { afterAll, expect, spyOn, test } from 'bun:test'
-import { existsSync, mkdirSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs'
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs'
 import { join, resolve } from 'node:path'
 import { tempDirs } from '../test/tmp'
 import { ALLOW, harmless, onPermissionRequest } from './allow'
@@ -8,7 +16,7 @@ import { Ledger, type NewTask, type Task } from './ledger'
 import { Terminals } from './tmux'
 import { Todos } from './todos'
 import { allowedLine, watch } from './view'
-import { onNotification, tell } from './worker'
+import { answer, onNotification, tell } from './worker'
 
 const tmp = tempDirs()
 afterAll(tmp.removeAll)
@@ -313,7 +321,9 @@ test('nod hook permission prints the allow only for what nod allows, nothing oth
   expect(run('not json')).toBe('')
   expect(run(JSON.stringify({ session_id: 's1' }))).toBe('')
   expect(ledger.allowed(id).map((n) => n.note)).toEqual(['rm -rf node_modules'])
-  // What it does not is a decision of the turn as the prompt shows, each prompt its own.
+  // What it does not is a decision of the turn as the prompt shows, each prompt its own. Not a
+  // subagent's, which may never show (a background one's): its Notification opens that one.
+  expect(run(JSON.stringify({ ...event('git push --force'), agent_id: 'a1' }))).toBe('')
   expect(asked(ledger, id)).toEqual([
     ['permission', attemptId, 'rm -rf .git'],
     ['permission', attemptId, 'git push origin feat/x'],
@@ -326,7 +336,7 @@ test('nod hook permission prints the allow only for what nod allows, nothing oth
 }, 15_000)
 
 // The PermissionRequest hook runs as the dialog shows, its Notification some 6 s later (2.1.310).
-test('a prompt nod does not allow holds back nod tell from its turn as it shows, before its Notification, which opens no second decision; so does the next prompt of the turn once the person answered the first in the terminal', async () => {
+test('a prompt nod does not allow holds back nod tell from its turn as it shows, before its Notification, which opens no second decision; so does the next prompt of the turn once the first is answered', async () => {
   const { home, ledger, id, attemptId, event } = running()
   const notified = () =>
     onNotification(ledger, home, {
@@ -341,6 +351,7 @@ test('a prompt nod does not allow holds back nod tell from its turn as it shows,
   // The worker's terminal is up (tmux stands in), its turn going.
   const alive = spyOn(Terminals.prototype, 'alive').mockReturnValue(true)
   const option = spyOn(Terminals.prototype, 'option').mockReturnValue('')
+  const keys = spyOn(Terminals.prototype, 'keys').mockImplementation(() => {})
   try {
     expect(hook(home, JSON.stringify(event('git push origin feat/x')))).toBe('')
     expect(asked(ledger, id)).toEqual([['permission', attemptId, 'git push origin feat/x']])
@@ -348,19 +359,86 @@ test('a prompt nod does not allow holds back nod tell from its turn as it shows,
     await notified()
     expect(asked(ledger, id)).toHaveLength(1)
 
-    // The person answers it in the worker's terminal, which nod does not see, and the turn asks
-    // again: that prompt is a decision of its own as it shows.
+    // It is answered, through nod here, so nothing of it is left open (one the person answers in
+    // the worker's terminal stays open to the turn's end), and the turn asks again: that prompt
+    // holds the message back with a decision of its own as it shows.
+    await answer(ledger, home, ledger.decisions(id)[0]?.id ?? 0, 'yes', 'human')
+    expect(keys.mock.calls.map(([, key]) => key)).toEqual(['Enter'])
+    expect(asked(ledger, id)).toEqual([])
     expect(hook(home, JSON.stringify(event('git push origin --tags')))).toBe('')
-    expect(asked(ledger, id).at(-1)).toEqual(['permission', attemptId, 'git push origin --tags'])
+    expect(asked(ledger, id)).toEqual([['permission', attemptId, 'git push origin --tags']])
     await refused()
     await notified()
-    expect(asked(ledger, id)).toHaveLength(2)
+    expect(asked(ledger, id)).toHaveLength(1)
   } finally {
     alive.mockRestore()
     option.mockRestore()
+    keys.mockRestore()
   }
   expect(ledger.messages(id)).toEqual([])
   expect(ledger.get(id).status).toBe('needs_decision')
+}, 15_000)
+
+test("a prompt's decision whose turn the person stopped with Escape closes as the next message goes in; while the turn goes on, it holds the message back", async () => {
+  const { home, ledger, id, attemptId, event } = running()
+  // Claude Code keeps the session's transcript in the account the worker runs as.
+  const config = tmp.make('nod-allow-claude-')
+  mkdirSync(join(config, 'projects', 'work'), { recursive: true })
+  ledger.setAccount(id, config)
+  const transcript = (...entries: object[]) =>
+    writeFileSync(
+      join(config, 'projects', 'work', 's1.jsonl'),
+      entries.map((e) => `${JSON.stringify(e)}\n`).join(''),
+    )
+  const asking = {
+    type: 'assistant',
+    message: { content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: {} }] },
+  }
+  const stop = { type: 'text', text: '[Request interrupted by user for tool use]' }
+  expect(hook(home, JSON.stringify(event('git push origin feat/x')))).toBe('')
+  const alive = spyOn(Terminals.prototype, 'alive').mockReturnValue(true)
+  const option = spyOn(Terminals.prototype, 'option').mockReturnValue('')
+  const send = spyOn(Terminals.prototype, 'send').mockImplementation(() => {})
+  try {
+    transcript(asking)
+    await expect(tell(ledger, home, id, 'push to the fork')).rejects.toThrow(/^answer permission/)
+    // Escape on the dialog ends the turn with no Stop (2.1.290).
+    transcript(asking, { type: 'user', message: { role: 'user', content: [stop] } })
+    await tell(ledger, home, id, 'push to the fork')
+    expect(send.mock.calls.map(([, text]) => text)).toEqual(['push to the fork'])
+  } finally {
+    alive.mockRestore()
+    option.mockRestore()
+    send.mockRestore()
+  }
+  expect(ledger.decisions(id).map((d) => [d.reason, d.answer])).toEqual([
+    ['permission', '(the person stopped its turn)'],
+  ])
+  expect(ledger.messages(id).map((m) => [m.attemptId, m.text])).toEqual([
+    [attemptId, 'push to the fork'],
+  ])
+  expect(ledger.get(id).status).toBe('running')
+}, 15_000)
+
+test('the decision goes in before what the turn closed as it opened is told, which may take a while', () => {
+  const { home, ledger, id, attemptId, event } = running()
+  // The worker asked as its turn ended, and the person typed into its terminal: this prompt's
+  // turn is theirs, which closes the question as it opens.
+  ledger.endAttempt(attemptId, { outcome: 'needs_decision', summary: 'which?', report: 'which?' })
+  ledger.ask(id, attemptId, 'question', 'which?')
+  const heard = join(home, 'heard')
+  writeFileSync(join(home, 'notify'), `#!/bin/sh\ncat >> '${heard}'\necho >> '${heard}'\n`)
+  chmodSync(join(home, 'notify'), 0o755)
+  expect(hook(home, JSON.stringify(event('git push origin feat/x')))).toBe('')
+  const told = readFileSync(heard, 'utf8')
+    .trim()
+    .split('\n')
+    .map((line) => JSON.parse(line))
+  expect(told.map((e) => [e.event, e.decision.reason])).toEqual([
+    ['decision', 'permission'],
+    ['answered', 'question'],
+  ])
+  expect(asked(ledger, id).map(([reason]) => reason)).toEqual(['permission'])
 }, 15_000)
 
 test('the worktree and the shell are compared by their real paths, so a link to the worktree is the worktree', () => {
