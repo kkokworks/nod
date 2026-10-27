@@ -1427,6 +1427,53 @@ test('a repo Claude Code does not trust yet becomes a decision: yes trusts and s
   expect(Terminals.of(home).alive(sessionName(refused))).toBe(false)
 })
 
+test('a repo the person trusted for an earlier task is trusted again without a decision, as are its worktrees', async () => {
+  // Every new session asks, as after the account changed.
+  writeFileSync(join(home, 'fake-untrusted'), '')
+  const addIn = (repo: string, branch: string): number =>
+    ledger.add({
+      brief: 'work here',
+      repo,
+      branch,
+      checkCmd: null,
+      model: null,
+      after: [],
+      triggerId: null,
+      issue: null,
+    })
+  const [trusted, refused] = [newRepo(), newRepo()]
+  const first = addIn(trusted, 'feat/first')
+  const no = addIn(refused, 'feat/no')
+  await startTask(ledger, home, first)
+  await startTask(ledger, home, no)
+  const [yes, dropped] = [first, no].map((id) => ledger.decisions(id)[0])
+  if (yes === undefined || dropped === undefined) throw new Error('no trust decision')
+  await answer(ledger, home, yes.id, 'yes', 'human')
+  await reaches(first, 'succeeded')
+  await answer(ledger, home, dropped.id, 'no', 'human')
+
+  // The same repo, and a worktree of it outside nod's.
+  const worktree = join(tmp.make('nod-worktree-'), 'wt')
+  git(trusted, 'worktree', 'add', '-q', '-b', 'side', worktree)
+  const again = [addIn(trusted, 'feat/again'), addIn(worktree, 'feat/tree')]
+  for (const id of again) {
+    await startTask(ledger, home, id)
+    await reaches(id, 'succeeded')
+    expect(ledger.decisions(id)).toEqual([])
+    expect(ledger.allowed(id).map((n) => n.note)).toEqual([
+      `trust ${ledger.get(id).repo}, as the person did in decision #${yes.id} (task #${first})`,
+    ])
+  }
+
+  // A repo the person said no to, and one they never answered for.
+  const asked = [addIn(refused, 'feat/no-again'), addIn(newRepo(), 'feat/new')]
+  for (const id of asked) {
+    await startTask(ledger, home, id)
+    expect(ledger.decisions(id).map((d) => [d.reason, d.answer])).toEqual([['trust', null]])
+    expect(ledger.allowed(id)).toEqual([])
+  }
+}, 30_000)
+
 test('an answer for a repo worker whose first start waits on trust goes with the brief, not into the trust dialog', async () => {
   writeFileSync(join(home, 'fake-untrusted'), '')
   const id = ledger.add({
