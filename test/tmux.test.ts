@@ -1,5 +1,6 @@
 import { afterAll, expect, test } from 'bun:test'
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { socketsParent, tempDirs } from './tmp'
 import { endFinishedRuns } from './tmux'
@@ -100,4 +101,13 @@ test("a run's dir is over once the run that made it is gone, or, with no owner y
 
   endFinishedRuns(parent, Date.now() + 86_400_000 + 60_000)
   expect([going, older, writing].map((d) => existsSync(d))).toEqual([true, false, false])
+})
+
+test("a test run keeps its sockets in the folder nod names only inside a worker's sandbox, and outside it, as nod's check runs, in the temp dir", () => {
+  const sockets = '/h/sockets/5'
+  expect(socketsParent({ SANDBOX_RUNTIME: '1', NOD_SOCKETS: sockets })).toBe(sockets)
+  // The worker writes that folder, and the check runs outside its sandbox.
+  expect(socketsParent({ NOD_SOCKETS: sockets })).toBe(tmpdir())
+  // A worker nod started before it named one.
+  expect(socketsParent({ SANDBOX_RUNTIME: '1' })).toBe(tmpdir())
 })

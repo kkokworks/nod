@@ -22,6 +22,10 @@ export function tempDirs(): {
 }
 
 // Where a test makes the dirs it keeps Unix sockets in (a tmux server's, a socket it listens on):
-// the one folder a nod worker's sandbox lets it keep them in, which nod names in NOD_SOCKETS
-// (socketsDir in worker.ts), or else the temp dir.
-export const socketsParent = (): string => process.env.NOD_SOCKETS || tmpdir()
+// inside a nod worker's sandbox, the one folder it lets the worker keep them in, which nod names in
+// NOD_SOCKETS (socketsDir in worker.ts); anywhere else the temp dir. Not that folder outside the
+// sandbox, where nod's check runs these tests: the worker writes the folder, and a link it left
+// there would lead the check, ending the tmux servers of runs that are over (test/tmux.ts), to
+// nod's own.
+export const socketsParent = (env: Record<string, string | undefined> = process.env): string =>
+  (env.SANDBOX_RUNTIME === '1' && env.NOD_SOCKETS) || tmpdir()
