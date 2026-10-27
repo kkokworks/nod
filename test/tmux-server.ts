@@ -1,7 +1,7 @@
 import { test } from 'bun:test'
 import { mkdtempSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { socketsParent } from './tmp'
 
 // Why to skip the tests that need a tmux server, or null to run them. `up`: whether a server
 // answered once started; tmux exits 0 even when it cannot make the server's socket.
@@ -10,7 +10,9 @@ import { join } from 'node:path'
 // adds SANDBOX_RUNTIME=1 to the environment of only the commands it runs in its sandbox, with
 // the sandbox's TMPDIR and proxy. Skipping takes both, and anything else that keeps tmux from
 // starting fails the run: nod's check runs these tests outside the sandbox and must not pass
-// without them.
+// without them. A worker nod starts now has a folder its sandbox lets it keep sockets in
+// (NOD_SOCKETS), where the probe and the tests make theirs, so they run there too; the skip stays
+// for a worker started before that, and any sandbox without the rule.
 export function tmuxSkip(
   up: boolean,
   stderr: string,
@@ -26,7 +28,7 @@ export function tmuxSkip(
 // A session on a socket of its own, in a dir of its own, so it meets no other server.
 function probe(): { up: boolean; stderr: string } {
   if (Bun.which('tmux') === null) return { up: false, stderr: 'tmux is not on PATH' }
-  const dir = mkdtempSync(join(tmpdir(), 'nod-tmux-probe-'))
+  const dir = mkdtempSync(join(socketsParent(), 'nod-tmux-probe-'))
   const env = { ...process.env, TMUX_TMPDIR: dir }
   const tmux = (...args: string[]) => Bun.spawnSync(['tmux', '-L', 'probe', ...args], { env })
   try {

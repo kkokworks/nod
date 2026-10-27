@@ -1,8 +1,10 @@
 import { afterAll, expect, test } from 'bun:test'
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, realpathSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
-import { tempDirs } from './tmp'
+import { socketsParent, tempDirs } from './tmp'
 import { endFinishedRuns } from './tmux'
+import { tmuxTest } from './tmux-server'
 
 const tmp = tempDirs()
 const runs: Run[] = []
@@ -16,9 +18,9 @@ afterAll(() => {
 
 type Run = { proc: Bun.Subprocess; dir: string; socket: string }
 
-// A test run as worker.test.ts begins one, making its dirs in `parent`, with a tmux server in its
-// dir. Returns once the server is up. The names are short: a socket's path must fit in 104 bytes
-// (macOS), and the temp dir there takes half.
+// A test run as worker.test.ts begins one, making its dirs in `parent` (its TMPDIR, and where it
+// keeps sockets), with a tmux server in its dir. Returns once the server is up. The names are
+// short: a socket's path must fit in 104 bytes (macOS), and the temp dir there takes half.
 async function begin(parent: string): Promise<Run> {
   const script = `
 import { tempDirs } from ${JSON.stringify(resolve(import.meta.dir, 'tmp.ts'))}
@@ -31,7 +33,7 @@ console.log(dir)
 await new Promise(() => {})
 `
   const proc = Bun.spawn([process.execPath, '-e', script], {
-    env: { ...process.env, TMPDIR: parent },
+    env: { ...process.env, TMPDIR: parent, NOD_SOCKETS: parent },
     stdout: 'pipe',
     stderr: 'inherit',
   })
@@ -50,24 +52,27 @@ await new Promise(() => {})
 const serves = (socket: string): boolean =>
   Bun.spawnSync(['tmux', '-S', socket, 'has-session']).exitCode === 0
 
-test('a test run ends the tmux servers a run cut off left behind, and leaves those of a run still going', async () => {
-  const parent = tmp.make('nod-r-')
-  const cut = await begin(parent)
-  cut.proc.kill('SIGKILL')
-  await cut.proc.exited
-  // Cut off before its afterAll: its server stays.
-  expect(serves(cut.socket)).toBe(true)
+tmuxTest(
+  'a test run ends the tmux servers a run cut off left behind, and leaves those of a run still going',
+  async () => {
+    const parent = tmp.make('nod-r-', socketsParent())
+    const cut = await begin(parent)
+    cut.proc.kill('SIGKILL')
+    await cut.proc.exited
+    // Cut off before its afterAll: its server stays.
+    expect(serves(cut.socket)).toBe(true)
 
-  const next = await begin(parent)
-  expect(serves(cut.socket)).toBe(false)
-  expect(existsSync(cut.dir)).toBe(false)
+    const next = await begin(parent)
+    expect(serves(cut.socket)).toBe(false)
+    expect(existsSync(cut.dir)).toBe(false)
 
-  // `next` is still going when another run begins.
-  const other = await begin(parent)
-  expect(serves(next.socket)).toBe(true)
-  expect(existsSync(next.dir)).toBe(true)
-  expect(serves(other.socket)).toBe(true)
-})
+    // `next` is still going when another run begins.
+    const other = await begin(parent)
+    expect(serves(next.socket)).toBe(true)
+    expect(existsSync(next.dir)).toBe(true)
+    expect(serves(other.socket)).toBe(true)
+  },
+)
 
 test("a run's dir is over once the run that made it is gone, or, with no owner yet or from before runs named theirs, a day on", () => {
   const parent = tmp.make('nod-runs-')
@@ -96,4 +101,24 @@ test("a run's dir is over once the run that made it is gone, or, with no owner y
 
   endFinishedRuns(parent, Date.now() + 86_400_000 + 60_000)
   expect([going, older, writing].map((d) => existsSync(d))).toEqual([true, false, false])
+})
+
+test("a test run keeps its sockets in the folder nod names only inside a worker's sandbox, and outside it, as nod's check runs, in the temp dir", () => {
+  const sockets = tmp.make('nod-sockets-')
+  const inside = (dir: string) => ({ SANDBOX_RUNTIME: '1', NOD_SOCKETS: dir })
+  // What is left of a socket path's 104 bytes past the folder, as tmux has it.
+  const room = 103 - Buffer.byteLength(realpathSync(sockets))
+  expect(socketsParent(inside(sockets), room)).toBe(sockets)
+  // The worker writes that folder, and the check runs outside its sandbox.
+  expect(socketsParent({ NOD_SOCKETS: sockets }, room)).toBe(tmpdir())
+  // A worker nod started before it named one.
+  expect(socketsParent({ SANDBOX_RUNTIME: '1' }, room)).toBe(tmpdir())
+  // A sandbox that does not let the tests make their dirs there, as a missing folder does not.
+  expect(socketsParent(inside(join(sockets, 'gone')), 0)).toBe(tmpdir())
+  // A folder too long for what the tests put past it, as under a long nod home.
+  expect(socketsParent(inside(sockets), room + 1)).toBe(tmpdir())
+  // Bytes, not characters: under a home whose path is not all ASCII.
+  const named = join(sockets, '가나다라')
+  mkdirSync(named)
+  expect(socketsParent(inside(named), room - '/가나다라'.length)).toBe(tmpdir())
 })

@@ -7,6 +7,7 @@ import {
   readdirSync,
   readFileSync,
   rmSync,
+  statSync,
   symlinkSync,
   writeFileSync,
 } from 'node:fs'
@@ -29,6 +30,7 @@ import { addTrigger, tick } from './triggers'
 import {
   answer,
   askToLand,
+  claudeArgs,
   closeFinished,
   drop,
   firstMessage,
@@ -46,6 +48,7 @@ import {
   resume,
   StopEvent,
   sessionName,
+  socketsDir,
   spawn,
   startReady,
   startTask,
@@ -1752,6 +1755,52 @@ it('a retrospective that sends its fix to the inbox ends as todo, and one that a
 it('a worker learns its task through NOD_TASK, so the todos it changes name it', () => {
   expect(workerEnv('/h', 5)).toMatchObject({ NOD_HOME: '/h', NOD_TASK: '5' })
   expect(workerEnv('/h', null)).not.toHaveProperty('NOD_TASK')
+})
+
+it("a worker's sandbox lets it keep Unix sockets in its own folder alone, which nod makes as it starts it and names in NOD_SOCKETS", () => {
+  const id = ledger.add({
+    brief: 'Run the tmux tests',
+    repo: null,
+    branch: null,
+    checkCmd: null,
+    model: null,
+    after: [],
+    triggerId: null,
+    issue: null,
+  })
+  const argv = claudeArgs(ledger, home, ledger.get(id), ['--session-id', 's'], null, null)
+  const { sandbox } = JSON.parse(argv[argv.indexOf('--settings') + 1] ?? '{}')
+  const own = socketsDir(home, id)
+  expect(sandbox.network.allowUnixSockets).toEqual([own])
+  // Its tests make the folders they keep sockets in there, and nothing else in nod's home.
+  expect(sandbox.filesystem.allowWrite).toEqual([own])
+  expect(sandbox.network.allowedDomains).toEqual(['registry.npmjs.org'])
+  expect(sandbox.network).not.toHaveProperty('allowAllUnixSockets')
+  // Made before Claude Code starts, so its tests can make theirs in it.
+  expect(statSync(own).isDirectory()).toBe(true)
+  expect(workerEnv(home, id).NOD_SOCKETS).toBe(own)
+  expect(workerEnv(home, null)).not.toHaveProperty('NOD_SOCKETS')
+
+  // In nod's home, not another worker's, nor any socket a worker must not reach: other sessions'
+  // inboxes, nod's tmux server, the SSH agent, nor the temp folders that hold them. Shown for a
+  // home outside the temp folder, where nod's own is.
+  expect(socketsDir('/h', 5)).toBe('/h/sockets/5')
+  const uid = process.getuid?.()
+  const kept = [
+    socketsDir('/h', 6),
+    '/tmp',
+    '/private/tmp',
+    '/tmp/cc-socks',
+    `/tmp/cc-socks-${uid}`,
+    `/private/tmp/tmux-${uid}`,
+    process.env.SSH_AUTH_SOCK ?? '/var/run/agent',
+  ]
+  for (const path of kept) {
+    const folder = socketsDir('/h', 5)
+    expect(folder === path || folder.startsWith(`${path}/`) || path.startsWith(`${folder}/`)).toBe(
+      false,
+    )
+  }
 })
 
 // Runs `body` with no CLAUDE_AUTOCOMPACT_PCT_OVERRIDE in nod's environment, whatever the shell

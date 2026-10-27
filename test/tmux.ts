@@ -1,7 +1,7 @@
 import { existsSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { running } from '../src/worker'
+import { socketsParent } from './tmp'
 
 // A test run keeps its tmux sockets in a temp dir of its own (TMUX_TMPDIR), so its servers leave
 // nothing in the shared tmux dir and never meet nod's own. The servers are daemons: a run cut off
@@ -17,10 +17,11 @@ const UNOWNED_MS = 86_400_000
 // A server that does not answer (stopped, say) must not hold up every later run.
 const KILL_TIMEOUT_MS = 10_000
 
-// Sets TMUX_TMPDIR to a new dir `tmp` removes, once the dirs of runs that are over are gone.
-export function testTmux(tmp: { make: (prefix: string) => string }): string {
+// Sets TMUX_TMPDIR to a new dir `tmp` removes, where tests keep sockets (socketsParent), once the
+// dirs of runs that are over there are gone.
+export function testTmux(tmp: { make: (prefix: string, parent?: string) => string }): string {
   endFinishedRuns()
-  const dir = tmp.make(PREFIX)
+  const dir = tmp.make(PREFIX, socketsParent())
   writeFileSync(join(dir, OWNER), String(process.pid))
   process.env.TMUX_TMPDIR = dir
   // tmux exits 0 even when it cannot make a socket (inside a sandbox), so the tests that need a
@@ -33,7 +34,7 @@ export function testTmux(tmp: { make: (prefix: string) => string }): string {
 }
 
 // `parent`: where runs make their dirs (tmp.make).
-export function endFinishedRuns(parent = tmpdir(), now = Date.now()): void {
+export function endFinishedRuns(parent = socketsParent(), now = Date.now()): void {
   for (const name of readdirSync(parent)) {
     if (!name.startsWith(PREFIX)) continue
     const dir = join(parent, name)

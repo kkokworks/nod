@@ -196,6 +196,21 @@ const SANDBOX = {
   network: { allowedDomains: ['registry.npmjs.org'] },
 }
 
+// The one folder a worker's sandbox lets it make and reach Unix sockets in, so its tests can start
+// a tmux server or listen on a socket, which the sandbox refuses anywhere else (EPERM, 2.1.310).
+// Its tests find it in NOD_SOCKETS (workerEnv). Each worker's own, in nod's home, where no other
+// worker can write. Not the sandbox's TMPDIR, `/tmp/claude-<uid>` for every Claude Code session of
+// the user, where any worker could remove or replace another's sockets, nor a folder in the
+// worktree, whose path (the branch's) can leave too little of a socket path's 104 bytes (macOS):
+// tmux takes 43 past its TMUX_TMPDIR in the tests. Made before Claude Code starts, so its tests can
+// make theirs in it.
+// ponytail: gc leaves the folder, as it leaves `.started-<task>`: what is in it is the worker's, and
+// nod going through it outside the sandbox could follow a link the worker left to nod's own tmux
+// server. A tmux server a cut-off test run left in it stays until the worker's next run ends it
+// (test/tmux.ts), or until a reboot.
+export const socketsDir = (home: string, taskId: number): string =>
+  join(home, 'sockets', String(taskId))
+
 // What a worker asks as its turn ends, which an answer goes on from in its conversation. Once it
 // goes on without one, nothing waits on them. Permission, trust and rule decisions are about other
 // things, and close where those end; every decision closes once the task does.
@@ -356,7 +371,7 @@ export async function startTask(ledger: Ledger, home: string, taskId: number): P
   try {
     if (started !== null) rmSync(started, { force: true })
     rmSync(promptFile(home, taskId), { force: true })
-    const first = claudeArgs(ledger, task, ['--session-id', sessionId], prompt, started)
+    const first = claudeArgs(ledger, home, task, ['--session-id', sessionId], prompt, started)
     launch(home, taskId, cwd, first)
     if (started !== null) await awaitStart(ledger, home, task, attemptId, started)
   } catch (error) {
@@ -1736,13 +1751,17 @@ export function running(pid: number): boolean {
   }
 }
 
-function claudeArgs(
+// The arguments a worker's Claude Code starts with; makes the folder it keeps sockets in.
+export function claudeArgs(
   ledger: Ledger,
+  home: string,
   task: Task,
   session: string[],
   prompt: string | null,
   started: string | null,
 ): string[] {
+  const sockets = socketsDir(home, task.id)
+  mkdirSync(sockets, { recursive: true, mode: 0o700 })
   return [
     'claude',
     ...session,
@@ -1752,7 +1771,7 @@ function claudeArgs(
     '--permission-mode',
     'auto',
     '--settings',
-    workerSettings(started),
+    workerSettings(started, sockets),
     '--append-system-prompt',
     workerPrompt(ledger, task),
     ...(task.model === null ? [] : ['--model', task.model]),
@@ -1998,7 +2017,7 @@ async function nextRun(ledger: Ledger, home: string, taskId: number): Promise<St
   // "No, exit".
   const brief = left === null ? first.prompt : `${first.prompt}\n\n${left}`
   const session = fresh ? ['--session-id', first.sessionId] : ['--resume', last.sessionId]
-  const argv = claudeArgs(ledger, task, session, fresh ? brief : left, marker)
+  const argv = claudeArgs(ledger, home, task, session, fresh ? brief : left, marker)
   return { argv, env, fresh, started: marker, left }
 }
 
@@ -2262,13 +2281,17 @@ export function workerPrompt(ledger: Ledger, task: Task | null): string {
 
 // `started`: a file the SessionStart hook creates, so nod knows the session got past the trust
 // dialog. Claude Code runs SessionStart hooks again once it has compacted the conversation, with
-// the matcher `compact` (2.1.310), for onCompact.
-function workerSettings(started: string | null): string {
+// the matcher `compact` (2.1.310), for onCompact. `sockets`: the worker's socketsDir.
+function workerSettings(started: string | null, sockets: string): string {
   const touch = (file: string) => [
     { hooks: [{ type: 'command', command: `touch ${quote(file)}` }] },
   ]
   return JSON.stringify({
-    sandbox: SANDBOX,
+    sandbox: {
+      ...SANDBOX,
+      filesystem: { allowWrite: [sockets] },
+      network: { ...SANDBOX.network, allowUnixSockets: [sockets] },
+    },
     hooks: {
       Stop: [
         { hooks: [{ type: 'command', command: hook('stop'), timeout: STOP_HOOK_TIMEOUT_SECS }] },
@@ -2301,7 +2324,8 @@ const startedMarker = (home: string, taskId: number): string =>
 
 // The whole environment a worker starts with (Terminals.start passes nothing else): what PASS_ENV
 // keeps of nod's, nod's PATH, the account `config`, and AUTOCOMPACT_PCT unless nod's says. NOD_TASK
-// names the task, so a todo the worker changes records `worker:<task>` (todos.ts).
+// names the task, so a todo the worker changes records `worker:<task>` (todos.ts), and NOD_SOCKETS
+// tells its tests where they may keep Unix sockets (socketsDir).
 export function workerEnv(
   home: string,
   taskId: number | null,
@@ -2310,7 +2334,10 @@ export function workerEnv(
   const env = passedEnv()
   env.NOD_HOME = home
   env.PATH = process.env.PATH ?? ''
-  if (taskId !== null) env.NOD_TASK = String(taskId)
+  if (taskId !== null) {
+    env.NOD_TASK = String(taskId)
+    env.NOD_SOCKETS = socketsDir(home, taskId)
+  }
   if (config !== null) env.CLAUDE_CONFIG_DIR = config
   env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE ||= AUTOCOMPACT_PCT
   return env
