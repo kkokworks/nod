@@ -300,13 +300,20 @@ test("in a session nod open opened, add hands over its project's work only, show
     CLAUDE_CODE_SESSION_ID: __,
     NOD_TASK: ___,
     NOD_ACTOR: ____,
+    CLAUDE_CODE_MESSAGING_SOCKET: _____,
     ...shell
   } = process.env
+  // A Claude session's Bash has its inbox socket too; nothing listens on this one.
+  const claude = (session: string) => ({
+    CLAUDECODE: '1',
+    CLAUDE_CODE_SESSION_ID: session,
+    CLAUDE_CODE_MESSAGING_SOCKET: join(home, 'inbox.sock'),
+  })
   const nod = (session: string | null, ...args: string[]) => {
     const env =
       session === null
         ? { ...shell, NOD_HOME: home }
-        : { ...shell, NOD_HOME: home, CLAUDECODE: '1', CLAUDE_CODE_SESSION_ID: session }
+        : { ...shell, NOD_HOME: home, ...claude(session) }
     const r = Bun.spawnSync(['bun', cli, ...args], { env })
     return { code: r.exitCode, out: r.stdout.toString(), err: r.stderr.toString() }
   }
@@ -416,13 +423,16 @@ test("a project's new session takes over the project's tasks and decisions in ls
     CLAUDE_CODE_SESSION_ID: __,
     NOD_TASK: ___,
     NOD_ACTOR: ____,
+    CLAUDE_CODE_MESSAGING_SOCKET: _____,
     ...shell
   } = process.env
+  // A Claude session's Bash has its inbox socket too; nothing listens on this one.
   const envOf = (session: string) => ({
     ...shell,
     NOD_HOME: home,
     CLAUDECODE: '1',
     CLAUDE_CODE_SESSION_ID: session,
+    CLAUDE_CODE_MESSAGING_SOCKET: join(home, 'inbox.sock'),
   })
   const nod = (session: string, ...args: string[]): string => {
     const r = Bun.spawnSync(['bun', cli, ...args], { env: envOf(session) })

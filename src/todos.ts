@@ -786,10 +786,30 @@ export class Todos {
 
   // Where a project session takes messages now; null once it ended. Nothing for a session nod open
   // did not open. With `from`, only while it is still that: one that started again since keeps the
-  // socket it has now.
+  // socket it has now. A socket is one Claude Code process's, so the session there now takes it
+  // from any other that had it: one that ended unheard, or went on under a new ID after /clear,
+  // whose old ID the socket drops.
   setSocket(sessionId: string, socket: string | null, from?: string): void {
-    const set = q.updateTable('projectSessions').set({ socket }).where('sessionId', '=', sessionId)
-    this.run(from === undefined ? set : set.where('socket', '=', from))
+    this.db.transaction(() => {
+      const set = q
+        .updateTable('projectSessions')
+        .set({ socket })
+        .where('sessionId', '=', sessionId)
+      this.run(from === undefined ? set : set.where('socket', '=', from))
+      if (socket === null) return
+      this.run(
+        q
+          .updateTable('projectSessions')
+          .set({ socket: null })
+          .where('socket', '=', socket)
+          .where('sessionId', '!=', sessionId),
+      )
+    })()
+  }
+
+  // The project session nod tells at `socket`; null for none.
+  sessionAt(socket: string): ProjectSession | null {
+    return this.first(q.selectFrom('projectSessions').selectAll().where('socket', '=', socket))
   }
 
   // The project's latest session; null before nod open opened one.
