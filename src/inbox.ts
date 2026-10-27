@@ -1,7 +1,7 @@
 import { z } from 'zod'
 import { Ledger, type Notice } from './ledger'
 import { type Project, Todos } from './todos'
-import { firstLine, indent, oneLine, taskLabel } from './view'
+import { allowedLine, firstLine, indent, oneLine, taskLabel } from './view'
 import { message } from './worker'
 
 // nod tells a project's session, the one nod open opened for it last, what `nod watch` would print
@@ -134,8 +134,7 @@ const NEXT = {
 // decision's number) to tell one sent twice, and what to do next.
 export function noticeText(ledger: Ledger, n: Notice): string {
   if (n.event === 'tell') return n.note ?? ''
-  // One line, in the words the person asked for; nothing to do next.
-  if (n.event === 'allowed') return `#${n.taskId} 허락: ${n.note}`
+  if (n.event === 'allowed') return allowedLine(n)
   const task = ledger.get(n.taskId ?? 0)
   if (n.event === 'decision') {
     const d = ledger.decision(n.decisionId ?? 0)

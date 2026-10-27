@@ -1615,6 +1615,18 @@ export class Ledger {
     )
   }
 
+  // The commands nod allowed any task's worker since notice `id`, oldest first (`nod watch`).
+  allowedAfter(id: number): Notice[] {
+    return this.run(
+      q
+        .selectFrom('notices')
+        .selectAll()
+        .where('event', '=', 'allowed')
+        .where('id', '>', id)
+        .orderBy('id'),
+    )
+  }
+
   // Marks sent to `sessionId` (null: to none) those of `ids` still unsent, in one statement, so of
   // two processes sending at once only one sends each. Returns the ones this call marked, and when.
   claimNotices(ids: number[], sessionId: string | null): { ids: number[]; at: string } {

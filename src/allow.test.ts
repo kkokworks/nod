@@ -1,11 +1,12 @@
 import { afterAll, expect, test } from 'bun:test'
-import { mkdirSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { tempDirs } from '../test/tmp'
 import { ALLOW, harmless, onPermissionRequest } from './allow'
 import { sendNotices } from './inbox'
-import { Ledger, type NewTask } from './ledger'
+import { Ledger, type NewTask, type Task } from './ledger'
 import { Todos } from './todos'
+import { allowedLine, watch } from './view'
 
 const tmp = tempDirs()
 afterAll(tmp.removeAll)
@@ -134,6 +135,10 @@ test('nod allows rm -rf of what a worktree can make again, and dependency instal
     'bun add left-pad --global',
     'npm install --prefix /tmp left-pad',
     'npm i left-pad@^1.0.0',
+    // Names npm and bun take for a tarball in the folder.
+    'npm i evil.tgz',
+    'bun add evil.tar',
+    'bun add evil.TAR.GZ',
   ]) {
     expect([command, allows(command)]).toEqual([command, false])
   }
@@ -152,6 +157,16 @@ test('nod allows rm -rf of what a worktree can make again, and dependency instal
   writeFileSync(join(work, 'app', 'notes.md'), 'mine\n')
   expect(allows('rm -rf app')).toBe(false)
   expect(allows('rm -rf node_modules app/node_modules')).toBe(true)
+  // Spelled in another case, which on a file system that ignores case (macOS) is the same folder
+  // while git takes it for another path.
+  expect(allows('rm -rf APP')).toBe(!existsSync(join(work, 'APP')))
+  expect(allows('rm -rf SRC')).toBe(!existsSync(join(work, 'SRC')))
+  // Through a link that stays in the worktree (as a workspace package in node_modules): rm reaches
+  // the folder it leads to, with a `/` after it or a path below it.
+  symlinkSync('../app', join(work, 'node_modules', 'linked'))
+  expect(allows('rm -rf node_modules/linked/')).toBe(false)
+  expect(allows('rm -rf node_modules/linked/notes.md')).toBe(false)
+  expect(allows('rm -rf node_modules')).toBe(true)
   // Dependencies that live outside the worktree.
   symlinkSync(outside, join(work, 'app', 'node_modules', 'pkg', 'linked'))
   writeFileSync(join(work, 'app', 'package.json'), '{}')
@@ -233,6 +248,32 @@ test('what nod allows goes into the ledger with its turn, and to the project ses
   // It opened no decision and left the task running.
   expect(ledger.decisions(id)).toEqual([])
   expect(ledger.get(id).status).toBe('running')
+})
+
+test('a root session that watches hears the line too, for the tasks it watches, from when it started', async () => {
+  const { ledger, id, event } = running()
+  onPermissionRequest(ledger, event('rm -rf dist'))
+  const heard = async (counts: (t: Task) => boolean): Promise<string[]> => {
+    const printed: string[] = []
+    let looks = 0
+    const wait = async (): Promise<void> => {
+      looks += 1
+      if (looks === 1) onPermissionRequest(ledger, event(`rm -rf build${looks}`))
+      if (looks === 2) ledger.succeed(id)
+    }
+    await watch(
+      ledger,
+      counts,
+      () => {},
+      () => {},
+      wait,
+      (n) => printed.push(allowedLine(n)),
+    )
+    return printed
+  }
+  expect(await heard((t) => t.id === id)).toEqual([`#${id} 허락: rm -rf build1`])
+  ledger.setRunning(id, ledger.get(id).workspace ?? '')
+  expect(await heard((t) => t.id !== id)).toEqual([])
 })
 
 test('nod hook permission prints the allow only for what nod allows, nothing otherwise, and never fails; nod show lists it', () => {

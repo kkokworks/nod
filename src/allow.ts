@@ -46,6 +46,8 @@ const INSTALL_FLAGS = new Set([
 ])
 // A registry package by name, scoped or not, with a version or tag: no path, URL, git or alias.
 const PACKAGE = /^(@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*(@[A-Za-z0-9._-]+)?$/
+// What npm and bun take for a tarball in the folder instead (npm-package-arg's file names).
+const TARBALL = /\.(tgz|tar|tar\.gz)$/i
 
 // Records and returns whether nod allows this prompt of a worker's. Only Bash, only in the folder of
 // the task the session works for.
@@ -79,7 +81,13 @@ export function harmless(command: string, cwd: string, workspace: string, repo: 
   if (name === 'rm' && (sub === '-rf' || sub === '-fr')) {
     // A work folder with no repo is the task's result itself: nothing there can be made again.
     if (!repo || rest.length === 0) return false
-    return rest.every((p) => removable(root, here, p)) && committed(here, rest)
+    const paths: string[] = []
+    for (const p of rest) {
+      const asked = removable(root, here, p)
+      if (asked === null) return false
+      paths.push(...asked)
+    }
+    return committed(root, paths)
   }
   if (INSTALLERS.get(name)?.includes(sub)) {
     const inRoot = (p: string): boolean => {
@@ -90,29 +98,37 @@ export function harmless(command: string, cwd: string, workspace: string, repo: 
       exists(join(here, 'package.json')) &&
       inRoot('package.json') &&
       (!exists(join(here, 'node_modules')) || inRoot('node_modules')) &&
-      rest.every((w) => INSTALL_FLAGS.has(w) || PACKAGE.test(w))
+      rest.every((w) => INSTALL_FLAGS.has(w) || (PACKAGE.test(w) && !TARBALL.test(w)))
     )
   }
   return false
 }
 
-// A path rm may take: relative, with no `..` and no git folder on the way, and inside `root` but not
-// `root` itself once links are resolved, so a link that leads out (to the repo's shared git folder,
-// say) is refused.
-function removable(root: string, here: string, path: string): boolean {
-  if (path.startsWith('/') || path.startsWith('-')) return false
-  if (path.split('/').some((p) => p === '..' || isGit(p))) return false
+// What git is asked about for rm's `path`, relative to `root`: the path as typed, and the path rm
+// reaches, with links and the file system's case resolved (a link with a `/` after it, or `SRC` for
+// `src` on macOS, which git takes as another path). Null for a path rm may not take: absolute, with
+// `..` or a git folder on the way, or outside `root` or `root` itself once resolved, so a link that
+// leads out (to the repo's shared git folder, say) is refused.
+function removable(root: string, here: string, path: string): string[] | null {
+  if (path.startsWith('/') || path.startsWith('-')) return null
+  if (path.split('/').some((p) => p === '..' || isGit(p))) return null
+  const typed = within(root, resolve(here, path))
   const real = realOf(resolve(here, path))
   const rel = real === null ? null : within(root, real)
-  return !!rel && !rel.split(sep).some(isGit)
+  if (!typed || !rel || rel.split(sep).some(isGit)) return null
+  return [typed, rel]
 }
 
 // No uncommitted change and no untracked file under the paths: what goes is in git or ignored
-// (dependencies, build output), so it comes back.
-function committed(here: string, paths: string[]): boolean {
+// (dependencies, build output, all made in the task: `worktree add` brings nothing ignored), so it
+// comes back. git runs outside the sandbox on config the worker can write, as the Stop hook's does;
+// the file system monitor, a command that config names, is off.
+function committed(root: string, paths: string[]): boolean {
   const status = Bun.spawnSync(
     [
       'git',
+      '-c',
+      'core.fsmonitor=false',
       '--no-optional-locks',
       'status',
       '--porcelain',
@@ -121,7 +137,7 @@ function committed(here: string, paths: string[]): boolean {
       '--',
       ...paths,
     ],
-    { cwd: here, stdout: 'pipe', stderr: 'pipe' },
+    { cwd: root, stdout: 'pipe', stderr: 'pipe' },
   )
   return status.exitCode === 0 && status.stdout.length === 0
 }
