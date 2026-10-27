@@ -46,6 +46,7 @@ import {
   resume,
   StopEvent,
   sessionName,
+  socketsDir,
   spawn,
   startReady,
   startTask,
@@ -54,6 +55,7 @@ import {
   trustedFile,
   workerEnv,
   workerPrompt,
+  workerSettings,
   workspaceOf,
 } from './worker'
 
@@ -1752,6 +1754,33 @@ it('a retrospective that sends its fix to the inbox ends as todo, and one that a
 it('a worker learns its task through NOD_TASK, so the todos it changes name it', () => {
   expect(workerEnv('/h', 5)).toMatchObject({ NOD_HOME: '/h', NOD_TASK: '5' })
   expect(workerEnv('/h', null)).not.toHaveProperty('NOD_TASK')
+})
+
+it("a worker's sandbox lets it keep Unix sockets in its own folder alone, which its tests find in NOD_SOCKETS", () => {
+  const own = socketsDir('/h', 5)
+  expect(workerEnv('/h', 5).NOD_SOCKETS).toBe(own)
+  expect(workerEnv('/h', null)).not.toHaveProperty('NOD_SOCKETS')
+  const { sandbox } = JSON.parse(workerSettings(null, own))
+  expect(sandbox.network.allowUnixSockets).toEqual(['/h/sockets/5'])
+  // Its tests make the folders they keep sockets in there, and nothing else in nod's home.
+  expect(sandbox.filesystem.allowWrite).toEqual([own])
+  expect(sandbox.network.allowedDomains).toEqual(['registry.npmjs.org'])
+  expect(sandbox.network).not.toHaveProperty('allowAllUnixSockets')
+  // Not another worker's, nor any socket a worker must not reach: other sessions' inboxes, nod's
+  // tmux server, the SSH agent, nor the temp folders that hold them.
+  const uid = process.getuid?.()
+  const kept = [
+    socketsDir('/h', 6),
+    '/tmp',
+    '/private/tmp',
+    '/tmp/cc-socks',
+    `/tmp/cc-socks-${uid}`,
+    `/private/tmp/tmux-${uid}`,
+    process.env.SSH_AUTH_SOCK ?? '/var/run/agent',
+  ]
+  for (const path of kept) {
+    expect(own === path || own.startsWith(`${path}/`) || path.startsWith(`${own}/`)).toBe(false)
+  }
 })
 
 // Runs `body` with no CLAUDE_AUTOCOMPACT_PCT_OVERRIDE in nod's environment, whatever the shell
