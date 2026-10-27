@@ -21,7 +21,7 @@ import { tmuxTest as test } from '../test/tmux-server'
 import { setAccountRule } from './account'
 import { ALLOW } from './allow'
 import { collect } from './gc'
-import { Ledger, type Task, type TaskStatus } from './ledger'
+import { Ledger, RETRO_STATUS, type RetroOutcome, type Task, type TaskStatus } from './ledger'
 import { notify } from './notify'
 import { askedAgain, reviewBrief } from './review'
 import { retroBrief } from './rules'
@@ -3314,6 +3314,118 @@ it('a dropped retrospective ends before what it closes is heard of, so no messag
   await dropping
   expect(ledger.attempts(retro)).toHaveLength(1)
   expect(status(retro)).toBe('cancelled')
+})
+
+it('an answer whose retrospective is dropped before it goes in leaves the task as the outcome has it', async () => {
+  const of = ledger.add({
+    brief: 'x',
+    repo: null,
+    branch: null,
+    checkCmd: null,
+    model: null,
+    after: [],
+    triggerId: null,
+    issue: null,
+  })
+  const retro = ledger.addRetro(ledger.get(of), 'look back')
+  const cwd = workspaceOf(home, ledger.get(retro))
+  mkdirSync(cwd, { recursive: true })
+  ledger.setRunning(retro, cwd)
+  const turn = ledger.startAttempt({
+    taskId: retro,
+    kind: 'start',
+    decisionId: null,
+    sessionId: 'answered-retro',
+    prompt: 'look back',
+  })
+  ledger.endAttempt(turn, { outcome: 'needs_decision', summary: 'rule A', report: null })
+  const rule = ledger.ask(retro, turn, 'rule', 'Add it?')
+  const question = ledger.ask(retro, turn, 'question', 'Which task?')
+  // The person drops the rule once the answer has closed its question, as the answer looks for the
+  // worker's terminal to send it (deliver).
+  let dropping: Promise<unknown> | undefined
+  const alive = spyOn(Terminals.prototype, 'alive').mockImplementation(() => {
+    dropping ??= drop(ledger, home, rule)
+    return false
+  })
+  try {
+    await expect(answer(ledger, home, question, 'the first', 'human')).rejects.toThrow(
+      'which ended (declined)',
+    )
+    await dropping
+  } finally {
+    alive.mockRestore()
+  }
+  expect(ledger.retroFor(of)?.outcome).toBe('declined')
+  expect(ledger.get(retro)).toMatchObject({ status: 'cancelled', error: null })
+})
+
+it('whatever ends a retrospective, its task ends as the outcome has it, and a turn after that changes nothing', async () => {
+  const open = (retro: number, reason: string): number => {
+    const d = ledger.decisions(retro).find((x) => x.answer === null && x.reason === reason)
+    if (d === undefined) throw new Error(`no ${reason} decision`)
+    return d.id
+  }
+  const ends: [RetroOutcome, (session: string, retro: number) => Promise<unknown>][] = [
+    [
+      'added',
+      async (s, r) => {
+        await stopped(s, 'NOD: done | rule A')
+        await answer(ledger, home, open(r, 'rule'), 'yes', 'human')
+      },
+    ],
+    [
+      'declined',
+      async (s, r) => {
+        await stopped(s, 'NOD: done | rule A')
+        await answer(ledger, home, open(r, 'rule'), 'no', 'human')
+      },
+    ],
+    ['none', (s) => stopped(s, 'NOD: done | none')],
+    ['todo', (s) => stopped(s, 'NOD: in {"title": "Fix nod"}\nNOD: done | none')],
+    [
+      'dropped',
+      async (s, r) => {
+        await stopped(s, 'NOD: question | Which task?')
+        await drop(ledger, home, open(r, 'question'))
+      },
+    ],
+  ]
+  for (const [outcome, end] of ends) {
+    const of = ledger.add({
+      brief: 'x',
+      repo: null,
+      branch: null,
+      checkCmd: null,
+      model: null,
+      after: [],
+      triggerId: null,
+      issue: null,
+    })
+    const retro = ledger.addRetro(ledger.get(of), 'look back')
+    const session = `ends-${outcome}`
+    ledger.startAttempt({
+      taskId: retro,
+      kind: 'start',
+      decisionId: null,
+      sessionId: session,
+      prompt: 'look back',
+    })
+    await end(session, retro)
+    const want = RETRO_STATUS[outcome]
+    expect([ledger.retroFor(of)?.outcome, status(retro)]).toEqual([outcome, want])
+    // A turn typed into its terminal afterwards asks again: it is only recorded.
+    await stopped(session, 'NOD: question | Still there?')
+    expect(status(retro)).toBe(want)
+    expect(ledger.decisions(retro).filter((d) => d.answer === null)).toEqual([])
+    // It ended once.
+    const notices = ledger.db
+      .query<{ event: string }, [number]>(
+        "select event from notices where task_id = ? and event != 'decision'",
+      )
+      .all(retro)
+    expect(notices.map((n) => n.event)).toEqual([want])
+  }
 })
 
 it('an answer to a decision already answered on a task gc collected brings nothing back', async () => {

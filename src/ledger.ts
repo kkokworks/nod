@@ -83,6 +83,15 @@ export type Task = {
 // down; `dropped`, a retrospective ended before it proposed one; `todo`, one that put a fix for nod
 // or the task's repo or check in the person's inbox instead of proposing a rule.
 export type RetroOutcome = 'added' | 'declined' | 'none' | 'dropped' | 'todo'
+// The status a retrospective's task has once its outcome is in, whatever path ended it or comes
+// after: setStatus and setRunning keep it there, and endRetro moves it there.
+export const RETRO_STATUS: Record<RetroOutcome, TaskStatus> = {
+  added: 'succeeded',
+  none: 'succeeded',
+  todo: 'succeeded',
+  declined: 'cancelled',
+  dropped: 'cancelled',
+}
 export type Retro = {
   id: number
   ofTaskId: number
@@ -589,6 +598,23 @@ export const MIGRATIONS = [
   );
   create index notices_unsent on notices(id) where sent_at is null;
   `,
+  // v25: a retrospective's task as its outcome has it (RETRO_STATUS, as it stands at v25). An older
+  // nod could leave one with its outcome waiting on a decision, which gc then never collected. Its
+  // open decisions wait on nothing, so they close as nod closes one (dismiss). No notice goes out:
+  // these ended long before.
+  `
+  update decisions set answer = '(the retrospective had ended)'
+  where answer is null and task_id in (
+    select t.id from tasks t join retros r on r.id = t.retro_id where r.outcome is not null);
+  update tasks set status = 'succeeded', error = null,
+    finished_at = coalesce((select ended_at from retros where id = tasks.retro_id), finished_at, created_at)
+  where status != 'succeeded'
+    and retro_id in (select id from retros where outcome in ('added', 'none', 'todo'));
+  update tasks set status = 'cancelled', error = null,
+    finished_at = coalesce((select ended_at from retros where id = tasks.retro_id), finished_at, created_at)
+  where status != 'cancelled'
+    and retro_id in (select id from retros where outcome in ('declined', 'dropped'));
+  `,
 ]
 // The migration that moves <home>/rules.md into the ledger, numbered as user_version counts.
 const RULES_FILE_MIGRATION = 17
@@ -841,7 +867,9 @@ export class Ledger {
     return this.run(q.selectFrom('tasks').select(TASK).orderBy('id'))
   }
 
+  // Not a retrospective that has its outcome (RETRO_STATUS).
   setRunning(id: number, workspace: string): void {
+    if (this.retroStatus(id) !== null) return
     this.run(q.updateTable('tasks').set({ status: 'running', workspace }).where('id', '=', id))
   }
 
@@ -1099,8 +1127,25 @@ export class Ledger {
     this.run(q.updateTable('retros').set({ rule }).where('id', '=', id))
   }
 
+  // Its task goes to the status the outcome has (RETRO_STATUS), in the same transaction.
   endRetro(id: number, outcome: RetroOutcome): void {
-    this.run(q.updateTable('retros').set({ outcome, endedAt: now() }).where('id', '=', id))
+    this.db.transaction(() => {
+      this.run(q.updateTable('retros').set({ outcome, endedAt: now() }).where('id', '=', id))
+      const task = this.first(q.selectFrom('tasks').select('id').where('retroId', '=', id))
+      if (task !== null) this.setStatus(task.id, RETRO_STATUS[outcome], null)
+    })()
+  }
+
+  // The status of a retrospective's task once it has its outcome; null before, and for other tasks.
+  private retroStatus(taskId: number): TaskStatus | null {
+    const row = this.first(
+      q
+        .selectFrom('tasks as t')
+        .innerJoin('retros as r', 'r.id', 't.retroId')
+        .select('r.outcome')
+        .where('t.id', '=', taskId),
+    )
+    return row === null || row.outcome === null ? null : RETRO_STATUS[row.outcome]
   }
 
   // A task that does one of the person's todos (todos.ts delegate).
@@ -1716,8 +1761,14 @@ export class Ledger {
 
   // Each end is a notice for the task's project session, in one transaction with it: the ends `nod
   // watch` prints, with what it prints of them (endLine in view.ts) as they are now.
-  private setStatus(id: number, status: TaskStatus, error: string | null): void {
+  // A retrospective that has its outcome takes the status that outcome has instead, and once it has
+  // that, nothing changes: no other path (an answer, an error, a late turn) moves it off.
+  private setStatus(id: number, wanted: TaskStatus, wantedError: string | null): void {
     this.db.transaction(() => {
+      const settled = this.retroStatus(id)
+      if (settled !== null && this.get(id).status === settled) return
+      const status = settled ?? wanted
+      const error = settled === null ? wantedError : null
       const finishedAt = FINISHED.has(status) ? now() : null
       this.run(q.updateTable('tasks').set({ status, error, finishedAt }).where('id', '=', id))
       if (FINISHED.has(status)) {

@@ -3,7 +3,7 @@ import { afterAll, expect, test } from 'bun:test'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tempDirs } from '../test/tmp'
-import { Ledger, MIGRATIONS } from './ledger'
+import { Ledger, MIGRATIONS, RETRO_STATUS, type RetroOutcome, type TaskStatus } from './ledger'
 import { Todos } from './todos'
 
 const tmp = tempDirs()
@@ -25,7 +25,7 @@ test('reopening a ledger keeps its data and does not re-run migrations', () => {
   })
   const reopened = new Ledger(home)
   expect(reopened.get(id).brief).toBe('keep me')
-  expect(reopened.db.query('pragma user_version').get()).toEqual({ user_version: 24 })
+  expect(reopened.db.query('pragma user_version').get()).toEqual({ user_version: 25 })
 })
 
 test('v18 leaves the tasks before it without a root session', () => {
@@ -39,7 +39,7 @@ test('v18 leaves the tasks before it without a root session', () => {
 
   const ledger = new Ledger(home)
   expect(ledger.get(1)).toMatchObject({ brief: 'x', rootSession: null })
-  expect(ledger.db.query('pragma user_version').get()).toEqual({ user_version: 24 })
+  expect(ledger.db.query('pragma user_version').get()).toEqual({ user_version: 25 })
 })
 
 test('v23 gives a ledger of v22 project sessions, none yet, and leaves its projects as they were', () => {
@@ -77,6 +77,101 @@ test('v24 keeps the project sessions of a v23 ledger, with no socket yet, and ha
   expect(ledger.unsentNotices()).toEqual([])
   ledger.error(1, 'boom')
   expect(ledger.unsentNotices()).toMatchObject([{ taskId: 1, event: 'error', note: 'boom' }])
+})
+
+test('v25 moves each retrospective that has its outcome to the status the outcome has, closes what it left open, and leaves the rest', () => {
+  const home = freshHome()
+  const old = new Database(join(home, 'nod.db'), { create: true, strict: true })
+  for (const sql of MIGRATIONS.slice(0, 24)) old.exec(sql)
+  // Retrospective n runs in task n and looks back on task 10 + n; task 6 is no retrospective.
+  old.exec(`pragma user_version = 24;
+    insert into tasks (id, brief, status, created_at, finished_at) values
+      (11, 'x', 'succeeded', 'at', 'at'), (12, 'x', 'succeeded', 'at', 'at'),
+      (13, 'x', 'succeeded', 'at', 'at'), (14, 'x', 'succeeded', 'at', 'at'),
+      (15, 'x', 'succeeded', 'at', 'at');
+    insert into retros (id, of_task_id, outcome, created_at, ended_at) values
+      (1, 11, 'added', 'at', 'ended'), (2, 12, 'declined', 'at', 'ended'),
+      (3, 13, 'none', 'at', 'ended'), (4, 14, null, 'at', null), (5, 15, 'dropped', 'at', null);
+    insert into tasks (id, brief, retro_id, status, error, created_at, finished_at) values
+      (1, 'r1', 1, 'needs_decision', null, 'at', null),
+      (2, 'r2', 2, 'error', 'boom', 'at', 'failed'),
+      (3, 'r3', 3, 'succeeded', null, 'at', 'done'),
+      (4, 'r4', 4, 'needs_decision', null, 'at', null),
+      (5, 'r5', 5, 'running', null, 'at', null),
+      (6, 'plain', null, 'needs_decision', null, 'at', null);
+    insert into attempts (id, task_id, kind, session_id, prompt, started_at) values
+      (1, 1, 'start', 's1', 'p', 'at'), (4, 4, 'start', 's4', 'p', 'at'),
+      (6, 6, 'start', 's6', 'p', 'at');
+    insert into decisions (id, task_id, attempt_id, reason, question, created_at) values
+      (1, 1, 1, 'rule', 'Add it?', 'at'), (4, 4, 4, 'rule', 'Add it?', 'at'),
+      (6, 6, 6, 'question', 'Which?', 'at');`)
+  old.close()
+
+  const ledger = new Ledger(home)
+  const row = (id: number) => {
+    const t = ledger.get(id)
+    return [t.status, t.error, t.finishedAt]
+  }
+  expect([1, 2, 3, 4, 5, 6].map(row)).toEqual([
+    ['succeeded', null, 'ended'],
+    ['cancelled', null, 'ended'],
+    ['succeeded', null, 'done'],
+    ['needs_decision', null, null],
+    ['cancelled', null, 'at'],
+    ['needs_decision', null, null],
+  ])
+  const decided = (id: number) => [ledger.decision(id).answer, ledger.decision(id).answeredAt]
+  expect([1, 4, 6].map(decided)).toEqual([
+    ['(the retrospective had ended)', null],
+    [null, null],
+    [null, null],
+  ])
+  expect(ledger.unsentNotices()).toEqual([])
+})
+
+test("a retrospective's task goes to the status its outcome has as it ends, and nothing later moves it off", () => {
+  const ledger = new Ledger(freshHome())
+  for (const [outcome, want] of Object.entries(RETRO_STATUS) as [RetroOutcome, TaskStatus][]) {
+    const of = ledger.add({
+      brief: 'x',
+      repo: null,
+      branch: null,
+      checkCmd: null,
+      model: null,
+      after: [],
+      triggerId: null,
+      issue: null,
+    })
+    const retro = ledger.addRetro(ledger.get(of), 'look back')
+    const { retroId } = ledger.get(retro)
+    if (retroId === null) throw new Error('no retrospective')
+    ledger.setRunning(retro, '/work/retro')
+    const turn = ledger.startAttempt({
+      taskId: retro,
+      kind: 'start',
+      decisionId: null,
+      sessionId: `s-${outcome}`,
+      prompt: 'look back',
+    })
+    ledger.endAttempt(turn, { outcome: 'needs_decision', summary: 'which?', report: null })
+    const asked = ledger.ask(retro, turn, 'question', 'Which task?')
+    ledger.endRetro(retroId, outcome)
+    const ended = ledger.get(retro)
+    expect([ended.status, ended.error]).toEqual([want, null])
+    // Whatever comes after: an answer, another question dropped, a turn, an error, another end.
+    ledger.answer(asked, 'the first')
+    ledger.drop(ledger.ask(retro, turn, 'question', 'Still there?'))
+    ledger.setRunning(retro, '/work/elsewhere')
+    ledger.error(retro, 'late')
+    ledger.succeed(retro)
+    expect(ledger.get(retro)).toEqual(ended)
+    const ends = ledger.db
+      .query<{ event: string }, [number]>(
+        "select event from notices where task_id = ? and event != 'decision'",
+      )
+      .all(retro)
+    expect(ends.map((n) => n.event)).toEqual([want])
+  }
 })
 
 test("v21 counts the turns and messages before it as the person's, from no task", () => {

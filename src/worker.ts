@@ -487,7 +487,6 @@ export async function answer(
         ledger.proposeRule(retroId, rule)
         ledger.addRule(rule, retroId, actor)
         ledger.endRetro(retroId, 'added')
-        ledger.succeed(decision.taskId)
         return others
       })
       .immediate()
