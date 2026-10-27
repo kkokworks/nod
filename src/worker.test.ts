@@ -513,7 +513,7 @@ test('a turn a person types into a finished task is in the ledger from its start
   // Its prompt hook opened the turn, as the Stop hook would have at its end; the task is as it was.
   expect(ledger.openAttempt(id)).toMatchObject({
     kind: 'followup',
-    prompt: '(typed into the terminal)',
+    prompt: '(typed into the terminal)\nhang until ended',
   })
   expect(ledger.get(id).status).toBe('succeeded')
   // tmux keeps when in seconds.
@@ -535,6 +535,30 @@ test('a turn a person types into a finished task is in the ledger from its start
     error: 'the person stopped it (Escape)',
   })
 })
+
+// A person attaches to a finished task and steers it: they stop a turn at its permission dialog
+// (Escape, no Stop), then type another, which goes on in the turn still open.
+test('what a person types into a worker’s terminal is kept once each, as theirs, for the review of its turn, and nod does not send it again', async () => {
+  const id = await finished('first')
+  const terminals = Terminals.of(home)
+  const name = sessionName(id)
+  terminals.send(name, 'need-permission')
+  await until(() => ledger.decisions(id)[0])
+  terminals.keys(name, 'Escape')
+  terminals.send(name, 'use tabs')
+  await until(() => entries('review')[1])
+  await reaches(id, 'succeeded')
+  await settled(id)
+  expect(turnsOf(id)).toEqual(['first', 'need-permission', 'use tabs'])
+  expect(ledger.attempts(id).map((a) => [a.kind, a.prompt])).toEqual([
+    ['start', 'first'],
+    ['followup', '(typed into the terminal)\nneed-permission'],
+  ])
+  expect(ledger.messages(id).map((m) => m.text)).toEqual(['(typed into the terminal)\nuse tabs'])
+  expect(entries('review')[1]?.message).toContain(
+    'later words win:\n- (typed into the terminal) need-permission\n- (typed into the terminal) use tabs\n\n',
+  )
+}, 40_000)
 
 test('a terminal that goes while the tick closes the others is not counted, and does not stop it', async () => {
   const gone = await finished('first')
@@ -3621,6 +3645,47 @@ it('the review hears what the human told the worker in the middle of a turn, in 
   expect(brief).toContain(
     'What the human said later, in order; later words win:\n- use tabs\n- in a.txt\n- no, in b.txt\n',
   )
+})
+
+it('what a person types into the worker’s terminal is kept once, marked as typed, with what nod sent, and a turn nod sent is not kept again', () => {
+  const id = ledger.add({
+    brief: 'write it',
+    repo: null,
+    branch: null,
+    checkCmd: null,
+    model: null,
+    after: [],
+    triggerId: null,
+    issue: null,
+  })
+  const sent = (kind: 'start' | 'followup', prompt: string): number =>
+    ledger.startAttempt({ taskId: id, kind, decisionId: null, sessionId: 's', prompt })
+  // What Claude Code's prompt hook passes for each message it takes in.
+  const typed = (prompt: string): void => onPrompt(ledger, { session_id: 's', prompt })
+  const first = sent('start', 'write it')
+  typed('write it') // nod's own, which deliver opened the turn with
+  ledger.endAttempt(first, { outcome: 'needs_decision', summary: 'which file?', report: null })
+  typed('in a.txt')
+  const mine = ledger.openAttempt(id)?.id ?? 0
+  typed('no,\nin b.txt') // into the turn they stopped, still open
+  ledger.endAttempt(mine, { outcome: 'needs_decision', summary: 'tabs?', report: null })
+  const third = sent('followup', 'use tabs')
+  typed('use tabs')
+  ledger.addMessage(id, third, 'and spaces') // nod told it more in the middle of that turn
+  expect(ledger.attempts(id).map((a) => [a.kind, a.prompt])).toEqual([
+    ['start', 'write it'],
+    ['followup', '(typed into the terminal)\nin a.txt'],
+    ['followup', 'use tabs'],
+  ])
+  expect(ledger.messages(id).map((m) => [m.attemptId, m.text])).toEqual([
+    [mine, '(typed into the terminal)\nno,\nin b.txt'],
+    [third, 'and spaces'],
+  ])
+  const later =
+    'later words win:\n- (typed into the terminal) in a.txt\n- (typed into the terminal) no, in b.txt\n- use tabs\n- and spaces\n'
+  expect(reviewBrief(ledger, ledger.get(id), 'NOD: done | ok', null)).toContain(later)
+  // And the worker, once Claude Code has compacted its conversation.
+  expect(onCompact(ledger, { session_id: 's', source: 'compact' })).toContain(later.trimEnd())
 })
 
 test('a message sent while a worker starts again after its Claude Code ended by itself waits for the new start', async () => {

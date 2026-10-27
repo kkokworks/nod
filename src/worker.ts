@@ -217,8 +217,10 @@ export const socketsDir = (home: string, taskId: number): string =>
 const ASKED: readonly DecisionReason[] = ['question', 'failed', 'check_failed', 'interrupted']
 const WENT_ON = '(it went on without an answer)'
 // The prompt of a turn nod did not send: one a person typed into the worker's terminal, or one
-// Claude Code went on to by itself. What they typed stays out of the ledger.
+// Claude Code went on to by itself. What a person typed follows it on the next line, and so does
+// each message of theirs such a turn takes in (onPrompt), so the reviewer reads it as theirs.
 const TYPED = '(typed into the terminal)'
+const typedHere = (text: string): boolean => text.startsWith(TYPED)
 // How Claude Code marks a turn the person stopped (endTurnWithoutStop), how much of the
 // transcript's end is read for it, and what a typed turn that ended without a Stop ends with in the
 // ledger.
@@ -850,20 +852,27 @@ export async function onStopFailure(
 }
 
 // Called by the UserPromptSubmit hook. A turn a person types into the worker's terminal is in the
-// ledger from its start, as one nod sends is (deliver opens that one before pasting it, so this
-// leaves it as it is): until its Stop, nothing takes the worker for idle (closeFinished, restarts).
-// Only the turn opens here; what it changes of the task waits for its Stop, as before
-// (currentAttempt). Only the ledger, as the person's message waits on this: a turn of theirs still
-// open, one they stopped say, takes this one too, and its Stop closes what the stopped one left.
+// ledger from its start, with their words, as one nod sends is (deliver opens that one, with its
+// words, before pasting it, so this leaves it as it is): until its Stop, nothing takes the worker
+// for idle (closeFinished, restarts), and the review hears what they said (reviewBrief). Only the
+// turn opens here; what it changes of the task waits for its Stop, as before (currentAttempt). Only
+// the ledger, as the person's message waits on this: a turn of theirs still open, one they stopped
+// say, takes this one too, as a message of its own, and its Stop closes what the stopped one left.
 // A command (/exit) or bash mode does not come here: it does not go through prompt.submit, as the
 // 2.1.310 binary says of a prompt with no submit outcome. So a message that starts with `/` (a path)
 // is a turn like any other.
 // ponytail: not measured in an interactive session; a command that did come here would open a
-// turn its Stop never closes, read as cut off once Claude Code starts again.
+// turn its Stop never closes, read as cut off once Claude Code starts again. Nor whether Claude
+// Code runs this hook for a message it gives the worker in the middle of a turn: if it does, what a
+// person types into a turn nod sent is left out, and a message nod sent into a person's turn is
+// kept twice. A message another hook of theirs held back is kept too.
 export function onPrompt(ledger: Ledger, event: z.infer<typeof PromptEvent>): void {
   const taskId = ledger.taskOfSession(event.session_id)
   if (taskId === null) return
-  openTurn(ledger, taskId, event.session_id)
+  const said = `${TYPED}\n${event.prompt}`
+  openTurn(ledger, taskId, event.session_id, said, (open) => {
+    if (typedHere(open.prompt)) ledger.addMessage(taskId, open.id, said)
+  })
 }
 
 // Called by the Notification hook. A permission prompt pauses the worker mid-turn, so it becomes a
@@ -1278,7 +1287,7 @@ async function currentAttempt(
   // A turn nod sent closed these as it started (deliver). One the prompt hook opened leaves them
   // to here, the turn's end as before it was opened at its start, so a turn the person stops
   // (Escape, no Stop) leaves the question open and the task waiting on it.
-  if (turn.prompt !== TYPED) return turn.id
+  if (!typedHere(turn.prompt)) return turn.id
   const asked = (d: Decision) => ASKED.includes(d.reason) && d.attemptId !== turn.id
   const closed = closeDecisions(ledger, taskId, asked, WENT_ON)
   goesOn(ledger, taskId, closed)
@@ -1286,19 +1295,29 @@ async function currentAttempt(
   return turn.id
 }
 
-// The task's open turn, or one opened as a turn nod did not send. In one transaction with the look,
-// as deliver opens its turns in one, so of a hook and a message at once only one opens it.
-function openTurn(ledger: Ledger, taskId: number, sessionId: string): Attempt {
+// The task's open turn, or one opened as a turn nod did not send, with `prompt`. In one transaction
+// with the look, as deliver opens its turns in one, so of a hook and a message at once only one
+// opens it. `taken`: what goes into the ledger with a turn found open, in that transaction.
+function openTurn(
+  ledger: Ledger,
+  taskId: number,
+  sessionId: string,
+  prompt = TYPED,
+  taken: (open: Attempt) => void = () => {},
+): Attempt {
   return ledger.db
     .transaction((): Attempt => {
       const open = ledger.openAttempt(taskId)
-      if (open !== null) return open
+      if (open !== null) {
+        taken(open)
+        return open
+      }
       const id = ledger.startAttempt({
         taskId,
         kind: 'followup',
         decisionId: null,
         sessionId,
-        prompt: TYPED,
+        prompt,
       })
       return ledger.attempt(id)
     })
@@ -1316,7 +1335,7 @@ function openTurn(ledger: Ledger, taskId: number, sessionId: string): Attempt {
 // not ended, which leaves the turn open as before.
 function endTurnWithoutStop(ledger: Ledger, home: string, taskId: number): void {
   const open = ledger.openAttempt(taskId)
-  if (open === null || open.prompt !== TYPED) return
+  if (open === null || !typedHere(open.prompt)) return
   if (ledger.decisions(taskId).some((d) => d.answer === null && d.attemptId === open.id)) return
   let why: string | null = null
   try {
@@ -1343,7 +1362,7 @@ function transcriptOf(
 // A turn a person typed that ended without a Stop (endTurnWithoutStop): it ran no turn of the
 // worker's, or none that went anywhere.
 const noTurn = (a: Attempt): boolean =>
-  a.prompt === TYPED && (a.error === STOPPED_TURN || a.error === HELD_BACK)
+  typedHere(a.prompt) && (a.error === STOPPED_TURN || a.error === HELD_BACK)
 
 const TranscriptEntry = z.object({
   type: z.string(),
@@ -1446,7 +1465,8 @@ const textsOf = (content: unknown): unknown[] =>
 // queue went with it, so each waits for the next start, as deliver leaves a message then. The first
 // starts the turn, the rest go into it, each with its sender; a turn a message opened during the
 // hook (deliver) came after them, so they stay where they are, before its words in the review. A
-// transcript that cannot be read leaves them in the turn that ended, as before.
+// transcript that cannot be read leaves them in the turn that ended, as before. What a person typed
+// (onPrompt) came from Claude Code's prompt hook, so Claude Code had it: it is not nod's to send.
 function carryUnheard(
   ledger: Ledger,
   home: string,
@@ -1454,7 +1474,9 @@ function carryUnheard(
   attemptId: number,
   sessionId: string,
 ): void {
-  const told = ledger.messages(task.id).filter((m) => m.attemptId === attemptId)
+  const told = ledger
+    .messages(task.id)
+    .filter((m) => m.attemptId === attemptId && !typedHere(m.text))
   if (told.length === 0) return
   let unheard: { said: Message; fate: Fate }[]
   try {
