@@ -1,7 +1,7 @@
 import { afterAll, expect, spyOn, test } from 'bun:test'
 import { join, resolve } from 'node:path'
 import { inboxServer, inboxTest } from '../test/inbox-server'
-import { tempDirs } from '../test/tmp'
+import { socketsParent, tempDirs } from '../test/tmp'
 import { onInbox, sendNotices, tellProject } from './inbox'
 import { Ledger, type NewTask } from './ledger'
 import { notify } from './notify'
@@ -310,7 +310,7 @@ inboxTest(
   "notify writes one line into the session's socket, a user message to its id, as Claude Code reads it; with no socket there it waits, and the end it tells of stands",
   async () => {
     const { home, ledger, todos, p, task, turn } = setup()
-    const socket = join(tmp.make('nod-inbox-sock-'), 's')
+    const socket = join(tmp.make('nod-inbox-sock-', socketsParent()), 's')
     todos.addSession(p.id, A, '/work/one')
     todos.setSocket(A, socket)
     const id = task('Ship it')

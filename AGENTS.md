@@ -27,6 +27,6 @@ Claude Code 는 `.claude/rules/` 를 자동으로 읽습니다. 다른 에이전
 
 ## 검증
 
-커밋 전에 `bun test`, `bun run typecheck`, `bun run lint` 가 모두 통과해야 합니다. `ui/` 를 고쳤으면 `ui/` 에서 `bun run typecheck` 도 통과해야 합니다. 워커 샌드박스에서는 tmux 서버가 뜨지 않아 tmux 를 쓰는 시험이 건너뛰어지고(`test/tmux-server.ts`), 전체 시험은 nod 의 검증이 샌드박스 밖에서 돌립니다.
+커밋 전에 `bun test`, `bun run typecheck`, `bun run lint` 가 모두 통과해야 합니다. `ui/` 를 고쳤으면 `ui/` 에서 `bun run typecheck` 도 통과해야 합니다. nod 가 띄운 워커는 자기 소켓 폴더(`NOD_SOCKETS`)에서 tmux·소켓 시험까지 돌립니다. 그 밖의 샌드박스(그 설정 전에 뜬 워커 등)에서는 tmux 서버가 뜨지 않아 그 시험이 건너뛰어지고(`test/tmux-server.ts`), 전체 시험은 nod 의 검증이 샌드박스 밖에서 돌립니다.
 
 > 규칙·스킬을 더하면 이 표에도 한 줄을 더합니다.

@@ -1,8 +1,9 @@
 import { afterAll, expect, test } from 'bun:test'
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
-import { tempDirs } from './tmp'
+import { socketsParent, tempDirs } from './tmp'
 import { endFinishedRuns } from './tmux'
+import { tmuxTest } from './tmux-server'
 
 const tmp = tempDirs()
 const runs: Run[] = []
@@ -16,9 +17,9 @@ afterAll(() => {
 
 type Run = { proc: Bun.Subprocess; dir: string; socket: string }
 
-// A test run as worker.test.ts begins one, making its dirs in `parent`, with a tmux server in its
-// dir. Returns once the server is up. The names are short: a socket's path must fit in 104 bytes
-// (macOS), and the temp dir there takes half.
+// A test run as worker.test.ts begins one, making its dirs in `parent` (its TMPDIR, and where it
+// keeps sockets), with a tmux server in its dir. Returns once the server is up. The names are
+// short: a socket's path must fit in 104 bytes (macOS), and the temp dir there takes half.
 async function begin(parent: string): Promise<Run> {
   const script = `
 import { tempDirs } from ${JSON.stringify(resolve(import.meta.dir, 'tmp.ts'))}
@@ -31,7 +32,7 @@ console.log(dir)
 await new Promise(() => {})
 `
   const proc = Bun.spawn([process.execPath, '-e', script], {
-    env: { ...process.env, TMPDIR: parent },
+    env: { ...process.env, TMPDIR: parent, NOD_SOCKETS: parent },
     stdout: 'pipe',
     stderr: 'inherit',
   })
@@ -50,24 +51,27 @@ await new Promise(() => {})
 const serves = (socket: string): boolean =>
   Bun.spawnSync(['tmux', '-S', socket, 'has-session']).exitCode === 0
 
-test('a test run ends the tmux servers a run cut off left behind, and leaves those of a run still going', async () => {
-  const parent = tmp.make('nod-r-')
-  const cut = await begin(parent)
-  cut.proc.kill('SIGKILL')
-  await cut.proc.exited
-  // Cut off before its afterAll: its server stays.
-  expect(serves(cut.socket)).toBe(true)
+tmuxTest(
+  'a test run ends the tmux servers a run cut off left behind, and leaves those of a run still going',
+  async () => {
+    const parent = tmp.make('nod-r-', socketsParent())
+    const cut = await begin(parent)
+    cut.proc.kill('SIGKILL')
+    await cut.proc.exited
+    // Cut off before its afterAll: its server stays.
+    expect(serves(cut.socket)).toBe(true)
 
-  const next = await begin(parent)
-  expect(serves(cut.socket)).toBe(false)
-  expect(existsSync(cut.dir)).toBe(false)
+    const next = await begin(parent)
+    expect(serves(cut.socket)).toBe(false)
+    expect(existsSync(cut.dir)).toBe(false)
 
-  // `next` is still going when another run begins.
-  const other = await begin(parent)
-  expect(serves(next.socket)).toBe(true)
-  expect(existsSync(next.dir)).toBe(true)
-  expect(serves(other.socket)).toBe(true)
-})
+    // `next` is still going when another run begins.
+    const other = await begin(parent)
+    expect(serves(next.socket)).toBe(true)
+    expect(existsSync(next.dir)).toBe(true)
+    expect(serves(other.socket)).toBe(true)
+  },
+)
 
 test("a run's dir is over once the run that made it is gone, or, with no owner yet or from before runs named theirs, a day on", () => {
   const parent = tmp.make('nod-runs-')

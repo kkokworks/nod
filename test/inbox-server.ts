@@ -1,8 +1,8 @@
 import { test } from 'bun:test'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { createServer, type Server } from 'node:net'
-import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { socketsParent } from './tmp'
 
 // A stand-in for a Claude Code session's inbox socket: it reads the lines written into it, as JSON,
 // and answers nothing, as Claude Code does. No test starts a real Claude Code session. `received`:
@@ -40,7 +40,8 @@ export function inboxServer(path: string): Promise<InboxServer> {
 // Why to skip the tests that need a socket server, or null to run them, as tmuxSkip does: a Claude
 // Code worker's sandbox refuses to listen on a Unix socket (EPERM, measured on 2.1.310), and its
 // commands have SANDBOX_RUNTIME=1. Anything else that keeps the server from listening fails the
-// run: nod's check runs these tests outside the sandbox and must not pass without them.
+// run: nod's check runs these tests outside the sandbox and must not pass without them. As with
+// tmuxSkip, a worker nod starts now listens in its own folder (NOD_SOCKETS), so they run there too.
 export function inboxSkip(
   error: { code?: unknown } | null,
   env: Record<string, string | undefined>,
@@ -53,7 +54,7 @@ export function inboxSkip(
 }
 
 async function probe(): Promise<{ code?: unknown } | null> {
-  const dir = mkdtempSync(join(tmpdir(), 'nod-inbox-probe-'))
+  const dir = mkdtempSync(join(socketsParent(), 'nod-inbox-probe-'))
   try {
     const server = await inboxServer(join(dir, 's'))
     await server.close()
