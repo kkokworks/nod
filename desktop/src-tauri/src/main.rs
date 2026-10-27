@@ -218,6 +218,10 @@ fn page(app: &AppHandle, path: &str) -> Url {
     if server_up() {
         return server_page(path);
     }
+    offline_page(app, path)
+}
+
+fn offline_page(app: &AppHandle, path: &str) -> Url {
     // The app's own pages: on the CLI's dev server under `tauri dev`, else on tauri://.
     let base = app.config().build.dev_url.clone();
     let base = base.unwrap_or_else(|| "tauri://localhost/".parse().unwrap());
@@ -243,7 +247,8 @@ fn watch_server(app: AppHandle) {
         let Some(window) = app.get_webview_window("main") else { continue };
         let Ok(url) = window.url() else { continue };
         if url.origin() == server_page("/").origin() && !server_up() {
-            let _ = window.navigate(page(&app, &shown_path(&url)));
+            // Not page(), which asks again: a server back in between would reload the page.
+            let _ = window.navigate(offline_page(&app, &shown_path(&url)));
         }
     });
 }

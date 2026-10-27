@@ -22,7 +22,7 @@ text.addEventListener('keydown', async (event) => {
   try {
     await invoke('capture', { text: sent })
     // What was typed while it was sent stays, to send next.
-    if (text.value === sent) text.value = ''
+    if (text.value.startsWith(sent)) text.value = text.value.slice(sent.length)
     error.textContent = ''
   } catch (e) {
     // Kept as typed, to send again once whatever went wrong is fixed.

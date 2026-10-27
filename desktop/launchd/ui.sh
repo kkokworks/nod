@@ -19,12 +19,13 @@ domain="gui/$(id -u)"
 url=http://127.0.0.1:4800
 
 # Waits up to $2 seconds for curl on the server's address to exit with $1: 0 once a server
-# answers there, 7 once nothing listens. Not through this shell's proxy, which would answer.
+# answers there, 7 once nothing listens. Not through this shell's proxy, which would answer, nor
+# with ~/.curlrc (-q), whose options can change the exit code.
 await() {
   tries=$2
   while :; do
     code=0
-    curl -s -o /dev/null --max-time 1 --noproxy '*' "$url" || code=$?
+    curl -q -s -o /dev/null --max-time 5 --noproxy '*' "$url" || code=$?
     [ "$code" -ne "$1" ] || return 0
     tries=$((tries - 1))
     [ "$tries" -gt 0 ] || return 1
@@ -83,7 +84,7 @@ for (const [name, value] of Object.entries(savedEnv())) console.log(name + '\t' 
     exit 1
   fi
   # How much of the log is from earlier runs, which a failure below leaves out.
-  seen=$(wc -c <"$log" 2>/dev/null || echo 0)
+  seen=$({ wc -c <"$log"; } 2>/dev/null || echo 0)
   # Right after the bootout, launchd may still be letting the old agent go, and a bootstrap then
   # fails with "5: Input/output error".
   tries=5
