@@ -48,15 +48,8 @@ const shell = await import('./routes/__root')
 if (before === undefined) delete process.env.NOD_HOME
 else process.env.NOD_HOME = before
 
-// The pages in a layout, as the real root puts them beside the sidebar. Its loader fails while
-// `rootFails` is set, as the real root's does when the sidebar's data does not load, and the real
-// root's error component shows then.
-let rootFails: Error | null = null
+// The pages in a layout, as the real root puts them beside the sidebar.
 const root = R.createRootRoute({
-  loader: () => {
-    if (rootFails !== null) throw rootFails
-  },
-  errorComponent: shell.Route.options.errorComponent,
   component: () => (
     <div className="layout">
       <R.Outlet />
@@ -547,12 +540,21 @@ test('a task or todo that is not there, an unknown page and a page that fails sh
     title: document.querySelector('.layout .page h1')?.textContent,
     out: document.querySelector('.layout .page a')?.getAttribute('href'),
   })
-  // As the server functions' validators do, a number that is not a whole one is refused.
+  // As the server functions' validators do, a number that is not a whole one is refused. Task 1000
+  // is there, which /tasks/1e3 does not name.
   answer = (id) => {
     if (!Number.isInteger(id)) throw new Error('id must be an integer')
-    return null
+    return id === 1000 ? detail(1000) : null
   }
-  for (const href of ['/tasks/999999', '/todos/999999', '/nope', '/tasks/abc', '/todos/1.5']) {
+  const hrefs = [
+    '/tasks/999999',
+    '/todos/999999',
+    '/nope',
+    '/tasks/abc',
+    '/todos/1.5',
+    '/tasks/1e3',
+  ]
+  for (const href of hrefs) {
     await go(href)
     expect(shown()).toEqual({ title: 'Not found', out: '/focus' })
     expect(document.querySelector('.layout .subtitle')?.textContent).toBe(`Nothing is at ${href}.`)
@@ -570,18 +572,46 @@ test('a task or todo that is not there, an unknown page and a page that fails sh
   expect(document.querySelector('.layout .task-title')?.textContent).toBe('task 3')
 })
 
-test("the sidebar's data failing to load leaves the layout, without its lists, until a refresh reads it", async () => {
-  answer = (id) => detail(id as number)
-  rootFails = new Error('ledger is busy')
-  await go('/tasks/3')
-  expect(document.querySelector('.layout')).toBeNull()
-  expect(document.querySelector('.sidebar a[href="/inbox"]')).not.toBeNull()
-  expect(document.querySelector('.side-summary')).toBeNull()
-  expect(document.querySelector('.main h1')?.textContent).toBe('Something went wrong')
-  expect(banners()).toEqual(['ledger is busy'])
-  // The layout's 5 second refresh, once the ledger reads.
-  rootFails = null
-  await reload()
-  expect(document.querySelector('.sidebar')).toBeNull()
-  expect(document.querySelector('.layout .task-title')?.textContent).toBe('task 3')
+test("the sidebar's data failing to load leaves the layout without its lists, and a refresh that reads brings them", async () => {
+  // The real root, in a router of its own, without the document shell around it.
+  const app = R.createRouter({
+    routeTree: R.createRootRoute({
+      loader: shell.Route.options.loader,
+      component: shell.Route.options.component,
+    } as never) as unknown as AnyRoute,
+    history: R.createMemoryHistory({ initialEntries: ['/'] }),
+    defaultNotFoundComponent: () => <p className="here">page</p>,
+  })
+  const box = document.body.appendChild(document.createElement('div'))
+  const own = createRoot(box)
+  // The layout's 5 second refresh.
+  const refresh = async () => {
+    await act(() => app.invalidate())
+    await settle()
+  }
+  try {
+    answer = () => {
+      throw new Error('ledger is busy')
+    }
+    await act(async () => own.render(<R.RouterProvider router={app as never} />))
+    await settle()
+    expect(box.querySelector('.sidebar a[href="/inbox"]')).not.toBeNull()
+    expect(box.querySelector('.side-summary')).toBeNull()
+    expect(box.querySelector('.main h1')?.textContent).toBe('Something went wrong')
+    expect(box.querySelector('.main .banner')?.textContent).toBe('ledger is busy')
+    // A refresh that fails again keeps what is being typed in the sidebar.
+    const search = box.querySelector<HTMLInputElement>('.side-search input')
+    if (search === null) throw new Error('no search box')
+    type(search, 'r2')
+    await refresh()
+    expect(box.querySelector<HTMLInputElement>('.side-search input')?.value).toBe('r2')
+
+    answer = () => ({ decisions: [], groups: [], collected: { items: [], total: 0 }, inbox: 2 })
+    await refresh()
+    expect(box.querySelector('.side-summary')?.textContent).toContain('0 tasks')
+    expect(box.querySelector('.main .here')).not.toBeNull()
+  } finally {
+    act(() => own.unmount())
+    box.remove()
+  }
 })

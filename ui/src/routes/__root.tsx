@@ -35,16 +35,14 @@ export const Route = createRootRoute({
       { rel: 'apple-touch-icon', href: '/apple-touch-icon.png' },
     ],
   }),
-  loader: () => getOverview(),
+  // The sidebar's own data failing to load leaves the layout without its lists, the error in place
+  // of the page, and the refresh brings the page back once the ledger reads again. Caught here, not
+  // in an error component, which each failed refresh would build anew, losing what the sidebar
+  // holds (a search being typed).
+  loader: () =>
+    getOverview().catch((e: unknown) => ({ failed: e instanceof Error ? e.message : String(e) })),
   shellComponent: Shell,
   component: Root,
-  // The sidebar's own data failing to load: the layout stands without its lists, and its refresh
-  // brings the page back once the ledger reads again.
-  errorComponent: (props) => (
-    <Layout data={null}>
-      <Failed {...props} />
-    </Layout>
-  ),
 })
 
 function Shell({ children }: { children: ReactNode }) {
@@ -62,8 +60,13 @@ function Shell({ children }: { children: ReactNode }) {
 }
 
 function Root() {
-  return (
-    <Layout data={Route.useLoaderData()}>
+  const data = Route.useLoaderData()
+  return 'failed' in data ? (
+    <Layout data={null}>
+      <Failed error={data.failed} />
+    </Layout>
+  ) : (
+    <Layout data={data}>
       <Outlet />
     </Layout>
   )

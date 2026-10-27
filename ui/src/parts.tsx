@@ -1,4 +1,4 @@
-import { type ErrorComponentProps, Link, useLocation } from '@tanstack/react-router'
+import { Link, useLocation } from '@tanstack/react-router'
 import { type ComponentProps, createContext, type ReactNode, useContext } from 'react'
 import ReactMarkdown, { type ExtraProps } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -149,7 +149,7 @@ export function NotFound() {
   )
 }
 
-export function Failed({ error }: ErrorComponentProps) {
+export function Failed({ error }: { error: unknown }) {
   return (
     <WayOut title="Something went wrong">
       <div className="banner">{error instanceof Error ? error.message : String(error)}</div>
