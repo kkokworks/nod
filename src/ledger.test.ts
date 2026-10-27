@@ -84,16 +84,21 @@ test('v25 moves each retrospective that has its outcome to the status the outcom
   const old = new Database(join(home, 'nod.db'), { create: true, strict: true })
   for (const sql of MIGRATIONS.slice(0, 24)) old.exec(sql)
   // Retrospective n runs in task n and looks back on task 10 + n. Task 6 is no retrospective; 8
-  // waits for retrospective 2, 9 for 8, and 10 for task 6.
+  // waits for retrospective 2, 9 for 8, 10 for task 6, and 21 for retrospective 20, cancelled
+  // already.
   old.exec(`pragma user_version = 24;
     insert into tasks (id, brief, status, created_at, finished_at) values
       (11, 'x', 'succeeded', 'at', 'at'), (12, 'x', 'succeeded', 'at', 'at'),
       (13, 'x', 'succeeded', 'at', 'at'), (14, 'x', 'succeeded', 'at', 'at'),
-      (15, 'x', 'succeeded', 'at', 'at'), (17, 'x', 'succeeded', 'at', 'at');
+      (15, 'x', 'succeeded', 'at', 'at'), (17, 'x', 'succeeded', 'at', 'at'),
+      (30, 'x', 'succeeded', 'at', 'at');
     insert into retros (id, of_task_id, outcome, created_at, ended_at) values
       (1, 11, 'added', 'at', 'ended'), (2, 12, 'declined', 'at', 'ended'),
       (3, 13, 'none', 'at', 'ended'), (4, 14, null, 'at', null), (5, 15, 'dropped', 'at', null),
-      (7, 17, 'todo', 'at', 'ended');
+      (7, 17, 'todo', 'at', 'ended'), (20, 30, 'dropped', 'at', 'ended');
+    insert into tasks (id, brief, retro_id, status, created_at, finished_at) values
+      (20, 'r20', 20, 'cancelled', 'at', 'ended'), (21, 'after r20', null, 'queued', 'at', null);
+    insert into task_deps (task_id, after_id) values (21, 20);
     insert into tasks (id, brief, retro_id, status, error, created_at, finished_at) values
       (1, 'r1', 1, 'needs_decision', null, 'at', null),
       (2, 'r2', 2, 'error', 'boom', 'at', 'failed'),
@@ -119,7 +124,7 @@ test('v25 moves each retrospective that has its outcome to the status the outcom
     const t = ledger.get(id)
     return [t.status, t.error, t.finishedAt]
   }
-  expect([1, 2, 3, 4, 5, 6, 7, 10].map(row)).toEqual([
+  expect([1, 2, 3, 4, 5, 6, 7, 10, 20, 21].map(row)).toEqual([
     ['succeeded', null, 'ended'],
     ['cancelled', null, 'ended'],
     ['succeeded', null, 'done'],
@@ -127,6 +132,8 @@ test('v25 moves each retrospective that has its outcome to the status the outcom
     ['cancelled', null, 'at'],
     ['needs_decision', null, null],
     ['succeeded', null, 'ended'],
+    ['queued', null, null],
+    ['cancelled', null, 'ended'],
     ['queued', null, null],
   ])
   // What waited for the cancelled retrospective is cancelled with it, as it is from then on.
