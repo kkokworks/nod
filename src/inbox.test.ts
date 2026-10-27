@@ -2,7 +2,7 @@ import { afterAll, expect, spyOn, test } from 'bun:test'
 import { join, resolve } from 'node:path'
 import { inboxServer, inboxTest } from '../test/inbox-server'
 import { socketsParent, tempDirs } from '../test/tmp'
-import { onInbox, sendNotices, tellProject } from './inbox'
+import { onCommand, onInbox, sendNotices, tellProject } from './inbox'
 import { Ledger, type NewTask } from './ledger'
 import { notify } from './notify'
 import { Todos } from './todos'
@@ -165,6 +165,56 @@ test('notices wait while the project has no session taking messages, and go in o
     ['/socks/a2', A],
   ])
   expect(sent[1]?.message.content).toContain('task #3 t3 error: boom')
+})
+
+test("a nod command in a project session its hooks never told nod of says where it takes messages, and what waited goes; another session's changes nothing", async () => {
+  const { ledger, todos, p, task, sent, send } = setup()
+  // Opened before nod open gave it hooks, or reopened with claude --resume: no socket.
+  todos.addSession(p.id, A, '/work/one')
+  ledger.succeed(task('First'))
+  await tellProject(ledger, p.id, 'Look at the logs', 'human', send)
+  expect(ledger.unsentNotices()).toHaveLength(2)
+
+  // Not a project's session: no socket, no send, no word.
+  expect(await onCommand(ledger, C, '/socks/c', send)).toBeNull()
+  expect(await onCommand(ledger, null, '/socks/c', send)).toBeNull()
+  expect(todos.latestSession(p.id)?.socket).toBeNull()
+  expect(sent).toEqual([])
+
+  expect(await onCommand(ledger, A, '/socks/a', send)).toBeNull()
+  expect(todos.latestSession(p.id)?.socket).toBe('/socks/a')
+  expect(sent.map((s) => [s.socket, s.session_id])).toEqual([['/socks/a', A]])
+  expect(sent[0]?.message.content).toStartWith('nod, project p1 Release: 2 notices, oldest first')
+  expect(ledger.unsentNotices()).toEqual([])
+  // The next command sends nothing again; the same session in a new process says its new socket.
+  await onCommand(ledger, A, '/socks/a', send)
+  expect(sent).toHaveLength(1)
+  expect(await onCommand(ledger, A, '/socks/a2', send)).toBeNull()
+  expect(todos.latestSession(p.id)?.socket).toBe('/socks/a2')
+  ledger.error(task('Second'), 'boom')
+  await sendNotices(ledger, send)
+  expect(sent.map((s) => s.socket)).toEqual(['/socks/a', '/socks/a2'])
+
+  // A session that cannot hear says so, and changes nothing: one with no socket, and one that is
+  // no longer the project's latest.
+  todos.addSession(p.id, B, '/work/two')
+  expect(await onCommand(ledger, B, undefined, send)).toBe(
+    'nod: this session of p1 hears nothing from nod: Claude Code gave it no inbox socket (CLAUDE_CODE_MESSAGING_SOCKET); nod open p1 opens it again',
+  )
+  expect(await onCommand(ledger, A, '/socks/a3', send)).toBe(
+    "nod: this session of p1 hears nothing from nod: nod tells p1's latest session, which nod open p1 opens",
+  )
+  ledger.succeed(task('Third'))
+  await sendNotices(ledger, send)
+  expect(sent).toHaveLength(2)
+  // One whose hook told nod its socket hears, with or without the variable.
+  expect(await onCommand(ledger, B, '/socks/b', send)).toBeNull()
+  expect(await onCommand(ledger, B, undefined, send)).toBeNull()
+  expect(sent.map((s) => [s.socket, s.session_id])).toEqual([
+    ['/socks/a', A],
+    ['/socks/a2', A],
+    ['/socks/b', B],
+  ])
 })
 
 test('a send that fails keeps the notices for the next and leaves the change it tells of as it is; a socket gone is forgotten unless the session said another since', async () => {
@@ -354,4 +404,82 @@ inboxTest(
       await server.close()
     }
   },
+)
+
+inboxTest(
+  "a nod command in a project session its hooks never told nod of writes the socket Claude Code exported to it, and what waited goes there; another session's command changes nothing",
+  async () => {
+    const { home, ledger, todos, p, task, turn } = setup()
+    const socket = join(tmp.make('nod-inbox-cmd-', socketsParent()), 's')
+    todos.addSession(p.id, A, '/work/one')
+    const id = task('Ship it')
+    turn(id, 'succeeded', 'Shipped')
+    ledger.succeed(id)
+    const {
+      CLAUDECODE: _,
+      CLAUDE_CODE_SESSION_ID: __,
+      CLAUDE_CODE_MESSAGING_SOCKET: ___,
+      NOD_TASK: ____,
+      NOD_ACTOR: _____,
+      ...shell
+    } = process.env
+    // `nod project`, as a Claude session runs it from its Bash.
+    const nod = async (session: string, inbox?: string) => {
+      const proc = Bun.spawn(['bun', cli, 'project'], {
+        env: {
+          ...shell,
+          NOD_HOME: home,
+          CLAUDECODE: '1',
+          CLAUDE_CODE_SESSION_ID: session,
+          ...(inbox === undefined ? {} : { CLAUDE_CODE_MESSAGING_SOCKET: inbox }),
+        },
+        stdout: 'pipe',
+        stderr: 'pipe',
+      })
+      const [code, out, err] = await Promise.all([
+        proc.exited,
+        new Response(proc.stdout).text(),
+        new Response(proc.stderr).text(),
+      ])
+      return { code, out, err }
+    }
+
+    const server = await inboxServer(socket)
+    try {
+      expect(await nod(C, socket)).toEqual({ code: 0, out: expect.any(String), err: '' })
+      expect(todos.latestSession(p.id)?.socket).toBeNull()
+      expect(ledger.unsentNotices()).toHaveLength(1)
+
+      expect(await nod(A, socket)).toEqual({
+        code: 0,
+        out: expect.stringContaining('Release'),
+        err: '',
+      })
+      expect(todos.latestSession(p.id)?.socket).toBe(socket)
+      await server.received(1)
+      expect(server.lines).toEqual([
+        {
+          type: 'user',
+          session_id: A,
+          message: {
+            role: 'user',
+            content:
+              'nod, project p1 Release: a notice\n\ntask #1 t1 succeeded, attempt 1: Shipped\nnext: nod show 1, then send its result out',
+          },
+        },
+      ])
+      expect(ledger.unsentNotices()).toEqual([])
+    } finally {
+      await server.close()
+    }
+
+    // A newer session of the project with no socket says on stderr that it hears nothing.
+    todos.addSession(p.id, B, '/work/two')
+    const deaf = await nod(B)
+    expect(deaf.code).toBe(0)
+    expect(deaf.err).toBe(
+      'nod: this session of p1 hears nothing from nod: Claude Code gave it no inbox socket (CLAUDE_CODE_MESSAGING_SOCKET); nod open p1 opens it again\n',
+    )
+  },
+  15_000,
 )

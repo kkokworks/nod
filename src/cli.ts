@@ -6,7 +6,7 @@ import { accountRule, configDir, describeRule, setAccountRule } from './account'
 import { ALLOW, onPermissionRequest, PermissionEvent } from './allow'
 import { sweep } from './done'
 import { collect, type GcPick, type GcReport, remotesHolding } from './gc'
-import { InboxEvent, onInbox, sendLine, sendNotices, tellProject } from './inbox'
+import { InboxEvent, onCommand, onInbox, sendLine, sendNotices, tellProject } from './inbox'
 import { land } from './land'
 import {
   type Attempt,
@@ -258,8 +258,11 @@ CLAUDE_CODE_MESSAGING_SOCKET), as another Claude session does; Claude Code shows
 another session, not the person. The line's format is Claude Code's own, not documented, and the
 socket answers nothing: a line Claude Code drops counts as sent. A session that skips permission
 prompts holds such messages for the person to approve. One reopened with claude --resume instead
-of nod open reports no socket, and /clear goes on under an ID nod open did not open: either hears
-nothing until nod open opens the project's session again.
+of nod open, or opened before nod open gave it hooks, reports its socket at its first nod command
+(Claude Code exports it to Bash too), and hears nothing before. A nod command in a project's
+session that cannot hear (not the project's latest, or no socket) says so on stderr. /clear goes
+on under an ID nod open did not open: it hears nothing until nod open opens the project's session
+again.
 
 When <home>/notify exists, nod runs it with a JSON event on stdin whenever a decision opens, a
 task succeeds or fails to start, a trigger fails, a watch passes or can no longer run, or a
@@ -272,6 +275,14 @@ if (command === 'hook' && rest[0] === 'prompt') await promptHook()
 if (command === 'hook' && rest[0] === 'inbox') await inboxHook()
 if (command === 'hook' && rest[0] === 'permission') await permissionHook()
 const ledger = new Ledger(home)
+// A project session its hooks never told nod of says where it takes messages (onCommand); what
+// goes wrong only goes to stderr, as the command still runs.
+const unheard = await onCommand(
+  ledger,
+  sessionFromEnv(),
+  process.env.CLAUDE_CODE_MESSAGING_SOCKET,
+).catch((error) => `nod: could not record this session's inbox: ${message(error)}`)
+if (unheard !== null) console.error(unheard)
 const terminals = Terminals.of(home)
 const taskRef = (ref: string | undefined): number => new Todos(ledger).taskRef(ref ?? '')
 

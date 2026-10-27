@@ -39,6 +39,36 @@ export async function onInbox(
   await sendNotices(ledger, send)
 }
 
+// What every nod command run in a Claude session does first (cli.ts), for a project session its
+// hooks never told nod of: one reopened with claude --resume, or opened before nod open gave it
+// hooks. Claude Code exports the socket to its Bash too, so the session says where it takes
+// messages now, or anew after it started again, and what waited for it goes. Returns why the
+// session still hears nothing, for stderr: it is not the project's latest session, which alone
+// hears, or nod knows no socket of it. A session nod open did not open, /clear's included, changes
+// nothing and is told nothing.
+// ponytail: with no SessionEnd hook such a session ends without saying so, and its socket stays
+// until a send finds it gone (sendNotices); the hooks' risk of a reused path is the same.
+export async function onCommand(
+  ledger: Ledger,
+  session: string | null,
+  socket: string | undefined,
+  send = sendLine,
+): Promise<string | null> {
+  const todos = new Todos(ledger)
+  const place = session === null ? null : todos.sessionPlace(session)
+  if (place === null) return null
+  const p = `p${place.project.id}`
+  const deaf = `nod: this session of ${p} hears nothing from nod`
+  if (!place.latest) return `${deaf}: nod tells ${p}'s latest session, which nod open ${p} opens`
+  if (socket && socket !== place.session.socket) {
+    todos.setSocket(place.session.sessionId, socket)
+    await sendNotices(ledger, send)
+  } else if (!socket && place.session.socket === null) {
+    return `${deaf}: Claude Code gave it no inbox socket (CLAUDE_CODE_MESSAGING_SOCKET); nod open ${p} opens it again`
+  }
+  return null
+}
+
 // `nod tell p<n>`: a person's words for the project's session, by the same way. Returns whether
 // they went now; else they wait for the session as a notice does.
 export async function tellProject(
