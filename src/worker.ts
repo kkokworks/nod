@@ -869,26 +869,39 @@ export async function onStopFailure(
 // turn its Stop never closes, read as cut off once Claude Code starts again. Nor whether Claude Code
 // runs this hook for a message it gives the worker in the middle of a turn, or how it passes one
 // nod pasted: words of nod's it changed read as the person's, and are kept twice. A message Claude
-// Code gives by itself while a person is attached reads as theirs.
+// Code gives by itself while a person is attached, in a shape OWN_MESSAGE misses, reads as theirs.
 export function onPrompt(ledger: Ledger, home: string, event: z.infer<typeof PromptEvent>): void {
   const taskId = ledger.taskOfSession(event.session_id)
   if (taskId === null) return
-  const typed = Terminals.of(home).attached(sessionName(taskId))
+  const terminals = Terminals.of(home)
+  const name = sessionName(taskId)
+  const typed = terminals.attached(name) && !OWN_MESSAGE.test(event.prompt)
+  // What a restart after an API error left for the new start (restart), which nod keeps nowhere
+  // else; the mark stays until a Stop.
+  const stalled = typed ? terminals.option(name, STALLED_OPTION) : ''
+  const left = stalled === '' ? [] : [continueAfter(stalled)]
   const said = `${TYPED}\n${event.prompt}`
   openTurn(ledger, taskId, event.session_id, typed ? said : TYPED, (open) => {
-    if (!typed || pastedByNod(ledger, open, event.prompt)) return
+    if (!typed || pastedByNod(ledger, open, event.prompt, left)) return
     // What they typed before this, if a hook of theirs held it back, the review does not go by.
-    const lines = transcriptTail(ledger, home, open)
-    if (endedWithoutStop(lines) === HELD_BACK) forgetHeldBack(ledger, open, lines)
+    if (endedWithoutStop(transcriptTail(ledger, home, open)) === HELD_BACK) {
+      forgetHeldBack(ledger, home, open)
+    }
     ledger.addMessage(taskId, open.id, said)
   })
 }
 
+// A message Claude Code gives the worker by itself, while a person may be attached: a background
+// task's end, another session's message. ponytail: the tags as Claude Code shows such messages to
+// the model (2.1.310); not measured as the prompt hook gets them.
+const OWN_MESSAGE = /<(task-notification|agent-message)[\s>]/
+
 // Whether `prompt`, a message Claude Code took in, holds only what nod sent into the open turn
 // `open` (deliver, carryUnheard) or the start's first message (on a fresh start, nextRun puts a
-// message left for it after that): nod's own, come back through the prompt hook. A paste of several
-// lines comes wrapped in `<pasted_content>`, as Claude Code keeps it in its transcript (heardOf).
-function pastedByNod(ledger: Ledger, open: Attempt, prompt: string): boolean {
+// message left for it after that), or `left` for a start: nod's own, come back through the prompt
+// hook. A paste of several lines comes wrapped in `<pasted_content>`, as Claude Code keeps it in its
+// transcript (heardOf).
+function pastedByNod(ledger: Ledger, open: Attempt, prompt: string, left: string[]): boolean {
   const start = ledger.attempts(open.taskId).findLast((a) => a.kind === 'start')
   const told = ledger
     .messages(open.taskId)
@@ -897,6 +910,7 @@ function pastedByNod(ledger: Ledger, open: Attempt, prompt: string): boolean {
     start?.prompt,
     typedHere(open.prompt) ? undefined : open.prompt,
     ...told.map((m) => m.text),
+    ...left,
   ]
     .flatMap((t) => (t === undefined || pasted(t).trim() === '' ? [] : [pasted(t).trim()]))
     // The longest first, so one inside another goes with it.
@@ -908,16 +922,28 @@ function pastedByNod(ledger: Ledger, open: Attempt, prompt: string): boolean {
 
 // Takes out of the ledger the last words a person typed into turn `open` once a hook of theirs held
 // that message back (endedWithoutStop): Claude Code never took it in, so neither the review nor the
-// worker goes by it, and what they type instead is what counts. Only if no message in the
-// transcript's end `lines` has those words: a held-back message may also keep nod's hook from
-// recording it, and then the last words recorded are ones Claude Code did take in.
-function forgetHeldBack(ledger: Ledger, open: Attempt, lines: string[]): void {
+// worker goes by it, and what they type instead is what counts. Only if no message in the whole
+// transcript has those words: a held-back message may also keep nod's hook from recording it, and
+// then the last words recorded are ones Claude Code did take in, maybe long before. A transcript
+// that cannot be read leaves them.
+// ponytail: words Claude Code keeps otherwise than the hook got them read as never taken in (heardOf).
+function forgetHeldBack(ledger: Ledger, home: string, open: Attempt): void {
   const last = ledger
     .messages(open.taskId)
     .filter((m) => m.attemptId === open.id && typedHere(m.text))
     .at(-1)
   const words = last?.text ?? (typedHere(open.prompt) ? open.prompt : TYPED)
-  if (words === TYPED || heardOf(lines, words.slice(TYPED.length + 1)) !== 'lost') return
+  if (words === TYPED) return
+  let lines: string[]
+  try {
+    const file = transcriptOf(ledger, home, open.taskId, open.sessionId)
+    if (file === null) return
+    lines = readFileSync(file, 'utf8').split('\n')
+  } catch (error) {
+    console.error(`nod: could not read the transcript of task ${open.taskId}: ${message(error)}`)
+    return
+  }
+  if (heardOf(lines, words.slice(TYPED.length + 1)) !== 'lost') return
   if (last === undefined) ledger.setPrompt(open.id, TYPED)
   else ledger.forgetMessage(last.id)
 }
@@ -1377,18 +1403,22 @@ function openTurn(
 // of its own, hold restarts back, and read as cut off once Claude Code starts again. Not one with a
 // decision open, a permission dialog the person stopped say: closing that would leave its task
 // waiting on nothing, so it goes as before, closed by the next turn's Stop, or cut off. Words of a
-// message held back leave the ledger (forgetHeldBack). Errors only go to stderr: what calls this
-// goes on as before.
+// message held back leave the ledger (forgetHeldBack), also from a turn nod sent that a person
+// typed into, which is not theirs to end here. Errors only go to stderr: what calls this goes on as
+// before.
 // ponytail: reads the transcript's end, in Claude Code's own format; a format that changes reads as
 // not ended, which leaves the turn open as before.
 function endTurnWithoutStop(ledger: Ledger, home: string, taskId: number): void {
   const open = ledger.openAttempt(taskId)
-  if (open === null || !typedHere(open.prompt)) return
+  if (open === null) return
+  const theirs = typedHere(open.prompt)
+  const said = ledger.messages(taskId).some((m) => m.attemptId === open.id && typedHere(m.text))
+  if (!theirs && !said) return
+  const why = endedWithoutStop(transcriptTail(ledger, home, open))
+  if (why === HELD_BACK) forgetHeldBack(ledger, home, open)
+  if (!theirs || why === null) return
   if (ledger.decisions(taskId).some((d) => d.answer === null && d.attemptId === open.id)) return
-  const lines = transcriptTail(ledger, home, open)
-  const why = endedWithoutStop(lines)
-  if (why === HELD_BACK) forgetHeldBack(ledger, open, lines)
-  if (why !== null) ledger.failOpenAttempt(open.id, why)
+  ledger.failOpenAttempt(open.id, why)
 }
 
 // The lines at the end (TRANSCRIPT_TAIL) of the transcript of turn `open`'s session; none for one

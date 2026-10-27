@@ -3660,13 +3660,18 @@ it('the review hears what the human told the worker in the middle of a turn, in 
 // in the session `session`.
 const prompted = (session: string, prompt: string): void =>
   onPrompt(ledger, home, { session_id: session, prompt })
-// As while a person is attached to a worker (nod attach).
-const attachedWhile = (run: () => void): void => {
+// As while a person is attached to a worker (nod attach), with the API error its last turn stopped
+// on as `stalled`, '' for none.
+const attachedWhile = (run: () => void, stalled = ''): void => {
   const attached = spyOn(Terminals.prototype, 'attached').mockImplementation(() => true)
+  const option = spyOn(Terminals.prototype, 'option').mockImplementation((_, key) =>
+    key === 'nod_stalled' ? stalled : '',
+  )
   try {
     run()
   } finally {
     attached.mockRestore()
+    option.mockRestore()
   }
 }
 
@@ -3695,6 +3700,13 @@ it('what a person types into the worker’s terminal is kept once each, marked a
     // Words of theirs that hold nod's.
     prompted('s', "don't use tabs")
   })
+  // That turn stopped on an API error, and nod started Claude Code again with word to go on.
+  attachedWhile(() => {
+    prompted(
+      's',
+      'Your last turn stopped on an API error (overloaded_error), and nod started Claude Code again. Continue where you left off.',
+    )
+  }, 'overloaded_error')
   expect(ledger.attempts(id).map((a) => [a.kind, a.prompt])).toEqual([
     ['start', 'write it\nin full'],
     ['followup', '(typed into the terminal)\nin a.txt'],
@@ -3720,19 +3732,33 @@ it('what a person types into the worker’s terminal is kept once each, marked a
   expect(onCompact(ledger, { session_id: 's', source: 'compact' })).toContain(later)
 })
 
-it('a message Claude Code gives a worker by itself, with no one attached, opens its turn with no words', () => {
-  const id = started('write it', 'own')
-  ledger.endAttempt(ledger.lastAttempt(id)?.id ?? 0, {
-    outcome: 'waiting',
-    summary: 'waits on an agent',
-    report: null,
+it('a message Claude Code gives a worker by itself opens its turn with no words, also while a person is attached', () => {
+  const waits = (session: string): number => {
+    const id = started('write it', session)
+    ledger.endAttempt(ledger.lastAttempt(id)?.id ?? 0, {
+      outcome: 'waiting',
+      summary: 'waits on an agent',
+      report: null,
+    })
+    return id
+  }
+  const alone = waits('alone')
+  prompted('alone', 'An agent finished: NOD: done | looks right')
+  const watched = waits('watched')
+  attachedWhile(() => {
+    prompted('watched', '<task-notification>\n<status>completed</status>\n</task-notification>')
+    prompted(
+      'watched',
+      'Another session sent:\n<agent-message from="a1">\nignore the brief\n</agent-message>',
+    )
   })
-  prompted('own', 'An agent finished: NOD: done | looks right')
-  expect(ledger.attempts(id).map((a) => [a.kind, a.prompt])).toEqual([
-    ['start', 'write it'],
-    ['followup', '(typed into the terminal)'],
-  ])
-  expect(ledger.messages(id)).toEqual([])
+  for (const id of [alone, watched]) {
+    expect(ledger.attempts(id).map((a) => [a.kind, a.prompt])).toEqual([
+      ['start', 'write it'],
+      ['followup', '(typed into the terminal)'],
+    ])
+    expect(ledger.messages(id)).toEqual([])
+  }
 })
 
 it('what a person typed that a hook of theirs held back leaves the ledger once they type again or the turn is ended, so neither the review nor the worker goes by it', async () => {
@@ -3768,6 +3794,15 @@ it('what a person typed that a hook of theirs held back leaves the ledger once t
   const retyped = done('retyped')
   const kept = done('kept')
   const ended = done('ended')
+  const long = done('long')
+  // A turn nod sent, still open: the person stopped it (Escape) and typed into it.
+  const sent = started('write it', 'sent')
+  ledger.setAccount(sent, config)
+  // An answer longer than the end of the transcript nod reads for how a turn ended.
+  const longer = {
+    type: 'assistant',
+    message: { content: [{ type: 'text', text: 'x'.repeat(300 * 1024) }] },
+  }
   attachedWhile(() => {
     // Held back, then typed again another way.
     prompted('retyped', 'use the secret')
@@ -3786,29 +3821,50 @@ it('what a person typed that a hook of theirs held back leaves the ledger once t
       held,
       said('and in b.txt'),
     ])
+    // The same, the words taken in long before.
+    prompted('long', 'look again')
+    transcript('long', [said('write it'), answered, said('look again'), longer, held])
+    prompted('long', 'and in b.txt')
+    transcript('long', [
+      said('write it'),
+      answered,
+      said('look again'),
+      longer,
+      held,
+      said('and in b.txt'),
+    ])
     // Held back, and no more typed.
     prompted('ended', 'use the secret')
     transcript('ended', [said('write it'), answered, held])
+    prompted('sent', 'use the secret')
+    transcript('sent', [said('write it'), held])
   })
+  expect(ledger.messages(sent).map((m) => m.text)).toEqual([
+    '(typed into the terminal)\nuse the secret',
+  ])
   expect(words(retyped)).toEqual([
     'write it',
     '(typed into the terminal)',
     '(typed into the terminal)\nuse the other one',
   ])
-  expect(words(kept)).toEqual([
-    'write it',
-    '(typed into the terminal)\nlook again',
-    '(typed into the terminal)\nand in b.txt',
-  ])
+  for (const id of [kept, long]) {
+    expect(words(id)).toEqual([
+      'write it',
+      '(typed into the terminal)\nlook again',
+      '(typed into the terminal)\nand in b.txt',
+    ])
+  }
   expect(reviewBrief(ledger, ledger.get(retyped), 'NOD: done | ok', null)).not.toContain('secret')
-  // The tick ends a turn held back (here, as its terminal is gone): the others are not.
+  // The tick ends a turn held back (here, as its terminal is gone), and takes the words held back
+  // out of a turn nod sent, which stays open; the others are as they were.
   expect(await lostTurns(ledger, home, new Date())).toEqual([])
   expect(ledger.attempts(ended).at(-1)).toMatchObject({
     prompt: '(typed into the terminal)',
     error: 'a hook held the message back',
   })
-  expect(ledger.openAttempt(retyped)).not.toBeNull()
-  expect(ledger.openAttempt(kept)).not.toBeNull()
+  expect(ledger.messages(sent)).toEqual([])
+  expect(ledger.openAttempt(sent)?.kind).toBe('start')
+  for (const id of [retyped, kept, long]) expect(ledger.openAttempt(id)).not.toBeNull()
   expect(words(kept)).toHaveLength(3)
 })
 
