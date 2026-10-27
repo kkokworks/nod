@@ -45,7 +45,7 @@ nod 는 여러 에이전트를 동시에 돌려 일을 처리하고, 사람에�
 | `src/todo-cli.ts` | `nod in`, `nod todo`(`check` 포함), `nod project`, `nod today` |
 | `ui/` | 이 컴퓨터에서만 여는 웹 화면. 작업·결정 화면(`nod.server.ts`)과 할 일 화면(`todos.server.ts`, `todo-fns.ts`)이 같은 장부 연결을 씁니다. |
 | `desktop/` | macOS 데스크톱 앱(Tauri). 화면 서버를 창에 띄우는 껍데기와 메뉴·전역 단축키·받아 적기 창(`src-tauri/src/main.rs`, `src/`), 화면 서버를 로그인할 때 띄우는 launchd 설정(`launchd/`). |
-| `src/inbox.ts` | 프로젝트 세션에 직접 알리기. 장부에 쌓인 알림(작업의 끝·결정·`nod tell p<n>`)을 프로젝트의 마지막 세션의 수신 소켓에 한 메시지로 쓰고, `nod open` 이 붙인 훅으로 그 소켓 경로를 받습니다. |
+| `src/inbox.ts` | 프로젝트 세션에 직접 알리기. 장부에 쌓인 알림(작업의 끝·결정·`nod tell p<n>`·nod 가 허락한 명령)을 프로젝트의 마지막 세션의 수신 소켓에 한 메시지로 쓰고, `nod open` 이 붙인 훅으로 그 소켓 경로를 받습니다. |
 | `src/cli.ts` | `nod`, `nod <결정> <답>`, `nod drop`, `nod add`, `nod open`, `nod tell`, `nod resume`, `nod attach`, `nod watch`, `nod ls`, `nod show`, `nod search`, `nod stats`, `nod gc`, `nod trigger add·ls·rm`, `nod rule ls·add·edit·off·on`, `nod repo`, `nod land`, `nod tick`, `nod restart`, `nod account`, `nod hook`, `nod run` |
 | `skills/nod/SKILL.md` | Claude 세션을 앞단으로 만드는 스킬입니다. 요청을 작업으로 나눠 넣고, 결정과 끝난 작업을 바로 전합니다. 프로젝트 세션은 nod 가 보내는 알림으로, 그 밖의 세션은 `nod watch` 를 Monitor 로 걸어 받습니다. 결정은 대신 내리지 않습니다. |
 | `skills/gtd/` | 할 일 장부로 GTD 를 하는 스킬 묶음(`gtd:capture`·`scan`·`clarify`·`focus`·`tomorrow`·`review` 등)과 업무 도구 연결부(`sources/`). 켠 도구와 도구별 값은 `<홈>/config.json` 에서 읽습니다. |
