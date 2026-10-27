@@ -17,7 +17,7 @@ nod 는 여러 에이전트를 동시에 돌려 일을 처리하고, 사람에�
 ```
 사람 ─▶ Claude 세션(/nod 스킬) ─▶ nod CLI ─▶ 장부(~/.nod/nod.db)
                                      │            ▲
-                                     ▼            │ Stop·Notification 훅
+                                     ▼            │ Stop·Notification·PermissionRequest 훅
                               tmux 세션마다 Claude Code 워커 (작업 폴더 또는 worktree)
 ```
 
@@ -28,6 +28,7 @@ nod 는 여러 에이전트를 동시에 돌려 일을 처리하고, 사람에�
 | `src/ledger.ts` | 장부. 작업(tasks)·시도(attempts)·결정(decisions)·작업 순서(task_deps)·회고(retros)·규칙(rules)·차례 도중 메시지(messages)·레포의 착지 권한(repos)·작업의 착지(landings)를 SQLite 에 기록합니다. 시도는 워커 세션의 한 턴이고, 시도와 메시지에는 그 말을 보낸 작업(`from_task`, 사람이면 비어 있음)이 남습니다. 스키마는 `pragma user_version` 으로 버전을 매기고, 마이그레이션은 덧붙이기만 합니다. |
 | `src/tmux.ts` | 워커 터미널. nod 홈마다 tmux 서버(소켓)를 따로 두고, 작업마다 tmux 세션 하나를 둡니다. 띄우기(주어진 환경 변수만, `env -i`), 메시지 보내기(줄바꿈·탭 말고 제어 문자를 지운 붙여넣기 + Enter), 키 보내기, 화면 읽기, 닫기(일부러 끈다는 표지를 남김)를 합니다. |
 | `src/worker.ts` | 워커 생명주기. 띄우기, 칸 안에서 Claude Code 를 지켜 다시 띄우기(`keepWorker`), Stop 훅 처리(보고 읽기 → 검증 → 다시 시키거나 결정 열기, 백그라운드 작업이 남았으면 기다리기, `NOD: tell` 을 다른 작업에 보내기), Notification 훅 처리(권한 확인 → 결정), UserPromptSubmit 훅 처리(사람이 칸에 친 차례를 시작할 때 장부에 열기), 답·후속 지시를 같은 세션에 보내기, 끝난 세션을 대화 기록에서 다시 열기, 앞 작업이 끝나면 기다리던 작업 띄우기, 계정이 바뀐 워커 다시 띄우기, 칸째 사라진 차례와 너무 오래 기다린 작업을 결정으로, 끝난 지 한 시간이 지난 작업의 칸 닫기. |
+| `src/allow.ts` | 워커의 권한 확인 가운데 nod 가 스스로 허락하는 것. PermissionRequest 훅 처리(그 작업의 폴더 안에서만 영향이 있고 다시 만들 수 있는 Bash 명령인지 코드로 판정 → 허락을 돌려주고 장부·프로젝트 세션 알림에 남김, 아니면 아무것도 돌려주지 않아 결정으로). |
 | `src/account.ts` | 워커가 쓸 계정(Claude 설정 폴더) 규칙. 기본은 띄우는 셸의 `CLAUDE_CONFIG_DIR`, 그 밖에 파일에서 읽기와 명령 출력(`<홈>/account.json`). |
 | `src/triggers.ts` | 트리거. 일정 계산, source 명령의 출력에서 새 항목 고르기, 때가 된 트리거로 작업 넣기(tick), 매분 끝난 작업의 칸 닫기, 5분마다 대기 감시와 끝난 작업 정리, OS 스케줄러에 매분 tick 등록·해제. |
 | `src/notify.ts` | 결정이 열리거나 작업이 끝나는 등의 일이 생기면 사람이 둔 `<홈>/notify` 를 부릅니다. |
@@ -44,7 +45,7 @@ nod 는 여러 에이전트를 동시에 돌려 일을 처리하고, 사람에�
 | `src/todo-cli.ts` | `nod in`, `nod todo`(`check` 포함), `nod project`, `nod today` |
 | `ui/` | 이 컴퓨터에서만 여는 웹 화면. 작업·결정 화면(`nod.server.ts`)과 할 일 화면(`todos.server.ts`, `todo-fns.ts`)이 같은 장부 연결을 씁니다. |
 | `desktop/` | macOS 데스크톱 앱(Tauri). 화면 서버를 창에 띄우는 껍데기와 메뉴·전역 단축키·받아 적기 창(`src-tauri/src/main.rs`, `src/`), 화면 서버를 로그인할 때 띄우는 launchd 설정(`launchd/`). |
-| `src/inbox.ts` | 프로젝트 세션에 직접 알리기. 장부에 쌓인 알림(작업의 끝·결정·`nod tell p<n>`)을 프로젝트의 마지막 세션의 수신 소켓에 한 메시지로 쓰고, `nod open` 이 붙인 훅으로 그 소켓 경로를 받습니다. |
+| `src/inbox.ts` | 프로젝트 세션에 직접 알리기. 장부에 쌓인 알림(작업의 끝·결정·`nod tell p<n>`·nod 가 허락한 명령)을 프로젝트의 마지막 세션의 수신 소켓에 한 메시지로 쓰고, `nod open` 이 붙인 훅으로 그 소켓 경로를 받습니다. |
 | `src/cli.ts` | `nod`, `nod <결정> <답>`, `nod drop`, `nod add`, `nod open`, `nod tell`, `nod resume`, `nod attach`, `nod watch`, `nod ls`, `nod show`, `nod search`, `nod stats`, `nod gc`, `nod trigger add·ls·rm`, `nod rule ls·add·edit·off·on`, `nod repo`, `nod land`, `nod tick`, `nod restart`, `nod account`, `nod hook`, `nod run` |
 | `skills/nod/SKILL.md` | Claude 세션을 앞단으로 만드는 스킬입니다. 요청을 작업으로 나눠 넣고, 결정과 끝난 작업을 바로 전합니다. 프로젝트 세션은 nod 가 보내는 알림으로, 그 밖의 세션은 `nod watch` 를 Monitor 로 걸어 받습니다. 결정은 대신 내리지 않습니다. |
 | `skills/gtd/` | 할 일 장부로 GTD 를 하는 스킬 묶음(`gtd:capture`·`scan`·`clarify`·`focus`·`tomorrow`·`review` 등)과 업무 도구 연결부(`sources/`). 켠 도구와 도구별 값은 `<홈>/config.json` 에서 읽습니다. |
@@ -74,7 +75,8 @@ nod 는 여러 에이전트를 동시에 돌려 일을 처리하고, 사람에�
 | 사람 | 워커가 받는 규칙은 뭐지? 누가 언제 바꿨지? | 규칙(`rules`): 내용, 만든 회고, 켜짐·꺼짐, 만든·바꾼 시각. 바꾼 이력(`rule_changes`): 누가, 무엇을, 언제 | `nod rule ls`, `nod show r<n>` |
 | 사람 | 이 작업의 결과는 어디로 갔지? 아직 안 내보낸 건 뭐지? | 작업의 링크(PR·게시한 리뷰 주소), 링크 전에는 작업 브랜치를 품은 원격 브랜치 | `nod link`, `nod ls`, `nod show <작업>` |
 | 사람 | 아직 손볼 작업은 뭐지? | gc 한 시각(`collected_at`) | `nod ls` (gc 한 작업은 `--all` 로만) |
-| 프로젝트 세션 | 내 프로젝트의 작업이 끝났나? 결정이 열렸나? 꺼져 있던 사이에는? | 알림(`notices`): 작업의 끝(그때의 요약·시도)·결정·사람의 말, 보낸 세션과 때 | nod 가 보냄(알림 이벤트마다·tick·세션이 열릴 때), `nod tell p<n>` |
+| 프로젝트 세션 | 내 프로젝트의 작업이 끝났나? 결정이 열렸나? 꺼져 있던 사이에는? | 알림(`notices`): 작업의 끝(그때의 요약·시도)·결정·사람의 말·nod 가 허락한 명령, 보낸 세션과 때 | nod 가 보냄(알림 이벤트마다·tick·세션이 열릴 때), `nod tell p<n>` |
+| 사람·루트 세션 | nod 가 이 작업에 무엇을 스스로 허락했지? | 알림(`notices`, 종류 `allowed`): 작업, 그때의 차례, 명령, 때 | `nod show <작업>`, 프로젝트 세션의 알림, `nod watch` |
 | nod | 프로젝트 세션은 지금 어디서 메시지를 받지? | 세션의 수신 소켓 경로(`project_sessions.socket`), 그 세션의 훅이 적음 | `nod hook inbox` |
 | 루트 세션 | 내 작업은 뭐고, 그 결정은 뭐지? | 작업을 맡긴 Claude 세션(`root_session`), 세션을 연 프로젝트(`project_sessions`), 작업의 할 일이 든 프로젝트 | `nod ls --mine`, `nod watch --mine`, `nod --mine` |
 | 사람 | 이 작업을 맡은 세션은 어디서 다시 열지? | 루트 세션 ID 전체, 프로젝트의 최신 세션과 그 세션을 연 폴더 | `nod show <작업>`, 웹 화면의 작업 상세, `nod open <프로젝트>` |
@@ -112,7 +114,8 @@ nod add ─▶ tmux 에 워커 세션 (지시가 첫 메시지)
    │          기다림이 이어진 지 한 시간 ─▶ 다음 멈춤이, 차례가 오지 않으면 tick 이 결정(question·failed)
    ├─ question, 또는 보고 줄 없음 ─▶ 결정(question)
    └─ failed ─▶ 결정(failed)
-권한 확인 화면 ─▶ Notification 훅 ─▶ 결정(permission), 화면 내용 포함 ─▶ 그 차례가 끝나면 닫음 (사람이 칸에서 직접 답함)
+권한 확인 화면 ─▶ PermissionRequest 훅 ─▶ 허락 목록의 Bash 명령 ─▶ 허락, 장부에 남기고 루트 세션에 `#<작업> 허락: <명령>` (프로젝트 세션에 보냄, nod watch 가 냄)
+               └▶ 그 밖 (훅이 아무것도 돌려주지 않음, 약 6초 뒤) ─▶ Notification 훅 ─▶ 결정(permission), 화면 내용 포함 ─▶ 그 차례가 끝나면 닫음 (사람이 칸에서 직접 답함)
 아직 신뢰하지 않은 레포 ─▶ 신뢰 확인 화면 ─▶ 결정(trust) ─▶ 차례가 끝나면 닫음 (칸에서 직접 답함)
 결정 ─▶ nod <결정> <답> ─▶ 살아 있는 같은 세션에 "Human decision: <답>" (gc 로 정리된 작업이면 폴더부터 되살림, 이미 끝난 작업이면 결정만 닫음)
         permission: yes ─▶ Enter / 그 밖 ─▶ Esc 로 거절하고 새 턴으로 답을 전함
@@ -409,6 +412,26 @@ watch 가 끝난 작업까지 알려도(위), 프로젝트 세션(`nod open` 으
 - **건너뛰기는 남겼습니다.** 이 설정 전에 뜬 워커와 이 규칙이 없는 다른 샌드박스에서는 여전히 소켓을 만들지 못하므로 `tmuxSkip`·`inboxSkip` 은 그대로입니다. 이제 새 설정으로 뜬 워커 안에서는 돌고, 그 밖의 샌드박스에서는 건너뜁니다. 끊긴 시험 실행을 정리하는 시험(`test/tmux.test.ts`)도 같은 건너뛰기를 씁니다. 전에는 샌드박스에서 `Operation not permitted` 로 실패했습니다.
 - **일부러 하지 않은 것.** gc 는 소켓 폴더를 지우지 않습니다(`.started-<작업>` 처럼, 위). 워커의 시험 실행이 끊겨 남긴 tmux 서버는 그 워커의 다음 시험 실행이 끄고, 다음 실행 없이 작업이 끝나면 재부팅까지 남습니다(샌드박스 안의 가짜 에이전트들). 워커마다 Claude Code 의 임시 폴더(`CLAUDE_CODE_TMPDIR`)를 따로 주면 시험을 고치지 않아도 되지만, 그 폴더에는 Claude Code 자신의 파일(명령 출력, 설정 사본)도 있어 그 전부를 소켓에 여는 셈이고, 그렇게 했을 때의 동작을 재지 못해 하지 않았습니다.
 - **확인하지 못한 것.** 이 작업의 워커는 이전 설정으로 뜬 샌드박스 안이라, 새 설정이 실제로 먹는지 직접 보지 못했습니다(여기서는 여전히 83개를 건너뜀, 모두 `tmuxTest`·`inboxTest`). 그 83개는 샌드박스 안에서 돈 적이 없습니다. 머지 뒤 새 워커에서 볼 것은 셋입니다. `bun test` 가 건너뛴 시험 0개로 끝나는지. 그 워커에서 `/tmp/cc-socks/<pid>.sock`, nod 의 tmux 소켓, `SSH_AUTH_SOCK` 에 붙는 것이 여전히 EPERM 인지. 소켓 폴더 안에 그 소켓들을 가리키는 심볼릭 링크를 두고 붙어도 EPERM 이고 하드 링크는 만들어지지 않는지.
+
+## 무해한 권한 확인은 nod 가 허락하기 (2026-10-27)
+
+리뷰 작업 하나가 자기 리뷰용 worktree 안에서 `rm -rf node_modules app/node_modules` 를 하려다 권한 결정을 두 번 열었고, 사람이 두 번 다 yes 로 답했습니다. 원인은 그 레포의 프로젝트 설정에 든 ask 규칙(`Bash(rm -rf *)`·`Bash(rm -fr *)`·`Bash(bun remove*)`·`Bash(git merge *)` 등)이었습니다. 화면에는 "Ask rule Bash(rm -rf *) overrides auto mode for this command" 가 나왔습니다. ask 규칙은 auto mode 와 샌드박스의 `autoAllowBashIfSandboxed` 보다 앞서므로 워커에서도 확인창이 뜹니다. 이 규칙은 사람의 원래 체크아웃을 지키려는 것이고 nod 의 worktree 에는 맞지 않습니다. 사용자는 큰 문제가 없으면 허락하고 그것을 nod 기능으로 넣어 달라고 했습니다.
+
+- **잰 것 (Claude Code 2.1.310, macOS).**
+  - `claude -p --permission-mode auto` 에 `--settings` 로 ask 규칙 `Bash(rm -rf *)`, 워커와 같은 샌드박스 설정, stdin 을 적어 두는 PermissionRequest 훅을 주고 worktree 안의 `rm -rf .cache/measure/node_modules` 를 시켰습니다. 훅이 불렸고(`permission_mode: "auto"`, `tool_name: "Bash"`, `tool_input.command`), 허락을 돌려주자 명령이 실행돼 폴더가 지워졌습니다. 같은 설정에서 훅이 아무것도 돌려주지 않자 명령은 거절됐습니다(`-p` 는 확인창을 띄울 수 없어 결정 없는 요청을 거절함, 문서와 같음). 곧 ask 규칙이 띄우는 확인에도, auto mode 에서도 이 훅이 불리고 그 허락이 통합니다.
+  - 대화형 세션은 이 워커 샌드박스에서 가상 터미널을 열 수 없어(`openpty: Operation not permitted`) 직접 재지 못했습니다. 대신 2.1.310 실행 파일을 읽었습니다. 대화형 확인 처리기는 확인창을 띄우면서 PermissionRequest 훅을 함께 돌리고, 아직 아무도 답하지 않았으면 훅의 허락으로 확인을 닫습니다. 사람만 답할 수 있다고 표시된 확인(작업 폴더 밖 경로, auto mode 판단기의 안전 차단 등)은 훅의 허락을 받지 않습니다. 문서상 `permission_prompt` 알림은 확인창이 약 6초 기다린 뒤에야 오므로, 훅이 그보다 빨리 허락하면 결정이 열리지 않습니다.
+  - 훅의 `cwd` 는 Bash 가 지금 있는 폴더입니다. 앞 호출에서 `cd .cache/measure` 한 뒤의 `rm -rf node_modules` 에 `cwd` 가 `.../.cache/measure` 로 왔습니다. 그래서 상대 경로는 `cwd` 기준으로 풉니다.
+  - 공용 git 폴더는 워커 샌드박스 안에서도 쓸 수 있습니다. worktree 안에서 `git update-ref refs/nod-measure/probe HEAD` 가 성공했고(`<원래 레포>/.git/refs` 에 씀), 바로 지웠습니다. worktree 에서 커밋이 되려면 그 폴더에 써야 하므로 샌드박스가 열어 둔 것입니다. 그래서 샌드박스만 믿지 않고, 지우는 경로가 그 폴더를 가리키는지 nod 가 따로 봅니다.
+- **방법: PermissionRequest 훅.** 워커 설정에 `matcher: "Bash"` 인 PermissionRequest 훅(`nod hook permission`)을 넣고, 허락이면 `{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}` 를, 아니면 아무것도 내지 않습니다. 다른 안은 지금처럼 `permission_prompt` 알림으로 결정을 연 뒤 범위 안이면 nod 가 스스로 yes 를 답하는 것이었습니다. 훅이 되므로 훅을 씁니다. 칸에 Enter 를 보내지 않으니 그 사이 바뀐 다른 대화상자를 잘못 승인할 틈이 없고, 결정이 열렸다 닫히는 소음도 없습니다. 판정은 모델에게 묻지 않고 코드(`src/allow.ts`)가 합니다. 훅은 장부를 열기 전부터 모든 실패를 잡아 stderr 에만 남기고 0 으로 끝나며 아무것도 내지 않습니다(`nod hook prompt`·`inbox` 와 같은 방식). 그러면 확인창이 남아 지금처럼 결정이 됩니다. Claude Code 는 훅이 끝나야 그 출력을 따르므로, 허락을 낸 뒤의 알림 보내기는 1초로 묶습니다. 그 안에 가지 못한 알림은 장부에 남아 다음 보내기(tick, 다음 알림 이벤트) 때 갑니다. 훅 한도는 장부 열기(5초)가 들어가는 15초입니다.
+- **허락 목록 (처음에는 계기의 모양만).** 명령 전체가 공백으로 나뉜 평범한 낱말(`A-Z a-z 0-9 . _ / @ -`)이어야 합니다. 그래서 `;`·`&`·`|`·줄바꿈·`$`·백틱·따옴표·glob·`~`·리다이렉션이 든 명령은 해석하지 않고 올립니다. 셸이 있는 폴더(`cwd`)는 실제 경로로 풀어 그 작업의 폴더(`tasks.workspace`, 역시 실제 경로) 안이어야 합니다. 그다음 둘 중 하나여야 합니다.
+  - `rm -rf <경로…>`·`rm -fr <경로…>`. 경로마다 상대 경로이고, `-` 로 시작하지 않고, `..`·`.git`(대소문자 무관) 마디가 없어야 합니다. 링크를 모두 풀어(없는 경로는 가장 가까운 있는 폴더를 풀고 나머지를 붙임, 끊긴 링크가 있으면 올림) 그 작업의 폴더 안이되 폴더 자체가 아니고, 푼 경로에도 `.git` 마디가 없어야 합니다. 그래서 공용 git 폴더나 다른 폴더를 가리키는 링크, 그 링크를 거친 경로는 올립니다. 마지막으로 그 경로들 아래에 커밋하지 않은 변경과 git 이 무시하지 않는 새 파일이 없어야 합니다(worktree 맨 위에서 `git -c core.fsmonitor=false --no-optional-locks --literal-pathspecs status --porcelain --untracked-files=all -- <경로…>` 가 비어 있음. `--literal-pathspecs` 는 `:(top)x` 처럼 이름 지은 폴더가 git 에게 다른 경로를 가리키지 못하게 합니다, 리뷰에서 찾음). git 에는 친 경로와 실제 경로(링크와 파일 시스템의 대소문자를 푼 것)를 둘 다 묻습니다. 친 경로만 물으면 둘이 다를 때 rm 이 닿는 곳을 git 이 보지 않습니다. macOS 에서 `rm -rf SRC` 는 `src` 를 지우는데 `git status -- SRC` 는 아무것도 내지 않았고(잼), `node_modules/<패키지>` 가 worktree 안 다른 폴더를 가리키는 링크면(작업 공간 패키지) `rm -rf node_modules/<패키지>/` 가 그 폴더를 지우는데 git 은 무시된 경로로 봤습니다(리뷰에서 찾음). 남는 것은 git 에 있거나(되살릴 수 있음) git 이 무시하는 것뿐입니다. nod 의 worktree 는 `git worktree add` 로 만들어 무시된 파일을 하나도 들여오지 않으므로, 무시된 것은 모두 그 작업 안에서 생긴 것(의존성·빌드 결과물·워커가 만든 파일)이고 다시 만들 수 있습니다. 레포 없는 작업 폴더에서는 그 폴더의 파일이 곧 결과물이라 `rm` 을 허락하지 않습니다.
+  - `bun`(`install`·`i`·`add`·`remove`), `npm`(`install`·`i`·`ci`·`uninstall`), `pnpm`(`install`·`i`·`add`·`remove`), `yarn`(`install`·`add`·`remove`). 그 뒤의 낱말은 레지스트리 패키지 이름(범위 포함, `@<버전·태그>` 가능, 경로·URL·git·별칭 불가, npm·bun 이 폴더의 타르볼로 읽는 `.tgz`·`.tar`·`.tar.gz` 로 끝나는 이름 불가)이거나 `-d`·`-D`·`--dev`·`--save-dev`·`-E`·`--exact`·`--frozen-lockfile` 이어야 합니다. 셸이 있는 폴더에 `package.json` 이 있어야 합니다. 없으면 패키지 관리자가 위 폴더로 올라가 찾기 때문입니다. `package.json` 과, 있으면 `node_modules` 도 링크를 풀어 그 작업의 폴더 안이어야 합니다.
+- **올리는 것.** 목록에 없거나 해석하지 못하는 것은 모두 결정으로 올립니다. 작업 폴더 밖 삭제·덮어쓰기, push·PR·댓글·메시지·MCP 쓰기(Bash 가 아닌 도구는 훅이 아예 불리지 않고, 불려도 올림), 운영 시스템·DB 접근, 비밀값, 권한 설정 변경, 샌드박스를 끄겠다는 명령(`dangerouslyDisableSandbox`), nod 가 띄우지 않은 세션입니다. 워커의 질문(`question`)은 이 길과 상관이 없습니다.
+- **기록과 알림.** 허락할 때마다 장부의 알림(`notices`)에 종류 `allowed`, 작업, 그때 열린 차례, 명령을 남깁니다. 알림 표는 이미 작업·차례·글·때를 갖고 있어 마이그레이션 없이 장부의 기록과 프로젝트 세션 알림을 한 줄로 겸합니다. `nod show <작업>` 이 `allowed by nod <시각>: <명령>` 으로 보여 줍니다. 그 작업의 루트 세션은 `#<작업> 허락: <명령>` 한 줄을 듣습니다. 프로젝트 세션에는 훅이 허락을 낸 뒤 보내지 않은 알림을 보내고(`sendNotices`), 그 밖의 루트 세션이 거는 `nod watch` 는 건 뒤에 허락한 것을 그 줄로 냅니다(`--issue`·`--mine` 도 따름). 이 줄은 다른 알림과 달리 사용자가 정한 말 그대로 씁니다. 프로젝트가 없는 작업은 다른 알림처럼 어느 프로젝트 세션에도 보내지 않습니다. 결정이 아니므로 결정 대기 지표와 `<홈>/notify` 에는 들어가지 않습니다.
+- **불변식 1 과의 관계.** 허락하는 것은 다시 만들 수 있는 일뿐이고 바깥으로 나가는 일은 없습니다. 지우는 것은 git 에 있거나 git 이 무시하는 것뿐이고, 설치는 샌드박스가 허용한 레지스트리에서만 받습니다. 쓰는 곳은 여전히 샌드박스가 막습니다. 설치는 패키지의 설치 스크립트를 돌리는데, 그 스크립트가 할 수 있는 일은 워커가 묻지 않고 돌릴 수 있는 다른 명령(`bun test` 등)과 같아 새로 열리는 것은 없습니다.
+- **일부러 하지 않은 것.** 판정을 모델에게 묻지 않았습니다. 잘못 허락하는 것이 한 번 더 묻는 것보다 훨씬 나빠서, 설명할 수 있는 좁은 목록으로 시작합니다. 빌드 결과물 정리, 로컬 테스트, 조회 같은 다른 모양은 계기에 없었고 대부분 이미 샌드박스가 묻지 않고 통과시키므로 넣지 않았습니다. 결정으로 자주 올라와 아무도 망설이지 않는 모양이 생기면 그때 넣습니다(`ponytail:` 주석). 레포의 ask 규칙을 고치거나 워커 설정에서 덮어쓰지도 않았습니다. 그 규칙이 지키려는 다른 명령(`git merge`·`git revert` 등)까지 풀리기 때문입니다. 웹 화면의 작업 상세에는 아직 허락한 명령을 보이지 않습니다.
+- **한계.** 판정은 명령이 돌기 전에 폴더를 읽은 것입니다. 그 사이 다른 프로세스(같은 워커의 백그라운드 작업)가 링크를 바꾸면 어긋날 수 있습니다(`ponytail:` 주석). 패키지 관리자가 폴더의 설정 파일(`.npmrc`·`bunfig.toml`)을 따라 다른 곳에 쓰는 것은 nod 가 읽지 않고 샌드박스에 맡깁니다. 대화형 세션에서 훅의 허락이 확인을 닫는 것은 실행 파일에서 읽은 것이고, 이 샌드박스에서는 `-p` 로만 쟀습니다. 훅이 6초 넘게 걸리면(장부가 바쁨) 결정이 열린 뒤 확인이 닫힐 수 있고, 그 결정은 그 차례가 끝날 때 `(its turn ended)` 로 닫힙니다. 장부에는 허락을 내기 전에 적으므로, 훅이 한도(15초)에 걸려 Claude Code 가 그 허락을 버리면 장부와 알림은 nod 가 허락했다고 하는데 확인은 결정으로 갑니다. 장부 열기가 5초에 묶이고 보내기가 1초에 묶여 일어나기 어렵습니다. git 은 샌드박스 밖에서, 워커가 쓸 수 있는 설정(worktree 와 공용 git 폴더의 config, `.gitattributes`)으로 돕니다. 그 설정이 이름 붙인 명령 가운데 파일 시스템 감시(`core.fsmonitor`)는 끄지만, 바뀐 파일에 걸린 clean 필터는 `git status` 가 돌릴 수 있습니다. Stop 훅이 커밋을 확인하는 `git status`, gc·착지의 `git status` 도 같은 곳에서 같은 설정으로 돌아 새로 열리는 것은 아니지만, 이 훅은 워커가 차례 도중에 부를 수 있습니다(리뷰에서 찾음). 설정을 무시한 채 git 을 돌리는 방법이 따로 없어 그대로 두었습니다.
+- **시험.** 판정은 공용 git 폴더를 가진 실제 worktree 로, 허락할 것(의존성·빌드 결과물·없는 경로·변경 없는 추적 파일 지우기, `cd` 한 뒤, 설치·삭제)과 올릴 것(밖·절대 경로·`..`·`~`·glob·변수·따옴표·명령 치환·여러 명령·worktree 자체·`.git`·`.GIT`·공용 git 폴더와 다른 폴더를 가리키는 링크와 그 링크를 거친 경로·끊긴 링크·커밋하지 않은 변경과 새 파일·다른 대소문자로 쓴 그런 폴더·worktree 안 그런 폴더를 가리키는 링크에 `/` 를 붙이거나 그 아래를 친 경로·pathspec 마법처럼 이름 지은 폴더 안에서 친 경로·push·경로·URL·git·타르볼 이름·전역 설치·`package.json` 이 없는 폴더·밖을 가리키는 `node_modules`·레포 없는 폴더의 `rm`)을 봅니다. 장부 기록과 그때의 차례, MCP 쓰기·push·다른 세션·샌드박스를 끄는 명령은 남기지 않는 것, 프로젝트 세션에 가는 한 줄, `nod watch` 가 건 뒤에 허락한 것만 지켜보는 작업의 것만 그 줄로 내는 것, `nod hook permission` 이 허락만 내고 나머지와 깨진 입력에는 아무것도 내지 않고 0 으로 끝나는 것, `nod show` 를 봅니다. 가짜 Claude 는 Claude Code 처럼 `need-permission <명령>` 에서 PermissionRequest 훅을 먼저 돌리고, 허락이 오면 알림 없이 이어 갑니다. 그 시험(worktree 안 `rm -rf node_modules` 는 결정 없이 끝나고 장부에 남음, `git push` 는 결정)은 tmux 가 필요해 워커 샌드박스에서는 건너뛰고 nod 의 검사가 밖에서 돌립니다.
 
 ## 할 일 (G1, 2026-10-20)
 
@@ -791,7 +814,7 @@ M1~M3.5 의 워커는 `claude -p` 였습니다. 아래는 그때 잰 값이고, 
 - 네트워크는 기본으로 막히고, `network.allowedDomains` 에 넣은 곳만 통과했습니다. 기본 허용은 `registry.npmjs.org` 하나입니다.
 - `allowUnsandboxedCommands: false` 로 샌드박스를 끄고 다시 시도하는 탈출구를 닫았습니다.
 - Unix 소켓은 워커마다 `<홈>/sockets/<작업>` 에서만 만들고 붙을 수 있습니다(`allowUnixSockets`, 2026-10-27 「워커 샌드박스의 Unix 소켓」).
-- worktree 에서의 `git commit` 은 성공했고, 전역 git 작성자 정보도 보였습니다.
+- worktree 에서의 `git commit` 은 성공했고, 전역 git 작성자 정보도 보였습니다. 그래서 공용 git 폴더(`<원래 레포>/.git`)도 샌드박스 안에서 쓸 수 있습니다(2026-10-27, 위 「무해한 권한 확인은 nod 가 허락하기」).
 - `git -c …` 처럼 설정을 덮어쓰는 명령은 권한 단계에서 거부됐습니다.
 - WebFetch·WebSearch·MCP 도구는 승인을 받아야 하는 도구입니다. 비대화 실행에서는 거부됐고, 대화형 워커에서는 권한 결정으로 올라옵니다.
 

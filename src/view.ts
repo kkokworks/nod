@@ -1,4 +1,11 @@
-import { type Decision, FINISHED, type Ledger, type Task, type TaskStatus } from './ledger'
+import {
+  type Decision,
+  FINISHED,
+  type Ledger,
+  type Notice,
+  type Task,
+  type TaskStatus,
+} from './ledger'
 import { quote, type Terminals } from './tmux'
 import type { Change, SessionPlace } from './todos'
 import { sessionName } from './worker'
@@ -14,14 +21,17 @@ const WATCH_GRACE_SECS = 5
 // again too, which the notify event leaves out by the landing's handedAt; telling those apart here
 // would need the ledger to keep it per turn, and leaving them out loses an end that a landing
 // turn started before the next look hides.
+// `printAllowed` gets each command nod allows one of those tasks' workers from then on (allow.ts).
 export async function watch(
   ledger: Ledger,
   counts: (t: Task) => boolean,
   print: (d: Decision) => void,
   printEnd: (t: Task) => void,
   wait: () => Promise<void> = () => Bun.sleep(1000),
+  printAllowed: (n: Notice) => void = () => {},
 ): Promise<void> {
   const seen = new Set(ledger.openDecisions().map((d) => d.id))
+  let allowed = ledger.allowedAfter(0).at(-1)?.id ?? 0
   const endOf = (t: Task): string | null =>
     FINISHED.has(t.status) ? `${t.status} ${t.finishedAt}` : null
   const ends = new Map(ledger.list().map((t) => [t.id, endOf(t)]))
@@ -32,6 +42,10 @@ export async function watch(
       if (seen.has(d.id)) continue
       seen.add(d.id)
       if (counts(ledger.get(d.taskId))) print(d)
+    }
+    for (const n of ledger.allowedAfter(allowed)) {
+      allowed = n.id
+      if (counts(ledger.get(n.taskId ?? 0))) printAllowed(n)
     }
     const tasks = ledger.list()
     for (const t of tasks) {
@@ -52,6 +66,10 @@ export function endLine(ledger: Ledger, t: Task): string {
   const note = t.status === 'succeeded' ? done?.summary : t.error
   return `${taskLabel(t)} ${t.status}: ${firstLine(note || t.brief)}`
 }
+
+// A command nod allowed a task's worker (allow.ts), as watch and the project session hear it: one line
+// in the words the person asked for, with nothing to do next.
+export const allowedLine = (n: Notice): string => `#${n.taskId} 허락: ${n.note}`
 
 // A task as watch and the decision list name it: `task #5 t3 PROJ-1`.
 export function taskLabel(t: Task): string {

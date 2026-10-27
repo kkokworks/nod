@@ -3,9 +3,10 @@ import { existsSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { parseArgs } from 'node:util'
 import { accountRule, configDir, describeRule, setAccountRule } from './account'
+import { ALLOW, onPermissionRequest, PermissionEvent } from './allow'
 import { sweep } from './done'
 import { collect, type GcPick, type GcReport, remotesHolding } from './gc'
-import { InboxEvent, onInbox, tellProject } from './inbox'
+import { InboxEvent, onInbox, sendLine, sendNotices, tellProject } from './inbox'
 import { land } from './land'
 import {
   type Attempt,
@@ -45,6 +46,7 @@ import {
   tick,
 } from './triggers'
 import {
+  allowedLine,
   endLine,
   indent,
   type LsTask,
@@ -86,6 +88,10 @@ import {
   startTask,
   tell,
 } from './worker'
+
+// How long the permission hook gives each send of what it allowed (permissionHook); a local socket
+// takes far less.
+const ALLOWED_SEND_MS = 1000
 
 const USAGE = `usage:
   nod [--issue <key,...>] [--mine] open decisions (--issue: only those of tasks on these issues;
@@ -131,7 +137,9 @@ const USAGE = `usage:
                                    (succeeded, error, cancelled), a line task #<n> [<todo>]
                                    [<issue>] <status>: <the worker's last report, or the
                                    error's first line, else the brief>, until no worker is
-                                   running. Only what opens or ends after it starts; a task
+                                   running, and a line #<n> 허락: <command> for each command
+                                   nod allows a worker itself (nod hook permission).
+                                   Only what opens or ends after it starts; a task
                                    that runs again and ends again is printed again. --issue:
                                    only decisions, ends and workers of tasks on these issues;
                                    --mine: only those of this Claude session's tasks, so
@@ -226,9 +234,14 @@ const USAGE = `usage:
                                    empty means Claude Code's default. With a file or a command,
                                    every nod command and tick restarts the workers that run as
                                    another account than the current one, as nod restart does
-  nod hook stop|notification|prompt|inbox
+  nod hook stop|notification|permission|prompt|inbox
                                    called by Claude Code hooks in worker sessions, and (inbox) in
-                                   the sessions nod open opens
+                                   the sessions nod open opens. permission allows a worker's
+                                   command that only touches what its folder can make again:
+                                   rm -rf of paths holding no uncommitted work in its worktree,
+                                   or a package manager adding or removing registry packages.
+                                   nod show lists each, and the root session hears of it (nod
+                                   tells a project session; nod watch prints it)
   nod run <task> <claude...>       what runs in a worker's terminal: keeps its Claude Code running
 
 A <task> is a task's number, t<n> for the latest task doing todo t<n>, or r<n> for the task
@@ -257,6 +270,7 @@ const home = nodHome()
 // Before the ledger opens here, as one that cannot open must not fail it either.
 if (command === 'hook' && rest[0] === 'prompt') await promptHook()
 if (command === 'hook' && rest[0] === 'inbox') await inboxHook()
+if (command === 'hook' && rest[0] === 'permission') await permissionHook()
 const ledger = new Ledger(home)
 const terminals = Terminals.of(home)
 const taskRef = (ref: string | undefined): number => new Todos(ledger).taskRef(ref ?? '')
@@ -318,6 +332,8 @@ switch (command) {
       (t) => onIssues(keys, t) && isMine(session, t),
       printDecision,
       (t) => console.log(endLine(ledger, t)),
+      undefined,
+      (n) => console.log(allowedLine(n)),
     )
     break
   }
@@ -797,6 +813,26 @@ async function inboxHook(): Promise<never> {
   process.exit(0)
 }
 
+// A worker's PermissionRequest hook (allow.ts), the same way: it prints Claude Code's allow only for
+// a command nod allows, and else nothing, so the prompt shows and becomes a decision as before,
+// whatever goes wrong. Claude Code acts on it once the hook exits, so the task's project session
+// hears of it with a short limit: what does not go in time waits for the next send (a tick, an
+// event), and the allow is not held toward the prompt's Notification (about 6 s).
+async function permissionHook(): Promise<never> {
+  console.log = console.error
+  try {
+    const event = PermissionEvent.parse(JSON.parse(await Bun.stdin.text()))
+    const ledger = new Ledger(home)
+    if (onPermissionRequest(ledger, event)) {
+      await Bun.write(Bun.stdout, `${JSON.stringify(ALLOW)}\n`)
+      await sendNotices(ledger, (socket, line) => sendLine(socket, line, ALLOWED_SEND_MS))
+    }
+  } catch (error) {
+    console.error(`nod: could not judge the permission prompt: ${message(error)}`)
+  }
+  process.exit(0)
+}
+
 function attach(taskId: number): void {
   if (!terminals.alive(sessionName(taskId))) throw noTerminal(taskId)
   // Unset TMUX so this also works from inside another tmux session.
@@ -985,6 +1021,7 @@ function show(id: number): void {
         : `closed: ${d.answer}`
     console.log(`  decision #${d.id} ${d.reason} — ${answered}`)
   }
+  for (const n of ledger.allowed(id)) console.log(`  allowed by nod ${n.createdAt}: ${n.note}`)
   const report = ledger.attempts(id).findLast((a) => a.report)?.report
   if (report) console.log(`\n${report}`)
 }

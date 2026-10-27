@@ -19,6 +19,7 @@ import { testTmux } from '../test/tmux'
 // that need none are `it`, bun's own, so they run there too.
 import { tmuxTest as test } from '../test/tmux-server'
 import { setAccountRule } from './account'
+import { ALLOW } from './allow'
 import { collect } from './gc'
 import { Ledger, type Task, type TaskStatus } from './ledger'
 import { notify } from './notify'
@@ -130,6 +131,8 @@ type LogEntry = {
   diff?: string | null
   addDir?: string | null
   addDirReal?: string | null
+  command?: string
+  out?: string
 }
 const entries = (event: string): LogEntry[] =>
   existsSync(log)
@@ -342,6 +345,37 @@ test('denying a permission ends the turn, so the worker hears why in a new turn'
   expect(ledger.attempts(id).map((a) => [a.kind, a.outcome])).toEqual([
     ['start', 'needs_decision'],
     ['answer', 'succeeded'],
+  ])
+})
+
+test('a prompt nod is sure of it allows itself, with no decision, and records it; one it is not stays a decision', async () => {
+  const repo = newRepo()
+  writeFileSync(join(repo, '.gitignore'), 'node_modules/\n')
+  git(repo, 'add', '-A')
+  git(repo, 'commit', '-qm', 'ignore dependencies')
+  const clean = ledger.add({
+    brief: 'need-permission rm -rf node_modules',
+    repo,
+    branch: 'feat/clean',
+    checkCmd: null,
+    model: null,
+    after: [],
+    triggerId: null,
+    issue: null,
+  })
+  await startTask(ledger, home, clean)
+  await reaches(clean, 'succeeded')
+  expect(ledger.decisions(clean)).toEqual([])
+  expect(ledger.attempts(clean)[0]?.summary).toBe('allowed by a hook')
+  expect(ledger.allowed(clean).map((n) => n.note)).toEqual(['rm -rf node_modules'])
+
+  const push = await add('need-permission git push')
+  const decision = await until(() => ledger.decisions(push)[0])
+  expect(decision.reason).toBe('permission')
+  expect(ledger.allowed(push)).toEqual([])
+  expect(entries('permission-hook').map((e) => [e.command, e.out?.trim()])).toEqual([
+    ['rm -rf node_modules', JSON.stringify(ALLOW)],
+    ['git push', ''],
   ])
 })
 

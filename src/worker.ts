@@ -246,7 +246,8 @@ const MAX_TELLS = 4
 // The check and the review both run inside the Stop hook, so the hook outlasts them.
 const REVIEW_TIMEOUT_MS = 600_000
 const STOP_HOOK_TIMEOUT_SECS = 1800
-// Opening the ledger (its busy_timeout, 5 s) and a send (inbox.ts, 5 s), with room to spare.
+// Opening the ledger (its busy_timeout, 5 s) and a send (inbox.ts, 5 s), with room to spare; for the
+// permission hook too, which sends what it allowed.
 const INBOX_HOOK_SECS = 15
 // What `claude -p` prints first when a hook blocks the message it was given (2.1.310).
 const BLOCKED = 'UserPromptSubmit operation blocked by hook:'
@@ -2297,6 +2298,14 @@ function workerSettings(started: string | null, sockets: string): string {
         { hooks: [{ type: 'command', command: hook('stop'), timeout: STOP_HOOK_TIMEOUT_SECS }] },
       ],
       Notification: [{ hooks: [{ type: 'command', command: hook('notification') }] }],
+      // Only Bash's prompts: nod allows no other tool (allow.ts). Claude Code shows the prompt while
+      // the hook runs, and the Notification for it comes only after it has waited about 6 s (docs).
+      PermissionRequest: [
+        {
+          matcher: 'Bash',
+          hooks: [{ type: 'command', command: hook('permission'), timeout: INBOX_HOOK_SECS }],
+        },
+      ],
       StopFailure: [{ hooks: [{ type: 'command', command: hook('stop-failure') }] }],
       UserPromptSubmit: [{ hooks: [{ type: 'command', command: hook('prompt') }] }],
       SessionStart: [
