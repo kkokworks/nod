@@ -199,13 +199,15 @@ const SANDBOX = {
 // The one folder a worker's sandbox lets it make and reach Unix sockets in, so its tests can start
 // a tmux server or listen on a socket, which the sandbox refuses anywhere else (EPERM, 2.1.310).
 // Its tests find it in NOD_SOCKETS (workerEnv). Each worker's own, in nod's home, where no other
-// worker can write: Claude Code puts the folder's real path in the rule (2.1.310), so one another
-// worker could swap for a link would open what the link names. Not the sandbox's TMPDIR,
-// `/tmp/claude-<uid>` for every Claude Code session of the user, nor a folder in the worktree,
-// whose path (the branch's) can leave too little of a socket path's 104 bytes (macOS): tmux takes
-// 43 past its TMUX_TMPDIR in the tests. Made before Claude Code starts, so the path is real then.
-// ponytail: gc leaves the folder, as it leaves `.started-<task>`; a tmux server a cut-off test run
-// left in it would be out of reach without its socket (test/tmux.ts).
+// worker can write. Not the sandbox's TMPDIR, `/tmp/claude-<uid>` for every Claude Code session of
+// the user, where any worker could remove or replace another's sockets, nor a folder in the
+// worktree, whose path (the branch's) can leave too little of a socket path's 104 bytes (macOS):
+// tmux takes 43 past its TMUX_TMPDIR in the tests. Made before Claude Code starts, so its tests can
+// make theirs in it.
+// ponytail: gc leaves the folder, as it leaves `.started-<task>`: what is in it is the worker's, and
+// nod going through it outside the sandbox could follow a link the worker left to nod's own tmux
+// server. A tmux server a cut-off test run left in it stays until the worker's next run ends it
+// (test/tmux.ts), or until a reboot.
 export const socketsDir = (home: string, taskId: number): string =>
   join(home, 'sockets', String(taskId))
 
@@ -1749,7 +1751,8 @@ export function running(pid: number): boolean {
   }
 }
 
-function claudeArgs(
+// The arguments a worker's Claude Code starts with; makes the folder it keeps sockets in.
+export function claudeArgs(
   ledger: Ledger,
   home: string,
   task: Task,
@@ -2279,7 +2282,7 @@ export function workerPrompt(ledger: Ledger, task: Task | null): string {
 // `started`: a file the SessionStart hook creates, so nod knows the session got past the trust
 // dialog. Claude Code runs SessionStart hooks again once it has compacted the conversation, with
 // the matcher `compact` (2.1.310), for onCompact. `sockets`: the worker's socketsDir.
-export function workerSettings(started: string | null, sockets: string): string {
+function workerSettings(started: string | null, sockets: string): string {
   const touch = (file: string) => [
     { hooks: [{ type: 'command', command: `touch ${quote(file)}` }] },
   ]
