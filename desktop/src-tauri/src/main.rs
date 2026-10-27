@@ -3,17 +3,19 @@
 // app. The UI's pages call nothing here: shortcuts, menus and windows are handled on this side,
 // and pages change by the app setting the main window's address.
 
+use std::io::ErrorKind;
 use std::net::TcpStream;
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
+use objc2::runtime::{AnyObject, Bool, ClassBuilder, Sel};
+use objc2::{class, msg_send, sel};
 use serde_json::{Map, Value};
 use tauri::menu::{IsMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::webview::NewWindowResponse;
 use tauri::{
-    AppHandle, Manager, RunEvent, Url, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
-    WindowEvent, Wry,
+    AppHandle, LogicalPosition, Manager, RunEvent, Url, WebviewUrl, WebviewWindow,
+    WebviewWindowBuilder, WindowEvent, Wry,
 };
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
@@ -24,9 +26,6 @@ const SERVER: &str = "127.0.0.1:4800";
 // the variables of its environment that `nod in` takes too.
 const AGENT: &str = "Library/LaunchAgents/io.github.kkokworks.nod.ui.plist";
 const AGENT_ENV: [&str; 3] = ["PATH", "NOD_HOME", "CLAUDE_CONFIG_DIR"];
-
-// Whether the capture window was opened while another app had the keyboard, to hand it back.
-static CAPTURE_FROM_ELSEWHERE: AtomicBool = AtomicBool::new(false);
 
 // The 이동 menu, ⌘1 to ⌘6, in the UI sidebar's order.
 const PAGES: [(&str, &str); 6] = [
@@ -51,12 +50,17 @@ fn main() {
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .menu(app_menu)
         .on_menu_event(on_menu)
-        .on_window_event(|window, event| {
+        .on_window_event(|window, event| match event {
             // Closing only hides: the app stays in the menu bar, and the window keeps its page.
-            if let WindowEvent::CloseRequested { api, .. } = event {
+            WindowEvent::CloseRequested { api, .. } => {
                 api.prevent_close();
                 put_away(window.app_handle(), window.label());
             }
+            // Like Spotlight, the capture window goes away once the person turns elsewhere.
+            WindowEvent::Focused(false) if window.label() == "capture" => {
+                put_away(window.app_handle(), "capture")
+            }
+            _ => {}
         })
         .invoke_handler(tauri::generate_handler![capture, dismiss, retry])
         .setup(|app| {
@@ -66,18 +70,22 @@ fn main() {
                 .title("nod")
                 .inner_size(1200.0, 800.0)
                 .on_navigation(move |url| {
-                    // Links out of the UI (a pull request, a doc) open in the browser instead.
+                    // Links out of the UI (a pull request, a doc, mailto:) open outside instead.
                     let shown = in_window(url, dev_url.as_ref());
                     if !shown {
-                        open_in_browser(url);
+                        open_outside(url);
                     }
                     shown
                 })
                 .on_new_window(|url, _| {
-                    open_in_browser(&url);
+                    open_outside(&url);
                     NewWindowResponse::Deny
                 })
                 .build()?;
+            if let Some(capture) = handle.get_webview_window("capture") {
+                make_panel(&capture);
+            }
+            watch_server(handle.clone());
             let (taken, problems) = register_shortcuts(&handle);
             let tray = handle.tray_by_id("main").expect("tauri.conf.json defines the tray icon");
             tray.set_menu(Some(tray_menu(&handle, &taken, &problems)?))?;
@@ -86,9 +94,12 @@ fn main() {
         .build(tauri::generate_context!())
         .expect("error while building the app")
         .run(|app, event| {
-            // The Dock icon brings the window back.
-            if let RunEvent::Reopen { has_visible_windows: false, .. } = event {
-                show_main(app);
+            // The Dock icon brings the main window back, also while the capture window is up.
+            if let RunEvent::Reopen { .. } = event {
+                let main = app.get_webview_window("main");
+                if !main.is_some_and(|w| w.is_visible().unwrap_or(false)) {
+                    show_main(app);
+                }
             }
         });
 }
@@ -107,13 +118,31 @@ async fn capture(app: AppHandle, text: String) -> Result<(), String> {
             None => nod.env_remove(name),
         };
     }
-    let out = nod.output().map_err(|e| format!("nod 를 실행하지 못했습니다: {e}"))?;
+    let out = nod.output().map_err(|e| match e.kind() {
+        ErrorKind::NotFound => "에이전트의 PATH 에 nod 가 없습니다. `bun link` 를 한 셸에서 `sh desktop/launchd/ui.sh install` 을 다시 돌리세요".to_string(),
+        _ => format!("nod 를 실행하지 못했습니다: {e}"),
+    })?;
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
-        return Err(format!("nod in 이 실패했습니다({}): {}", out.status, stderr.trim()));
+        return Err(format!("nod in 이 실패했습니다({}): {}", out.status, failure(&stderr)));
     }
     put_away(&app, "capture");
     Ok(())
+}
+
+// What went wrong, from a failed command's stderr. bun puts an uncaught error's message (`error:
+// …`, `TypeError: …`) under the source lines around the throw and above the stack, which would
+// push it out of the capture window's few lines, so only the message is kept.
+fn failure(stderr: &str) -> String {
+    let lines: Vec<&str> = stderr.lines().collect();
+    // After the ^ under the throw, if bun showed the source.
+    let start = lines.iter().position(|l| l.trim_start().starts_with('^')).map_or(0, |i| i + 1);
+    let message: Vec<&str> = lines[start..]
+        .iter()
+        .take_while(|l| !(l.starts_with(' ') && l.trim_start().starts_with("at ")))
+        .copied()
+        .collect();
+    message.join("\n").trim().to_string()
 }
 
 #[tauri::command]
@@ -179,17 +208,46 @@ fn page(app: &AppHandle, path: &str) -> Url {
     url
 }
 
-// Whether the main window goes to url itself: the UI server's pages and the app's own, on tauri://
-// or, under `tauri dev`, at dev_url. Any other web address opens in the browser, another server
-// on this computer too.
-fn in_window(url: &Url, dev_url: Option<&Url>) -> bool {
-    !matches!(url.scheme(), "http" | "https")
-        || url.origin() == server_page("/").origin()
-        || dev_url.is_some_and(|dev| url.origin() == dev.origin())
+// The UI server's path a main window url shows, or for the offline page, the one it stands for.
+fn shown_path(url: &Url) -> String {
+    if url.path().ends_with("/offline.html") {
+        let path = url.query_pairs().find(|(key, _)| key == "path").map(|(_, value)| value);
+        return path.map_or_else(|| "/".to_string(), |value| value.into_owned());
+    }
+    format!("{}{}", url.path(), url.query().map(|q| format!("?{q}")).unwrap_or_default())
 }
 
-fn open_in_browser(url: &Url) {
-    if !matches!(url.scheme(), "http" | "https") {
+// The server can also go down under a page already shown (a reinstall, a crash), so every few
+// seconds the main window goes to the offline page if so. That page comes back once it is up.
+fn watch_server(app: AppHandle) {
+    std::thread::spawn(move || loop {
+        std::thread::sleep(Duration::from_secs(3));
+        let Some(window) = app.get_webview_window("main") else { continue };
+        let Ok(url) = window.url() else { continue };
+        if url.origin() == server_page("/").origin() && !server_up() {
+            let _ = window.navigate(page(&app, &shown_path(&url)));
+        }
+    });
+}
+
+// Whether the main window goes to url itself: the UI server's pages, the app's own (on tauri://
+// or, under `tauri dev`, at dev_url) and what a page makes in place (about:blank, blob:, data:).
+// Anything else opens outside: a web address in the browser, another server on this computer
+// too, and mailto: and the like in the app macOS has for them.
+fn in_window(url: &Url, dev_url: Option<&Url>) -> bool {
+    match url.scheme() {
+        "http" | "https" => {
+            url.origin() == server_page("/").origin()
+                || dev_url.is_some_and(|dev| url.origin() == dev.origin())
+        }
+        "tauri" | "about" | "blob" | "data" => true,
+        _ => false,
+    }
+}
+
+fn open_outside(url: &Url) {
+    // `open` runs what a file: link names, so a page's link to a program would start it.
+    if url.scheme() == "file" {
         return;
     }
     let url = url.to_string();
@@ -204,17 +262,60 @@ fn bring(window: &WebviewWindow) {
     let _ = window.set_focus();
 }
 
-// Hides the window, and the app as well, which hands the keyboard back to the app the person came
-// from: once none of its windows is showing, or when the capture window was opened from another
-// app, though the main window stays open behind it.
+// Hides the window. Once none of the app's windows is showing, it hides the app as well, which
+// hands the keyboard back to the app the person came from. The capture panel never makes nod the
+// active app (make_panel), so hiding it alone is enough.
 fn put_away(app: &AppHandle, label: &str) {
     if let Some(window) = app.get_webview_window(label) {
         let _ = window.hide();
     }
-    let from_elsewhere = label == "capture" && CAPTURE_FROM_ELSEWHERE.swap(false, Ordering::Relaxed);
-    if from_elsewhere || !app.webview_windows().values().any(|w| w.is_visible().unwrap_or(false)) {
+    if !app.webview_windows().values().any(|w| w.is_visible().unwrap_or(false)) {
         let _ = app.hide();
     }
+}
+
+// Makes the capture window a panel that takes the keyboard without activating the app, as
+// Spotlight's does: it comes up alone over the app in front, not with nod's other windows, and
+// once it goes away that app has the keyboard again. tauri makes only windows, so this swaps the
+// class of the one tao made (an NSWindow subclass) for an NSPanel subclass, as tauri-nspanel does.
+fn make_panel(window: &WebviewWindow) {
+    extern "C" fn yes(_: &AnyObject, _: Sel) -> Bool {
+        Bool::YES
+    }
+    let Ok(ns_window) = window.ns_window() else { return };
+    let ns_window = ns_window.cast::<AnyObject>();
+    let Some(mut panel) = ClassBuilder::new(c"NodCapturePanel", class!(NSPanel)) else { return };
+    // A borderless window takes the keyboard only if its class says so.
+    unsafe { panel.add_method(sel!(canBecomeKeyWindow), yes as extern "C" fn(_, _) -> _) };
+    let panel = panel.register();
+    unsafe {
+        // The object stays the size tao allocated, so the new class must not need more.
+        if panel.instance_size() > (*ns_window).class().instance_size() {
+            return;
+        }
+        objc2::ffi::object_setClass(ns_window, panel);
+        let mask: usize = msg_send![ns_window, styleMask];
+        // NSWindowStyleMaskNonactivatingPanel
+        let () = msg_send![ns_window, setStyleMask: mask | 1 << 7];
+        let () = msg_send![ns_window, setHidesOnDeactivate: false];
+    }
+}
+
+// Centers the window on the screen the pointer is on, which is where the person is looking.
+fn center_on_pointer(window: &WebviewWindow) -> tauri::Result<()> {
+    let app = window.app_handle();
+    // tao gives the pointer in the primary screen's pixels but finds screens by points (macOS's
+    // logical units), and gives each screen in its own pixels: all in points here.
+    let primary = app.primary_monitor()?.map_or(1.0, |m| m.scale_factor());
+    let pointer = app.cursor_position()?.to_logical::<f64>(primary);
+    let Some(screen) = app.monitor_from_point(pointer.x, pointer.y)? else { return Ok(()) };
+    let at = screen.position().to_logical::<f64>(screen.scale_factor());
+    let room = screen.size().to_logical::<f64>(screen.scale_factor());
+    let size = window.outer_size()?.to_logical::<f64>(window.scale_factor()?);
+    window.set_position(LogicalPosition::new(
+        at.x + (room.width - size.width) / 2.0,
+        at.y + (room.height - size.height) / 2.0,
+    ))
 }
 
 fn show_main(app: &AppHandle) {
@@ -234,15 +335,25 @@ fn toggle_main(app: &AppHandle) {
     }
 }
 
+// Brings up the capture panel without activating the app, so nod's other windows stay where they
+// are. Each time it comes up it is on the screen the pointer is on and without the last error;
+// what was typed stays.
 fn open_capture(app: &AppHandle) {
-    if let Some(window) = app.get_webview_window("capture") {
-        // Asked again while it is open, it keeps where it was first opened from.
-        if !window.is_visible().unwrap_or(false) {
-            let ours = app.webview_windows().values().any(|w| w.is_focused().unwrap_or(false));
-            CAPTURE_FROM_ELSEWHERE.store(!ours, Ordering::Relaxed);
-        }
-        bring(&window);
+    let Some(window) = app.get_webview_window("capture") else { return };
+    if !window.is_visible().unwrap_or(false) {
+        let _ = center_on_pointer(&window);
+        let _ = window.eval("document.getElementById('error').textContent = ''");
     }
+    // A hidden app shows none of its windows. put_away hides it only with none of them up, so
+    // unhiding brings back nothing else, unless the person hid nod (⌘H) with its window open.
+    let _ = app.run_on_main_thread(|| unsafe {
+        let ns_app: *mut AnyObject = msg_send![class!(NSApplication), sharedApplication];
+        let hidden: bool = msg_send![ns_app, isHidden];
+        if hidden {
+            let () = msg_send![ns_app, unhideWithoutActivation];
+        }
+    });
+    let _ = window.show();
 }
 
 fn go(app: &AppHandle, path: &str) {
@@ -258,14 +369,7 @@ fn reload(app: &AppHandle) {
     let Some(url) = app.get_webview_window("main").and_then(|w| w.url().ok()) else {
         return;
     };
-    let path = if url.path().ends_with("/offline.html") {
-        // The offline page stands for the page in its query.
-        let path = url.query_pairs().find(|(key, _)| key == "path").map(|(_, value)| value);
-        path.map_or_else(|| "/".to_string(), |value| value.into_owned())
-    } else {
-        format!("{}{}", url.path(), url.query().map(|q| format!("?{q}")).unwrap_or_default())
-    };
-    go(app, &path);
+    go(app, &shown_path(&url));
 }
 
 fn on_menu(app: &AppHandle, event: MenuEvent) {
@@ -428,5 +532,34 @@ mod tests {
         assert!(!in_window(&url("http://localhost:3000/"), Some(&dev)));
         assert!(!in_window(&url("http://localhost:1430/"), None));
         assert!(!in_window(&url("https://example.com/pull/1"), None));
+        assert!(in_window(&url("about:blank"), None));
+        assert!(!in_window(&url("mailto:someone@example.com"), None));
+        assert!(!in_window(&url("file:///Applications/Calculator.app"), None));
+    }
+
+    #[test]
+    fn a_failure_shows_buns_error_message_without_the_source_and_stack() {
+        let thrown = "126 |   if (title === '') throw new Error(TODO_USAGE)\n                          ^\nerror: usage: nod in <title>\n  --key <id>\n      at capture (/x/src/todo-cli.ts:130:27)\n\nBun v1.3.14 (macOS arm64)\n";
+        assert_eq!(failure(thrown), "error: usage: nod in <title>\n  --key <id>");
+        let type_error = "1 | null.x\n    ^\nTypeError: null is not an object\n      at /x/[eval]:1:1\n";
+        assert_eq!(failure(type_error), "TypeError: null is not an object");
+        assert_eq!(failure("env: bun: No such file or directory\n"), "env: bun: No such file or directory");
+    }
+
+    #[test]
+    fn the_offline_page_stands_for_the_path_in_its_query() {
+        let url = |s: &str| s.parse::<Url>().unwrap();
+        assert_eq!(shown_path(&url("http://127.0.0.1:4800/tasks/1?tab=log")), "/tasks/1?tab=log");
+        assert_eq!(shown_path(&url("tauri://localhost/offline.html?path=%2Ftasks%2F1")), "/tasks/1");
+        assert_eq!(shown_path(&url("tauri://localhost/offline.html")), "/");
+    }
+
+    #[test]
+    fn a_panel_fits_in_the_window_tao_makes() {
+        // make_panel swaps tao's NSWindow subclass, which adds an ivar, for an NSPanel one.
+        let size = |name: &std::ffi::CStr| {
+            objc2::runtime::AnyClass::get(name).unwrap().instance_size()
+        };
+        assert!(size(c"NSPanel") <= size(c"NSWindow"));
     }
 }

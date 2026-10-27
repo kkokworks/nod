@@ -274,7 +274,7 @@ cd ui && bun run dev   # http://127.0.0.1:4800
 
 `desktop/` 의 앱은 화면 서버를 창에 띄우고, 메뉴 막대 아이콘과 전역 단축키로 어디서든 nod 를 불러오거나 떠오른 일을 받아 적게 해 줍니다. 화면 서버는 앱이 띄우지 않고, 로그인할 때 launchd 가 띄웁니다.
 
-먼저 화면 서버를 로그인 에이전트로 둡니다. `ui/` 를 빌드하고 `~/Library/LaunchAgents/io.github.kkokworks.nod.ui.plist` 를 설치해 바로 띄웁니다. 개발 서버가 아니라 빌드한 서버(`bun run build` 뒤 `bun run start`)를 띄우므로, 레포를 받아 오거나 브랜치를 바꾼 뒤에는 같은 명령을 다시 돌려 빌드합니다. 실행한 셸의 `PATH`(bun·tmux·git·claude)와, 있으면 `NOD_HOME`·`CLAUDE_CONFIG_DIR` 로 돕니다. 데스크톱 앱의 받아 적기도 이 에이전트의 환경으로 `nod in` 을 돌립니다. 로그는 `~/Library/Logs/nod-ui.log` 입니다. 4800 포트를 개발 서버가 쓰고 있으면 뜨지 못하니 개발 서버를 끄고 설치합니다.
+먼저 화면 서버를 로그인 에이전트로 둡니다. `ui/` 를 빌드하고 `~/Library/LaunchAgents/io.github.kkokworks.nod.ui.plist` 를 설치해 바로 띄웁니다. 개발 서버가 아니라 빌드한 서버(`bun run build` 뒤 `bun run start`)를 띄우므로, 레포를 받아 오거나 브랜치를 바꾼 뒤에는 같은 명령을 다시 돌려 빌드합니다. 실행한 셸의 `PATH`(bun·tmux·git·claude)와, 있으면 `NOD_HOME`·`CLAUDE_CONFIG_DIR` 로 돕니다. 데스크톱 앱의 받아 적기도 이 에이전트의 환경으로 `nod in` 을 돌립니다. 로그는 `~/Library/Logs/nod-ui.log` 입니다. 빌드는 옆 폴더(`ui/dist.next`)에 한 뒤 `ui/dist` 와 바꿔 끼우므로, 빌드하는 동안에도 떠 있던 서버가 화면을 보여 줍니다. 4800 포트를 개발 서버 등 다른 서버가 쓰고 있으면 에이전트를 띄우지 않고 실패로 끝나니, 그 서버를 끄고 다시 돌립니다. 띄운 서버가 몇 초 안에 응답하지 않아도 로그 끝부분을 보여 주며 실패로 끝납니다.
 
 ```sh
 sh desktop/launchd/ui.sh install     # 빌드하고 에이전트를 설치·재시작
@@ -286,12 +286,15 @@ sh desktop/launchd/ui.sh uninstall   # 에이전트를 멈추고 지움
 ```sh
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh   # Rust
 cd desktop && bun install && bun run build
+rm -rf /Applications/nod.app   # 있던 앱은 지우고 복사합니다
 cp -R src-tauri/target/release/bundle/macos/nod.app /Applications/
 ```
 
+있던 앱 위에 제자리로 덮어 복사하면 서명이 어긋나 앱이 `Killed: 9` 로 죽을 수 있습니다.
+
 전역 단축키는 앱이 떠 있어야 동작합니다. 로그인할 때 앱도 띄우려면 시스템 설정 › 일반 › 로그인 항목의 「로그인 시 열기」에 nod.app 을 더합니다.
 
-창을 닫으면(⌘W) 숨기기만 하고 앱은 메뉴 막대 아이콘으로 남습니다. 아이콘 메뉴에는 열기·받아 적기·종료가 있습니다. 서버가 떠 있지 않으면 창에 그렇다고 알리고, 서버가 뜨면 저절로 넘어갑니다. 화면 서버(`127.0.0.1:4800`) 밖으로 나가는 링크(PR, 이 컴퓨터의 다른 포트 등)는 브라우저에서 열립니다.
+창을 닫으면(⌘W) 숨기기만 하고 앱은 메뉴 막대 아이콘으로 남습니다. 아이콘 메뉴에는 열기·받아 적기·종료가 있습니다. Dock 아이콘을 누르면 메인 창이 나옵니다. 서버가 떠 있지 않으면 창에 그렇다고 알리고, 서버가 뜨면 저절로 넘어갑니다. 화면을 보는 중에 서버가 내려가도 몇 초 안에 그 안내로 바뀌고, 다시 뜨면 보던 화면으로 돌아갑니다. 화면 서버(`127.0.0.1:4800`) 밖으로 나가는 링크(PR, 이 컴퓨터의 다른 포트 등)는 브라우저에서, `mailto:` 같은 웹 주소가 아닌 링크는 macOS 가 정한 앱에서 열립니다. `file:` 링크는 열지 않습니다.
 
 | 키 | 하는 일 |
 |---|---|
@@ -302,7 +305,7 @@ cp -R src-tauri/target/release/bundle/macos/nod.app /Applications/
 | ⌃⌥⌘O | 어디서든: nod 창 불러오기, 앞에 있으면 숨기기 |
 | ⌃⌥⌘N | 어디서든: 받아 적기 창 열기 |
 
-받아 적기 창에 쓰고 Enter 를 누르면 `nod in` 으로 Inbox 에 넣고 닫힙니다(누가는 `human:desktop`). Esc 는 그냥 닫습니다. 다른 앱에서 연 창이면 보내거나 닫은 뒤 그 앱으로 돌아갑니다. 실패하면 쓴 글을 그대로 두고 오류를 보여 줍니다.
+받아 적기 창에 쓰고 Enter 를 누르면 `nod in` 으로 Inbox 에 넣고 닫힙니다(누가는 `human:desktop`). Esc 는 그냥 닫고, 다른 곳을 눌러 창이 포커스를 잃어도 닫힙니다. 창은 nod 의 다른 창을 앞으로 가져오지 않고, 마우스 포인터가 있는 화면 가운데에 지금 앱 위로 뜹니다. 그래서 다른 앱에서 연 창이면 보내거나 닫은 뒤 그 앱으로 돌아갑니다. 실패하면 쓴 글을 그대로 두고 오류를 보여 줍니다. 닫았다가 다시 열면 쓴 글은 남고 지난 오류는 지워집니다. `nod` 를 찾지 못하면 `bun link` 를 한 셸에서 `ui.sh install` 을 다시 돌리라고 알립니다.
 
 `nod in` 은 화면 서버와 같은 환경으로 돕니다. 위의 `ui.sh install` 이 설치한 에이전트(plist)에서 `PATH` 와, 있으면 `NOD_HOME`·`CLAUDE_CONFIG_DIR` 를 받아 쓰므로, 받아 적은 일은 화면 서버가 보는 장부에 들어갑니다. 그래서 받아 적기 전에 에이전트를 설치해 두어야 하고(없으면 창에 그렇게 알립니다), 설치한 셸의 `PATH` 에 `bun link` 로 등록한 `nod` 가 있어야 합니다. 셸의 환경을 바꿨으면 `ui.sh install` 을 다시 돌립니다. 앱은 받아 적을 때마다 에이전트를 읽으므로 다시 켜지 않아도 됩니다.
 
