@@ -19,12 +19,12 @@ domain="gui/$(id -u)"
 url=http://127.0.0.1:4800
 
 # Waits up to $2 seconds for curl on the server's address to exit with $1: 0 once a server
-# answers there, 7 once nothing listens.
+# answers there, 7 once nothing listens. Not through this shell's proxy, which would answer.
 await() {
   tries=$2
   while :; do
     code=0
-    curl -s -o /dev/null --max-time 1 "$url" || code=$?
+    curl -s -o /dev/null --max-time 1 --noproxy '*' "$url" || code=$?
     [ "$code" -ne "$1" ] || return 0
     tries=$((tries - 1))
     [ "$tries" -gt 0 ] || return 1

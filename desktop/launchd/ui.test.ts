@@ -109,6 +109,10 @@ test('the install fails, without loading the agent, while another server holds t
   expect(taken.exitCode).not.toBe(0)
   expect(taken.calls).not.toContain('launchctl bootstrap')
   expect(taken.stderr).toContain('another server answers on http://127.0.0.1:4800')
+  // Asked directly: a proxy in the shell's environment would answer for a free port.
+  expect(taken.calls).toContain(
+    'curl -s -o /dev/null --max-time 1 --noproxy * http://127.0.0.1:4800',
+  )
 })
 
 test('the install fails, showing the end of the log, when the server does not come up', () => {
