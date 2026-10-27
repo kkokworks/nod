@@ -18,18 +18,13 @@ const UNOWNED_MS = 86_400_000
 const KILL_TIMEOUT_MS = 10_000
 
 // Sets TMUX_TMPDIR to a new dir `tmp` removes, where tests keep sockets (socketsParent), once the
-// dirs of runs that are over there are gone.
+// dirs of runs that are over there are gone. Whether tmux can start a server here is tmuxTest's to
+// say (test/tmux-server.ts).
 export function testTmux(tmp: { make: (prefix: string, parent?: string) => string }): string {
   endFinishedRuns()
   const dir = tmp.make(PREFIX, socketsParent())
   writeFileSync(join(dir, OWNER), String(process.pid))
   process.env.TMUX_TMPDIR = dir
-  // tmux exits 0 even when it cannot make a socket (inside a sandbox), so the tests that need a
-  // server would only time out; this says why, once.
-  const env = process.env
-  const tried = Bun.spawnSync(['tmux', '-L', 'try', 'new-session', '-d', 'true'], { env })
-  if (tried.stderr.length > 0) console.error(`tmux cannot run here: ${tried.stderr.toString()}`)
-  Bun.spawnSync(['tmux', '-L', 'try', 'kill-server'], { env })
   return dir
 }
 
