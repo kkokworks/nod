@@ -463,11 +463,15 @@ switch (command) {
       console.error(USAGE)
       process.exit(1)
     }
-    // Yes to a rule decision adds a rule, which `nod rule` refuses a worker.
-    if (process.env.NOD_TASK !== undefined && ledger.decision(id).reason === 'rule') {
+    const { taskId, reason } = ledger.decision(id)
+    // Yes to a rule decision adds a rule, which `nod rule` refuses a worker, and yes to a trust
+    // decision trusts the repo for later tasks too (trustedBy in worker.ts).
+    if (process.env.NOD_TASK !== undefined && reason === 'rule') {
       throw new Error('a worker cannot change the rules')
     }
-    const { taskId, reason } = ledger.decision(id)
+    if (process.env.NOD_TASK !== undefined && reason === 'trust') {
+      throw new Error('a worker cannot trust a repo')
+    }
     const said = words(rest)
     const took = await answer(ledger, home, id, said, actorFromEnv())
     if (reason === 'land') {

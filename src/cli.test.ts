@@ -909,7 +909,7 @@ test('add refuses repo work without a valid branch, before adding anything', asy
   expect(new Ledger(home).list()).toEqual([])
 })
 
-test('rule ls, add, edit, off and on change rules as a person, show r<n> tells what became of its rule, and a worker cannot change one', async () => {
+test('rule ls, add, edit, off and on change rules as a person, show r<n> tells what became of its rule, and a worker can neither change one nor trust a repo', async () => {
   const home = tmp.make('nod-rule-')
   const ledger = new Ledger(home)
   // A retrospective whose rule was added, as answering yes to its decision leaves it.
@@ -1015,6 +1015,12 @@ test('rule ls, add, edit, off and on change rules as a person, show r<n> tells w
   expect(answered.err).toContain('a worker cannot change the rules')
   expect(ledger.decision(decision).answer).toBeNull()
   expect(ledger.rules()).toHaveLength(2)
+  // Nor trust a repo, which a yes does for the repo's later tasks too.
+  const trust = ledger.ask(asking, attempt, 'trust', 'trust it?')
+  const trusted = await nod({ NOD_TASK: '5' }, String(trust), 'yes')
+  expect(trusted.code).not.toBe(0)
+  expect(trusted.err).toContain('a worker cannot trust a repo')
+  expect(ledger.decision(trust).answer).toBeNull()
 }, 15_000)
 
 test('repo sets how far nod lands a repo, records who changed what, and refuses a worker and a Claude session going up', async () => {

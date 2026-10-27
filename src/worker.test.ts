@@ -1512,6 +1512,15 @@ it("a repo's trust goes by the answer the person gave last, not the decision ope
   expect(trustedBy(ledger, repo)).toBeNull()
 })
 
+it('a yes for a task given a worktree counts for the repo it belongs to', () => {
+  const repo = newRepo()
+  const worktree = join(tmp.make('nod-worktree-'), 'wt')
+  git(repo, 'worktree', 'add', '-q', '-b', 'side', worktree)
+  const yes = askTrust(worktree)
+  ledger.answer(yes, 'yes')
+  expect(trustedBy(ledger, repo)?.id).toBe(yes)
+})
+
 it('a no for a worktree removed since counts as a no for its repo', () => {
   const repo = newRepo()
   const yes = askTrust(repo)
