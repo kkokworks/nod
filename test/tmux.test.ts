@@ -104,10 +104,12 @@ test("a run's dir is over once the run that made it is gone, or, with no owner y
 })
 
 test("a test run keeps its sockets in the folder nod names only inside a worker's sandbox, and outside it, as nod's check runs, in the temp dir", () => {
-  const sockets = '/h/sockets/5'
+  const sockets = tmp.make('nod-sockets-')
   expect(socketsParent({ SANDBOX_RUNTIME: '1', NOD_SOCKETS: sockets })).toBe(sockets)
   // The worker writes that folder, and the check runs outside its sandbox.
   expect(socketsParent({ NOD_SOCKETS: sockets })).toBe(tmpdir())
   // A worker nod started before it named one.
   expect(socketsParent({ SANDBOX_RUNTIME: '1' })).toBe(tmpdir())
+  // A sandbox that does not let the tests make their dirs there, as a missing folder does not.
+  expect(socketsParent({ SANDBOX_RUNTIME: '1', NOD_SOCKETS: join(sockets, 'gone') })).toBe(tmpdir())
 })

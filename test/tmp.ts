@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, rmdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -26,6 +26,18 @@ export function tempDirs(): {
 // NOD_SOCKETS (socketsDir in worker.ts); anywhere else the temp dir. Not that folder outside the
 // sandbox, where nod's check runs these tests: the worker writes the folder, and a link it left
 // there would lead the check, ending the tmux servers of runs that are over (test/tmux.ts), to
-// nod's own.
-export const socketsParent = (env: Record<string, string | undefined> = process.env): string =>
-  (env.SANDBOX_RUNTIME === '1' && env.NOD_SOCKETS) || tmpdir()
+// nod's own. Nor in a sandbox that does not let this process make dirs there (nod's reviewer gets
+// the worker's NOD_SOCKETS with a sandbox of its own): there the tests skip as before.
+export function socketsParent(env: Record<string, string | undefined> = process.env): string {
+  const dir = env.SANDBOX_RUNTIME === '1' ? env.NOD_SOCKETS : undefined
+  return dir && canMake(dir) ? dir : tmpdir()
+}
+
+function canMake(dir: string): boolean {
+  try {
+    rmdirSync(mkdtempSync(join(dir, 'nod-try-')))
+    return true
+  } catch {
+    return false
+  }
+}
