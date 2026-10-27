@@ -17,6 +17,7 @@ import { homedir, tmpdir } from 'node:os'
 import { basename, join, resolve } from 'node:path'
 import { z } from 'zod'
 import { accountChanged, accountRule, configDir } from './account'
+import type { PermissionEvent } from './allow'
 import { onlyCopy } from './gc'
 import {
   type Attempt,
@@ -248,9 +249,11 @@ const MAX_TELLS = 4
 // The check and the review both run inside the Stop hook, so the hook outlasts them.
 const REVIEW_TIMEOUT_MS = 600_000
 const STOP_HOOK_TIMEOUT_SECS = 1800
-// Opening the ledger (its busy_timeout, 5 s) and a send (inbox.ts, 5 s), with room to spare; for the
-// permission hook too, which sends what it allowed.
+// Opening the ledger (its busy_timeout, 5 s) and a send (inbox.ts, 5 s), with room to spare.
 const INBOX_HOOK_SECS = 15
+// The permission hook sends what it allowed, or opens a decision, which also runs <home>/notify
+// (10 s). The dialog shows while it runs, so its time holds up no one.
+const PERMISSION_HOOK_SECS = 30
 // What `claude -p` prints first when a hook blocks the message it was given (2.1.310).
 const BLOCKED = 'UserPromptSubmit operation blocked by hook:'
 const TRUST_TIMEOUT_MS = 20_000
@@ -949,8 +952,36 @@ function forgetHeldBack(ledger: Ledger, home: string, open: Attempt): void {
   else ledger.forgetMessage(last.id)
 }
 
-// Called by the Notification hook. A permission prompt pauses the worker mid-turn, so it becomes a
-// decision; the other notifications need nothing from nod.
+// Called by the PermissionRequest hook for a prompt nod does not allow itself (allow.ts). A permission
+// prompt pauses the worker mid-turn, so it becomes a decision. Claude Code runs the hook as it shows
+// the dialog (2.1.310's binary), some 6 s before the dialog's Notification, so the decision opens
+// here: from then on deliver sends no message into the turn, whose Enter would answer the dialog.
+// Each dialog opens its own, as each Notification did. The dialog may not be on the screen yet, so
+// the question gives what the worker asked for.
+// ponytail: beside the dialog, not before it: while the hook starts (Bun, the ledger), a message
+// can still go in; only Claude Code could close that.
+export async function onPermissionAsk(
+  ledger: Ledger,
+  home: string,
+  event: z.infer<typeof PermissionEvent>,
+): Promise<void> {
+  const taskId = ledger.taskOfSession(event.session_id)
+  if (taskId === null) return
+  const attemptId = await currentAttempt(ledger, home, taskId, event.session_id)
+  const { command } = event.tool_input
+  const asked = typeof command === 'string' ? command : JSON.stringify(event.tool_input)
+  await decide(
+    ledger,
+    home,
+    taskId,
+    attemptId,
+    'permission',
+    `Claude needs your permission to use ${event.tool_name}. Answer yes to allow; anything else denies.\n${asked.slice(0, QUESTION_LIMIT)}`,
+  )
+}
+
+// Called by the Notification hook: a permission prompt still shown after some 6 s. The other
+// notifications need nothing from nod.
 export async function onNotification(
   ledger: Ledger,
   home: string,
@@ -960,6 +991,10 @@ export async function onNotification(
   const taskId = ledger.taskOfSession(event.session_id)
   if (taskId === null) return
   const attemptId = await currentAttempt(ledger, home, taskId, event.session_id)
+  // The PermissionRequest hook opened the dialog's decision as it showed (onPermissionAsk). One
+  // Claude Code runs no hook for, a prompt only a person may answer (2.1.310), or whose hook
+  // failed, opens here.
+  if (asking(ledger, taskId, attemptId) !== undefined) return
   const screen = Terminals.of(home).screen(sessionName(taskId))
   const prompt = screen.trimEnd().split('\n').slice(-15).join('\n')
   await decide(
@@ -1650,6 +1685,12 @@ function closeDecisions(
     .immediate()
 }
 
+// The turn's open permission decision: a dialog of that turn that may be on the screen.
+const asking = (ledger: Ledger, taskId: number, attemptId: number): Decision | undefined =>
+  ledger
+    .decisions(taskId)
+    .find((d) => d.answer === null && d.reason === 'permission' && d.attemptId === attemptId)
+
 // A task that ended for good: dropped, or a retrospective that has its outcome. A turn that ends
 // after (one its Stop hook still checked as it was dropped, or one typed into its terminal) is only
 // recorded, and changes nothing else.
@@ -1790,12 +1831,10 @@ async function deliver(
   // ledger keeps it with that turn, for the reviewer. Its Enter would answer a permission dialog
   // that turn shows, so that is answered first.
   if (!turn.started) {
-    const asking = ledger
-      .decisions(taskId)
-      .find((d) => d.answer === null && d.reason === 'permission' && d.attemptId === turn.attemptId)
-    if (asking !== undefined && !restarting) {
+    const dialog = asking(ledger, taskId, turn.attemptId)
+    if (dialog !== undefined && !restarting) {
       throw new Error(
-        `answer permission decision #${asking.id} first: Enter would answer its dialog`,
+        `answer permission decision #${dialog.id} first: Enter would answer its dialog`,
       )
     }
     if (restarting) leavePrompt(home, taskId, text)
@@ -2408,12 +2447,12 @@ function workerSettings(started: string | null, sockets: string): string {
         { hooks: [{ type: 'command', command: hook('stop'), timeout: STOP_HOOK_TIMEOUT_SECS }] },
       ],
       Notification: [{ hooks: [{ type: 'command', command: hook('notification') }] }],
-      // Only Bash's prompts: nod allows no other tool (allow.ts). Claude Code shows the prompt while
-      // the hook runs, and the Notification for it comes only after it has waited about 6 s (docs).
+      // Every tool's prompts: nod allows only Bash commands (allow.ts), and any prompt it does not
+      // becomes a decision here (onPermissionAsk). Claude Code shows the prompt while the hook runs,
+      // and the Notification for it comes only after it has waited about 6 s (docs).
       PermissionRequest: [
         {
-          matcher: 'Bash',
-          hooks: [{ type: 'command', command: hook('permission'), timeout: INBOX_HOOK_SECS }],
+          hooks: [{ type: 'command', command: hook('permission'), timeout: PERMISSION_HOOK_SECS }],
         },
       ],
       StopFailure: [{ hooks: [{ type: 'command', command: hook('stop-failure') }] }],

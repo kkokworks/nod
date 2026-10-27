@@ -1,12 +1,14 @@
-import { afterAll, expect, test } from 'bun:test'
+import { afterAll, expect, spyOn, test } from 'bun:test'
 import { existsSync, mkdirSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { tempDirs } from '../test/tmp'
 import { ALLOW, harmless, onPermissionRequest } from './allow'
 import { sendNotices } from './inbox'
 import { Ledger, type NewTask, type Task } from './ledger'
+import { Terminals } from './tmux'
 import { Todos } from './todos'
 import { allowedLine, watch } from './view'
+import { onNotification, tell } from './worker'
 
 const tmp = tempDirs()
 afterAll(tmp.removeAll)
@@ -281,28 +283,84 @@ test('a root session that watches hears the line too, for the tasks it watches, 
   expect(await heard((t) => t.id !== id)).toEqual([])
 })
 
-test('nod hook permission prints the allow only for what nod allows, nothing otherwise, and never fails; nod show lists it', () => {
-  const { home, ledger, id, event } = running()
-  const hook = (stdin: string) => {
-    const run = Bun.spawnSync(['bun', cli, 'hook', 'permission'], {
-      env: { ...process.env, NOD_HOME: home },
-      stdin: Buffer.from(stdin),
-    })
-    expect(run.exitCode).toBe(0)
-    return run.stdout.toString()
-  }
+// Runs `nod hook permission` on `home` as Claude Code does, with `stdin`; returns what it printed.
+function hook(home: string, stdin: string): string {
+  const run = Bun.spawnSync(['bun', cli, 'hook', 'permission'], {
+    env: { ...process.env, NOD_HOME: home },
+    stdin: Buffer.from(stdin),
+  })
+  expect(run.exitCode).toBe(0)
+  return run.stdout.toString()
+}
 
-  expect(JSON.parse(hook(JSON.stringify(event('rm -rf node_modules'))))).toEqual(ALLOW)
-  expect(hook(JSON.stringify(event('rm -rf .git')))).toBe('')
-  expect(hook(JSON.stringify(event('git push origin feat/x')))).toBe('')
-  expect(hook('not json')).toBe('')
-  expect(hook(JSON.stringify({ session_id: 's1' }))).toBe('')
+// The task's open decisions: why, on which turn, and the line of the question that names what the
+// worker asked for.
+const asked = (ledger: Ledger, id: number) =>
+  ledger
+    .decisions(id)
+    .filter((d) => d.answer === null)
+    .map((d) => [d.reason, d.attemptId, d.question.split('\n')[1]])
+
+test('nod hook permission prints the allow only for what nod allows, nothing otherwise, and never fails; nod show lists it', () => {
+  const { home, ledger, id, attemptId, event } = running()
+  const run = (stdin: string) => hook(home, stdin)
+
+  expect(JSON.parse(run(JSON.stringify(event('rm -rf node_modules'))))).toEqual(ALLOW)
+  // What it allows opens no decision.
+  expect(asked(ledger, id)).toEqual([])
+  expect(run(JSON.stringify(event('rm -rf .git')))).toBe('')
+  expect(run(JSON.stringify(event('git push origin feat/x')))).toBe('')
+  expect(run('not json')).toBe('')
+  expect(run(JSON.stringify({ session_id: 's1' }))).toBe('')
   expect(ledger.allowed(id).map((n) => n.note)).toEqual(['rm -rf node_modules'])
+  // What it does not is a decision of the turn as the prompt shows, each prompt its own.
+  expect(asked(ledger, id)).toEqual([
+    ['permission', attemptId, 'rm -rf .git'],
+    ['permission', attemptId, 'git push origin feat/x'],
+  ])
 
   const show = Bun.spawnSync(['bun', cli, 'show', String(id)], {
     env: { ...process.env, NOD_HOME: home },
   })
   expect(show.stdout.toString()).toMatch(/\n {2}allowed by nod \S+: rm -rf node_modules\n/)
+}, 15_000)
+
+// The PermissionRequest hook runs as the dialog shows, its Notification some 6 s later (2.1.310).
+test('a prompt nod does not allow holds back nod tell from its turn as it shows, before its Notification, which opens no second decision; so does the next prompt of the turn once the person answered the first in the terminal', async () => {
+  const { home, ledger, id, attemptId, event } = running()
+  const notified = () =>
+    onNotification(ledger, home, {
+      session_id: 's1',
+      notification_type: 'permission_prompt',
+      message: 'Claude needs your permission to use Bash',
+    })
+  const refused = () =>
+    expect(tell(ledger, home, id, 'also tag it')).rejects.toThrow(
+      /^answer permission decision #\d+ first: Enter would answer its dialog$/,
+    )
+  // The worker's terminal is up (tmux stands in), its turn going.
+  const alive = spyOn(Terminals.prototype, 'alive').mockReturnValue(true)
+  const option = spyOn(Terminals.prototype, 'option').mockReturnValue('')
+  try {
+    expect(hook(home, JSON.stringify(event('git push origin feat/x')))).toBe('')
+    expect(asked(ledger, id)).toEqual([['permission', attemptId, 'git push origin feat/x']])
+    await refused()
+    await notified()
+    expect(asked(ledger, id)).toHaveLength(1)
+
+    // The person answers it in the worker's terminal, which nod does not see, and the turn asks
+    // again: that prompt is a decision of its own as it shows.
+    expect(hook(home, JSON.stringify(event('git push origin --tags')))).toBe('')
+    expect(asked(ledger, id).at(-1)).toEqual(['permission', attemptId, 'git push origin --tags'])
+    await refused()
+    await notified()
+    expect(asked(ledger, id)).toHaveLength(2)
+  } finally {
+    alive.mockRestore()
+    option.mockRestore()
+  }
+  expect(ledger.messages(id)).toEqual([])
+  expect(ledger.get(id).status).toBe('needs_decision')
 }, 15_000)
 
 test('the worktree and the shell are compared by their real paths, so a link to the worktree is the worktree', () => {

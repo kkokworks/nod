@@ -8,7 +8,7 @@ import type { Ledger } from './ledger'
 // in auto mode too, and also for a prompt an ask rule of the repo forces (measured on 2.1.310, with
 // `Bash(rm -rf *)` as an ask rule). An ask rule keeps the person's own checkout safe, not a worktree
 // of nod's. The judgment is code, a short list: anything not on it, or that nod cannot read, gets no
-// answer, so the prompt shows and becomes a decision as before.
+// answer, so the prompt shows, and the hook makes it a decision as it does (onPermissionAsk).
 // ponytail: only rm -rf and dependency installs, the shapes asked about; add a shape once it keeps
 // coming up as a decision nobody hesitates on.
 
