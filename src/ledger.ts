@@ -228,10 +228,12 @@ export type Decision = {
 }
 
 // What a project's session hears (inbox.ts): a task's end (a status in FINISHED, with the worker's
-// last done summary or the error as `note`), a decision that opened, or a person's words (`tell`,
-// in `note` as said, with `projectId`). `attemptId`: the task's latest turn as it happened.
-// `sessionId` and `sentAt`: the session it went to and when; null and set for one that went to none.
-export type NoticeEvent = 'succeeded' | 'error' | 'cancelled' | 'decision' | 'tell'
+// last done summary or the error as `note`), a decision that opened, a person's words (`tell`, in
+// `note` as said, with `projectId`), or a command nod allowed the task's worker (`allowed`, the
+// command in `note`; allow.ts), which is also the ledger's record of it. `attemptId`: the task's
+// latest turn as it happened. `sessionId` and `sentAt`: the session it went to and when; null and
+// set for one that went to none.
+export type NoticeEvent = 'succeeded' | 'error' | 'cancelled' | 'decision' | 'tell' | 'allowed'
 export type Notice = {
   id: number
   taskId: number | null
@@ -1599,6 +1601,18 @@ export class Ledger {
 
   unsentNotices(): Notice[] {
     return this.run(q.selectFrom('notices').selectAll().where('sentAt', 'is', null).orderBy('id'))
+  }
+
+  // The commands nod allowed a task's worker itself (allow.ts), oldest first.
+  allowed(taskId: number): Notice[] {
+    return this.run(
+      q
+        .selectFrom('notices')
+        .selectAll()
+        .where('taskId', '=', taskId)
+        .where('event', '=', 'allowed')
+        .orderBy('id'),
+    )
   }
 
   // Marks sent to `sessionId` (null: to none) those of `ids` still unsent, in one statement, so of

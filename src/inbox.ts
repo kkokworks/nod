@@ -134,6 +134,8 @@ const NEXT = {
 // decision's number) to tell one sent twice, and what to do next.
 export function noticeText(ledger: Ledger, n: Notice): string {
   if (n.event === 'tell') return n.note ?? ''
+  // One line, in the words the person asked for; nothing to do next.
+  if (n.event === 'allowed') return `#${n.taskId} 허락: ${n.note}`
   const task = ledger.get(n.taskId ?? 0)
   if (n.event === 'decision') {
     const d = ledger.decision(n.decisionId ?? 0)

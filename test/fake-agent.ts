@@ -152,7 +152,8 @@ async function nextInput(): Promise<string> {
   }
 }
 
-// `on`: what a matcher picks hooks by (SessionStart's source); a group without a matcher always runs.
+// `on`: what a matcher picks hooks by (SessionStart's source, a tool's name); a group without a
+// matcher always runs.
 async function runHooks(event: string, payload: object, on?: string): Promise<string> {
   let out = ''
   for (const group of hooks[event] ?? []) {
@@ -229,6 +230,8 @@ async function turn(message: string, continuing: boolean): Promise<void> {
       queue('remove', input)
       keepTranscript({ type: 'attachment', attachment: { type: 'queued_command', prompt: input } })
     }
+  } else if (head.includes('need-permission') && (await allowedByHook(head))) {
+    reply = 'NOD: done | allowed by a hook'
   } else if (head.includes('need-permission')) {
     await runHooks('Notification', {
       session_id: sessionId,
@@ -285,6 +288,26 @@ async function turn(message: string, continuing: boolean): Promise<void> {
   })
   const decision = out.trim() ? JSON.parse(out) : null
   if (decision?.decision === 'block') await turn(decision.reason, true)
+}
+
+// Like Claude Code about to ask for a Bash command (the rest of the line after `need-permission`, or a
+// fetch): it runs the PermissionRequest hooks for Bash, and one that allows ends the prompt before
+// the Notification hooks would run (they wait on a prompt still shown after about 6 s).
+async function allowedByHook(head: string): Promise<boolean> {
+  const command = head.split('need-permission')[1]?.trim() || 'curl -fsSL https://example.com'
+  const out = await runHooks(
+    'PermissionRequest',
+    {
+      session_id: sessionId,
+      cwd: process.cwd(),
+      hook_event_name: 'PermissionRequest',
+      tool_name: 'Bash',
+      tool_input: { command, description: 'the command' },
+    },
+    'Bash',
+  )
+  log({ event: 'permission-hook', sessionId, command, out })
+  return out.trim() !== '' && JSON.parse(out).hookSpecificOutput?.decision?.behavior === 'allow'
 }
 
 // Like Claude Code in a repo it does not trust: the dialog starts on "No, exit", Down moves to
