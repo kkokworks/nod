@@ -18,9 +18,11 @@ text.addEventListener('keydown', async (event) => {
   }
   if (event.key !== 'Enter' || sending || text.value.trim() === '') return
   sending = true
+  const sent = text.value
   try {
-    await invoke('capture', { text: text.value })
-    text.value = ''
+    await invoke('capture', { text: sent })
+    // What was typed while it was sent stays, to send next.
+    if (text.value === sent) text.value = ''
     error.textContent = ''
   } catch (e) {
     // Kept as typed, to send again once whatever went wrong is fixed.

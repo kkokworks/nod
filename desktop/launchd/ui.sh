@@ -82,6 +82,8 @@ for (const [name, value] of Object.entries(savedEnv())) console.log(name + '\t' 
     echo "another server answers on $url, a dev server perhaps (cd ui && bun run dev); stop it and run this again" >&2
     exit 1
   fi
+  # How much of the log is from earlier runs, which a failure below leaves out.
+  seen=$(wc -c <"$log" 2>/dev/null || echo 0)
   # Right after the bootout, launchd may still be letting the old agent go, and a bootstrap then
   # fails with "5: Input/output error".
   tries=5
@@ -92,8 +94,8 @@ for (const [name, value] of Object.entries(savedEnv())) console.log(name + '\t' 
   done
   # launchd loads the agent even when its server dies at once, so it is up only once it answers.
   if ! await 0 15; then
-    echo "the nod UI server did not answer on $url; the end of $log:" >&2
-    tail -n 20 "$log" >&2 || true
+    echo "the nod UI server did not answer on $url; the end of what it wrote to $log:" >&2
+    tail -c "+$((seen + 1))" "$log" 2>/dev/null | tail -n 20 >&2
     exit 1
   fi
   echo "nod UI server: $url (agent $plist, log $log)"

@@ -6,6 +6,7 @@
 use std::io::ErrorKind;
 use std::net::TcpStream;
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use objc2::runtime::{AnyObject, Bool, ClassBuilder, Sel};
@@ -26,6 +27,13 @@ const SERVER: &str = "127.0.0.1:4800";
 // the variables of its environment that `nod in` takes too.
 const AGENT: &str = "Library/LaunchAgents/io.github.kkokworks.nod.ui.plist";
 const AGENT_ENV: [&str; 3] = ["PATH", "NOD_HOME", "CLAUDE_CONFIG_DIR"];
+
+// Whether make_panel made the capture window a panel. If not, showing it activates the app.
+static PANEL: AtomicBool = AtomicBool::new(false);
+
+// Whether `nod in` is running. The capture window then stays up when it loses focus, so that a
+// failure shows.
+static CAPTURING: AtomicBool = AtomicBool::new(false);
 
 // The 이동 menu, ⌘1 to ⌘6, in the UI sidebar's order.
 const PAGES: [(&str, &str); 6] = [
@@ -57,7 +65,9 @@ fn main() {
                 put_away(window.app_handle(), window.label());
             }
             // Like Spotlight, the capture window goes away once the person turns elsewhere.
-            WindowEvent::Focused(false) if window.label() == "capture" => {
+            WindowEvent::Focused(false)
+                if window.label() == "capture" && !CAPTURING.load(Ordering::Relaxed) =>
+            {
                 put_away(window.app_handle(), "capture")
             }
             _ => {}
@@ -109,7 +119,16 @@ fn main() {
 // the window keeps the text and shows what went wrong.
 #[tauri::command]
 async fn capture(app: AppHandle, text: String) -> Result<(), String> {
-    let env = agent_env(&app)?;
+    CAPTURING.store(true, Ordering::Relaxed);
+    let result = nod_in(&app, &text);
+    CAPTURING.store(false, Ordering::Relaxed);
+    result?;
+    put_away(&app, "capture");
+    Ok(())
+}
+
+fn nod_in(app: &AppHandle, text: &str) -> Result<(), String> {
+    let env = agent_env(app)?;
     let mut nod = Command::new("nod");
     nod.args(["in", "--", text.trim()]).env("NOD_ACTOR", "human:desktop").stdin(Stdio::null());
     for name in AGENT_ENV {
@@ -126,7 +145,6 @@ async fn capture(app: AppHandle, text: String) -> Result<(), String> {
         let stderr = String::from_utf8_lossy(&out.stderr);
         return Err(format!("nod in 이 실패했습니다({}): {}", out.status, failure(&stderr)));
     }
-    put_away(&app, "capture");
     Ok(())
 }
 
@@ -263,8 +281,9 @@ fn bring(window: &WebviewWindow) {
 }
 
 // Hides the window. Once none of the app's windows is showing, it hides the app as well, which
-// hands the keyboard back to the app the person came from. The capture panel never makes nod the
-// active app (make_panel), so hiding it alone is enough.
+// hands the keyboard back to the app the person came from if nod was active. The capture panel
+// does not make nod active (make_panel), but a click on it may, as can the plain window it stays
+// when make_panel fails.
 fn put_away(app: &AppHandle, label: &str) {
     if let Some(window) = app.get_webview_window(label) {
         let _ = window.hide();
@@ -299,6 +318,7 @@ fn make_panel(window: &WebviewWindow) {
         let () = msg_send![ns_window, setStyleMask: mask | 1 << 7];
         let () = msg_send![ns_window, setHidesOnDeactivate: false];
     }
+    PANEL.store(true, Ordering::Relaxed);
 }
 
 // Centers the window on the screen the pointer is on, which is where the person is looking.
@@ -354,6 +374,10 @@ fn open_capture(app: &AppHandle) {
         }
     });
     let _ = window.show();
+    // A plain window takes the keyboard only with its app active.
+    if !PANEL.load(Ordering::Relaxed) {
+        let _ = window.set_focus();
+    }
 }
 
 fn go(app: &AppHandle, path: &str) {

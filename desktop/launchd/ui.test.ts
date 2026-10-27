@@ -39,7 +39,7 @@ function install({
   }
   writeFileSync(`${repo}/ui/dist/old`, '')
   mkdirSync(`${home}/Library/Logs`, { recursive: true })
-  writeFileSync(`${home}/Library/Logs/nod-ui.log`, 'error: Port 4800 is already in use\n')
+  writeFileSync(`${home}/Library/Logs/nod-ui.log`, 'a line from an earlier run\n')
   const stub = (name: string, body: string) => {
     writeFileSync(`${bin}/${name}`, `#!/bin/sh\necho "${name} $*" >> "$HOME/calls"\n${body}\n`)
     chmodSync(`${bin}/${name}`, 0o755)
@@ -116,9 +116,15 @@ test('the install fails, without loading the agent, while another server holds t
 })
 
 test('the install fails, showing the end of the log, when the server does not come up', () => {
-  const down = install({ curl: 'exit 7' })
+  // The agent's server, started by the bootstrap, writes why it died.
+  const down = install({
+    curl: 'exit 7',
+    launchctl: `[ "$1" = bootstrap ] && echo 'error: Port 4800 is already in use' >> "$HOME/Library/Logs/nod-ui.log"
+exit 0`,
+  })
   expect(down.exitCode).not.toBe(0)
-  expect(down.calls).toContain('launchctl bootstrap')
   expect(down.stderr).toContain('did not answer')
   expect(down.stderr).toContain('error: Port 4800 is already in use')
+  // Without what earlier runs left there.
+  expect(down.stderr).not.toContain('an earlier run')
 })
