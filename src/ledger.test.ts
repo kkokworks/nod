@@ -83,22 +83,29 @@ test('v25 moves each retrospective that has its outcome to the status the outcom
   const home = freshHome()
   const old = new Database(join(home, 'nod.db'), { create: true, strict: true })
   for (const sql of MIGRATIONS.slice(0, 24)) old.exec(sql)
-  // Retrospective n runs in task n and looks back on task 10 + n; task 6 is no retrospective.
+  // Retrospective n runs in task n and looks back on task 10 + n. Task 6 is no retrospective; 8
+  // waits for retrospective 2, 9 for 8, and 10 for task 6.
   old.exec(`pragma user_version = 24;
     insert into tasks (id, brief, status, created_at, finished_at) values
       (11, 'x', 'succeeded', 'at', 'at'), (12, 'x', 'succeeded', 'at', 'at'),
       (13, 'x', 'succeeded', 'at', 'at'), (14, 'x', 'succeeded', 'at', 'at'),
-      (15, 'x', 'succeeded', 'at', 'at');
+      (15, 'x', 'succeeded', 'at', 'at'), (17, 'x', 'succeeded', 'at', 'at');
     insert into retros (id, of_task_id, outcome, created_at, ended_at) values
       (1, 11, 'added', 'at', 'ended'), (2, 12, 'declined', 'at', 'ended'),
-      (3, 13, 'none', 'at', 'ended'), (4, 14, null, 'at', null), (5, 15, 'dropped', 'at', null);
+      (3, 13, 'none', 'at', 'ended'), (4, 14, null, 'at', null), (5, 15, 'dropped', 'at', null),
+      (7, 17, 'todo', 'at', 'ended');
     insert into tasks (id, brief, retro_id, status, error, created_at, finished_at) values
       (1, 'r1', 1, 'needs_decision', null, 'at', null),
       (2, 'r2', 2, 'error', 'boom', 'at', 'failed'),
       (3, 'r3', 3, 'succeeded', null, 'at', 'done'),
       (4, 'r4', 4, 'needs_decision', null, 'at', null),
       (5, 'r5', 5, 'running', null, 'at', null),
-      (6, 'plain', null, 'needs_decision', null, 'at', null);
+      (6, 'plain', null, 'needs_decision', null, 'at', null),
+      (7, 'r7', 7, 'error', 'boom', 'at', 'failed'),
+      (8, 'after r2', null, 'queued', null, 'at', null),
+      (9, 'after 8', null, 'queued', null, 'at', null),
+      (10, 'after 6', null, 'queued', null, 'at', null);
+    insert into task_deps (task_id, after_id) values (8, 2), (9, 8), (10, 6);
     insert into attempts (id, task_id, kind, session_id, prompt, started_at) values
       (1, 1, 'start', 's1', 'p', 'at'), (4, 4, 'start', 's4', 'p', 'at'),
       (6, 6, 'start', 's6', 'p', 'at');
@@ -112,13 +119,21 @@ test('v25 moves each retrospective that has its outcome to the status the outcom
     const t = ledger.get(id)
     return [t.status, t.error, t.finishedAt]
   }
-  expect([1, 2, 3, 4, 5, 6].map(row)).toEqual([
+  expect([1, 2, 3, 4, 5, 6, 7, 10].map(row)).toEqual([
     ['succeeded', null, 'ended'],
     ['cancelled', null, 'ended'],
     ['succeeded', null, 'done'],
     ['needs_decision', null, null],
     ['cancelled', null, 'at'],
     ['needs_decision', null, null],
+    ['succeeded', null, 'ended'],
+    ['queued', null, null],
+  ])
+  // What waited for the cancelled retrospective is cancelled with it, as it is from then on.
+  const when = expect.stringMatching(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/)
+  expect([8, 9].map(row)).toEqual([
+    ['cancelled', 'task #2 it waits for was cancelled', when],
+    ['cancelled', 'task #8 it waits for was cancelled', when],
   ])
   const decided = (id: number) => [ledger.decision(id).answer, ledger.decision(id).answeredAt]
   expect([1, 4, 6].map(decided)).toEqual([

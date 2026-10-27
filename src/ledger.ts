@@ -600,9 +600,25 @@ export const MIGRATIONS = [
   `,
   // v25: a retrospective's task as its outcome has it (RETRO_STATUS, as it stands at v25). An older
   // nod could leave one with its outcome waiting on a decision, which gc then never collected. Its
-  // open decisions wait on nothing, so they close as nod closes one (dismiss). No notice goes out:
-  // these ended long before.
+  // open decisions wait on nothing, so they close as nod closes one (dismiss), and the tasks queued
+  // after a cancelled one are cancelled with it, as setStatus does. No notice goes out: these ended
+  // long before.
   `
+  with recursive w(id, after) as (
+    select d.task_id, d.after_id from task_deps d
+      join tasks t on t.id = d.task_id
+      join tasks a on a.id = d.after_id
+      join retros r on r.id = a.retro_id
+    where t.status = 'queued' and r.outcome in ('declined', 'dropped')
+    union
+    select d.task_id, d.after_id from task_deps d
+      join w on d.after_id = w.id
+      join tasks t on t.id = d.task_id
+    where t.status = 'queued')
+  update tasks set status = 'cancelled',
+    error = 'task #' || (select min(after) from w where w.id = tasks.id) || ' it waits for was cancelled',
+    finished_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+  where id in (select id from w);
   update decisions set answer = '(the retrospective had ended)'
   where answer is null and task_id in (
     select t.id from tasks t join retros r on r.id = t.retro_id where r.outcome is not null);
