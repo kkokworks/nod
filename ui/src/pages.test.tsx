@@ -44,11 +44,19 @@ const { TodoRow } = await import('./todo-parts')
 const { Search } = await import('./search')
 const projects = await import('./routes/projects')
 const { Failed, NotFound } = await import('./parts')
+const shell = await import('./routes/__root')
 if (before === undefined) delete process.env.NOD_HOME
 else process.env.NOD_HOME = before
 
-// The pages in a layout, as the real root puts them beside the sidebar.
+// The pages in a layout, as the real root puts them beside the sidebar. Its loader fails while
+// `rootFails` is set, as the real root's does when the sidebar's data does not load, and the real
+// root's error component shows then.
+let rootFails: Error | null = null
 const root = R.createRootRoute({
+  loader: () => {
+    if (rootFails !== null) throw rootFails
+  },
+  errorComponent: shell.Route.options.errorComponent,
   component: () => (
     <div className="layout">
       <R.Outlet />
@@ -539,8 +547,12 @@ test('a task or todo that is not there, an unknown page and a page that fails sh
     title: document.querySelector('.layout .page h1')?.textContent,
     out: document.querySelector('.layout .page a')?.getAttribute('href'),
   })
-  answer = () => null
-  for (const href of ['/tasks/999999', '/todos/999999', '/nope']) {
+  // As the server functions' validators do, a number that is not a whole one is refused.
+  answer = (id) => {
+    if (!Number.isInteger(id)) throw new Error('id must be an integer')
+    return null
+  }
+  for (const href of ['/tasks/999999', '/todos/999999', '/nope', '/tasks/abc', '/todos/1.5']) {
     await go(href)
     expect(shown()).toEqual({ title: 'Not found', out: '/focus' })
     expect(document.querySelector('.layout .subtitle')?.textContent).toBe(`Nothing is at ${href}.`)
@@ -555,5 +567,21 @@ test('a task or todo that is not there, an unknown page and a page that fails sh
   // The next reload that works shows the page.
   answer = (id) => detail(id as number)
   await reload()
+  expect(document.querySelector('.layout .task-title')?.textContent).toBe('task 3')
+})
+
+test("the sidebar's data failing to load leaves the layout, without its lists, until a refresh reads it", async () => {
+  answer = (id) => detail(id as number)
+  rootFails = new Error('ledger is busy')
+  await go('/tasks/3')
+  expect(document.querySelector('.layout')).toBeNull()
+  expect(document.querySelector('.sidebar a[href="/inbox"]')).not.toBeNull()
+  expect(document.querySelector('.side-summary')).toBeNull()
+  expect(document.querySelector('.main h1')?.textContent).toBe('Something went wrong')
+  expect(banners()).toEqual(['ledger is busy'])
+  // The layout's 5 second refresh, once the ledger reads.
+  rootFails = null
+  await reload()
+  expect(document.querySelector('.sidebar')).toBeNull()
   expect(document.querySelector('.layout .task-title')?.textContent).toBe('task 3')
 })

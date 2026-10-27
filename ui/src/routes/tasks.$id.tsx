@@ -23,8 +23,10 @@ const sendMessage = createServerFn({ method: 'POST' })
   .handler(({ data }) => send(data))
 
 export const Route = createFileRoute('/tasks/$id')({
+  // An address no task has, its number not one or no task's, is not found.
   loader: async ({ params }) => {
-    const page = await getDetail({ data: Number(params.id) })
+    const id = Number(params.id)
+    const page = Number.isInteger(id) ? await getDetail({ data: id }) : null
     if (page === null) throw notFound()
     return page
   },

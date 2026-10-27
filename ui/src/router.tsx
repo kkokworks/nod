@@ -3,8 +3,8 @@ import { Failed, NotFound } from './parts'
 import { routeTree } from './routeTree.gen'
 
 export function getRouter() {
-  // As defaults, not the root's own: each page's error then shows in the root's outlet, beside the
-  // sidebar, where the root's would take the whole window.
+  // As defaults, so each page has its own: its error then shows in the root's outlet, its sidebar
+  // with all its lists beside it. Without one it would reach a boundary above the root.
   return createRouter({
     routeTree,
     scrollRestoration: true,

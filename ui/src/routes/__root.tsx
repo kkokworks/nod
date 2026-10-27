@@ -9,8 +9,8 @@ import {
 import { createServerFn } from '@tanstack/react-start'
 import { type ReactNode, type Ref, useEffect, useRef } from 'react'
 import { bindKeys, ignoreOnPage, KEYS } from '../keys'
-import { overview } from '../nod.server'
-import { TaskId, TaskItem } from '../parts'
+import { type Overview, overview } from '../nod.server'
+import { Failed, TaskId, TaskItem } from '../parts'
 import { Search } from '../search'
 import css from '../styles.css?url'
 import { focusRow, STATUS_ICONS, UndoBar } from '../todo-parts'
@@ -38,6 +38,13 @@ export const Route = createRootRoute({
   loader: () => getOverview(),
   shellComponent: Shell,
   component: Root,
+  // The sidebar's own data failing to load: the layout stands without its lists, and its refresh
+  // brings the page back once the ledger reads again.
+  errorComponent: (props) => (
+    <Layout data={null}>
+      <Failed {...props} />
+    </Layout>
+  ),
 })
 
 function Shell({ children }: { children: ReactNode }) {
@@ -55,6 +62,14 @@ function Shell({ children }: { children: ReactNode }) {
 }
 
 function Root() {
+  return (
+    <Layout data={Route.useLoaderData()}>
+      <Outlet />
+    </Layout>
+  )
+}
+
+function Layout({ data, children }: { data: Overview | null; children: ReactNode }) {
   const router = useRouter()
   useEffect(() => {
     const timer = setInterval(() => router.invalidate(), REFRESH_MS)
@@ -72,11 +87,9 @@ function Root() {
   )
   return (
     <div className="app">
-      <Sidebar />
+      <Sidebar data={data} />
       <main className="main">
-        <UndoBar>
-          <Outlet />
-        </UndoBar>
+        <UndoBar>{children}</UndoBar>
       </main>
       <KeysHelp ref={help} />
     </div>
@@ -160,8 +173,16 @@ function NavIcon({ name }: { name: keyof typeof ICONS }) {
   )
 }
 
-function Sidebar() {
-  const { decisions, groups, collected, inbox } = Route.useLoaderData()
+// What the sidebar lists while its data fails to load.
+const NOTHING: Pick<Overview, 'decisions' | 'groups' | 'collected' | 'inbox'> = {
+  decisions: [],
+  groups: [],
+  collected: { items: [], total: 0 },
+  inbox: 0,
+}
+
+function Sidebar({ data }: { data: Overview | null }) {
+  const { decisions, groups, collected, inbox } = data ?? NOTHING
   const active = groups.reduce((n, g) => n + g.tasks.length, 0)
   return (
     <aside className="sidebar">
@@ -212,12 +233,15 @@ function Sidebar() {
           </Link>
         </details>
       </nav>
-      <div className="side-summary">
-        <span>{active} tasks</span>
-        <span className={decisions.length > 0 ? 'attention' : ''}>
-          {decisions.length} to decide
-        </span>
-      </div>
+      {/* Not "0 tasks" when there is no telling. */}
+      {data !== null && (
+        <div className="side-summary">
+          <span>{active} tasks</span>
+          <span className={decisions.length > 0 ? 'attention' : ''}>
+            {decisions.length} to decide
+          </span>
+        </div>
+      )}
 
       {decisions.length > 0 && (
         <div className="side-group">

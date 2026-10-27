@@ -162,9 +162,9 @@ function WayOut({ title, children }: { title: string; children: ReactNode }) {
     <div className="page">
       <h1 className="title">{title}</h1>
       {children}
-      <div className="link">
-        <Link to="/focus">Go to Focus →</Link>
-      </div>
+      <Link to="/focus" className="todo-open">
+        Go to Focus →
+      </Link>
     </div>
   )
 }

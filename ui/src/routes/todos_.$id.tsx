@@ -18,8 +18,10 @@ export const Route = createFileRoute('/todos_/$id')({
   // The page shows the todo; `?edit=true`, from its "…" menu, shows the form instead.
   validateSearch: (s: Record<string, unknown>): { edit?: true } =>
     s.edit === true ? { edit: true } : {},
+  // An address no todo has, its number not one or no todo's, is not found.
   loader: async ({ params }) => {
-    const page = await getTodo({ data: Number(params.id) })
+    const id = Number(params.id)
+    const page = Number.isInteger(id) ? await getTodo({ data: id }) : null
     if (page === null) throw notFound()
     return page
   },
