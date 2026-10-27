@@ -46,7 +46,7 @@ const SOCKET_TAIL = 50
 
 function usable(dir: string, tail: number): boolean {
   try {
-    if (realpathSync(dir).length + tail > 103) return false
+    if (Buffer.byteLength(realpathSync(dir)) + tail > 103) return false
     rmdirSync(mkdtempSync(join(dir, 'nod-try-')))
     return true
   } catch {

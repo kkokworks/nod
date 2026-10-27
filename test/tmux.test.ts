@@ -107,7 +107,7 @@ test("a test run keeps its sockets in the folder nod names only inside a worker'
   const sockets = tmp.make('nod-sockets-')
   const inside = (dir: string) => ({ SANDBOX_RUNTIME: '1', NOD_SOCKETS: dir })
   // What is left of a socket path's 104 bytes past the folder, as tmux has it.
-  const room = 103 - realpathSync(sockets).length
+  const room = 103 - Buffer.byteLength(realpathSync(sockets))
   expect(socketsParent(inside(sockets), room)).toBe(sockets)
   // The worker writes that folder, and the check runs outside its sandbox.
   expect(socketsParent({ NOD_SOCKETS: sockets }, room)).toBe(tmpdir())
@@ -117,4 +117,8 @@ test("a test run keeps its sockets in the folder nod names only inside a worker'
   expect(socketsParent(inside(join(sockets, 'gone')), 0)).toBe(tmpdir())
   // A folder too long for what the tests put past it, as under a long nod home.
   expect(socketsParent(inside(sockets), room + 1)).toBe(tmpdir())
+  // Bytes, not characters: under a home whose path is not all ASCII.
+  const named = join(sockets, '가나다라')
+  mkdirSync(named)
+  expect(socketsParent(inside(named), room - '/가나다라'.length)).toBe(tmpdir())
 })
