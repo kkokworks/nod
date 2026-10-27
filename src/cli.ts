@@ -792,7 +792,7 @@ async function promptHook(): Promise<never> {
   console.log = console.error
   try {
     const event = PromptEvent.parse(JSON.parse(await Bun.stdin.text()))
-    onPrompt(new Ledger(home), event)
+    onPrompt(new Ledger(home), home, event)
   } catch (error) {
     console.error(`nod: could not record the turn: ${message(error)}`)
   }

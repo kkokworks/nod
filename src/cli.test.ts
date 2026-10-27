@@ -1162,7 +1162,7 @@ test('attach and peek of a finished task whose terminal is closed say a message 
   }
 })
 
-test("the prompt hook opens the turn a person types into a worker's terminal, with their words, printing nothing and never failing", () => {
+test("the prompt hook opens the turn typed into a worker's terminal, printing nothing and never failing, and keeps no words while no one is attached", () => {
   const home = tmp.make('nod-prompt-')
   const ledger = new Ledger(home)
   const spec = {
@@ -1208,7 +1208,7 @@ test("the prompt hook opens the turn a person types into a worker's terminal, wi
   quiet(prompt(`session-${finished}`))
   expect(ledger.attempts(finished).map((a) => [a.kind, a.prompt, a.finishedAt])).toEqual([
     ['start', 'some task', expect.any(String)],
-    ['followup', '(typed into the terminal)\ngo on', null],
+    ['followup', '(typed into the terminal)', null],
   ])
   expect(ledger.get(finished).status).toBe('succeeded')
   // A task asking a question: only the turn opens. The question stays open and the task waits on
@@ -1220,7 +1220,7 @@ test("the prompt hook opens the turn a person types into a worker's terminal, wi
   quiet(prompt(`session-${asking}`))
   expect(ledger.get(asking).status).toBe('needs_decision')
   expect(ledger.decisions(asking).map((d) => d.answer)).toEqual([null])
-  expect(ledger.openAttempt(asking)?.prompt).toBe('(typed into the terminal)\ngo on')
+  expect(ledger.openAttempt(asking)?.prompt).toBe('(typed into the terminal)')
   // The person stopped that turn with Escape, as the transcript records, and types again: the hook
   // reads only the ledger, so the new message goes on in the turn still open, whose Stop closes
   // what the stopped one left.
@@ -1237,7 +1237,9 @@ test("the prompt hook opens the turn a person types into a worker's terminal, wi
     ['needs_decision', null],
     [null, null],
   ])
-  expect(ledger.messages(asking).map((m) => m.text)).toEqual(['(typed into the terminal)\ngo on'])
+  // No one is attached to these (there is no tmux server here): what came is Claude Code's own, a
+  // background agent's result say, not a person's, so no words are kept (worker.test.ts has theirs).
+  expect(ledger.messages(asking)).toEqual([])
   // A message that starts with `/` (a path) is a turn like any other: commands do not come here.
   const slashed = started(ledger.add(spec))
   ledger.endAttempt(ledger.lastAttempt(slashed)?.id ?? 0, {
@@ -1248,14 +1250,11 @@ test("the prompt hook opens the turn a person types into a worker's terminal, wi
   ledger.succeed(slashed)
   const path = { session_id: `session-${slashed}`, prompt: '/src/app.ts: why does it fail?' }
   quiet(prompt(`session-${slashed}`, home, JSON.stringify(path)))
-  expect(ledger.openAttempt(slashed)?.prompt).toBe(
-    '(typed into the terminal)\n/src/app.ts: why does it fail?',
-  )
-  // A message nod sent has its turn open already, with its words: no second one.
+  expect(ledger.openAttempt(slashed)?.prompt).toBe('(typed into the terminal)')
+  // A message nod sent has its turn open already: no second one.
   const told = started(ledger.add(spec))
   quiet(prompt(`session-${told}`))
   expect(ledger.attempts(told).map((a) => a.kind)).toEqual(['start'])
-  expect(ledger.messages(told)).toEqual([])
 
   // A session nod did not start, a ledger that cannot open, input it cannot read: still quiet,
   // and nothing changes.

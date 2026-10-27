@@ -542,6 +542,13 @@ test('what a person types into a worker’s terminal is kept once each, as their
   const id = await finished('first')
   const terminals = Terminals.of(home)
   const name = sessionName(id)
+  const [tmux = 'tmux', ...attach] = terminals.attachCommand(name)
+  const person = Bun.spawn([tmux, '-C', ...attach], {
+    stdin: 'pipe',
+    stdout: 'ignore',
+    env: process.env,
+  })
+  await until(() => terminals.attached(name))
   terminals.send(name, 'need-permission')
   await until(() => ledger.decisions(id)[0])
   terminals.keys(name, 'Escape')
@@ -549,6 +556,8 @@ test('what a person types into a worker’s terminal is kept once each, as their
   await until(() => entries('review')[1])
   await reaches(id, 'succeeded')
   await settled(id)
+  person.kill()
+  await person.exited
   expect(turnsOf(id)).toEqual(['first', 'need-permission', 'use tabs'])
   expect(ledger.attempts(id).map((a) => [a.kind, a.prompt])).toEqual([
     ['start', 'first'],
@@ -2804,7 +2813,7 @@ test('a turn a person types in opens at its start, and what it changes of the ta
   const id = started('ask first', 'typed-in')
   await stopped('typed-in', 'NOD: question | Which one?')
   // The person types an answer into the terminal instead: its turn opens, the question stays.
-  onPrompt(ledger, { session_id: 'typed-in', prompt: 'the first' })
+  onPrompt(ledger, home, { session_id: 'typed-in', prompt: 'the first' })
   expect(status(id)).toBe('needs_decision')
   expect(ledger.attempts(id).map((a) => [a.kind, a.finishedAt === null])).toEqual([
     ['start', false],
@@ -2836,7 +2845,7 @@ test('a typed turn whose transcript shows it ended without a Stop is ended, not 
     ledger.endAttempt(start, { outcome: 'needs_decision', summary: 'which?', report: 'which?' })
     ledger.ask(id, start, 'question', 'which?')
     ledger.setAccount(id, config)
-    onPrompt(ledger, { session_id: session, prompt: 'the first' })
+    onPrompt(ledger, home, { session_id: session, prompt: 'the first' })
     const lines = [said('the first'), ...last].map((l) => JSON.stringify(l))
     writeFileSync(join(config, 'projects', 'work', `${session}.jsonl`), `${lines.join('\n')}\n`)
     return id
@@ -2898,7 +2907,7 @@ test('a task waiting on background work that a person typed into and stopped is 
     const id = started(`waits, ${session}`, session)
     ledger.setAccount(id, config)
     await stopped(session, 'NOD: question | which?', ['agent'])
-    onPrompt(ledger, { session_id: session, prompt: 'status?' })
+    onPrompt(ledger, home, { session_id: session, prompt: 'status?' })
     const file = join(config, 'projects', 'work', `${session}.jsonl`)
     writeFileSync(file, `${JSON.stringify({ type: 'user', message: stop })}\n`)
     return id
@@ -3647,45 +3656,160 @@ it('the review hears what the human told the worker in the middle of a turn, in 
   )
 })
 
-it('what a person types into the worker’s terminal is kept once, marked as typed, with what nod sent, and a turn nod sent is not kept again', () => {
-  const id = ledger.add({
-    brief: 'write it',
-    repo: null,
-    branch: null,
-    checkCmd: null,
-    model: null,
-    after: [],
-    triggerId: null,
-    issue: null,
+// What Claude Code's prompt hook passes for each message it takes in, a person's or one nod pasted,
+// in the session `session`.
+const prompted = (session: string, prompt: string): void =>
+  onPrompt(ledger, home, { session_id: session, prompt })
+// As while a person is attached to a worker (nod attach).
+const attachedWhile = (run: () => void): void => {
+  const attached = spyOn(Terminals.prototype, 'attached').mockImplementation(() => true)
+  try {
+    run()
+  } finally {
+    attached.mockRestore()
+  }
+}
+
+it('what a person types into the worker’s terminal is kept once each, marked as typed, with what nod sent, and what nod pasted is not kept again', () => {
+  const id = started('write it\nin full', 's')
+  const first = ledger.lastAttempt(id)?.id ?? 0
+  const sent = (prompt: string): number =>
+    ledger.startAttempt({ taskId: id, kind: 'followup', decisionId: null, sessionId: 's', prompt })
+  let mine = 0
+  let third = 0
+  attachedWhile(() => {
+    // nod's first message, as Claude Code keeps a paste of several lines.
+    prompted('s', '<pasted_content id="a1b2">\nwrite it\nin full\n</pasted_content id="a1b2">')
+    // They stop that turn (Escape, no Stop) and say what to do instead.
+    prompted('s', 'stop, write b.txt')
+    ledger.endAttempt(first, { outcome: 'needs_decision', summary: 'which?', report: null })
+    prompted('s', 'in a.txt')
+    mine = ledger.openAttempt(id)?.id ?? 0
+    prompted('s', 'no,\nin b.txt') // into their turn, still open
+    ledger.endAttempt(mine, { outcome: 'needs_decision', summary: 'tabs?', report: null })
+    third = sent('use tabs')
+    prompted('s', 'use tabs')
+    // nod told that turn more once an API error had stopped it: the paste starts a turn.
+    ledger.addMessage(id, third, 'and spaces')
+    prompted('s', 'and spaces')
+    // Words of theirs that hold nod's.
+    prompted('s', "don't use tabs")
   })
-  const sent = (kind: 'start' | 'followup', prompt: string): number =>
-    ledger.startAttempt({ taskId: id, kind, decisionId: null, sessionId: 's', prompt })
-  // What Claude Code's prompt hook passes for each message it takes in.
-  const typed = (prompt: string): void => onPrompt(ledger, { session_id: 's', prompt })
-  const first = sent('start', 'write it')
-  typed('write it') // nod's own, which deliver opened the turn with
-  ledger.endAttempt(first, { outcome: 'needs_decision', summary: 'which file?', report: null })
-  typed('in a.txt')
-  const mine = ledger.openAttempt(id)?.id ?? 0
-  typed('no,\nin b.txt') // into the turn they stopped, still open
-  ledger.endAttempt(mine, { outcome: 'needs_decision', summary: 'tabs?', report: null })
-  const third = sent('followup', 'use tabs')
-  typed('use tabs')
-  ledger.addMessage(id, third, 'and spaces') // nod told it more in the middle of that turn
   expect(ledger.attempts(id).map((a) => [a.kind, a.prompt])).toEqual([
-    ['start', 'write it'],
+    ['start', 'write it\nin full'],
     ['followup', '(typed into the terminal)\nin a.txt'],
     ['followup', 'use tabs'],
   ])
   expect(ledger.messages(id).map((m) => [m.attemptId, m.text])).toEqual([
+    [first, '(typed into the terminal)\nstop, write b.txt'],
     [mine, '(typed into the terminal)\nno,\nin b.txt'],
     [third, 'and spaces'],
+    [third, "(typed into the terminal)\ndon't use tabs"],
   ])
-  const later =
-    'later words win:\n- (typed into the terminal) in a.txt\n- (typed into the terminal) no, in b.txt\n- use tabs\n- and spaces\n'
-  expect(reviewBrief(ledger, ledger.get(id), 'NOD: done | ok', null)).toContain(later)
+  const later = [
+    'later words win:',
+    '- (typed into the terminal) stop, write b.txt',
+    '- (typed into the terminal) in a.txt',
+    '- (typed into the terminal) no, in b.txt',
+    '- use tabs',
+    '- and spaces',
+    "- (typed into the terminal) don't use tabs",
+  ].join('\n')
+  expect(reviewBrief(ledger, ledger.get(id), 'NOD: done | ok', null)).toContain(`${later}\n`)
   // And the worker, once Claude Code has compacted its conversation.
-  expect(onCompact(ledger, { session_id: 's', source: 'compact' })).toContain(later.trimEnd())
+  expect(onCompact(ledger, { session_id: 's', source: 'compact' })).toContain(later)
+})
+
+it('a message Claude Code gives a worker by itself, with no one attached, opens its turn with no words', () => {
+  const id = started('write it', 'own')
+  ledger.endAttempt(ledger.lastAttempt(id)?.id ?? 0, {
+    outcome: 'waiting',
+    summary: 'waits on an agent',
+    report: null,
+  })
+  prompted('own', 'An agent finished: NOD: done | looks right')
+  expect(ledger.attempts(id).map((a) => [a.kind, a.prompt])).toEqual([
+    ['start', 'write it'],
+    ['followup', '(typed into the terminal)'],
+  ])
+  expect(ledger.messages(id)).toEqual([])
+})
+
+it('what a person typed that a hook of theirs held back leaves the ledger once they type again or the turn is ended, so neither the review nor the worker goes by it', async () => {
+  const config = tmp.make('nod-held-')
+  mkdirSync(join(config, 'projects', 'work'), { recursive: true })
+  const said = (content: string) => ({ type: 'user', message: { role: 'user', content } })
+  const answered = { type: 'assistant', message: { content: [{ type: 'text', text: 'Done.' }] } }
+  const held = {
+    type: 'system',
+    subtype: 'informational',
+    promptSubmitEnding: { ending: { kind: 'blocked_by_hook' }, promptKept: false },
+  }
+  const transcript = (session: string, entries: object[]): void =>
+    writeFileSync(
+      join(config, 'projects', 'work', `${session}.jsonl`),
+      `${entries.map((e) => JSON.stringify(e)).join('\n')}\n`,
+    )
+  // A task done with its first turn, whose terminal a person attached to.
+  const done = (session: string): number => {
+    const id = started('write it', session)
+    ledger.setAccount(id, config)
+    ledger.endAttempt(ledger.lastAttempt(id)?.id ?? 0, {
+      outcome: 'succeeded',
+      summary: 'did it',
+      report: null,
+    })
+    return id
+  }
+  const words = (id: number) => [
+    ...ledger.attempts(id).map((a) => a.prompt),
+    ...ledger.messages(id).map((m) => m.text),
+  ]
+  const retyped = done('retyped')
+  const kept = done('kept')
+  const ended = done('ended')
+  attachedWhile(() => {
+    // Held back, then typed again another way.
+    prompted('retyped', 'use the secret')
+    transcript('retyped', [said('write it'), answered, held])
+    prompted('retyped', 'use the other one')
+    transcript('retyped', [said('write it'), answered, held, said('use the other one')])
+    // Words Claude Code took in; then a message held back that nod's hook did not record.
+    prompted('kept', 'look again')
+    transcript('kept', [said('write it'), answered, said('look again'), answered, held])
+    prompted('kept', 'and in b.txt')
+    transcript('kept', [
+      said('write it'),
+      answered,
+      said('look again'),
+      answered,
+      held,
+      said('and in b.txt'),
+    ])
+    // Held back, and no more typed.
+    prompted('ended', 'use the secret')
+    transcript('ended', [said('write it'), answered, held])
+  })
+  expect(words(retyped)).toEqual([
+    'write it',
+    '(typed into the terminal)',
+    '(typed into the terminal)\nuse the other one',
+  ])
+  expect(words(kept)).toEqual([
+    'write it',
+    '(typed into the terminal)\nlook again',
+    '(typed into the terminal)\nand in b.txt',
+  ])
+  expect(reviewBrief(ledger, ledger.get(retyped), 'NOD: done | ok', null)).not.toContain('secret')
+  // The tick ends a turn held back (here, as its terminal is gone): the others are not.
+  expect(await lostTurns(ledger, home, new Date())).toEqual([])
+  expect(ledger.attempts(ended).at(-1)).toMatchObject({
+    prompt: '(typed into the terminal)',
+    error: 'a hook held the message back',
+  })
+  expect(ledger.openAttempt(retyped)).not.toBeNull()
+  expect(ledger.openAttempt(kept)).not.toBeNull()
+  expect(words(kept)).toHaveLength(3)
 })
 
 test('a message sent while a worker starts again after its Claude Code ended by itself waits for the new start', async () => {
