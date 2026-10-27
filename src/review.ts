@@ -61,8 +61,9 @@ export function askedAgain(ledger: Ledger, task: Task): string {
 }
 
 // What came after the brief. The human's later words, which may change the brief, and so the check
-// written before them: what started their turns, each followed by what they said while it ran. What
-// other tasks' workers sent it (`NOD: tell`) comes the same ways, but is a peer's: it changes
+// written before them: what started their turns, each followed by what they said while it ran,
+// whether sent through nod or typed into the worker's terminal (marked so, onPrompt in worker.ts).
+// What other tasks' workers sent it (`NOD: tell`) comes the same ways, but is a peer's: it changes
 // nothing the human asked.
 function laterWords(ledger: Ledger, task: Task): string[] {
   const messages = ledger.messages(task.id)

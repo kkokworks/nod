@@ -1162,7 +1162,7 @@ test('attach and peek of a finished task whose terminal is closed say a message 
   }
 })
 
-test("the prompt hook opens the turn a person types into a worker's terminal, and only that, printing nothing and never failing", () => {
+test("the prompt hook opens the turn typed into a worker's terminal, printing nothing and never failing, and keeps no words while no one is attached", () => {
   const home = tmp.make('nod-prompt-')
   const ledger = new Ledger(home)
   const spec = {
@@ -1237,6 +1237,9 @@ test("the prompt hook opens the turn a person types into a worker's terminal, an
     ['needs_decision', null],
     [null, null],
   ])
+  // No one is attached to these (there is no tmux server here): what came is Claude Code's own, a
+  // background agent's result say, not a person's, so no words are kept (worker.test.ts has theirs).
+  expect(ledger.messages(asking)).toEqual([])
   // A message that starts with `/` (a path) is a turn like any other: commands do not come here.
   const slashed = started(ledger.add(spec))
   ledger.endAttempt(ledger.lastAttempt(slashed)?.id ?? 0, {

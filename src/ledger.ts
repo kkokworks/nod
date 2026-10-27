@@ -1429,6 +1429,16 @@ export class Ledger {
     )
   }
 
+  // Words a person typed that Claude Code never took in, out of the ledger (forgetHeldBack in
+  // worker.ts): a message that went into a turn, or what started one.
+  forgetMessage(id: number): void {
+    this.run(q.deleteFrom('messages').where('id', '=', id))
+  }
+
+  setPrompt(attemptId: number, prompt: string): void {
+    this.run(q.updateTable('attempts').set({ prompt }).where('id', '=', attemptId))
+  }
+
   // How many messages the workers of tasks `a` and `b` sent each other (`NOD: tell`), both ways:
   // the turns they started and those that went into a turn.
   tellsBetween(a: number, b: number): number {
