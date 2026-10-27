@@ -1,5 +1,5 @@
 import { afterAll, expect, test } from 'bun:test'
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, realpathSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { socketsParent, tempDirs } from './tmp'
@@ -105,11 +105,16 @@ test("a run's dir is over once the run that made it is gone, or, with no owner y
 
 test("a test run keeps its sockets in the folder nod names only inside a worker's sandbox, and outside it, as nod's check runs, in the temp dir", () => {
   const sockets = tmp.make('nod-sockets-')
-  expect(socketsParent({ SANDBOX_RUNTIME: '1', NOD_SOCKETS: sockets })).toBe(sockets)
+  const inside = (dir: string) => ({ SANDBOX_RUNTIME: '1', NOD_SOCKETS: dir })
+  // What is left of a socket path's 104 bytes past the folder, as tmux has it.
+  const room = 103 - realpathSync(sockets).length
+  expect(socketsParent(inside(sockets), room)).toBe(sockets)
   // The worker writes that folder, and the check runs outside its sandbox.
-  expect(socketsParent({ NOD_SOCKETS: sockets })).toBe(tmpdir())
+  expect(socketsParent({ NOD_SOCKETS: sockets }, room)).toBe(tmpdir())
   // A worker nod started before it named one.
-  expect(socketsParent({ SANDBOX_RUNTIME: '1' })).toBe(tmpdir())
+  expect(socketsParent({ SANDBOX_RUNTIME: '1' }, room)).toBe(tmpdir())
   // A sandbox that does not let the tests make their dirs there, as a missing folder does not.
-  expect(socketsParent({ SANDBOX_RUNTIME: '1', NOD_SOCKETS: join(sockets, 'gone') })).toBe(tmpdir())
+  expect(socketsParent(inside(join(sockets, 'gone')), 0)).toBe(tmpdir())
+  // A folder too long for what the tests put past it, as under a long nod home.
+  expect(socketsParent(inside(sockets), room + 1)).toBe(tmpdir())
 })

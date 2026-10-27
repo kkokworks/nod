@@ -1,4 +1,4 @@
-import { mkdtempSync, rmdirSync, rmSync } from 'node:fs'
+import { mkdtempSync, realpathSync, rmdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -27,14 +27,26 @@ export function tempDirs(): {
 // sandbox, where nod's check runs these tests: the worker writes the folder, and a link it left
 // there would lead the check, ending the tmux servers of runs that are over (test/tmux.ts), to
 // nod's own. Nor in a sandbox that does not let this process make dirs there (nod's reviewer gets
-// the worker's NOD_SOCKETS with a sandbox of its own): there the tests skip as before.
-export function socketsParent(env: Record<string, string | undefined> = process.env): string {
+// the worker's NOD_SOCKETS with a sandbox of its own), nor in one whose path leaves too little of a
+// socket path's 104 bytes (macOS, with its NUL) for what the tests put past it: there the tests
+// skip as before.
+// `tail`: what the tests put past it.
+export function socketsParent(
+  env: Record<string, string | undefined> = process.env,
+  tail = SOCKET_TAIL,
+): string {
   const dir = env.SANDBOX_RUNTIME === '1' ? env.NOD_SOCKETS : undefined
-  return dir && canMake(dir) ? dir : tmpdir()
+  return dir && usable(dir, tail) ? dir : tmpdir()
 }
 
-function canMake(dir: string): boolean {
+// The most a test puts past it, as tmux has it (past the real path): worker.test.ts's
+// `/nod-tmux-XXXXXX/tmux-<uid>/nod-<home hash>`, 43 bytes with a three-digit uid, and room for a
+// longer one.
+const SOCKET_TAIL = 50
+
+function usable(dir: string, tail: number): boolean {
   try {
+    if (realpathSync(dir).length + tail > 103) return false
     rmdirSync(mkdtempSync(join(dir, 'nod-try-')))
     return true
   } catch {
