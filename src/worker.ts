@@ -256,6 +256,8 @@ const BLOCKED = 'UserPromptSubmit operation blocked by hook:'
 const TRUST_TIMEOUT_MS = 20_000
 const TRUST_POLL_MS = 500
 const TRUST_DIALOG = 'Yes, I trust this folder'
+// An answer that says yes to a decision.
+const YES = /^y(es)?$/i
 const SCREEN_TIMEOUT_MS = 5000
 const SCREEN_POLL_MS = 100
 // The standard `dirname`, not Bun's `dir`: the UI server loads this module through Vite, which
@@ -447,7 +449,7 @@ export async function answer(
     await told()
     return false
   }
-  const yes = /^y(es)?$/i.test(text.trim())
+  const yes = YES.test(text.trim())
   // Trust and rules are yes-or-nothing: anything but yes ends the task.
   if ((decision.reason === 'trust' || decision.reason === 'rule') && !yes) {
     return (await drop(ledger, home, decisionId)) === 'dropped'
@@ -2133,7 +2135,7 @@ async function nextRun(ledger: Ledger, home: string, taskId: number): Promise<St
 
 // Claude Code asks once per account whether to trust a repo. The person answered for this repo
 // when the task got past its first start in it, so a later start, as another account, says yes
-// again; a start before that (`fresh`) leaves the question to the person (awaitStart).
+// again; a start before that (`fresh`) goes as a first start does (awaitStart).
 async function trustOnStart(
   ledger: Ledger,
   home: string,
@@ -2528,7 +2530,10 @@ async function acceptTrust(terminals: Terminals, name: string, started: string):
 
 // Waits for a repo task's worker to start. Claude Code asks once per repo whether to trust it, and
 // for a worktree it asks about the repo (measured on 2.1.290). Trusting lets the repo's own Claude
-// Code settings and hooks run, so a repo it does not trust yet becomes a decision.
+// Code settings and hooks run, so a repo it does not trust yet becomes a decision, unless the person
+// trusted it for an earlier task (trustedBy): Claude Code keeps what it trusts per account, so it
+// asks again once the account changes. Then nod says yes, as for a later start (trustOnStart), and
+// records which decision it went by.
 async function awaitStart(
   ledger: Ledger,
   home: string,
@@ -2542,6 +2547,12 @@ async function awaitStart(
   while (!existsSync(started)) {
     const screen = terminals.screen(name)
     if (screen.includes(TRUST_DIALOG)) {
+      const by = task.repo === null ? null : trustedBy(ledger, task.repo)
+      if (by !== null) {
+        const note = `trust ${task.repo}, as the person did in decision #${by.id} (task #${by.taskId})`
+        ledger.addNotice({ taskId: task.id, attemptId, event: 'allowed', note })
+        return acceptTrust(terminals, name, started)
+      }
       await decide(
         ledger,
         home,
@@ -2558,6 +2569,35 @@ async function awaitStart(
     await Bun.sleep(TRUST_POLL_MS)
   }
   rmSync(started)
+}
+
+// The decision in which the person trusted `repo`: of the trust decisions on tasks in the same repo,
+// the last one the person answered, if they said yes. Null if there is none, or if they said
+// anything else or dropped it, so the person decides again. Tasks count by the repo Claude Code asks
+// about, a worktree's own repo, not by the path each task has. A no for a folder git cannot read any
+// more (a worktree removed since) may have been for this repo, so it counts as this repo's.
+// ponytail: that no also stops other repos' older yes until the person says yes again; record the
+// repo Claude Code asked about with the decision if that comes up.
+export function trustedBy(ledger: Ledger, repo: string): Decision | null {
+  const main = mainRepo(repo)
+  if (main === null) return null
+  const mains = new Map<string, string | null>()
+  for (const d of ledger.trustAnswers()) {
+    if (!mains.has(d.repo)) mains.set(d.repo, mainRepo(d.repo))
+    const of = mains.get(d.repo)
+    const yes = YES.test(d.answer?.trim() ?? '')
+    if (of === main || (of === null && !yes)) return yes ? d : null
+  }
+  return null
+}
+
+// The repo's main worktree, the same for each of its worktrees; null for a folder git cannot read,
+// such as a repo removed since.
+function mainRepo(path: string): string | null {
+  const { exitCode, stdout } = Bun.spawnSync(['git', '-C', path, 'worktree', 'list', '--porcelain'])
+  if (exitCode !== 0) return null
+  const [main] = stdout.toString().split('\n')
+  return main?.replace(/^worktree /, '') || null
 }
 
 // The task's folder, and in a repo the commit its new branch starts at. One that fails leaves no

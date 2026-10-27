@@ -67,7 +67,7 @@ export function endLine(ledger: Ledger, t: Task): string {
   return `${taskLabel(t)} ${t.status}: ${firstLine(note || t.brief)}`
 }
 
-// A command nod allowed a task's worker (allow.ts), as watch and the project session hear it: one line
+// What nod allowed a task's worker itself (Notice), as watch and the project session hear it: one line
 // in the words the person asked for, with nothing to do next.
 export const allowedLine = (n: Notice): string => `#${n.taskId} 허락: ${n.note}`
 

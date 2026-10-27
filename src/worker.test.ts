@@ -1,4 +1,4 @@
-import { afterAll, beforeEach, expect, it, spyOn } from 'bun:test'
+import { afterAll, beforeEach, expect, it, setSystemTime, spyOn } from 'bun:test'
 import {
   appendFileSync,
   chmodSync,
@@ -55,6 +55,7 @@ import {
   startTask,
   tell,
   transcriptPath,
+  trustedBy,
   trustedFile,
   workerEnv,
   workerPrompt,
@@ -1458,6 +1459,111 @@ test('a repo Claude Code does not trust yet becomes a decision: yes trusts and s
   await answer(ledger, home, no.id, 'not this one', 'human')
   expect(status(refused)).toBe('cancelled')
   expect(Terminals.of(home).alive(sessionName(refused))).toBe(false)
+})
+
+test('a repo the person trusted for an earlier task is trusted again without a decision, as are its worktrees', async () => {
+  // Every new session asks, as after the account changed.
+  writeFileSync(join(home, 'fake-untrusted'), '')
+  const addIn = (repo: string, branch: string): number =>
+    ledger.add({
+      brief: 'work here',
+      repo,
+      branch,
+      checkCmd: null,
+      model: null,
+      after: [],
+      triggerId: null,
+      issue: null,
+    })
+  const [trusted, refused] = [newRepo(), newRepo()]
+  const first = addIn(trusted, 'feat/first')
+  const no = addIn(refused, 'feat/no')
+  await startTask(ledger, home, first)
+  await startTask(ledger, home, no)
+  const [yes, dropped] = [first, no].map((id) => ledger.decisions(id)[0])
+  if (yes === undefined || dropped === undefined) throw new Error('no trust decision')
+  await answer(ledger, home, yes.id, 'yes', 'human')
+  await reaches(first, 'succeeded')
+  await answer(ledger, home, dropped.id, 'no', 'human')
+
+  // The same repo, and a worktree of it outside nod's.
+  const worktree = join(tmp.make('nod-worktree-'), 'wt')
+  git(trusted, 'worktree', 'add', '-q', '-b', 'side', worktree)
+  const again = [addIn(trusted, 'feat/again'), addIn(worktree, 'feat/tree')]
+  for (const id of again) {
+    await startTask(ledger, home, id)
+    await reaches(id, 'succeeded')
+    expect(ledger.decisions(id)).toEqual([])
+    expect(ledger.allowed(id).map((n) => n.note)).toEqual([
+      `trust ${ledger.get(id).repo}, as the person did in decision #${yes.id} (task #${first})`,
+    ])
+  }
+
+  // A repo the person said no to, and one they never answered for.
+  const asked = [addIn(refused, 'feat/no-again'), addIn(newRepo(), 'feat/new')]
+  for (const id of asked) {
+    await startTask(ledger, home, id)
+    expect(ledger.decisions(id).map((d) => [d.reason, d.answer])).toEqual([['trust', null]])
+    expect(ledger.allowed(id)).toEqual([])
+  }
+}, 30_000)
+
+// A trust decision on a new task in `repo`, as awaitStart opens one.
+function askTrust(repo: string): number {
+  const id = ledger.add({
+    brief: 'work here',
+    repo,
+    branch: 'feat/here',
+    checkCmd: null,
+    model: null,
+    after: [],
+    triggerId: null,
+    issue: null,
+  })
+  const attemptId = ledger.startAttempt({
+    taskId: id,
+    kind: 'start',
+    decisionId: null,
+    sessionId: crypto.randomUUID(),
+    prompt: 'work here',
+  })
+  return ledger.ask(id, attemptId, 'trust', 'trust it?')
+}
+
+it("a repo's trust goes by the answer the person gave last, not the decision opened last", () => {
+  const repo = newRepo()
+  // Two tasks asked at once, as after the account changed, answered newer first.
+  const [older, newer] = [askTrust(repo), askTrust(repo)]
+  try {
+    setSystemTime(new Date('2026-01-01T00:00:00Z'))
+    ledger.answer(newer, 'yes')
+    setSystemTime(new Date('2026-01-01T00:01:00Z'))
+    ledger.drop(older)
+  } finally {
+    setSystemTime()
+  }
+  expect(trustedBy(ledger, repo)).toBeNull()
+})
+
+it('a yes for a task given a worktree counts for the repo it belongs to', () => {
+  const repo = newRepo()
+  const worktree = join(tmp.make('nod-worktree-'), 'wt')
+  git(repo, 'worktree', 'add', '-q', '-b', 'side', worktree)
+  const yes = askTrust(worktree)
+  ledger.answer(yes, 'yes')
+  expect(trustedBy(ledger, repo)?.id).toBe(yes)
+})
+
+it('a no for a worktree removed since counts as a no for its repo', () => {
+  const repo = newRepo()
+  const yes = askTrust(repo)
+  ledger.answer(yes, 'yes')
+  expect(trustedBy(ledger, repo)?.id).toBe(yes)
+  const worktree = join(tmp.make('nod-worktree-'), 'wt')
+  git(repo, 'worktree', 'add', '-q', '-b', 'side', worktree)
+  ledger.drop(askTrust(worktree))
+  git(repo, 'worktree', 'remove', worktree)
+  expect(trustedBy(ledger, repo)).toBeNull()
 })
 
 test('an answer for a repo worker whose first start waits on trust goes with the brief, not into the trust dialog', async () => {

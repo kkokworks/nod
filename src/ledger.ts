@@ -229,10 +229,10 @@ export type Decision = {
 
 // What a project's session hears (inbox.ts): a task's end (a status in FINISHED, with the worker's
 // last done summary or the error as `note`), a decision that opened, a person's words (`tell`, in
-// `note` as said, with `projectId`), or a command nod allowed the task's worker (`allowed`, the
-// command in `note`; allow.ts), which is also the ledger's record of it. `attemptId`: the task's
-// latest turn as it happened. `sessionId` and `sentAt`: the session it went to and when; null and
-// set for one that went to none.
+// `note` as said, with `projectId`), or what nod allowed the task's worker itself (`allowed`, in
+// `note`: a command, allow.ts, or its repo's trust, awaitStart in worker.ts), which is also the
+// ledger's record of it. `attemptId`: the task's latest turn as it happened. `sessionId` and
+// `sentAt`: the session it went to and when; null and set for one that went to none.
 export type NoticeEvent = 'succeeded' | 'error' | 'cancelled' | 'decision' | 'tell' | 'allowed'
 export type Notice = {
   id: number
@@ -1587,6 +1587,24 @@ export class Ledger {
     return this.run(q.selectFrom('decisions').selectAll().where('answer', 'is', null).orderBy('id'))
   }
 
+  // The trust decisions a person answered or dropped, the latest answer first, with their task's repo
+  // (trustedBy in worker.ts). Those nod closed itself have no answeredAt (dismiss).
+  trustAnswers(): (Decision & { repo: string })[] {
+    return this.run(
+      q
+        .selectFrom('decisions as d')
+        .innerJoin('tasks as t', 't.id', 'd.taskId')
+        .selectAll('d')
+        .select('t.repo')
+        .where('d.reason', '=', 'trust')
+        .where('d.answeredAt', 'is not', null)
+        .where('t.repo', 'is not', null)
+        .orderBy('d.answeredAt', 'desc')
+        .orderBy('d.id', 'desc')
+        .$narrowType<{ repo: string }>(),
+    )
+  }
+
   // ── notices (inbox.ts) ──
 
   // A person's words for a project's session, or, from setStatus and ask, a task's end or decision.
@@ -1613,7 +1631,7 @@ export class Ledger {
     return this.run(q.selectFrom('notices').selectAll().where('sentAt', 'is', null).orderBy('id'))
   }
 
-  // The commands nod allowed a task's worker itself (allow.ts), oldest first.
+  // What nod allowed a task's worker itself (Notice), oldest first.
   allowed(taskId: number): Notice[] {
     return this.run(
       q
@@ -1625,7 +1643,7 @@ export class Ledger {
     )
   }
 
-  // The commands nod allowed any task's worker since notice `id`, oldest first (`nod watch`).
+  // What nod allowed any task's worker since notice `id`, oldest first (`nod watch`).
   allowedAfter(id: number): Notice[] {
     return this.run(
       q
