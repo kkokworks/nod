@@ -420,6 +420,34 @@ test("a prompt's decision whose turn the person stopped with Escape closes as th
   expect(ledger.get(id).status).toBe('running')
 }, 15_000)
 
+test("no to one of the prompts tools that ran at once queued closes the others' decisions too: Escape ends the turn and every dialog of it", async () => {
+  const { home, ledger, id, attemptId, event } = running()
+  expect(hook(home, JSON.stringify(event('git push origin feat/x')))).toBe('')
+  expect(hook(home, JSON.stringify(event('git push origin --tags')))).toBe('')
+  const [first] = ledger.decisions(id)
+  const alive = spyOn(Terminals.prototype, 'alive').mockReturnValue(true)
+  const option = spyOn(Terminals.prototype, 'option').mockReturnValue('')
+  const attached = spyOn(Terminals.prototype, 'attached').mockReturnValue(false)
+  const keys = spyOn(Terminals.prototype, 'keys').mockImplementation(() => {})
+  // Claude Code shows the turn stopped once Escape is in.
+  const screen = spyOn(Terminals.prototype, 'screen').mockReturnValue('Interrupted')
+  const send = spyOn(Terminals.prototype, 'send').mockImplementation(() => {})
+  try {
+    await answer(ledger, home, first?.id ?? 0, 'no, not yet', 'human')
+    expect(keys.mock.calls.map(([, key]) => key)).toEqual(['Escape'])
+    expect(send.mock.calls.map(([, text]) => text)).toEqual([
+      'Human decision: permission denied. no, not yet',
+    ])
+  } finally {
+    for (const spy of [alive, option, attached, keys, screen, send]) spy.mockRestore()
+  }
+  expect(ledger.decisions(id).map((d) => [d.attemptId, d.answer])).toEqual([
+    [attemptId, 'no, not yet'],
+    [attemptId, '(its turn ended)'],
+  ])
+  expect(ledger.get(id).status).toBe('running')
+}, 15_000)
+
 test('the decision goes in before what the turn closed as it opened is told, which may take a while', () => {
   const { home, ledger, id, attemptId, event } = running()
   // The worker asked as its turn ended, and the person typed into its terminal: this prompt's

@@ -233,6 +233,8 @@ const HELD_BACK = 'a hook held the message back'
 const CUT = '(the turn was cut off)'
 // What a permission decision gets once the person stopped its turn with Escape (stoppedDialogs).
 const STOPPED_DIALOG = '(the person stopped its turn)'
+// What a permission decision gets once its turn ended otherwise: its dialog went with the turn.
+const TURN_ENDED = '(its turn ended)'
 
 // ponytail: fixed retry budget; make it per-task if real checks need more.
 const CHECK_RETRIES = 2
@@ -543,7 +545,8 @@ export async function answer(
     return true
   }
   // Escape answers no, but also ends the turn without a Stop hook (measured on 2.1.290), so close
-  // the attempt here and tell the worker in a new turn.
+  // the attempt here and tell the worker in a new turn. The turn's other dialogs go with it: tools
+  // that ran at once queue a dialog each, each its decision (onPermissionAsk).
   terminals.keys(name, 'Escape')
   await waitForScreen(terminals, name, 'Interrupted')
   ledger.endAttempt(decision.attemptId, {
@@ -551,6 +554,9 @@ export async function answer(
     summary: 'permission denied',
     report: null,
   })
+  const ofTurn = (d: Decision) => d.reason === 'permission' && d.attemptId === decision.attemptId
+  const gone = closeDecisions(ledger, decision.taskId, ofTurn, TURN_ENDED)
+  await announce(home, ledger.get(decision.taskId), gone, TURN_ENDED)
   await reply(`Human decision: permission denied. ${text}`)
   return true
 }
@@ -1080,14 +1086,13 @@ async function settle(
   // A permission dialog of this turn went with it: one a person answered in the worker's own
   // terminal waits on nothing.
   // And a turn that ran got past the trust dialog: one a person answered there waits on nothing.
-  const gone = '(its turn ended)'
   const past = '(it got past the trust dialog)'
   const dialogs = async (): Promise<void> => {
     const ofTurn = (d: Decision): boolean => d.reason === 'permission' && d.attemptId === attemptId
-    const closed = closeDecisions(ledger, task.id, ofTurn, gone)
+    const closed = closeDecisions(ledger, task.id, ofTurn, TURN_ENDED)
     const trusted = closeDecisions(ledger, task.id, (d) => d.reason === 'trust', past)
     goesOn(ledger, task.id, [...closed, ...trusted])
-    await announce(home, task, closed, gone)
+    await announce(home, task, closed, TURN_ENDED)
     await announce(home, task, trusted, past)
   }
   if (!done) {
