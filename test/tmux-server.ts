@@ -12,14 +12,17 @@ import { socketsParent } from './tmp'
 // starting fails the run: nod's check runs these tests outside the sandbox and must not pass
 // without them. A worker nod starts now has a folder its sandbox lets it keep sockets in
 // (NOD_SOCKETS), where the probe and the tests make theirs, so they run there too; the skip stays
-// for a worker started before that, and any sandbox without the rule.
+// for a worker started before that, and any sandbox without the rule. A sandbox that lets tmux make
+// its socket there but opens no pseudo-terminal (`script` says `openpty: Operation not permitted`)
+// gets the server up with no window: new-session prints `create window failed: fork failed:
+// Operation not permitted`, and that skips too.
 export function tmuxSkip(
   up: boolean,
   stderr: string,
   env: Record<string, string | undefined>,
 ): string | null {
   if (up) return null
-  if (env.SANDBOX_RUNTIME === '1' && stderr.includes('(Operation not permitted)')) {
+  if (env.SANDBOX_RUNTIME === '1' && stderr.includes('Operation not permitted')) {
     return "tmux cannot start a server in this sandbox: skipping the tests that need one, which nod's check runs outside it"
   }
   throw new Error(`tmux cannot start a server: ${stderr.trim() || '(it said nothing)'}`)

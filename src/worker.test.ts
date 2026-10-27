@@ -2776,7 +2776,7 @@ it('a turn the worker goes on to by itself closes what it asked before, and so d
   ])
 })
 
-test('a turn a person types in opens at its start, and what it changes of the task waits for its Stop, as before', async () => {
+it('a turn a person types in opens at its start, and what it changes of the task waits for its Stop, as before', async () => {
   const id = started('ask first', 'typed-in')
   await stopped('typed-in', 'NOD: question | Which one?')
   // The person types an answer into the terminal instead: its turn opens, the question stays.
@@ -2796,7 +2796,7 @@ test('a turn a person types in opens at its start, and what it changes of the ta
   expect(ledger.decisions(id).map((d) => d.answer)).toEqual(['(it went on without an answer)'])
 })
 
-test('a typed turn whose transcript shows it ended without a Stop is ended, not taken for cut off; one cut off still is', async () => {
+it('a typed turn whose transcript shows it ended without a Stop is ended, not taken for cut off; one cut off still is', async () => {
   const config = tmp.make('nod-transcripts-')
   mkdirSync(join(config, 'projects', 'work'), { recursive: true })
   const said = (content: unknown, more: object = {}) => ({
@@ -2865,7 +2865,7 @@ test('a typed turn whose transcript shows it ended without a Stop is ended, not 
   }
 })
 
-test('a task waiting on background work that a person typed into and stopped is still asked about once it waited too long', async () => {
+it('a task waiting on background work that a person typed into and stopped is still asked about once it waited too long', async () => {
   const config = tmp.make('nod-transcripts-')
   mkdirSync(join(config, 'projects', 'work'), { recursive: true })
   const stop = { role: 'user', content: [{ type: 'text', text: '[Request interrupted by user]' }] }
@@ -3548,7 +3548,7 @@ it('a rule decision takes no yes while its retrospective proposes again, and a y
   ])
 })
 
-it("a message that finds a turn gone with its terminal closes that turn's decisions", async () => {
+test("a message that finds a turn gone with its terminal closes that turn's decisions", async () => {
   const id = started('fetch it', 'gone-dialog')
   const attempt = ledger.openAttempt(id)
   if (attempt === null) throw new Error('no turn')
@@ -3579,7 +3579,7 @@ it('two ticks that find the same lost turn at once raise one decision for it', a
   ])
 })
 
-it('an answer to a decision left open on a task gc collected brings its folder back first, as tell does', async () => {
+test('an answer to a decision left open on a task gc collected brings its folder back first, as tell does', async () => {
   const id = started('first', 'collected-session')
   await stopped('collected-session', 'NOD: question | Which one?')
   const decision = ledger.decisions(id)[0]
