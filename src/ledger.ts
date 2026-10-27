@@ -1577,8 +1577,8 @@ export class Ledger {
     return this.run(q.selectFrom('decisions').selectAll().where('answer', 'is', null).orderBy('id'))
   }
 
-  // The trust decisions a person answered or dropped, newest first, with their task's repo (trustedBy
-  // in worker.ts). Those nod closed itself have no answeredAt (dismiss).
+  // The trust decisions a person answered or dropped, the latest answer first, with their task's repo
+  // (trustedBy in worker.ts). Those nod closed itself have no answeredAt (dismiss).
   trustAnswers(): (Decision & { repo: string })[] {
     return this.run(
       q
@@ -1589,6 +1589,7 @@ export class Ledger {
         .where('d.reason', '=', 'trust')
         .where('d.answeredAt', 'is not', null)
         .where('t.repo', 'is not', null)
+        .orderBy('d.answeredAt', 'desc')
         .orderBy('d.id', 'desc')
         .$narrowType<{ repo: string }>(),
     )
@@ -1620,7 +1621,7 @@ export class Ledger {
     return this.run(q.selectFrom('notices').selectAll().where('sentAt', 'is', null).orderBy('id'))
   }
 
-  // The commands nod allowed a task's worker itself (allow.ts), oldest first.
+  // What nod allowed a task's worker itself (Notice), oldest first.
   allowed(taskId: number): Notice[] {
     return this.run(
       q
@@ -1632,7 +1633,7 @@ export class Ledger {
     )
   }
 
-  // The commands nod allowed any task's worker since notice `id`, oldest first (`nod watch`).
+  // What nod allowed any task's worker since notice `id`, oldest first (`nod watch`).
   allowedAfter(id: number): Notice[] {
     return this.run(
       q

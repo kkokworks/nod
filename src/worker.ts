@@ -2465,14 +2465,19 @@ async function awaitStart(
 // The decision in which the person trusted `repo`: of the trust decisions on tasks in the same repo,
 // the last one the person answered, if they said yes. Null if there is none, or if they said
 // anything else or dropped it, so the person decides again. Tasks count by the repo Claude Code asks
-// about, a worktree's own repo, not by the path each task has.
+// about, a worktree's own repo, not by the path each task has. A no for a folder git cannot read any
+// more (a worktree removed since) may have been for this repo, so it counts as this repo's.
+// ponytail: that no also stops other repos' older yes until the person says yes again; record the
+// repo Claude Code asked about with the decision if that comes up.
 export function trustedBy(ledger: Ledger, repo: string): Decision | null {
   const main = mainRepo(repo)
   if (main === null) return null
   const mains = new Map<string, string | null>()
   for (const d of ledger.trustAnswers()) {
     if (!mains.has(d.repo)) mains.set(d.repo, mainRepo(d.repo))
-    if (mains.get(d.repo) === main) return YES.test(d.answer?.trim() ?? '') ? d : null
+    const of = mains.get(d.repo)
+    const yes = YES.test(d.answer?.trim() ?? '')
+    if (of === main || (of === null && !yes)) return yes ? d : null
   }
   return null
 }

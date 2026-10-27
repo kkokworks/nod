@@ -1,4 +1,4 @@
-import { afterAll, beforeEach, expect, it, spyOn } from 'bun:test'
+import { afterAll, beforeEach, expect, it, setSystemTime, spyOn } from 'bun:test'
 import {
   appendFileSync,
   chmodSync,
@@ -55,6 +55,7 @@ import {
   startTask,
   tell,
   transcriptPath,
+  trustedBy,
   trustedFile,
   workerEnv,
   workerPrompt,
@@ -1473,6 +1474,55 @@ test('a repo the person trusted for an earlier task is trusted again without a d
     expect(ledger.allowed(id)).toEqual([])
   }
 }, 30_000)
+
+// A trust decision on a new task in `repo`, as awaitStart opens one.
+function askTrust(repo: string): number {
+  const id = ledger.add({
+    brief: 'work here',
+    repo,
+    branch: 'feat/here',
+    checkCmd: null,
+    model: null,
+    after: [],
+    triggerId: null,
+    issue: null,
+  })
+  const attemptId = ledger.startAttempt({
+    taskId: id,
+    kind: 'start',
+    decisionId: null,
+    sessionId: crypto.randomUUID(),
+    prompt: 'work here',
+  })
+  return ledger.ask(id, attemptId, 'trust', 'trust it?')
+}
+
+it("a repo's trust goes by the answer the person gave last, not the decision opened last", () => {
+  const repo = newRepo()
+  // Two tasks asked at once, as after the account changed, answered newer first.
+  const [older, newer] = [askTrust(repo), askTrust(repo)]
+  try {
+    setSystemTime(new Date('2026-01-01T00:00:00Z'))
+    ledger.answer(newer, 'yes')
+    setSystemTime(new Date('2026-01-01T00:01:00Z'))
+    ledger.drop(older)
+  } finally {
+    setSystemTime()
+  }
+  expect(trustedBy(ledger, repo)).toBeNull()
+})
+
+it('a no for a worktree removed since counts as a no for its repo', () => {
+  const repo = newRepo()
+  const yes = askTrust(repo)
+  ledger.answer(yes, 'yes')
+  expect(trustedBy(ledger, repo)?.id).toBe(yes)
+  const worktree = join(tmp.make('nod-worktree-'), 'wt')
+  git(repo, 'worktree', 'add', '-q', '-b', 'side', worktree)
+  ledger.drop(askTrust(worktree))
+  git(repo, 'worktree', 'remove', worktree)
+  expect(trustedBy(ledger, repo)).toBeNull()
+})
 
 test('an answer for a repo worker whose first start waits on trust goes with the brief, not into the trust dialog', async () => {
   writeFileSync(join(home, 'fake-untrusted'), '')
