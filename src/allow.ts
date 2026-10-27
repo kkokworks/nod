@@ -130,6 +130,8 @@ function committed(root: string, paths: string[]): boolean {
       '-c',
       'core.fsmonitor=false',
       '--no-optional-locks',
+      // A folder may be named like pathspec magic (`:(top)x`), which would point git elsewhere.
+      '--literal-pathspecs',
       'status',
       '--porcelain',
       '-z',

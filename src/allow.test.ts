@@ -175,6 +175,11 @@ test('nod allows rm -rf of what a worktree can make again, and dependency instal
   writeFileSync(join(linked, 'package.json'), '{}')
   symlinkSync(join(outside, 'x'), join(linked, 'node_modules'))
   expect(harmless('bun install', linked, linked, true)).toBe(false)
+  // In a folder named like git's pathspec magic, which would point git at another path.
+  const magic = join(work, ':(top)zz')
+  mkdirSync(join(magic, 'work'), { recursive: true })
+  writeFileSync(join(magic, 'work', 'mine.ts'), 'mine\n')
+  expect(allows('rm -rf work', magic)).toBe(false)
 })
 
 const spec = (repo: string | null): NewTask => ({
