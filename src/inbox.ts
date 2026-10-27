@@ -43,14 +43,15 @@ export async function onInbox(
 // What every nod command run in a Claude session does first (cli.ts), for a project session its
 // hooks never told nod of: one reopened with claude --resume, or opened before nod open gave it
 // hooks. Claude Code exports the socket to its Bash too, so the session says where it takes
-// messages now, or anew after it started again, and what waited for it goes. Returns why the
-// session still hears nothing, for stderr: it is not the project's latest session, which alone
-// hears, or nod knows no socket of it. A session nod open did not open is told nothing, but one on
-// a socket nod tells another session at, as /clear's new ID in a session without the hook that
-// says so, takes it from that one, whose old ID it drops now (setSocket).
-// ponytail: with no SessionEnd hook such a session ends, or goes on under /clear's new ID, without
-// saying so: its socket stays until a send finds it gone (sendNotices) or another session says it,
-// and a line sent to the old ID there meanwhile is dropped yet counts as sent.
+// messages now, or anew after it started again, and what waited for it goes. A socket is one
+// session's (setSocket), so one said here leaves the session nod told there before: one its
+// process ran until /clear or /resume with no hook to say so, whose old ID the socket drops now.
+// Returns what to tell stderr, or null: why a project's session still hears nothing (it is not the
+// project's latest, which alone hears, or nod knows no socket of it), and which project's latest
+// session lost its socket to this one. Any other session is told nothing and changes nothing.
+// ponytail: with no SessionEnd hook such a session ends, or goes on under a new ID, without saying
+// so: its socket stays until a send finds it gone (sendNotices) or another session says it, and a
+// line sent to the old ID there meanwhile is dropped yet counts as sent.
 export async function onCommand(
   ledger: Ledger,
   session: string | null,
@@ -60,20 +61,31 @@ export async function onCommand(
   if (session === null) return null
   const todos = new Todos(ledger)
   const place = todos.sessionPlace(session)
-  if (place === null) {
-    if (socket && todos.sessionAt(socket) !== null) todos.setSocket(session, socket)
-    return null
+  const said = socket && socket !== place?.session.socket ? socket : null
+  const had = said === null ? null : todos.sessionAt(said)
+  if (said !== null && (place !== null || had !== null)) todos.setSocket(session, said)
+  const told: string[] = []
+  const lost = had === null ? null : todos.sessionPlace(had.sessionId)
+  if (lost?.latest && lost.project.id !== place?.project.id) {
+    const p = `p${lost.project.id}`
+    told.push(
+      `nod: ${p}'s session took messages at this session's inbox socket, which runs another session now (/clear or /resume in its terminal), so it hears nothing from nod; nod open ${p} opens it again`,
+    )
   }
-  const p = `p${place.project.id}`
-  const deaf = `nod: this session of ${p} hears nothing from nod`
-  if (!place.latest) return `${deaf}: nod tells ${p}'s latest session, which nod open ${p} opens`
-  if (socket && socket !== place.session.socket) {
-    todos.setSocket(place.session.sessionId, socket)
-    await sendNotices(ledger, send)
-  } else if (!socket && place.session.socket === null) {
-    return `${deaf}: Claude Code gave it no inbox socket (CLAUDE_CODE_MESSAGING_SOCKET); nod open ${p} opens it again`
+  if (place !== null) {
+    const p = `p${place.project.id}`
+    const deaf = `nod: this session of ${p} hears nothing from nod`
+    if (!place.latest) {
+      told.push(`${deaf}: nod tells ${p}'s latest session, which nod open ${p} opens`)
+    } else if (said !== null) {
+      await sendNotices(ledger, send)
+    } else if (!socket && place.session.socket === null) {
+      told.push(
+        `${deaf}: Claude Code gave it no inbox socket (CLAUDE_CODE_MESSAGING_SOCKET); nod open ${p} opens it again`,
+      )
+    }
   }
-  return null
+  return told.length === 0 ? null : told.join('\n')
 }
 
 // `nod tell p<n>`: a person's words for the project's session, by the same way. Returns whether

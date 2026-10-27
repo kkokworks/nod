@@ -195,8 +195,8 @@ test("a nod command in a project session its hooks never told nod of says where 
   await sendNotices(ledger, send)
   expect(sent.map((s) => s.socket)).toEqual(['/socks/a', '/socks/a2'])
 
-  // A session that cannot hear says so, and changes nothing: one with no socket, and one that is
-  // no longer the project's latest.
+  // A session that cannot hear says so: one with no socket, and one that is no longer the project's
+  // latest, whose socket nod keeps but tells nothing at.
   todos.addSession(p.id, B, '/work/two')
   expect(await onCommand(ledger, B, undefined, send)).toBe(
     'nod: this session of p1 hears nothing from nod: Claude Code gave it no inbox socket (CLAUDE_CODE_MESSAGING_SOCKET); nod open p1 opens it again',
@@ -217,7 +217,7 @@ test("a nod command in a project session its hooks never told nod of says where 
   ])
 })
 
-test("a socket is one session's: the ID /clear goes on under takes it from the old one at its first nod command, so what comes then waits; a session starting at it takes it too", async () => {
+test("a socket is one session's: the ID /clear or /resume goes on under takes it from the old one at its first nod command and says so, so what comes then waits; a session starting at it takes it too", async () => {
   const { ledger, todos, p, q, task, sent, send } = setup()
   const D = 'dddd4444-0000-4000-8000-00000000000d'
   todos.addSession(p.id, A, '/work/one')
@@ -229,21 +229,39 @@ test("a socket is one session's: the ID /clear goes on under takes it from the o
   expect(todos.latestSession(p.id)?.socket).toBe('/socks/a')
   // /clear: the same process and socket, under an ID nod open did not open, which the old ID's
   // lines no longer reach.
-  expect(await onCommand(ledger, C, '/socks/a', send)).toBeNull()
+  expect(await onCommand(ledger, C, '/socks/a', send)).toBe(
+    "nod: p1's session took messages at this session's inbox socket, which runs another session now (/clear or /resume in its terminal), so it hears nothing from nod; nod open p1 opens it again",
+  )
   expect(todos.latestSession(p.id)?.socket).toBeNull()
   ledger.succeed(task('First'))
   await sendNotices(ledger, send)
   expect(sent).toEqual([])
   expect(ledger.unsentNotices()).toHaveLength(1)
 
-  // nod open opens it again; it ends without its hook, and another project's session starts where
-  // its socket was.
-  await onInbox(ledger, { session_id: A, hook_event_name: 'SessionStart' }, '/socks/a2', send)
-  expect(sent.map((s) => [s.socket, s.session_id])).toEqual([['/socks/a2', A]])
-  todos.addSession(q.id, D, '/work/two')
-  await onInbox(ledger, { session_id: D, hook_event_name: 'SessionStart' }, '/socks/a2', send)
+  // A newer session of p1, then /resume of the older one in its process: the older takes the
+  // socket, and says it is not the one nod tells.
+  todos.addSession(p.id, B, '/work/two')
+  expect(await onCommand(ledger, B, '/socks/b', send)).toBeNull()
+  expect(sent.map((s) => [s.socket, s.session_id])).toEqual([['/socks/b', B]])
+  expect(await onCommand(ledger, A, '/socks/b', send)).toBe(
+    "nod: this session of p1 hears nothing from nod: nod tells p1's latest session, which nod open p1 opens",
+  )
   expect(todos.latestSession(p.id)?.socket).toBeNull()
-  expect(todos.latestSession(q.id)?.socket).toBe('/socks/a2')
+  ledger.succeed(task('Second'))
+  await sendNotices(ledger, send)
+  expect(sent).toHaveLength(1)
+
+  // nod open opens p1's session again; it ends without its hook, and another project's session
+  // starts where its socket was.
+  await onInbox(ledger, { session_id: B, hook_event_name: 'SessionStart' }, '/socks/b2', send)
+  expect(sent.map((s) => [s.socket, s.session_id])).toEqual([
+    ['/socks/b', B],
+    ['/socks/b2', B],
+  ])
+  todos.addSession(q.id, D, '/work/three')
+  await onInbox(ledger, { session_id: D, hook_event_name: 'SessionStart' }, '/socks/b2', send)
+  expect(todos.latestSession(p.id)?.socket).toBeNull()
+  expect(todos.latestSession(q.id)?.socket).toBe('/socks/b2')
 })
 
 test('a send that fails keeps the notices for the next and leaves the change it tells of as it is; a socket gone is forgotten unless the session said another since', async () => {
