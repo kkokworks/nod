@@ -559,6 +559,14 @@ kbd + kbd {
   padding: 0;
 }
 
+/* A tag in a row of them can hold free text (whom a todo waits on, a check command) longer than a
+   narrow window is wide. It still moves to a line of its own whole; only there does it wrap. */
+.tags .tag,
+.todo-tags .tag {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
 .tags {
   display: flex;
   flex-wrap: wrap;

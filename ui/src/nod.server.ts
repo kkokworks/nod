@@ -136,8 +136,10 @@ function latestCollected(todos: Todos, tasks: Task[], limit: number): Shown<Task
   return { items: all.slice(0, limit).map((t) => row(todos, t)), total: all.length }
 }
 
-export function detail(id: number): Detail {
-  const task = ledger.get(id)
+// null for a number no task has, as an old link may name: the page says it is not there.
+export function detail(id: number): Detail | null {
+  const { task } = ledger.numbered(id)
+  if (task === null) return null
   const attempts = ledger.attempts(id)
   const name = sessionName(id)
   const todos = new Todos(ledger)

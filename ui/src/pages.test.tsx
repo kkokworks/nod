@@ -43,10 +43,18 @@ const todos = await import('./routes/todos_.$id')
 const { TodoRow } = await import('./todo-parts')
 const { Search } = await import('./search')
 const projects = await import('./routes/projects')
+const { Failed, NotFound } = await import('./parts')
 if (before === undefined) delete process.env.NOD_HOME
 else process.env.NOD_HOME = before
 
-const root = R.createRootRoute() as unknown as AnyRoute
+// The pages in a layout, as the real root puts them beside the sidebar.
+const root = R.createRootRoute({
+  component: () => (
+    <div className="layout">
+      <R.Outlet />
+    </div>
+  ),
+}) as unknown as AnyRoute
 // A list of todo rows, as the list pages show them.
 let rows: ReturnType<typeof todoItem>[] = []
 const rowsRoute = R.createRoute({
@@ -82,7 +90,9 @@ const router = R.createRouter({
     rowsRoute,
   ]),
   history: R.createMemoryHistory({ initialEntries: ['/'] }),
-  defaultNotFoundComponent: () => null,
+  // As router.tsx has them.
+  defaultNotFoundComponent: NotFound,
+  defaultErrorComponent: Failed,
 })
 const view = createRoot(document.body.appendChild(document.createElement('div')))
 await act(async () => view.render(<R.RouterProvider router={router as never} />))
@@ -522,4 +532,28 @@ test('a search answered after a later one does not take its place', async () => 
   await settle()
   expect(picks()).toEqual([])
   expect(document.querySelector('.side-search')?.textContent).toContain('No match for 9')
+})
+
+test('a task or todo that is not there, an unknown page and a page that fails show in the layout with a way out', async () => {
+  const shown = () => ({
+    title: document.querySelector('.layout .page h1')?.textContent,
+    out: document.querySelector('.layout .page a')?.getAttribute('href'),
+  })
+  answer = () => null
+  for (const href of ['/tasks/999999', '/todos/999999', '/nope']) {
+    await go(href)
+    expect(shown()).toEqual({ title: 'Not found', out: '/focus' })
+    expect(document.querySelector('.layout .subtitle')?.textContent).toBe(`Nothing is at ${href}.`)
+  }
+
+  answer = () => {
+    throw new Error('ledger is busy')
+  }
+  await go('/tasks/3')
+  expect(shown()).toEqual({ title: 'Something went wrong', out: '/focus' })
+  expect(banners()).toEqual(['ledger is busy'])
+  // The next reload that works shows the page.
+  answer = (id) => detail(id as number)
+  await reload()
+  expect(document.querySelector('.layout .task-title')?.textContent).toBe('task 3')
 })

@@ -1,4 +1,4 @@
-import { createFileRoute, Link, useRouter } from '@tanstack/react-router'
+import { createFileRoute, Link, notFound, useRouter } from '@tanstack/react-router'
 import { createServerFn } from '@tanstack/react-start'
 import { useLayoutEffect, useRef, useState } from 'react'
 import type { Decision } from '../../../src/ledger'
@@ -23,7 +23,11 @@ const sendMessage = createServerFn({ method: 'POST' })
   .handler(({ data }) => send(data))
 
 export const Route = createFileRoute('/tasks/$id')({
-  loader: ({ params }) => getDetail({ data: Number(params.id) }),
+  loader: async ({ params }) => {
+    const page = await getDetail({ data: Number(params.id) })
+    if (page === null) throw notFound()
+    return page
+  },
   component: TaskPage,
 })
 

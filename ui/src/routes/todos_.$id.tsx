@@ -1,4 +1,4 @@
-import { createFileRoute, Link, useNavigate } from '@tanstack/react-router'
+import { createFileRoute, Link, notFound, useNavigate } from '@tanstack/react-router'
 import { useState } from 'react'
 import type { RawEdit } from '../input'
 import { localTime, Url } from '../parts'
@@ -18,7 +18,11 @@ export const Route = createFileRoute('/todos_/$id')({
   // The page shows the todo; `?edit=true`, from its "…" menu, shows the form instead.
   validateSearch: (s: Record<string, unknown>): { edit?: true } =>
     s.edit === true ? { edit: true } : {},
-  loader: ({ params }) => getTodo({ data: Number(params.id) }),
+  loader: async ({ params }) => {
+    const page = await getTodo({ data: Number(params.id) })
+    if (page === null) throw notFound()
+    return page
+  },
   component: TodoDetail,
 })
 

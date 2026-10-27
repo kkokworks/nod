@@ -10,8 +10,30 @@ afterAll(tmp.removeAll)
 const before = process.env.NOD_HOME
 process.env.NOD_HOME = tmp.make('nod-ui-server-')
 const { detail, ledger, rules } = await import('./nod.server')
+const { todoPage } = await import('./todos.server')
 if (before === undefined) delete process.env.NOD_HOME
 else process.env.NOD_HOME = before
+
+test('a number no task or todo has gets no page, which the page shows as not found', () => {
+  const todo = new Todos(ledger).capture(
+    { title: 'x', notes: null, source: 'cli', sourceKey: null, url: null },
+    'human',
+  ).todo.id
+  const task = ledger.add({
+    brief: 'x',
+    repo: null,
+    branch: null,
+    checkCmd: null,
+    model: null,
+    after: [],
+    triggerId: null,
+    issue: null,
+  })
+  expect(todoPage(todo)?.todo.id).toBe(todo)
+  expect(detail(task)?.task.id).toBe(task)
+  expect(todoPage(Math.max(todo, task) + 1)).toBeNull()
+  expect(detail(Math.max(todo, task) + 1)).toBeNull()
+})
 
 test('the Settings page lists every rule with its retrospective task, and both pages mark the same edits', () => {
   const of = ledger.add({
@@ -35,7 +57,7 @@ test('the Settings page lists every rule with its retrospective task, and both p
     { text: 'check first, always', state: 'off', retroId, retroTaskId: retroTask, edited: true },
     { text: 'keep it short', state: 'on', retroId: null, retroTaskId: null, edited: false },
   ])
-  expect(detail(retroTask).retro?.rules).toMatchObject([{ id: proposed.id, edited: true }])
+  expect(detail(retroTask)?.retro?.rules).toMatchObject([{ id: proposed.id, edited: true }])
 })
 
 test('the task page names as its root the project session whose task it is, with the command that reopens it and who added it', () => {
@@ -67,16 +89,16 @@ test('the task page names as its root the project session whose task it is, with
   const fromS = inProject(S)
 
   const latest = { project: p, command: `nod open p${p.id}` }
-  expect(detail(opened).root).toEqual({ ...latest, addedFrom: null })
-  expect(detail(fromS).root).toEqual({ ...latest, addedFrom: S })
-  expect(detail(inProject(null)).root).toEqual({ ...latest, addedFrom: null })
-  expect(detail(loose(S)).root).toBeNull()
-  expect(detail(loose(null)).root).toBeNull()
+  expect(detail(opened)?.root).toEqual({ ...latest, addedFrom: null })
+  expect(detail(fromS)?.root).toEqual({ ...latest, addedFrom: S })
+  expect(detail(inProject(null))?.root).toEqual({ ...latest, addedFrom: null })
+  expect(detail(loose(S))?.root).toBeNull()
+  expect(detail(loose(null))?.root).toBeNull()
   // A new session of the project carries on with its tasks; one in no project stays with A.
   todos.addSession(p.id, B, '/work/release 2')
-  expect(detail(fromA).root).toEqual({ ...latest, addedFrom: A })
-  expect(detail(fromS).root).toEqual({ ...latest, addedFrom: S })
-  expect(detail(opened).root).toEqual({
+  expect(detail(fromA)?.root).toEqual({ ...latest, addedFrom: A })
+  expect(detail(fromS)?.root).toEqual({ ...latest, addedFrom: S })
+  expect(detail(opened)?.root).toEqual({
     project: p,
     command: `cd '/work/release' && claude --resume ${A}`,
     addedFrom: null,
