@@ -262,7 +262,8 @@ of nod open, or opened before nod open gave it hooks, reports its socket at its 
 (Claude Code exports it to Bash too), and hears nothing before. A nod command in a project's
 session that cannot hear (not the project's latest, or no socket) says so on stderr. /clear goes
 on under an ID nod open did not open: it hears nothing until nod open opens the project's session
-again.
+again. One with no hooks cannot say it cleared, so what went to it after, until its next nod
+command, is lost: nod ls --mine and nod --mine show what it missed.
 
 When <home>/notify exists, nod runs it with a JSON event on stdin whenever a decision opens, a
 task succeeds or fails to start, a trigger fails, a watch passes or can no longer run, or a

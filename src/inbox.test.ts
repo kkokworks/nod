@@ -217,6 +217,35 @@ test("a nod command in a project session its hooks never told nod of says where 
   ])
 })
 
+test("a socket is one session's: the ID /clear goes on under takes it from the old one at its first nod command, so what comes then waits; a session starting at it takes it too", async () => {
+  const { ledger, todos, p, q, task, sent, send } = setup()
+  const D = 'dddd4444-0000-4000-8000-00000000000d'
+  todos.addSession(p.id, A, '/work/one')
+  // Reopened with claude --resume, so no hook says when it ends or clears.
+  await onCommand(ledger, A, '/socks/a', send)
+  expect(todos.latestSession(p.id)?.socket).toBe('/socks/a')
+  // A command elsewhere leaves it.
+  expect(await onCommand(ledger, C, '/socks/c', send)).toBeNull()
+  expect(todos.latestSession(p.id)?.socket).toBe('/socks/a')
+  // /clear: the same process and socket, under an ID nod open did not open, which the old ID's
+  // lines no longer reach.
+  expect(await onCommand(ledger, C, '/socks/a', send)).toBeNull()
+  expect(todos.latestSession(p.id)?.socket).toBeNull()
+  ledger.succeed(task('First'))
+  await sendNotices(ledger, send)
+  expect(sent).toEqual([])
+  expect(ledger.unsentNotices()).toHaveLength(1)
+
+  // nod open opens it again; it ends without its hook, and another project's session starts where
+  // its socket was.
+  await onInbox(ledger, { session_id: A, hook_event_name: 'SessionStart' }, '/socks/a2', send)
+  expect(sent.map((s) => [s.socket, s.session_id])).toEqual([['/socks/a2', A]])
+  todos.addSession(q.id, D, '/work/two')
+  await onInbox(ledger, { session_id: D, hook_event_name: 'SessionStart' }, '/socks/a2', send)
+  expect(todos.latestSession(p.id)?.socket).toBeNull()
+  expect(todos.latestSession(q.id)?.socket).toBe('/socks/a2')
+})
+
 test('a send that fails keeps the notices for the next and leaves the change it tells of as it is; a socket gone is forgotten unless the session said another since', async () => {
   const { ledger, todos, p, task, sent, send } = setup()
   todos.addSession(p.id, A, '/work/one')

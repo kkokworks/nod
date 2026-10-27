@@ -22,8 +22,9 @@ export const InboxEvent = z.object({ session_id: z.string(), hook_event_name: z.
 // The hooks nod open gives a project session (openSettings in worker.ts): as it starts, where it
 // takes messages (Claude Code exports the socket to its hooks), and what waited for it goes; once it
 // ends, none, unless the session runs on elsewhere since (nod open of the same session in another
-// terminal). A session nod open did not open changes nothing, so neither does the conversation
-// /clear starts under a new ID: it hears nothing until nod open opens the project's session again.
+// terminal). A session nod open did not open records nothing, only takes its socket from any
+// session that had it (setSocket), so the conversation /clear starts under a new ID hears nothing
+// until nod open opens the project's session again.
 export async function onInbox(
   ledger: Ledger,
   event: z.infer<typeof InboxEvent>,
@@ -44,19 +45,25 @@ export async function onInbox(
 // hooks. Claude Code exports the socket to its Bash too, so the session says where it takes
 // messages now, or anew after it started again, and what waited for it goes. Returns why the
 // session still hears nothing, for stderr: it is not the project's latest session, which alone
-// hears, or nod knows no socket of it. A session nod open did not open, /clear's included, changes
-// nothing and is told nothing.
-// ponytail: with no SessionEnd hook such a session ends without saying so, and its socket stays
-// until a send finds it gone (sendNotices); the hooks' risk of a reused path is the same.
+// hears, or nod knows no socket of it. A session nod open did not open is told nothing, but one on
+// a socket nod tells another session at, as /clear's new ID in a session without the hook that
+// says so, takes it from that one, whose old ID it drops now (setSocket).
+// ponytail: with no SessionEnd hook such a session ends, or goes on under /clear's new ID, without
+// saying so: its socket stays until a send finds it gone (sendNotices) or another session says it,
+// and a line sent to the old ID there meanwhile is dropped yet counts as sent.
 export async function onCommand(
   ledger: Ledger,
   session: string | null,
   socket: string | undefined,
   send = sendLine,
 ): Promise<string | null> {
+  if (session === null) return null
   const todos = new Todos(ledger)
-  const place = session === null ? null : todos.sessionPlace(session)
-  if (place === null) return null
+  const place = todos.sessionPlace(session)
+  if (place === null) {
+    if (socket && todos.sessionAt(socket) !== null) todos.setSocket(session, socket)
+    return null
+  }
   const p = `p${place.project.id}`
   const deaf = `nod: this session of ${p} hears nothing from nod`
   if (!place.latest) return `${deaf}: nod tells ${p}'s latest session, which nod open ${p} opens`
