@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeEach, expect, mock, setSystemTime, test } from 'bun:test'
+import { afterAll, afterEach, beforeEach, expect, jest, mock, setSystemTime, test } from 'bun:test'
 import { GlobalRegistrator } from '@happy-dom/global-registrator'
 import type { AnyRoute } from '@tanstack/react-router'
 import { tempDirs } from '../../test/tmp'
@@ -68,6 +68,7 @@ const { TodoRow } = await import('./todo-parts')
 const { Search } = await import('./search')
 const projects = await import('./routes/projects')
 const { Failed, NotFound } = await import('./parts')
+const { RETRY_MS } = await import('./terminal')
 const shell = await import('./routes/__root')
 if (before === undefined) delete process.env.NOD_HOME
 else process.env.NOD_HOME = before
@@ -269,6 +270,41 @@ test("a live worker's screen attaches to its session, takes keys, and lets go wh
   await reload()
   expect(next?.readyState).toBe(3)
   expect(document.querySelector('.term')).toBeNull()
+})
+
+test("a live worker's screen lets go while the page is out of sight, and attaches again when it shows or a while after its connection closed", async () => {
+  answer = (id) => detail(id as number)
+  Socket.made.length = 0
+  await go('/tasks/22')
+  // As a hidden app window or a tab behind others is.
+  const sight = (state: 'hidden' | 'visible') =>
+    act(() => {
+      Object.defineProperty(document, 'visibilityState', { value: state, configurable: true })
+      document.dispatchEvent(new Event('visibilitychange'))
+    })
+  try {
+    sight('hidden')
+    await settle()
+    expect(Socket.made.map((s) => s.readyState)).toEqual([3])
+    sight('visible')
+    await settle()
+    expect(Socket.made.map((s) => s.readyState)).toEqual([3, 0])
+  } finally {
+    Reflect.deleteProperty(document, 'visibilityState')
+  }
+  // The UI server went away: it attaches again once the page would have reloaded.
+  jest.useFakeTimers()
+  try {
+    act(() => Socket.made[1]?.onclose?.())
+    act(() => jest.advanceTimersByTime(RETRY_MS - 1))
+    expect(Socket.made).toHaveLength(2)
+    act(() => jest.advanceTimersByTime(1))
+  } finally {
+    jest.useRealTimers()
+  }
+  await settle()
+  expect(Socket.made).toHaveLength(3)
+  expect(Socket.made[2]?.url).toContain('/terminal/22?')
 })
 
 test('what is written to one task does not go to another', async () => {

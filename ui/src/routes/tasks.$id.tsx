@@ -224,7 +224,7 @@ function TaskPage() {
                 ))}
             </div>
           ) : (
-            <Screen id={task.id} screen={screen} />
+            <Screen key={`screen-${task.id}`} id={task.id} screen={screen} />
           )}
           {/* Keyed, as moving to another task keeps this page: what was written does not go along. */}
           {canSend && (

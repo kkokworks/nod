@@ -190,13 +190,15 @@ process.stdin.on('data', (d) => { appendFileSync(${JSON.stringify(typed)}, d); p
     )
     writeFileSync(typed, '')
     terminals.start(name, home, [process.execPath, recorder], { HOME: home })
-    // With no locale, as launchd starts the server: tmux would then draw Korean as underscores.
+    // With no locale that says UTF-8, as launchd starts the server, and an LC_ALL that tmux reads
+    // first: tmux would then draw Korean as underscores.
     const locale = {
       LANG: process.env.LANG,
       LC_ALL: process.env.LC_ALL,
       LC_CTYPE: process.env.LC_CTYPE,
     }
     for (const key of Object.keys(locale)) delete process.env[key]
+    process.env.LC_ALL = 'C'
     try {
       const page = await upgrade('/terminal/2?cols=90&rows=20', PAGE)
       expect(page.status).toStartWith('HTTP/1.1 101')
@@ -227,7 +229,8 @@ process.stdin.on('data', (d) => { appendFileSync(${JSON.stringify(typed)}, d); p
       expect(terminals.alive(name)).toBe(true)
     } finally {
       for (const [key, value] of Object.entries(locale)) {
-        if (value !== undefined) process.env[key] = value
+        if (value === undefined) delete process.env[key]
+        else process.env[key] = value
       }
     }
   },

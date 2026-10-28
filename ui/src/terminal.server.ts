@@ -60,8 +60,8 @@ function attach(ws: WebSocket, terminals: Terminals, name: string, cols: number,
   if (!terminals.alive(name)) return ws.close(NO_SESSION, 'no live session')
   // tmux will not attach from inside one of its panes, where `bun run dev` may run, and takes a
   // terminal whose locale does not say UTF-8 for one that cannot show it, Korean coming out as
-  // underscores; launchd starts the server with no locale.
-  const { TMUX: _, ...env } = process.env
+  // underscores; launchd starts the server with no locale. It reads LC_ALL before LC_CTYPE.
+  const { TMUX: _, LC_ALL: __, ...env } = process.env
   let proc: Bun.Subprocess
   try {
     proc = Bun.spawn(terminals.attachCommand(name), {
