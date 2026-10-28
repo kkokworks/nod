@@ -3,6 +3,8 @@
 import { type CalendarEvent, readEvents } from '../../src/calendar'
 import { localDay, REPEATS } from '../../src/days'
 import {
+  cleared,
+  oneOf,
   PROJECT_STATUSES,
   type Project,
   TODO_STATUSES,
@@ -12,6 +14,7 @@ import {
   type TodoStatus,
   Todos,
   type TodoTask,
+  withLine,
 } from '../../src/todos'
 import type { Trust } from '../../src/trust'
 import { changeText } from '../../src/view'
@@ -35,8 +38,6 @@ export type Lists = {
   inbox: TodoItem[]
   waiting: TodoItem[]
   someday: TodoItem[]
-  // The projects a todo can go in.
-  projects: Project[]
 }
 
 export type DonePage = {
@@ -103,7 +104,6 @@ export function lists(): Lists {
     inbox: of('inbox'),
     waiting: of('waiting'),
     someday: of('someday'),
-    projects: todos.projects(['active', 'someday']),
   }
 }
 
@@ -216,26 +216,14 @@ export function projectsPage(): ProjectsPage {
 export const capture = (title: string): number =>
   todos.capture({ title, notes: null, source: 'ui', sourceKey: null, url: null }, ACTOR).todo.id
 
-// A field sent empty is cleared, as `nod todo set` clears one given as ''.
-const cleared = (v: string | undefined): string | null | undefined => (v === '' ? null : v)
-
-function oneOf<T extends string>(value: string, allowed: readonly T[], what: string): T {
-  const found = allowed.find((a) => a === value)
-  if (found === undefined) throw new Error(`a ${what} is one of ${allowed.join(', ')}`)
-  return found
-}
-
 export function editTodo(id: number, raw: RawEdit): void {
   // A line added below the notes leaves what was there alone, as `nod todo set --add-note`.
   const added = raw.addNote?.trim() ?? ''
   if (added !== '' && raw.notes !== undefined) throw new Error('replace the notes or add a line')
   const edit: TodoEdit = {
     title: raw.title,
-    notes:
-      added === ''
-        ? cleared(raw.notes)
-        : [todos.get(id).notes, added].filter((x) => x !== null).join('\n'),
-    status: raw.status === undefined ? undefined : oneOf(raw.status, TODO_STATUSES, 'todo status'),
+    notes: added === '' ? cleared(raw.notes) : withLine(todos.get(id).notes, added),
+    status: raw.status === undefined ? undefined : oneOf('todo status', raw.status, TODO_STATUSES),
     projectId: raw.projectId,
     context: cleared(raw.context),
     waitingOn: cleared(raw.waitingOn),
@@ -247,7 +235,7 @@ export function editTodo(id: number, raw: RawEdit): void {
         ? undefined
         : raw.repeat === ''
           ? null
-          : oneOf(raw.repeat, REPEATS, 'repeat'),
+          : oneOf('repeat', raw.repeat, REPEATS),
     focus: cleared(raw.focus),
   }
   todos.set(id, edit, ACTOR)
@@ -258,6 +246,6 @@ export const addProject = (title: string, outcome: string): number =>
 
 export function editProject(id: number, raw: RawProjectEdit): void {
   const status =
-    raw.status === undefined ? undefined : oneOf(raw.status, PROJECT_STATUSES, 'project status')
+    raw.status === undefined ? undefined : oneOf('project status', raw.status, PROJECT_STATUSES)
   todos.setProject(id, { title: raw.title, outcome: cleared(raw.outcome), status }, ACTOR)
 }

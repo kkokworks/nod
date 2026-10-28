@@ -9,7 +9,7 @@ import { Ledger, type Trigger } from './ledger'
 import { notify, runGroup, taskRef } from './notify'
 import { pullRequests } from './prs'
 import { homeId } from './tmux'
-import { type Todo, Todos } from './todos'
+import { type Todo, Todos, withLine } from './todos'
 import { oneLine } from './view'
 import {
   closeFinished,
@@ -216,7 +216,7 @@ async function checkWatches(ledger: Ledger, home: string): Promise<number[]> {
           // The task could not carry on (its transcript gone after gc, its session failing to
           // start), so the person takes the todo, as when no task is named.
           const line = `${localTime(new Date())} task #${back} could not carry on: ${oneLine(message(error), 200)}`
-          const notes = [todos.get(t.id).notes, line].filter((x) => x !== null).join('\n')
+          const notes = withLine(todos.get(t.id).notes, line)
           todos.set(t.id, { status: 'next', notes }, SELF)
           await notify(home, {
             event: 'error',

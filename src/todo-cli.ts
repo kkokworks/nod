@@ -5,7 +5,9 @@ import { type CalendarEvent, calendarBuild, readEvents } from './calendar'
 import { addDays, dayOf, localDay, localTime, parseWhen, REPEATS, type Repeat } from './days'
 import {
   type Change,
+  cleared,
   OPEN,
+  oneOf,
   PROJECT_STATUSES,
   type Project,
   parseRef,
@@ -14,6 +16,7 @@ import {
   type TodoDecision,
   type Todos,
   type WatchCheck,
+  withLine,
 } from './todos'
 import { SCHEDULE_OFF, scheduleEnv, tryWatch } from './triggers'
 import { nudgeLine, STALE_DAYS, type Trust } from './trust'
@@ -366,10 +369,8 @@ async function setTodo(todos: Todos, home: string, args: string[]): Promise<void
   })
   const [ref, ...extra] = positionals
   if (ref === undefined || extra.length > 0) throw new Error(TODO_USAGE)
-  const status = TODO_STATUSES.find((s) => s === values.status)
-  if (values.status !== undefined && status === undefined) {
-    throw new Error(`a todo status is one of ${TODO_STATUSES.join(', ')}`)
-  }
+  const status =
+    values.status === undefined ? undefined : oneOf('todo status', values.status, TODO_STATUSES)
   const { project } = values
   const id = parseRef(ref, 't')
   const added = values['add-note']
@@ -400,10 +401,7 @@ async function setTodo(todos: Todos, home: string, args: string[]): Promise<void
   const tried = typeof watch === 'string' ? { watch, ...(await tryWatch(watch, home)) } : null
   // A line added below the notes, so recording why leaves what was there alone. Read after the
   // watch ran, so nothing written meanwhile is lost.
-  const notes =
-    added === undefined
-      ? cleared(values.notes)
-      : [todos.get(id).notes, added].filter((x) => x !== null).join('\n')
+  const notes = added === undefined ? cleared(values.notes) : withLine(todos.get(id).notes, added)
   const todo = todos.set(id, { ...edit, notes }, actorFromEnv(), values.link ?? [])
   if (tried !== null) todos.recordCheck(id, tried.watch, tried.code, tried.output)
   console.log(line(todos, todo))
@@ -504,10 +502,10 @@ function setProject(todos: Todos, args: string[]): void {
   })
   const [ref, ...extra] = positionals
   if (ref === undefined || extra.length > 0) throw new Error(TODO_USAGE)
-  const status = PROJECT_STATUSES.find((s) => s === values.status)
-  if (values.status !== undefined && status === undefined) {
-    throw new Error(`a project status is one of ${PROJECT_STATUSES.join(', ')}`)
-  }
+  const status =
+    values.status === undefined
+      ? undefined
+      : oneOf('project status', values.status, PROJECT_STATUSES)
   const p = todos.findProject(ref)
   const edit = { title: values.title, outcome: cleared(values.outcome), status }
   console.log(projectLine(todos.setProject(p.id, edit, actorFromEnv())))
@@ -597,9 +595,6 @@ function repeatOf(v: string | undefined): Repeat | null | undefined {
   if (repeat === undefined) throw new Error(`--repeat is one of ${REPEATS.join(', ')}`)
   return repeat
 }
-
-// An option given as an empty string clears the field; one not given leaves it alone.
-const cleared = (v: string | undefined): string | null | undefined => (v === '' ? null : v)
 
 function line(todos: Todos, t: Todo): string {
   const rest = tags(todos, t)

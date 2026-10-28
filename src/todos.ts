@@ -568,7 +568,7 @@ export class Todos {
       const back = passed ? t.backTo : null
       const to = back === null ? '' : `, back to task #${back}`
       const line = `${localTime(new Date())} watch ${outcome}${to}: ${watch}`
-      const notes = [t.notes, line].filter((x) => x !== null).join('\n')
+      const notes = withLine(t.notes, line)
       const edit: TodoEdit = back === null ? { status: 'next' } : { waitingOn: null, watch: null }
       this.set(id, { ...edit, notes }, actor)
       return { back }
@@ -1045,9 +1045,19 @@ function projectTitle(title: string): void {
   if (/^p?\d+$/.test(title)) throw new Error(`a project title cannot look like p<n>: ${title}`)
 }
 
-function oneOf(what: string, value: string, allowed: readonly string[]): void {
-  if (!allowed.includes(value)) throw new Error(`a ${what} is one of ${allowed.join(', ')}`)
+// value as one of allowed, which narrows its type; anything else is refused.
+export function oneOf<T extends string>(what: string, value: string, allowed: readonly T[]): T {
+  const found = allowed.find((a) => a === value)
+  if (found === undefined) throw new Error(`a ${what} is one of ${allowed.join(', ')}`)
+  return found
 }
+
+// A field or option given as an empty string clears it; one not given leaves it alone.
+export const cleared = (v: string | undefined): string | null | undefined => (v === '' ? null : v)
+
+// The notes with line added below what they hold.
+export const withLine = (notes: string | null, line: string): string =>
+  [notes, line].filter((x) => x !== null).join('\n')
 
 // Each field the edit sets to a value other than the current one, as [before, after]. Unset
 // (undefined) fields are left out; a field set to null is a change when it was not null.

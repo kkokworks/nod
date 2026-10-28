@@ -28,7 +28,6 @@ export const ACTOR = 'human:ui'
 export type TaskRow = {
   id: number
   status: string
-  turns: number
   // What the task is: its todo's title, else the brief's first line. The note is how it went last.
   title: string
   note: string
@@ -36,7 +35,6 @@ export type TaskRow = {
   todoId: number | null
   retroId: number | null
   projectId: number | null
-  links: string[]
 }
 
 // Where a task sits in the person's lists: the todo it does and that todo's project.
@@ -213,7 +211,6 @@ export async function send(m: Message): Promise<void> {
 const RANK: Record<string, number> = {
   needs_decision: 0,
   error: 1,
-  failed: 1,
   'session ended': 1,
   running: 2,
   queued: 3,
@@ -241,13 +238,11 @@ function row(todos: Todos, t: Task, live: ReadonlySet<string>): TaskRow {
   return {
     id: t.id,
     status: taskStatus(t, live),
-    turns: ledger.attempts(t.id).length,
     title: todo?.title ?? t.brief.replace(/\n[\s\S]*/, ''),
     note: taskNote(ledger, t),
     issue: t.issue,
     todoId: todo?.id ?? null,
     retroId: t.retroId,
     projectId: project?.id ?? null,
-    links: ledger.links(t.id),
   }
 }
