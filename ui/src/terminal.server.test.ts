@@ -1,4 +1,4 @@
-import { afterAll, expect, test } from 'bun:test'
+import { afterAll, expect, spyOn, test } from 'bun:test'
 import { readFileSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { connect } from 'node:net'
@@ -151,6 +151,48 @@ test("only the UI's own page attaches to a worker's terminal: another site, a na
   }
 })
 
+// What the server runs to attach, caught before it runs: the sandbox opens no pseudo-terminal.
+test("the server attaches as nod attach does, telling tmux the page's terminal takes RGB colour, outside any tmux and in UTF-8", async () => {
+  const alive = spyOn(Terminals.prototype, 'alive').mockReturnValue(true)
+  let ran: { argv: string[]; env: Record<string, string | undefined> } | undefined
+  const spawn = spyOn(Bun, 'spawn').mockImplementation(((
+    argv: string[],
+    options: { env: Record<string, string | undefined> },
+  ) => {
+    ran = { argv, env: options.env }
+    throw new Error('no pty here')
+  }) as never)
+  const before = { TMUX: process.env.TMUX, LC_ALL: process.env.LC_ALL }
+  process.env.TMUX = '/tmp/outer,1,0'
+  process.env.LC_ALL = 'C'
+  try {
+    const peer = await upgrade('/terminal/7?cols=80&rows=24', PAGE)
+    const close = await peer.next()
+    expect([close.op, close.data.readUInt16BE(0)]).toEqual([8, 1011])
+    peer.end()
+  } finally {
+    alive.mockRestore()
+    spawn.mockRestore()
+    for (const [key, value] of Object.entries(before)) {
+      if (value === undefined) delete process.env[key]
+      else process.env[key] = value
+    }
+  }
+  expect(ran?.argv).toEqual([
+    'tmux',
+    '-L',
+    `nod-${homeId(home)}`,
+    '-T',
+    'RGB',
+    'attach',
+    '-t',
+    `=${sessionName(7)}`,
+  ])
+  expect(ran?.env).toMatchObject({ TERM: 'xterm-256color', LC_CTYPE: 'UTF-8' })
+  expect(ran?.env.TMUX).toBeUndefined()
+  expect(ran?.env.LC_ALL).toBeUndefined()
+})
+
 // tmux on this home's socket.
 const tmux = (...args: string[]) =>
   Bun.spawn(['tmux', '-L', `nod-${homeId(home)}`, ...args], { env: process.env }).exited
@@ -206,6 +248,21 @@ process.stdin.on('data', (d) => { appendFileSync(${JSON.stringify(typed)}, d); p
       // As a person in a terminal is: gc and the tick leave the session alone.
       expect(terminals.attached(name)).toBe(true)
       expect(sizes(name)).toBe('90x20')
+      // So tmux passes the worker's RGB colours on as they are.
+      const features = Bun.spawnSync(
+        [
+          'tmux',
+          '-L',
+          `nod-${homeId(home)}`,
+          'list-clients',
+          '-t',
+          `=${name}`,
+          '-F',
+          '#{client_termfeatures}',
+        ],
+        { env: process.env },
+      )
+      expect(features.stdout.toString().trim().split(',')).toContain('RGB')
 
       await tmux('set-hook', '-g', 'client-resized', 'wait-for -S resized')
       page.send(['size', 100, 30])

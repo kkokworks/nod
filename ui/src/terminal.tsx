@@ -1,3 +1,4 @@
+import type { ITerminalOptions } from '@xterm/xterm'
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 
 // How long a box whose connection closed waits to attach again (the UI server restarted, say): as
@@ -55,6 +56,51 @@ export function Screen({ id, screen }: { id: number; screen: string }) {
   )
 }
 
+// The worker's terminal as the person sees terminals elsewhere: Orca's defaults, its renderer
+// (WebGL), its widths (Unicode 11) and its dark theme (Ghostty Default Style Dark), the colours a
+// program does not set itself. Orca also turns on the kitty keyboard protocol, which xterm.js 6.0
+// does not have.
+export const TERMINAL = {
+  allowProposedApi: true,
+  cursorBlink: true,
+  cursorStyle: 'block',
+  cursorInactiveStyle: 'outline',
+  fontSize: 14,
+  fontFamily:
+    '"SF Mono", "Menlo", "Monaco", "Cascadia Mono", "Consolas", "DejaVu Sans Mono", "Liberation Mono", "Symbols Nerd Font Mono", "MesloLGS Nerd Font", "JetBrainsMono Nerd Font", "Hack Nerd Font", monospace',
+  fontWeight: '300',
+  fontWeightBold: '500',
+  // Orca's for a dark theme.
+  minimumContrastRatio: 3,
+  macOptionIsMeta: false,
+  macOptionClickForcesSelection: true,
+  drawBoldTextInBrightColors: true,
+  theme: {
+    background: '#282c34',
+    foreground: '#ffffff',
+    cursor: '#ffffff',
+    cursorAccent: '#282c34',
+    selectionBackground: '#5a7898',
+    selectionForeground: '#ffffff',
+    black: '#1d1f21',
+    red: '#cc6666',
+    green: '#b5bd68',
+    yellow: '#f0c674',
+    blue: '#81a2be',
+    magenta: '#b294bb',
+    cyan: '#8abeb7',
+    white: '#c5c8c6',
+    brightBlack: '#666666',
+    brightRed: '#d54e53',
+    brightGreen: '#b9ca4a',
+    brightYellow: '#e7c547',
+    brightBlue: '#7aa6da',
+    brightMagenta: '#c397d8',
+    brightCyan: '#70c0b1',
+    brightWhite: '#eaeaea',
+  },
+} satisfies ITerminalOptions
+
 function onVisibility(changed: () => void): () => void {
   document.addEventListener('visibilitychange', changed)
   return () => document.removeEventListener('visibilitychange', changed)
@@ -70,23 +116,30 @@ async function attach(
   leave: AbortSignal,
   closed: () => void,
 ): Promise<void> {
-  const [{ Terminal }, { FitAddon }] = await Promise.all([
+  const [{ Terminal }, { FitAddon }, { Unicode11Addon }, { WebglAddon }] = await Promise.all([
     import('@xterm/xterm'),
     import('@xterm/addon-fit'),
+    import('@xterm/addon-unicode11'),
+    import('@xterm/addon-webgl'),
   ])
   if (leave.aborted) return
-  const colors = getComputedStyle(box)
-  const term = new Terminal({
-    fontFamily: 'ui-monospace, "SF Mono", Menlo, monospace',
-    fontSize: 12,
-    theme: {
-      background: colors.getPropertyValue('--term-bg').trim(),
-      foreground: colors.getPropertyValue('--term-fg').trim(),
-    },
-  })
+  const term = new Terminal(TERMINAL)
   const fit = new FitAddon()
   term.loadAddon(fit)
+  term.loadAddon(new Unicode11Addon())
+  term.unicode.activeVersion = '11'
   term.open(box)
+  // Drawn with WebGL, as Orca draws; where WebGL cannot run, or loses its context, the DOM renderer
+  // xterm.js starts with draws instead.
+  try {
+    const webgl = new WebglAddon()
+    webgl.onContextLoss(() => webgl.dispose())
+    term.loadAddon(webgl)
+  } catch {
+    // No WebGL here: the DOM renderer stays.
+  }
+  // Around the cells too, in the padding.
+  box.style.background = TERMINAL.theme.background
   fit.fit()
   // The terminal is made before the socket, so it has the first screen tmux draws on attaching.
   const ws = new WebSocket(

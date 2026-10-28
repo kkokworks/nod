@@ -78,7 +78,7 @@ const { TodoRow } = await import('./todo-parts')
 const { Search } = await import('./search')
 const projects = await import('./routes/projects')
 const { Failed, NotFound } = await import('./parts')
-const { RETRY_MS } = await import('./terminal')
+const { RETRY_MS, TERMINAL } = await import('./terminal')
 const shell = await import('./routes/__root')
 if (before === undefined) delete process.env.NOD_HOME
 else process.env.NOD_HOME = before
@@ -250,16 +250,21 @@ const detail = (id: number) => ({
 // The same with its session alive.
 const live = (id: number) => ({ ...detail(id), screen: 'working' })
 
-test('a live session is typed into on its screen, with the box below only to answer a decision; a task with none keeps the box to message it', async () => {
+test('a live session is only its terminal, a decision open on it too; a task with none keeps the box to message it', async () => {
   answer = (id) => live(id as number)
   await go('/tasks/23')
-  expect(document.querySelector('.term')).not.toBeNull()
-  expect(document.querySelector('.composer')).toBeNull()
-  expect(document.querySelector('.computer')?.textContent).not.toContain('nod attach')
-  // What is typed on the screen does not answer a decision, so the box comes back for one.
-  open[23] = { id: 30, reason: 'question' }
-  await reload()
-  expect(field<HTMLTextAreaElement>('.composer textarea').placeholder).toBe('Your answer…')
+  const terminalOnly = () => {
+    expect(document.querySelector('.term')).not.toBeNull()
+    expect(document.querySelector('.composer')).toBeNull()
+    expect(document.querySelector('.computer')?.textContent).not.toContain('nod attach')
+  }
+  terminalOnly()
+  // A decision is answered on the screen, where the worker asks it.
+  for (const reason of ['question', 'permission']) {
+    open[23] = { id: 30, reason }
+    await reload()
+    terminalOnly()
+  }
   open[23] = undefined
   // With the session gone, the box is the way to the worker.
   answer = (id) => detail(id as number)
@@ -268,30 +273,22 @@ test('a live session is typed into on its screen, with the box below only to ans
   expect(field<HTMLTextAreaElement>('.composer textarea').placeholder).toBe('Message the worker…')
 })
 
-test('under a live terminal, a decision that opens is not answered by a click at once, and an answer whose decision closes stays', async () => {
+test("a worker's terminal looks as the person's terminals in Orca do: its font, weights, cursor and dark theme, to the box's edges", async () => {
+  expect(TERMINAL).toMatchObject({
+    fontSize: 14,
+    fontWeight: '300',
+    fontWeightBold: '500',
+    cursorStyle: 'block',
+    cursorBlink: true,
+    minimumContrastRatio: 3,
+  })
+  expect(TERMINAL.fontFamily).toStartWith('"SF Mono", "Menlo", "Monaco"')
+  expect(TERMINAL.theme).toMatchObject({ background: '#282c34', foreground: '#ffffff' })
   answer = (id) => live(id as number)
-  await go('/tasks/24')
-  expect(document.querySelector('.composer')).toBeNull()
-  // The box comes where the person was about to click on the screen.
-  open[24] = { id: 40, reason: 'permission' }
-  await reload()
-  await click('Yes')
-  expect(posted).toEqual([])
-  expect(banners().join()).toContain('#40')
-  // Answered elsewhere (in the dialog on the screen), it takes the box and what it said along.
-  open[24] = undefined
-  await reload()
-  expect(document.querySelector('.composer')).toBeNull()
-  // An answer being written to a question that closes meanwhile stays, to go as a message.
-  open[24] = { id: 41, reason: 'question' }
-  await reload()
-  type(field('.composer textarea'), 'use the first')
-  open[24] = undefined
-  await reload()
-  expect(field<HTMLTextAreaElement>('.composer textarea').value).toBe('use the first')
-  await submit('.composer textarea')
-  expect(posted).toEqual([])
-  expect(banners().join()).toContain('#41')
+  await go('/tasks/25')
+  expect(document.querySelector<HTMLElement>('.term')?.style.background).toMatch(
+    /#282c34|rgb\(40, 44, 52\)/,
+  )
 })
 
 test("a live worker's screen attaches to its session, takes keys, and lets go when the page moves on or the session ends", async () => {
@@ -401,12 +398,11 @@ test('answering with a button keeps what was being written', async () => {
   answer = (id) => detail(id as number)
   await go('/tasks/5')
   type(field('.composer textarea'), 'half a thought')
-  open[5] = { id: 8, reason: 'permission' }
+  open[5] = { id: 8, reason: 'land' }
   onPost = () => {
     open[5] = undefined
   }
   await reload()
-  setSystemTime(new Date(Date.now() + 1500))
   await click('Yes')
   expect(posted.splice(0)).toEqual([{ taskId: 5, decisionId: 8, text: 'yes' }])
   expect(field<HTMLTextAreaElement>('.composer textarea').value).toBe('half a thought')
@@ -426,24 +422,6 @@ test('⌘↵ pressed again before the message is through sends it once', async (
   send()
   await settle()
   expect(posted.splice(0)).toEqual([{ taskId: 7, decisionId: null, text: 'hi' }])
-})
-
-test('a button does not answer a decision that just took the place of another', async () => {
-  answer = (id) => detail(id as number)
-  open[6] = { id: 10, reason: 'permission' }
-  await go('/tasks/6')
-  // The answer is taken, and the worker asks the next just as the person clicks again.
-  onPost = () => {
-    open[6] = { id: 11, reason: 'permission' }
-  }
-  await click('Yes')
-  await click('Yes')
-  expect(posted.splice(0)).toEqual([{ taskId: 6, decisionId: 10, text: 'yes' }])
-  expect(banners().join()).toContain('#11')
-  // A moment on, the person has seen it.
-  setSystemTime(new Date(Date.now() + 1500))
-  await click('Yes')
-  expect(posted.splice(0)).toEqual([{ taskId: 6, decisionId: 11, text: 'yes' }])
 })
 
 test("a task's root shows as its project session, with the command that reopens it, else as the session's ID", async () => {

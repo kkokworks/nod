@@ -16,6 +16,9 @@ const PATH = /^\/terminal\/(\d+)$/
 const MAX_CELLS = 1000
 // The close code when there is no session to attach to; the page then shows the screen it has.
 export const NO_SESSION = 4404
+// What the page's terminal (xterm.js) can do that tmux does not take from xterm-256color: the
+// colours a program gives as RGB, which tmux would otherwise bring to the nearest of 256.
+export const FEATURES = 'RGB'
 
 export function serveTerminals(http: Server, terminals = Terminals.of(nodHome())): void {
   const wss = new WebSocketServer({ noServer: true })
@@ -64,7 +67,7 @@ function attach(ws: WebSocket, terminals: Terminals, name: string, cols: number,
   const { TMUX: _, LC_ALL: __, ...env } = process.env
   let proc: Bun.Subprocess
   try {
-    proc = Bun.spawn(terminals.attachCommand(name), {
+    proc = Bun.spawn(terminals.attachCommand(name, FEATURES), {
       env: { ...env, TERM: 'xterm-256color', LC_CTYPE: 'UTF-8' },
       terminal: {
         cols,

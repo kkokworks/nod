@@ -1,6 +1,6 @@
 import { createFileRoute, Link, notFound, useRouter } from '@tanstack/react-router'
 import { createServerFn } from '@tanstack/react-start'
-import { useLayoutEffect, useRef, useState } from 'react'
+import { useState } from 'react'
 import type { Decision } from '../../../src/ledger'
 import { int } from '../input'
 import type { Message } from '../nod.server'
@@ -227,10 +227,10 @@ function TaskPage() {
           ) : (
             <Screen key={`screen-${task.id}`} id={task.id} screen={screen} />
           )}
-          {/* Keyed, as moving to another task keeps this page: what was written does not go along. */}
-          {canSend && (
-            <Composer key={task.id} taskId={task.id} open={open} live={screen !== null} />
-          )}
+          {/* A live session is typed into on its screen, decisions too; with none, this box is the
+              way to the worker. Keyed, as moving to another task keeps this page: what was
+              written does not go along. */}
+          {canSend && screen === null && <Composer key={task.id} taskId={task.id} open={open} />}
         </aside>
       )}
     </div>
@@ -240,19 +240,8 @@ function TaskPage() {
 // These decisions take yes or no; for trust and rule anything but yes ends the task, and for land
 // it stops landing the task, so they get buttons instead of a text box.
 const YES_OR_NO = new Set(['permission', 'trust', 'rule', 'land'])
-// How long the buttons wait after the open decision changed under them.
-const CHANGED_MS = 1000
 
-// `live`: the session is alive, and typed into on its screen.
-function Composer({
-  taskId,
-  open,
-  live,
-}: {
-  taskId: number
-  open: Decision | undefined
-  live: boolean
-}) {
+function Composer({ taskId, open }: { taskId: number; open: Decision | undefined }) {
   const router = useRouter()
   const [text, setText] = useState('')
   // The decision the text was begun for, or null for a message. The page reloads under the person
@@ -261,12 +250,6 @@ function Composer({
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const now = open?.id ?? null
-  // When the open decision last changed on this page. A click just then was aimed at the one
-  // before, so it must not answer the one that took its place.
-  const changed = useRef({ id: now, at: 0 })
-  useLayoutEffect(() => {
-    if (changed.current.id !== now) changed.current = { id: now, at: Date.now() }
-  }, [now])
 
   const submit = async (reply: string, decisionId: number | null, sent = () => {}) => {
     setBusy(true)
@@ -301,19 +284,6 @@ function Composer({
     }
     void submit(text, aim, () => setText(''))
   }
-  const press = (reply: string, d: Decision) => {
-    if (Date.now() - changed.current.at < CHANGED_MS) {
-      setError(`Decision #${d.id} just opened. Read it, then answer.`)
-      return
-    }
-    void submit(reply, d.id)
-  }
-
-  // A live session is typed into on its screen, so the box shows there only to answer a decision,
-  // which what is typed on the screen does not, and while it holds what was written. Hidden, not
-  // gone: a decision that opens is still timed (`changed`), and an answer whose decision closes
-  // stays to be sent as a message. What it said of a decision since closed goes with it.
-  if (live && open === undefined && text === '') return null
   return (
     <form
       className="composer"
@@ -329,14 +299,14 @@ function Composer({
       )}
       {open !== undefined && YES_OR_NO.has(open.reason) ? (
         <div className="composer-actions">
-          <button type="button" disabled={busy} onClick={() => press('yes', open)}>
+          <button type="button" disabled={busy} onClick={() => void submit('yes', open.id)}>
             Yes
           </button>
           <button
             type="button"
             className="secondary"
             disabled={busy}
-            onClick={() => press('no', open)}
+            onClick={() => void submit('no', open.id)}
           >
             {open.reason === 'permission' ? 'No' : 'No — end the task'}
           </button>

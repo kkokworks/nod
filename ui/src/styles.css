@@ -870,17 +870,12 @@ details summary {
 }
 
 /* The worker's terminal (terminal.tsx) keeps one size, which the screen as it was covers until the
-   live one comes; leaving room below for the box to message the worker. */
+   live one comes, down to the foot of the column. */
 .term-box {
   position: relative;
 }
 
 .term {
-  height: max(14rem, calc(100dvh - 16rem));
-}
-
-/* With no box below (a live session and no decision open), the terminal takes its room too. */
-.computer:not(:has(.composer)) .term {
   height: max(14rem, calc(100dvh - 7rem));
 }
 
