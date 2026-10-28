@@ -2796,6 +2796,28 @@ it('a turn whose Stop hook was cut off once it had closed it goes on: the tick h
   expect(status(id)).toBe('succeeded')
 }, 30_000)
 
+it('the mark of a Stop hook gone goes whatever became of its turn, and a turn it raised a decision on is not reported again', async () => {
+  const id = started('ask-first', 'cut-asked')
+  const terminal = upTerminal(id)
+  try {
+    expect(await stopped('cut-asked', 'Should I?\nNOD: question | May I?')).toBeNull()
+    const turn = ledger.lastAttempt(id)?.id
+    // Cut off past its decision (its notify, say): the task waits on that decision.
+    const gone = (): string => `${Bun.spawnSync(['true']).pid} ${turn}`
+    terminal.options.set('nod_settling', gone())
+    await tick(ledger, home, new Date(), false)
+    expect(terminal.options.has('nod_settling')).toBe(false)
+    // As an answer sets it running before it goes to the worker (answer).
+    ledger.setRunning(id, ledger.get(id).workspace ?? '')
+    terminal.options.set('nod_settling', gone())
+    await tick(ledger, home, new Date(), false)
+  } finally {
+    terminal.restore()
+  }
+  expect(terminal.pasted).toEqual([])
+  expect(terminal.options.has('nod_settling')).toBe(false)
+}, 30_000)
+
 it('a turn nod has its worker report again leaves the retries of its checks as they were', async () => {
   const id = started('review-strict: write it', 'cut-retries')
   const terminal = upTerminal(id)

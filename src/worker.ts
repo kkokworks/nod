@@ -2246,12 +2246,13 @@ async function watchSettling(ledger: Ledger, home: string, taskId: number): Prom
 
 // Goes on from the checks Stop hooks did not finish (goOnCut) of the workers whose terminal is up,
 // whose Claude Code went on without them; keepWorker does it as soon as one's Claude Code ends
-// (watchSettling). The tick runs it. Returns the tasks it went on with.
+// (watchSettling). Every such terminal, so the mark of a hook gone goes whatever the task's status.
+// The tick runs it. Returns the tasks it went on with.
 export async function cutChecks(ledger: Ledger, home: string): Promise<number[]> {
   const live = Terminals.of(home).sessions()
   const went: number[] = []
   for (const t of ledger.list()) {
-    if (t.status !== 'running' || !live.has(sessionName(t.id))) continue
+    if (!live.has(sessionName(t.id))) continue
     // One that goes meanwhile must not keep the rest from going on.
     try {
       if (await goOnCut(ledger, home, t.id)) went.push(t.id)
@@ -2277,16 +2278,21 @@ async function goOnCut(ledger: Ledger, home: string, taskId: number): Promise<bo
   const terminals = Terminals.of(home)
   const name = sessionName(taskId)
   const [pid = '', checked] = terminals.option(name, SETTLING_OPTION).split(' ')
-  if (pid === '' || running(Number(pid)) || checked === undefined) return false
+  if (pid === '' || running(Number(pid))) return false
+  // The hook is gone, so its mark goes, whatever it left: a pid another process takes later would
+  // read as a hook still checking (settling).
+  terminals.setOption(name, SETTLING_OPTION, null)
+  if (checked === undefined) return false
   // That turn, closed, and nothing since: a turn that came since decides at its own stop.
   const cut = ledger.lastAttempt(taskId)
   if (cut?.id !== Number(checked) || ledger.get(taskId).status !== 'running') return false
   // Waiting on background work: Claude Code starts the next turn itself (overdueWaits otherwise).
   if (cut.outcome === null || cut.outcome === 'waiting') return false
+  // A decision it raised on that turn is its result: an answer going on from it is on its way.
+  const raised = (d: Decision): boolean =>
+    d.attemptId === cut.id && d.reason !== 'permission' && d.reason !== 'trust'
+  if (ledger.decisions(taskId).some(raised)) return false
   if (!ledger.cutCheck(cut.id, CUT_MARK)) return false
-  // No hook runs now, the turn closed and none since: a pid another process takes later would read
-  // as one still checking (settling).
-  terminals.setOption(name, SETTLING_OPTION, null)
   const cutOff = "nod's check of its last turn was cut off before it finished"
   let why = `${cutOff}, the second time since nod had its worker report a turn again for that: a check that takes longer than its Stop hook may (${STOP_HOOK_TIMEOUT_SECS / 60} minutes) never finishes. nod tell goes on.`
   if (!nodsTurns(ledger, taskId).some((a) => a.prompt === REPORT_AGAIN)) {
