@@ -56,6 +56,7 @@ function TaskPage() {
   // A session that is gone has nothing to show, so the page keeps its width for the turns and the
   // result; the box to message the worker stays while the task can be resumed.
   const aside = screen !== null || canSend
+  const open = decisions.find((d) => d.answer === null)
   return (
     <div className={aside ? 'task-layout' : 'task-layout solo'}>
       <div className="page">
@@ -226,18 +227,12 @@ function TaskPage() {
           ) : (
             <Screen key={`screen-${task.id}`} id={task.id} screen={screen} />
           )}
-          {/* Keyed, as moving to another task keeps this page: what was written does not go along. */}
-          {canSend && (
-            <Composer
-              key={task.id}
-              taskId={task.id}
-              open={decisions.find((d) => d.answer === null)}
-            />
-          )}
-          {screen !== null && (
-            <p className="muted small">
-              Click the screen to type into it, or in a terminal: <code>nod attach {task.id}</code>
-            </p>
+          {/* Keyed, as moving to another task keeps this page: what was written does not go along.
+              A live session is typed into on its screen, so the box is there only to answer a
+              decision, which what is typed there does not, and to message a worker whose session
+              is gone. */}
+          {canSend && (screen === null || open !== undefined) && (
+            <Composer key={task.id} taskId={task.id} open={open} />
           )}
         </aside>
       )}

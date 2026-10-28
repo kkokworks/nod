@@ -20,12 +20,17 @@ const terminalPlugin: Plugin = {
   configurePreviewServer: ({ httpServer }) => terminal(httpServer as Server),
 }
 
+// Kept in the environment: a build reads this file again for the server, which must get the same.
+process.env.NOD_UI_BUILD ??= Date.now().toString(36)
+
 export default defineConfig({
   plugins: [
     tanstackStart({ router: { quoteStyle: 'single', semicolons: false } }),
     viteReact(),
     terminalPlugin,
   ],
+  // Which build this is, the same in the page and the server built with it (src/build.ts).
+  define: { __NOD_BUILD__: JSON.stringify(process.env.NOD_UI_BUILD) },
   // Vite's default lets any localhost origin read the responses, and the pages show workers'
   // reports and screens. The CSRF middleware guards only the server functions.
   server: { cors: false },

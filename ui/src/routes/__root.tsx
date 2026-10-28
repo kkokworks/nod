@@ -9,6 +9,7 @@ import {
 import { createServerFn } from '@tanstack/react-start'
 import xtermCss from '@xterm/xterm/css/xterm.css?url'
 import { type ReactNode, type Ref, useEffect, useRef } from 'react'
+import { BUILD } from '../build'
 import { bindKeys, ignoreOnPage, KEYS } from '../keys'
 import { type Overview, overview } from '../nod.server'
 import { Failed, TaskId, TaskItem } from '../parts'
@@ -18,6 +19,8 @@ import { focusRow, STATUS_ICONS, UndoBar } from '../todo-parts'
 
 // Workers change the ledger while the page is open, so it reloads its data this often.
 const REFRESH_MS = 5000
+// The server's build a page last loaded itself again for.
+const RELOADED = 'nod-reloaded-for-build'
 
 const getOverview = createServerFn({ method: 'GET' }).handler(() => overview())
 
@@ -64,6 +67,20 @@ function Shell({ children }: { children: ReactNode }) {
 
 function Root() {
   const data = Route.useLoaderData()
+  const build = 'failed' in data ? null : data.build
+  // A page from before the server was built again (`ui.sh install`) goes on running the old code,
+  // which the app's window keeps until it loads a page anew, so the page loads itself again. Once
+  // for each build of the server's: a page and a server that do not agree must not reload for good.
+  useEffect(() => {
+    if (build === null || build === BUILD) return
+    try {
+      if (sessionStorage.getItem(RELOADED) === build) return
+      sessionStorage.setItem(RELOADED, build)
+    } catch {
+      return
+    }
+    location.reload()
+  }, [build])
   return 'failed' in data ? (
     <Layout data={null}>
       <Failed error={data.failed} />

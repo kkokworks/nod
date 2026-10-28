@@ -879,6 +879,11 @@ details summary {
   height: max(14rem, calc(100dvh - 16rem));
 }
 
+/* With no box below (a live session and no decision open), the terminal takes its room too. */
+.computer:not(:has(.composer)) .term {
+  height: max(14rem, calc(100dvh - 7rem));
+}
+
 /* Padding on .xterm, where the fit addon takes it off the size. */
 .term .xterm {
   height: 100%;

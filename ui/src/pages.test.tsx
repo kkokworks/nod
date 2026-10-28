@@ -1,4 +1,14 @@
-import { afterAll, afterEach, beforeEach, expect, jest, mock, setSystemTime, test } from 'bun:test'
+import {
+  afterAll,
+  afterEach,
+  beforeEach,
+  expect,
+  jest,
+  mock,
+  setSystemTime,
+  spyOn,
+  test,
+} from 'bun:test'
 import { GlobalRegistrator } from '@happy-dom/global-registrator'
 import type { AnyRoute } from '@tanstack/react-router'
 import { tempDirs } from '../../test/tmp'
@@ -234,12 +244,32 @@ const detail = (id: number) => ({
   report: null,
   place: { todo: null, project: null },
   retro: null,
-  screen: 'working',
+  screen: null as string | null,
   root: null,
+})
+// The same with its session alive.
+const live = (id: number) => ({ ...detail(id), screen: 'working' })
+
+test('a live session is typed into on its screen, with the box below only to answer a decision; a task with none keeps the box to message it', async () => {
+  answer = (id) => live(id as number)
+  await go('/tasks/23')
+  expect(document.querySelector('.term')).not.toBeNull()
+  expect(document.querySelector('.composer')).toBeNull()
+  expect(document.querySelector('.computer')?.textContent).not.toContain('nod attach')
+  // What is typed on the screen does not answer a decision, so the box comes back for one.
+  open[23] = { id: 30, reason: 'question' }
+  await reload()
+  expect(field<HTMLTextAreaElement>('.composer textarea').placeholder).toBe('Your answer…')
+  open[23] = undefined
+  // With the session gone, the box is the way to the worker.
+  answer = (id) => detail(id as number)
+  await reload()
+  expect(document.querySelector('.term')).toBeNull()
+  expect(field<HTMLTextAreaElement>('.composer textarea').placeholder).toBe('Message the worker…')
 })
 
 test("a live worker's screen attaches to its session, takes keys, and lets go when the page moves on or the session ends", async () => {
-  answer = (id) => detail(id as number)
+  answer = (id) => live(id as number)
   Socket.made.length = 0
   await go('/tasks/20')
   const [socket] = Socket.made
@@ -266,14 +296,14 @@ test("a live worker's screen attaches to its session, takes keys, and lets go wh
   expect(socket.readyState).toBe(3)
   const next = Socket.made[1]
   expect(next?.url).toContain('/terminal/21?')
-  answer = (id) => ({ ...detail(id as number), screen: null })
+  answer = (id) => detail(id as number)
   await reload()
   expect(next?.readyState).toBe(3)
   expect(document.querySelector('.term')).toBeNull()
 })
 
 test("a live worker's screen lets go while the page is out of sight, and attaches again when it shows or a while after its connection closed", async () => {
-  answer = (id) => detail(id as number)
+  answer = (id) => live(id as number)
   Socket.made.length = 0
   await go('/tasks/22')
   // As a hidden app window or a tab behind others is.
@@ -666,9 +696,9 @@ test('a task or todo that is not there, an unknown page and a page that fails sh
   expect(document.querySelector('.layout .task-title')?.textContent).toBe('task 3')
 })
 
-test("the sidebar's data failing to load leaves the layout without its lists, and a refresh that reads brings them", async () => {
-  // The real root, in a router of its own, without the document shell around it.
-  const app = R.createRouter({
+// The real root, in a router of its own, without the document shell around it.
+const realRoot = () =>
+  R.createRouter({
     routeTree: R.createRootRoute({
       loader: shell.Route.options.loader,
       component: shell.Route.options.component,
@@ -676,6 +706,49 @@ test("the sidebar's data failing to load leaves the layout without its lists, an
     history: R.createMemoryHistory({ initialEntries: ['/'] }),
     defaultNotFoundComponent: () => <p className="here">page</p>,
   })
+// What the sidebar gets with nothing in the ledger, from a server of `build`; '' is this page's.
+const overview = (build: string) => ({
+  decisions: [],
+  groups: [],
+  collected: { items: [], total: 0 },
+  inbox: 0,
+  build,
+})
+
+test("a page from another build than the server's loads itself again, once for that build", async () => {
+  const reloads = spyOn(location, 'reload').mockImplementation(() => {})
+  const box = document.body.appendChild(document.createElement('div'))
+  let own = createRoot(box)
+  const load = async (app: ReturnType<typeof realRoot>) => {
+    await act(async () => own.render(<R.RouterProvider router={app as never} />))
+    await settle()
+  }
+  sessionStorage.clear()
+  try {
+    answer = () => overview('')
+    const app = realRoot()
+    await load(app)
+    expect(reloads).not.toHaveBeenCalled()
+    // The server was built again (ui.sh install) while the page was open.
+    answer = () => overview('newer')
+    await act(() => app.invalidate())
+    await settle()
+    expect(reloads).toHaveBeenCalledTimes(1)
+    // Loaded anew and still told of another build: not again, or it would reload for good.
+    act(() => own.unmount())
+    own = createRoot(box)
+    await load(realRoot())
+    expect(reloads).toHaveBeenCalledTimes(1)
+  } finally {
+    reloads.mockRestore()
+    sessionStorage.clear()
+    act(() => own.unmount())
+    box.remove()
+  }
+})
+
+test("the sidebar's data failing to load leaves the layout without its lists, and a refresh that reads brings them", async () => {
+  const app = realRoot()
   const box = document.body.appendChild(document.createElement('div'))
   const own = createRoot(box)
   // The layout's 5 second refresh.
@@ -700,7 +773,7 @@ test("the sidebar's data failing to load leaves the layout without its lists, an
     await refresh()
     expect(box.querySelector<HTMLInputElement>('.side-search input')?.value).toBe('r2')
 
-    answer = () => ({ decisions: [], groups: [], collected: { items: [], total: 0 }, inbox: 2 })
+    answer = () => ({ ...overview(''), inbox: 2 })
     await refresh()
     expect(box.querySelector('.side-summary')?.textContent).toContain('0 tasks')
     expect(box.querySelector('.main .here')).not.toBeNull()

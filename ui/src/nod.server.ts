@@ -15,6 +15,7 @@ import { Terminals } from '../../src/tmux'
 import { type Found, firstLineOf, type Project, type Todo, Todos } from '../../src/todos'
 import { reopenCommand, taskNote, taskStatus } from '../../src/view'
 import { answer, sessionName, tell } from '../../src/worker'
+import { BUILD } from './build'
 
 export const home = nodHome()
 // One connection for the server's life, shared with the todo pages (todos.server.ts); WAL lets nod
@@ -64,6 +65,8 @@ export type Overview = {
   stats: Stats
   // For the sidebar's link to the todos.
   inbox: number
+  // The server's build (build.ts), for a page from another to load itself again.
+  build: string
 }
 
 export type Detail = {
@@ -117,6 +120,7 @@ export function overview(): Overview {
       hideSomedayProjects: false,
       day: null,
     }).length,
+    build: BUILD,
   }
 }
 
