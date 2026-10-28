@@ -12,7 +12,7 @@ import {
   type Trigger,
 } from '../../src/ledger'
 import { Terminals } from '../../src/tmux'
-import { type Found, type Project, type Todo, Todos } from '../../src/todos'
+import { type Found, firstLineOf, type Project, type Todo, Todos } from '../../src/todos'
 import { reopenCommand, taskNote, taskStatus } from '../../src/view'
 import { answer, sessionName, tell } from '../../src/worker'
 
@@ -28,7 +28,6 @@ export const ACTOR = 'human:ui'
 export type TaskRow = {
   id: number
   status: string
-  turns: number
   // What the task is: its todo's title, else the brief's first line. The note is how it went last.
   title: string
   note: string
@@ -36,7 +35,6 @@ export type TaskRow = {
   todoId: number | null
   retroId: number | null
   projectId: number | null
-  links: string[]
 }
 
 // Where a task sits in the person's lists: the todo it does and that todo's project.
@@ -213,7 +211,6 @@ export async function send(m: Message): Promise<void> {
 const RANK: Record<string, number> = {
   needs_decision: 0,
   error: 1,
-  failed: 1,
   'session ended': 1,
   running: 2,
   queued: 3,
@@ -224,16 +221,8 @@ const rank = (t: TaskRow): number => RANK[t.status] ?? 5
 // A retrospective does no todo of its own; it sits in the project of the task it looks back on.
 function place(todos: Todos, t: Task): Place {
   const todo = t.todoId === null ? null : todos.get(t.todoId)
-  if (todo === null) {
-    return {
-      todo: null,
-      project:
-        t.retroId === null
-          ? null
-          : place(todos, ledger.get(ledger.retro(t.retroId).ofTaskId)).project,
-    }
-  }
-  return { todo, project: todo.projectId === null ? null : todos.project(todo.projectId) }
+  const projectId = todo === null ? todos.projectOf(t) : todo.projectId
+  return { todo, project: projectId === null ? null : todos.project(projectId) }
 }
 
 function row(todos: Todos, t: Task, live: ReadonlySet<string>): TaskRow {
@@ -241,13 +230,11 @@ function row(todos: Todos, t: Task, live: ReadonlySet<string>): TaskRow {
   return {
     id: t.id,
     status: taskStatus(t, live),
-    turns: ledger.attempts(t.id).length,
-    title: todo?.title ?? t.brief.replace(/\n[\s\S]*/, ''),
+    title: todo?.title ?? firstLineOf(t.brief),
     note: taskNote(ledger, t),
     issue: t.issue,
     todoId: todo?.id ?? null,
     retroId: t.retroId,
     projectId: project?.id ?? null,
-    links: ledger.links(t.id),
   }
 }

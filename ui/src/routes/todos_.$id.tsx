@@ -1,5 +1,6 @@
 import { createFileRoute, Link, notFound, useNavigate } from '@tanstack/react-router'
 import { useState } from 'react'
+import { REPEATS } from '../../../src/days'
 import type { RawEdit } from '../input'
 import { localTime, Url } from '../parts'
 import { changeTodo, getTodo } from '../todo-fns'
@@ -26,9 +27,6 @@ export const Route = createFileRoute('/todos_/$id')({
   },
   component: TodoDetail,
 })
-
-// The ledger's repeats (days.ts), which the browser cannot import: it reaches the database.
-const REPEATS = ['', 'daily', 'weekly', 'monthly']
 
 function TodoDetail() {
   const page = Route.useLoaderData()
@@ -244,7 +242,7 @@ function EditForm({ page }: { page: TodoPage }) {
       <label>
         Repeat
         <select value={f.repeat} onChange={set('repeat')}>
-          {REPEATS.map((r) => (
+          {['', ...REPEATS].map((r) => (
             <option key={r} value={r}>
               {r === '' ? '—' : r}
             </option>

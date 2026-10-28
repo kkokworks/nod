@@ -18,7 +18,7 @@ import { basename, join, resolve } from 'node:path'
 import { z } from 'zod'
 import { accountChanged, accountRule, configDir } from './account'
 import type { PermissionEvent } from './allow'
-import { onlyCopy } from './gc'
+import { hasRef, onlyCopy } from './gc'
 import {
   type Attempt,
   type AttemptKind,
@@ -26,14 +26,14 @@ import {
   type DecisionReason,
   FINISHED,
   type Ledger,
-  type Message,
   type Task,
 } from './ledger'
 import { notify, runGroup, taskRef } from './notify'
 import { askedAgain, type Changes, reviewBrief } from './review'
 import { activeRules, hadTrouble, isNoRule, retroBrief } from './rules'
-import { pasted, quote, Terminals } from './tmux'
+import { pasted, quote, running, Terminals } from './tmux'
 import { Todos } from './todos'
+import { oneLine } from './view'
 
 // Each worker is an interactive Claude Code session in tmux. It reports when it stops through
 // Claude Code's Stop hook, and answers and follow-ups go into the same live session, so the worker
@@ -238,7 +238,7 @@ const TURN_ENDED = '(its turn ended)'
 
 // ponytail: fixed retry budget; make it per-task if real checks need more.
 const CHECK_RETRIES = 2
-const OUTPUT_LIMIT = 4000
+export const OUTPUT_LIMIT = 4000
 const QUESTION_LIMIT = 2000
 // More than this in one report is more than a person can clarify, or a worker gone wrong.
 const MAX_CAPTURES = 50
@@ -418,7 +418,8 @@ export function firstMessage(ledger: Ledger, task: Task, start: string | null): 
   const after = ledger.after(task.id)
   if (after.length === 0) return `${task.brief}${since}${check}`
   const reports = after.map(
-    (a) => `- #${a.id} ${oneLine(a.brief)}: ${ledger.lastAttempt(a.id)?.summary || '(no summary)'}`,
+    (a) =>
+      `- #${a.id} ${oneLine(a.brief, 200)}: ${ledger.lastAttempt(a.id)?.summary || '(no summary)'}`,
   )
   const base = baseOf(ledger, task)
   const branch =
@@ -427,7 +428,7 @@ export function firstMessage(ledger: Ledger, task: Task, start: string | null): 
 }
 
 // The task whose branch this task's worktree starts from: the one it comes after in the same repo.
-function baseOf(ledger: Ledger, task: Task): Task | null {
+export function baseOf(ledger: Ledger, task: Task): Task | null {
   return ledger.after(task.id).find((a) => task.repo !== null && a.repo === task.repo) ?? null
 }
 
@@ -444,12 +445,7 @@ export async function answer(
   // Before anything acts on it, as bringing a collected task back (restore below).
   if (decision.answer !== null) throw new Error(`decision ${decisionId} is already answered`)
   // A to-do list that mirrors open decisions can close this one.
-  const told = (): Promise<void> =>
-    notify(home, {
-      event: 'answered',
-      task: taskRef(ledger.get(decision.taskId)),
-      decision: { id: decisionId, reason: decision.reason, answer: text },
-    })
+  const told = (): Promise<void> => announce(home, ledger.get(decision.taskId), [decision], text)
   // One left open on a task that ended only closes: no turn starts, and the task stays as it is.
   if (finished(ledger, decision.taskId)) {
     ledger.dismiss(decisionId, text)
@@ -576,15 +572,10 @@ export type Dropped = 'dropped' | 'closed' | 'landing stopped'
 export async function drop(ledger: Ledger, home: string, decisionId: number): Promise<Dropped> {
   const decision = ledger.decision(decisionId)
   const task = ledger.get(decision.taskId)
-  const dropped = {
-    event: 'answered',
-    task: taskRef(task),
-    decision: { id: decisionId, reason: decision.reason, answer: '(dropped)' },
-  } as const
   // One left open on a task that ended only closes, and the task stays as it is.
   if (finished(ledger, task.id)) {
     ledger.dismiss(decisionId, '(dropped)')
-    await notify(home, dropped)
+    await announce(home, task, [decision], '(dropped)')
     return 'closed'
   }
   // Landing work, or a decision on landing (land.ts): the work succeeded, so only its landing stops.
@@ -607,7 +598,7 @@ export async function drop(ledger: Ledger, home: string, decisionId: number): Pr
     if (task.workspace !== null && rebasing(task.workspace)) {
       await spawn([...NOD_GIT, 'rebase', '--abort'], task.workspace)
     }
-    await notify(home, dropped)
+    await announce(home, task, [decision], '(dropped)')
     await announce(home, task, closed, why)
     return 'landing stopped'
   }
@@ -641,9 +632,7 @@ async function startRetro(ledger: Ledger, home: string, task: Task): Promise<voi
   if (task.retroId !== null || ledger.retroFor(task.id) !== null) return
   if (!hadTrouble(ledger, task.id)) return
   const id = ledger.addRetro(task, retroBrief(ledger, task, workerPrompt(ledger, null)))
-  await startTask(ledger, home, id).catch((error) =>
-    notify(home, { event: 'error', task: taskRef(ledger.get(id)), error: message(error) }),
-  )
+  await startTask(ledger, home, id).catch(notifyError(ledger, home, id))
 }
 
 export async function tell(
@@ -942,19 +931,11 @@ function pastedByNod(ledger: Ledger, open: Attempt, prompt: string, left: string
 function forgetHeldBack(ledger: Ledger, home: string, open: Attempt): void {
   const last = ledger
     .messages(open.taskId)
-    .filter((m) => m.attemptId === open.id && typedHere(m.text))
-    .at(-1)
+    .findLast((m) => m.attemptId === open.id && typedHere(m.text))
   const words = last?.text ?? (typedHere(open.prompt) ? open.prompt : TYPED)
   if (words === TYPED) return
-  let lines: string[]
-  try {
-    const file = transcriptOf(ledger, home, open.taskId, open.sessionId)
-    if (file === null) return
-    lines = readFileSync(file, 'utf8').split('\n')
-  } catch (error) {
-    console.error(`nod: could not read the transcript of task ${open.taskId}: ${message(error)}`)
-    return
-  }
+  const lines = transcriptLines(ledger, home, open.taskId, open.sessionId)
+  if (lines === null) return
   if (heardOf(lines, words.slice(TYPED.length + 1)) !== 'lost') return
   if (last === undefined) ledger.setPrompt(open.id, TYPED)
   else ledger.forgetMessage(last.id)
@@ -1075,7 +1056,7 @@ async function settle(
 ): Promise<string | null> {
   const text = event.last_assistant_message.trim()
   const report = parseReport(text)
-  const summary = report?.text ?? oneLine(text)
+  const summary = report?.text ?? oneLine(text, 200)
   // A worker that keeps going after a failed check often drops the report line; the check decides.
   const done = report?.status === 'done' || (report === null && event.stop_hook_active)
   // A message that came while this hook ran started another turn, which Claude Code runs once the
@@ -1480,6 +1461,23 @@ function endTurnWithoutStop(ledger: Ledger, home: string, taskId: number): void 
   ledger.failOpenAttempt(open.id, why)
 }
 
+// The lines of the transcript of a task's session; null for one there is none of, or that cannot
+// be read, which goes to stderr only.
+function transcriptLines(
+  ledger: Ledger,
+  home: string,
+  taskId: number,
+  sessionId: string,
+): string[] | null {
+  try {
+    const file = transcriptOf(ledger, home, taskId, sessionId)
+    return file === null ? null : readFileSync(file, 'utf8').split('\n')
+  } catch (error) {
+    console.error(`nod: could not read the transcript of task ${taskId}: ${message(error)}`)
+    return null
+  }
+}
+
 // The lines at the end (TRANSCRIPT_TAIL) of the transcript of turn `open`'s session; none for one
 // there is none of, or that cannot be read, which goes to stderr only.
 function transcriptTail(ledger: Ledger, home: string, open: Attempt): string[] {
@@ -1558,7 +1556,7 @@ const TranscriptEntry = z.object({
 // (`interruptedByShutdown`), a turn cut off. A message a hook held back leaves no message of the
 // person's but a system entry with `promptSubmitEnding` (measured on 2.1.310 with `claude -p`).
 function endedWithoutStop(lines: string[]): string | null {
-  for (const line of [...lines].reverse()) {
+  for (const line of lines.toReversed()) {
     const parsed = TranscriptEntry.safeParse(jsonOrNull(line))
     if (!parsed.success || parsed.data.isSidechain === true) continue
     const entry = parsed.data
@@ -1642,18 +1640,11 @@ function carryUnheard(
     .messages(task.id)
     .filter((m) => m.attemptId === attemptId && !typedHere(m.text))
   if (told.length === 0) return
-  let unheard: { said: Message; fate: Fate }[]
-  try {
-    const file = transcriptOf(ledger, home, task.id, sessionId)
-    if (file === null) return
-    const lines = readFileSync(file, 'utf8').split('\n')
-    unheard = told
-      .map((said) => ({ said, fate: heardOf(lines, said.text) }))
-      .filter((u) => u.fate !== 'heard')
-  } catch (error) {
-    console.error(`nod: could not read the transcript of task ${task.id}: ${message(error)}`)
-    return
-  }
+  const lines = transcriptLines(ledger, home, task.id, sessionId)
+  if (lines === null) return
+  const unheard = told
+    .map((said) => ({ said, fate: heardOf(lines, said.text) }))
+    .filter((u) => u.fate !== 'heard')
   const [first] = unheard
   if (first === undefined) return
   // The turn opened here; null for one open already.
@@ -1681,9 +1672,7 @@ function carryUnheard(
   const terminals = Terminals.of(home)
   const name = sessionName(task.id)
   const live = terminals.alive(name)
-  const claude = live ? Number(terminals.option(name, CLAUDE_OPTION)) : 0
-  const gone =
-    !live || terminals.option(name, RESTARTING_OPTION) !== '' || (claude !== 0 && !running(claude))
+  const gone = !live || restartingClaude(terminals, name)
   try {
     for (const { said, fate } of unheard) {
       if (gone) leavePrompt(home, task.id, said.text)
@@ -1803,9 +1792,7 @@ async function deliver(
   // Claude Code is starting again: pasted now, the message would be lost, so it waits for the new
   // start in the prompt file (keepWorker). Also once the Claude Code keepWorker started is gone,
   // before keepWorker marks the restart.
-  const claude = live ? Number(terminals.option(name, CLAUDE_OPTION)) : 0
-  const restarting =
-    live && (terminals.option(name, RESTARTING_OPTION) !== '' || (claude !== 0 && !running(claude)))
+  const restarting = live && restartingClaude(terminals, name)
   // A Stop hook is checking the worker's last turn: Claude Code waits in that hook, so a message
   // runs as a turn of its own once the hook ends, even before the hook closes that turn. Another
   // turn open by then, a retry the hook starts, is one the message goes into.
@@ -1937,17 +1924,13 @@ function settling(terminals: Terminals, name: string): boolean {
   return running(Number.parseInt(terminals.option(name, SETTLING_OPTION), 10))
 }
 
-export function running(pid: number): boolean {
-  if (!pid) return false
-  try {
-    process.kill(pid, 0)
-    return true
-  } catch (error) {
-    // ESRCH: gone. EPERM: it runs, but this process may not signal it, as from inside a sandbox
-    // that keeps nod off processes outside it (macOS sandbox-exec answers EPERM for those).
-    // ponytail: a pid another user's process took since counts too.
-    return error instanceof Error && 'code' in error && error.code === 'EPERM'
-  }
+// Whether the live session's Claude Code is starting again, or the one keepWorker started is gone
+// before keepWorker marks the restart.
+function restartingClaude(terminals: Terminals, name: string): boolean {
+  // The pid first: keepWorker marks the restart before it starts the next Claude Code, so a pid
+  // read before the mark is of the one that ended.
+  const claude = Number(terminals.option(name, CLAUDE_OPTION))
+  return terminals.option(name, RESTARTING_OPTION) !== '' || (claude !== 0 && !running(claude))
 }
 
 // The arguments a worker's Claude Code starts with; makes the folder it keeps sockets in.
@@ -2093,12 +2076,8 @@ export async function keepWorker(
       exited = child.exited
       failure = ''
       if (next.started !== null) {
-        void trustOnStart(ledger, home, taskId, next.fresh, next.started).catch((error) =>
-          notify(home, {
-            event: 'error',
-            task: taskRef(ledger.get(taskId)),
-            error: message(error),
-          }),
+        void trustOnStart(ledger, home, taskId, next.fresh, next.started).catch(
+          notifyError(ledger, home, taskId),
         )
       }
     } catch (error) {
@@ -2121,13 +2100,7 @@ export async function keepWorker(
       // A turn cut off goes on in a message the person sent since, which the new start got: there
       // is nothing to decide, and the stop of the turn it runs closes that turn.
       if (turn !== null && left === null && late === null) {
-        await cutOff(ledger, home, taskId, turn, RESTARTED).catch((error) =>
-          notify(home, {
-            event: 'error',
-            task: taskRef(ledger.get(taskId)),
-            error: message(error),
-          }),
-        )
+        await cutOff(ledger, home, taskId, turn, RESTARTED).catch(notifyError(ledger, home, taskId))
       }
       await exited
     }
@@ -2143,9 +2116,7 @@ export async function keepWorker(
     // that start in the prompt file (deliver).
     terminals.setOption(name, RESTARTING_OPTION, '1')
     if (terminals.option(name, SETTLING_OPTION) !== '') {
-      void watchSettling(ledger, home, taskId).catch((error) =>
-        notify(home, { event: 'error', task: taskRef(ledger.get(taskId)), error: message(error) }),
-      )
+      void watchSettling(ledger, home, taskId).catch(notifyError(ledger, home, taskId))
     }
     // A restart ends Claude Code between turns, or with deliver's message still to come; a turn
     // open with no message left for the new start began in between, and was cut off.
@@ -2354,7 +2325,7 @@ async function cutOff(
     taskId,
     attempt.id,
     'interrupted',
-    `${why}\nThe turn did not finish, and part of it may be done. It was on:\n> ${oneLine(attempt.prompt)}\nAnswer with how to go on, such as to check what is done and carry on; the answer goes into the same conversation.`,
+    `${why}\nThe turn did not finish, and part of it may be done. It was on:\n> ${oneLine(attempt.prompt, 200)}\nAnswer with how to go on, such as to check what is done and carry on; the answer goes into the same conversation.`,
   )
   return true
 }
@@ -2421,7 +2392,7 @@ export async function closeFinished(ledger: Ledger, home: string, now: Date): Pr
 // waited, in a row up to the last one; null when its last finished turn did not wait.
 function waitingSince(ledger: Ledger, taskId: number): number | null {
   const ended = ledger.attempts(taskId).filter((a) => a.finishedAt !== null && !noTurn(a))
-  const first = ended.slice(ended.findLastIndex((a) => a.outcome !== 'waiting') + 1)[0]
+  const first = ended[ended.findLastIndex((a) => a.outcome !== 'waiting') + 1]
   return first?.finishedAt ? Date.parse(first.finishedAt) : null
 }
 
@@ -2440,7 +2411,7 @@ export async function overdueWaits(ledger: Ledger, home: string, now: Date): Pro
     // A turn the person typed that ended without a Stop came while it waited, and changed nothing
     // of that: the work it waits on still runs or is gone.
     const turns = ledger.attempts(t.id)
-    const last = turns.filter((a) => !noTurn(a)).at(-1) ?? null
+    const last = turns.findLast((a) => !noTurn(a)) ?? null
     const since = waitingSince(ledger, t.id)
     if (last === null || last.outcome !== 'waiting' || since === null) continue
     if (now.getTime() - since < WAIT_LIMIT_MS) continue
@@ -2771,9 +2742,7 @@ async function prepareWorkspace(
   // Starting from the earlier task's branch keeps tasks on the same files in sequence, not in
   // conflict.
   const base = baseOf(ledger, task)
-  const had =
-    Bun.spawnSync(['git', '-C', repo, 'rev-parse', '--verify', '-q', `refs/heads/${branch}`])
-      .exitCode === 0
+  const had = hasRef(repo, `refs/heads/${branch}`)
   // 32 concurrent `worktree add` on one repo all succeeded when measured, so no lock here.
   const { code, output } = await spawn([
     'git',
@@ -2835,9 +2804,7 @@ async function rebuildWorktree(
   cwd: string,
   head: string | null,
 ): Promise<void> {
-  const has = (ref: string): boolean =>
-    Bun.spawnSync(['git', '-C', repo, 'rev-parse', '--verify', '-q', `${ref}^{commit}`])
-      .exitCode === 0
+  const has = (ref: string): boolean => hasRef(repo, `${ref}^{commit}`)
   const from = (): string => {
     const ref = [head, `refs/remotes/origin/${branch}`, 'refs/remotes/origin/HEAD'].find(
       (r): r is string => r !== null && has(r),
@@ -3113,11 +3080,11 @@ async function verifyLanding(
   const had = ledger.landing(task.id)
   if (pr !== null && had?.pr === null && had.title === null) ledger.setLanding(task.id, pr)
   if (rebasing(ws)) {
-    const unmerged = (await spawn(['git', 'diff', '--name-only', '--diff-filter=U'], ws)).stdout
-    if (unmerged.trim() !== '') {
+    const unmerged = await unmergedFiles(ws)
+    if (unmerged !== '') {
       return {
         passed: false,
-        output: `These files are still unmerged:\n${unmerged.trim()}\nResolve each and stage it with \`git add <file>\`; nod goes on with the rebase once none is left.`,
+        output: `These files are still unmerged:\n${unmerged}\nResolve each and stage it with \`git add <file>\`; nod goes on with the rebase once none is left.`,
       }
     }
     const onto = readFileSync(gitPath(ws, 'rebase-merge/onto'), 'utf8').trim()
@@ -3126,8 +3093,8 @@ async function verifyLanding(
       // Stopped at the next commit's conflict: the landing goes on. Anything else (an unstaged
       // change left beside the resolution, say) is the worker's to fix, as a failed check is, so
       // it counts toward the retries and git says why.
-      const next = (await spawn(['git', 'diff', '--name-only', '--diff-filter=U'], ws)).stdout
-      if (rebasing(ws) && next.trim() !== '') {
+      const next = await unmergedFiles(ws)
+      if (rebasing(ws) && next !== '') {
         return { passed: false, next: true, output: await conflictBrief(ws) }
       }
       return {
@@ -3154,7 +3121,7 @@ async function verifyLanding(
 
 // The pull request's text a worker writes above its report line: the title on its first line,
 // then the body. The `NOD:` lines are nod's. Null without a title.
-export function prText(report: string): { title: string; body: string } | null {
+function prText(report: string): { title: string; body: string } | null {
   const lines = report.split('\n').filter((l) => nodLine(l) === null)
   const at = lines.findIndex((l) => l.trim() !== '')
   const first = lines[at]
@@ -3189,12 +3156,14 @@ export function rebasing(ws: string): boolean {
   return existsSync(gitPath(ws, 'rebase-merge')) || existsSync(gitPath(ws, 'rebase-apply'))
 }
 
+// The files a stopped rebase left unmerged, one per line.
+async function unmergedFiles(ws: string): Promise<string> {
+  return (await spawn(['git', 'diff', '--name-only', '--diff-filter=U'], ws)).stdout.trim()
+}
+
 // The commit a stopped rebase is on and the files in conflict, with how to resolve them.
 export async function conflictBrief(ws: string): Promise<string> {
-  const files = (await spawn(['git', 'diff', '--name-only', '--diff-filter=U'], ws)).stdout
-    .trim()
-    .split('\n')
-    .filter(Boolean)
+  const files = (await unmergedFiles(ws)).split('\n').filter(Boolean)
   const at = await spawn(['git', 'log', '-1', '--format=%h %s', 'REBASE_HEAD'], ws)
   const listed = files.length > 0 ? files.map((f) => `- ${f}`).join('\n') : '- (see git status)'
   return `The rebase stopped at your commit ${at.code === 0 ? at.stdout.trim() : '?'} with conflicts in:\n${listed}\n${RESOLVE}`
@@ -3263,10 +3232,12 @@ export async function readAtOnce<T, R>(items: T[], read: (item: T) => Promise<R>
   return out
 }
 
-function oneLine(s: string): string {
-  return s.replaceAll('\n', ' ').slice(0, 200)
-}
-
 export function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
+
+// For a .catch on work nobody watches: the person hears the task's error (notify).
+export const notifyError =
+  (ledger: Ledger, home: string, taskId: number) =>
+  (error: unknown): Promise<void> =>
+    notify(home, { event: 'error', task: taskRef(ledger.get(taskId)), error: message(error) })

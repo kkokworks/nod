@@ -4,7 +4,7 @@ import { nodHome } from '../../../src/ledger'
 
 // The person's settings for the work tools: which are on, and each one's values (an address, an
 // organization). They live in nod's home, out of the repo.
-export const configPath = (): string => join(nodHome(), 'config.json')
+const configPath = (): string => join(nodHome(), 'config.json')
 
 const Config = z.object({
   // The tools that are on, by their folder name under sources/.

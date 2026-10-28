@@ -1,6 +1,6 @@
 import { existsSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { running } from '../src/worker'
+import { running } from '../src/tmux'
 import { socketsParent } from './tmp'
 
 // A test run keeps its tmux sockets in a temp dir of its own (TMUX_TMPDIR), so its servers leave

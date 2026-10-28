@@ -1,22 +1,23 @@
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { landed } from './gc'
+import { hasRef, landed } from './gc'
 import type { Landing, Ledger, Repo, Task } from './ledger'
-import { notify, runGroup, taskRef } from './notify'
+import { notify, taskRef } from './notify'
 import { type GitService, type OwnPr, serviceOf } from './prs'
-import { Terminals } from './tmux'
+import { running, Terminals } from './tmux'
 import {
   askToLand,
+  baseOf,
   conflictBrief,
   createdFrom,
   handOff,
   message,
   NOD_GIT,
+  OUTPUT_LIMIT,
   ownStart,
   PR_TEXT,
   rebasing,
   restore,
-  running,
   type Send,
   sessionName,
   spawn,
@@ -40,7 +41,6 @@ const GATE_TIMEOUT_MS = 5 * 60_000
 // no one is there to type, must not hold the tick. They run in a process group of their own, so the
 // timeout also ends the remote helper or ssh git starts, which would hold the output open.
 const GIT_TIMEOUT_MS = 2 * 60_000
-const OUTPUT_LIMIT = 4000
 const GIT = NOD_GIT
 
 // What a pass did with a task, or what it waits on, for `nod land` to print.
@@ -140,8 +140,8 @@ async function landTask(
   if (branch === null || task.repo === null) throw new Error(`task ${task.id} has no branch`)
   const ask = (question: string): Promise<string> => askFor(pass, task, question)
   // On the branch of the task it comes after, it holds that task's commits: those land first.
-  const before = ledger.after(task.id).find((a) => a.repo === task.repo)
-  if (before !== undefined && !hasLanded(ledger, before)) {
+  const before = baseOf(ledger, task)
+  if (before !== null && !hasLanded(ledger, before)) {
     return noteFor(pass, task, `lands after #${before.id}`)
   }
   if (branch === tip.branch) {
@@ -214,13 +214,9 @@ async function landTask(
     if (check !== null) {
       if (!claim(ledger, task.id)) return noteFor(pass, task, 'its worker is busy')
       // In a group of its own, as the remote's git calls, so the timeout ends what it started.
-      const run = await runGroup(['sh', '-c', check], {
-        cwd: ws,
-        env: process.env,
-        timeoutMs: CHECK_TIMEOUT_MS,
-      })
+      const run = await spawn(['sh', '-c', check], ws, { timeoutMs: CHECK_TIMEOUT_MS })
       ledger.setLanding(task.id, { busy: null })
-      if (run.code !== 0) failed = (run.stdout + run.stderr).slice(-OUTPUT_LIMIT)
+      if (run.code !== 0) failed = run.output.slice(-OUTPUT_LIMIT)
     }
     if (failed === null) l = ledger.setLanding(task.id, { ready: head })
   }
@@ -369,16 +365,7 @@ function hasLanded(ledger: Ledger, task: Task): boolean {
   if (ledger.landing(task.id)?.mergedAt) return true
   if (task.repo === null) return true
   const ref =
-    task.branch !== null &&
-    Bun.spawnSync([
-      'git',
-      '-C',
-      task.repo,
-      'rev-parse',
-      '--verify',
-      '-q',
-      `refs/heads/${task.branch}`,
-    ]).exitCode === 0
+    task.branch !== null && hasRef(task.repo, `refs/heads/${task.branch}`)
       ? `refs/heads/${task.branch}`
       : task.head
   return ref !== null && landed(task.repo, ref)
@@ -456,10 +443,8 @@ async function runGate(
   const file = join(home, 'work', `.pr-${task.id}`)
   mkdirSync(join(home, 'work'), { recursive: true })
   writeFileSync(file, `${title}\n\n${body}\n`)
-  const { code, stdout, stderr } = await runGroup(['sh', '-c', gate], {
-    cwd: ws,
+  const { code, output } = await spawn(['sh', '-c', gate], ws, {
     env: {
-      ...process.env,
       NOD_BASE: base,
       NOD_HEAD: head,
       NOD_PR: file,
@@ -468,7 +453,7 @@ async function runGate(
     timeoutMs: GATE_TIMEOUT_MS,
   })
   rmSync(file, { force: true })
-  return code === 0 ? null : (stdout + stderr).trim().slice(-OUTPUT_LIMIT) || `exited ${code}`
+  return code === 0 ? null : output.trim().slice(-OUTPUT_LIMIT) || `exited ${code}`
 }
 
 // Whether `remote`, the branch as origin has it, holds only the task's own commits: past where the
@@ -488,13 +473,11 @@ async function ownPush(ws: string, branch: string, remote: string): Promise<bool
 }
 
 // git on the remote, which may never answer and must not ask (GIT_TIMEOUT_MS).
-async function onRemote(cwd: string, args: string[]): Promise<{ code: number; output: string }> {
-  const r = await runGroup([...GIT, ...args], {
-    cwd,
-    env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+function onRemote(cwd: string, args: string[]): Promise<{ code: number; output: string }> {
+  return spawn([...GIT, ...args], cwd, {
+    env: { GIT_TERMINAL_PROMPT: '0' },
     timeoutMs: GIT_TIMEOUT_MS,
   })
-  return { code: r.code, output: r.stdout + r.stderr }
 }
 
 async function git(cwd: string, ...args: string[]): Promise<string> {

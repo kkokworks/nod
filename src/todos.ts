@@ -15,6 +15,7 @@ import {
   type Decision,
   type Ledger,
   type NewTask,
+  now,
   queryBuilder,
   runQuery,
   type Task,
@@ -42,7 +43,7 @@ export type ProjectStatus = (typeof PROJECT_STATUSES)[number]
 export const OPEN: TodoStatus[] = ['inbox', 'next', 'waiting']
 const CLOSED_PROJECT: ProjectStatus[] = ['done', 'dropped']
 // A delegated todo's tasks that may still go on: one in error can be resumed.
-export const UNFINISHED: TaskStatus[] = ['queued', 'running', 'needs_decision', 'error']
+const UNFINISHED: TaskStatus[] = ['queued', 'running', 'needs_decision', 'error']
 
 export type Todo = {
   id: number
@@ -170,7 +171,6 @@ type Tables = {
 }
 
 const q = queryBuilder<Tables>()
-const now = (): string => new Date().toISOString()
 const ChangeJson = z.record(z.string(), z.tuple([z.unknown(), z.unknown()]))
 
 const REF_NAMES = { t: 'todo', p: 'project', r: 'retrospective' } as const
@@ -187,7 +187,11 @@ export function parseRef(ref: string, prefix: keyof typeof REF_NAMES): number {
 }
 
 // GTD contexts start with `@`; `phone` and `@phone` are the same context.
-const asContext = (c: string): string => (c.startsWith('@') ? c : `@${c}`)
+export const asContext = (c: string): string => (c.startsWith('@') ? c : `@${c}`)
+
+// Text up to its first newline, as it is: a brief or question as a title. view.ts firstLine also
+// trims it and takes out control characters.
+export const firstLineOf = (s: string): string => s.replace(/\n[\s\S]*/, '')
 
 // Reads the tasks and decisions through the ledger and writes only the todo tables, so nothing in
 // the ledger depends on todos.
@@ -419,7 +423,7 @@ export class Todos {
   // their lists, in the project when one is given. The brief's first line is its title.
   delegateNew(task: NewTask, projectId: number | null, actor: string): number {
     return this.db.transaction(() => {
-      const title = task.brief.replace(/\n[\s\S]*/, '')
+      const title = firstLineOf(task.brief)
       const { todo } = this.capture(
         { title, notes: null, source: 'nod', sourceKey: null, url: null, projectId },
         actor,
@@ -457,14 +461,13 @@ export class Todos {
     const todo = this.first(q.selectFrom('todos').selectAll().where('id', '=', n))
     const project = this.first(q.selectFrom('projects').selectAll().where('id', '=', n))
     const { task, retro, decision } = this.ledger.numbered(n)
-    const firstLine = (s: string) => s.replace(/\n[\s\S]*/, '')
     const all: (Found | null)[] = [
       todo && { kind: 'todo', id: n, ref: `t${n}`, title: todo.title, status: todo.status },
       task && {
         kind: 'task',
         id: n,
         ref: `#${n}`,
-        title: firstLine(task.brief),
+        title: firstLineOf(task.brief),
         status: status(task),
         taskId: n,
       },
@@ -472,7 +475,7 @@ export class Todos {
         kind: 'retro',
         id: n,
         ref: `r${n}`,
-        title: `of #${retro.retro.ofTaskId}: ${firstLine(this.ledger.get(retro.retro.ofTaskId).brief)}`,
+        title: `of #${retro.retro.ofTaskId}: ${firstLineOf(this.ledger.get(retro.retro.ofTaskId).brief)}`,
         status: retro.retro.outcome ?? status(retro.task),
         taskId: retro.task.id,
       },
@@ -487,7 +490,7 @@ export class Todos {
         kind: 'decision',
         id: n,
         ref: String(n),
-        title: firstLine(decision.question),
+        title: firstLineOf(decision.question),
         status:
           decision.answer === null ? 'open' : decision.answeredAt === null ? 'closed' : 'answered',
         taskId: decision.taskId,
@@ -568,7 +571,7 @@ export class Todos {
       const back = passed ? t.backTo : null
       const to = back === null ? '' : `, back to task #${back}`
       const line = `${localTime(new Date())} watch ${outcome}${to}: ${watch}`
-      const notes = [t.notes, line].filter((x) => x !== null).join('\n')
+      const notes = withLine(t.notes, line)
       const edit: TodoEdit = back === null ? { status: 'next' } : { waitingOn: null, watch: null }
       this.set(id, { ...edit, notes }, actor)
       return { back }
@@ -1045,9 +1048,19 @@ function projectTitle(title: string): void {
   if (/^p?\d+$/.test(title)) throw new Error(`a project title cannot look like p<n>: ${title}`)
 }
 
-function oneOf(what: string, value: string, allowed: readonly string[]): void {
-  if (!allowed.includes(value)) throw new Error(`a ${what} is one of ${allowed.join(', ')}`)
+// value as one of allowed, which narrows its type; anything else is refused.
+export function oneOf<T extends string>(what: string, value: string, allowed: readonly T[]): T {
+  const found = allowed.find((a) => a === value)
+  if (found === undefined) throw new Error(`a ${what} is one of ${allowed.join(', ')}`)
+  return found
 }
+
+// A field or option given as an empty string clears it; one not given leaves it alone.
+export const cleared = (v: string | undefined): string | null | undefined => (v === '' ? null : v)
+
+// The notes with line added below what they hold.
+export const withLine = (notes: string | null, line: string): string =>
+  [notes, line].filter((x) => x !== null).join('\n')
 
 // Each field the edit sets to a value other than the current one, as [before, after]. Unset
 // (undefined) fields are left out; a field set to null is a change when it was not null.

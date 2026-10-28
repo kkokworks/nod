@@ -27,24 +27,13 @@ import {
 } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { projectFolder } from './projects'
+import { GIT } from './remote'
 
 type Hooks = Record<string, { matcher?: string; hooks: { command: string }[] }[]>
 
 const ENTER = '\r'
 const ESCAPE = '\x1b'
 const DOWN = '\x1b[B'
-// A fixed identity and no hooks, so commits do not depend on this machine's git config.
-const GIT = [
-  'git',
-  '-c',
-  'user.name=nod test',
-  '-c',
-  'user.email=nod-test@example.invalid',
-  '-c',
-  'core.hooksPath=/dev/null',
-  '-c',
-  'commit.gpgsign=false',
-]
 // The options of claude nod passes a value with.
 const VALUED = new Set([
   '--resume',

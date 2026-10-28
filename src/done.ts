@@ -1,4 +1,4 @@
-import { collect, type GcReport, landed } from './gc'
+import { collect, type GcReport, hasRef, landed } from './gc'
 import { FINISHED, type Ledger, type Task } from './ledger'
 import { Terminals } from './tmux'
 import { Todos } from './todos'
@@ -136,7 +136,7 @@ function branchState(task: Task): { own: number; landed: boolean; unpushed: bool
   if (repo === null || branch === null || task.workspace === null) return null
   const ref = `refs/heads/${branch}`
   const git = (...args: string[]) => Bun.spawnSync(['git', '-C', repo, ...args])
-  if (git('rev-parse', '--verify', '-q', ref).exitCode !== 0) return null
+  if (!hasRef(repo, ref)) return null
   const count = (...args: string[]): number => {
     const out = git('rev-list', '--count', ...args)
     if (out.exitCode !== 0) throw new Error(`git rev-list in ${repo}: ${out.stderr.toString()}`)
@@ -151,10 +151,7 @@ function branchState(task: Task): { own: number; landed: boolean; unpushed: bool
   const notTheirs = subject.join(' ').startsWith('branch: Created from') ? [`^${start}`] : []
   const notOnRemotes = count(ref, ...notTheirs, '--not', '--remotes')
   const main = 'refs/remotes/origin/HEAD'
-  const own =
-    git('rev-parse', '--verify', '-q', main).exitCode === 0
-      ? count(`${main}..${ref}`, ...notTheirs)
-      : 0
+  const own = hasRef(repo, main) ? count(`${main}..${ref}`, ...notTheirs) : 0
   const merged = landed(repo, ref)
   return { own, landed: merged, unpushed: notOnRemotes > 0 && !merged }
 }

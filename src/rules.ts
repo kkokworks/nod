@@ -1,4 +1,6 @@
 import type { Ledger, Task } from './ledger'
+import { quote } from './review'
+import { oneLine } from './view'
 
 // Rules every worker gets after the built-in ones, one per line: the ledger's rules that are on.
 // They come from retrospectives the human approved, or from `nod rule add`.
@@ -29,8 +31,7 @@ const NOTE_LIMIT = 400
 // belongs: a fix for nod or for the task's repo or check goes to the person's inbox instead, since
 // a rule could only work around it (two declined rules did, for a nod bug and a sandbox limit).
 export function retroBrief(ledger: Ledger, task: Task, rules: string): string {
-  const note = (s: string | null): string => (s ?? '').replaceAll('\n', ' ').slice(0, NOTE_LIMIT)
-  const quote = (s: string): string[] => s.split('\n').map((line) => `> ${line}`)
+  const note = (s: string | null): string => oneLine(s ?? '', NOTE_LIMIT)
   const turns = ledger.attempts(task.id).map((a) => {
     const check = a.checkResult === null ? '' : ` Check ${a.checkResult}: ${note(a.checkOutput)}`
     return `- ${a.kind}, ${a.outcome ?? 'unfinished'}: ${note(a.summary ?? a.error)}${check}`

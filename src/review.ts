@@ -120,4 +120,4 @@ function work(task: Task, changes: Changes | null): string[] {
   ]
 }
 
-const quote = (s: string): string[] => s.split('\n').map((line) => `> ${line}`)
+export const quote = (s: string): string[] => s.split('\n').map((line) => `> ${line}`)

@@ -233,9 +233,13 @@ async function dropBranch(task: Task): Promise<void> {
   const ref = `refs/heads/${branch}`
   const git = (...args: string[]) => Bun.spawnSync(['git', '-C', repo, ...args])
   // The repo or the branch is gone: nothing to delete.
-  if (git('rev-parse', '--verify', '-q', ref).exitCode !== 0) return
+  if (!hasRef(repo, ref)) return
   if ((await remotesHolding(repo, ref)).length > 0 || landed(repo, ref)) git('branch', '-D', branch)
 }
+
+// Whether ref names something in repo; false once the repo is gone too.
+export const hasRef = (repo: string, ref: string): boolean =>
+  Bun.spawnSync(['git', '-C', repo, 'rev-parse', '--verify', '-q', ref]).exitCode === 0
 
 // The commit a repo task's branch points at, or null without a repo or once the branch is gone.
 function headOf({ repo, branch }: Task): string | null {

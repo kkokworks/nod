@@ -5,9 +5,10 @@
 // Usage: bun scripts/import-mindwtr.ts <tasks.json> <projects.json>
 import { z } from 'zod'
 import { loadConfig } from '../skills/gtd/sources/config'
-import { localDay, REPEATS } from '../src/days'
+import { localDay, localTime, REPEATS } from '../src/days'
 import { Ledger } from '../src/ledger'
 import {
+  asContext,
   PROJECT_STATUSES,
   type Project,
   type ProjectStatus,
@@ -74,8 +75,7 @@ export type Imported = {
 
 // A day, or a time, as it was on this computer; Mindwtr keeps a day alone as `YYYY-MM-DD`.
 const day = (iso: string): string => (iso.length === 10 ? iso : localDay(new Date(iso)))
-const when = (iso: string): string =>
-  iso.length === 10 ? iso : `${day(iso)} ${new Date(iso).toLocaleTimeString('sv-SE').slice(0, 5)}`
+const when = (iso: string): string => (iso.length === 10 ? iso : localTime(new Date(iso)))
 
 // Mindwtr's archive holds both done and cancelled todos; deleted ones are not brought.
 function statusOf(t: Task): { status: TodoStatus; at: string } {
@@ -189,7 +189,7 @@ export function mapMindwtr(rawTasks: unknown, rawProjects: unknown, tools: Tools
         notes: notesOf(t, waitingOn),
         status,
         project: t.projectId ?? null,
-        context: context === null || context.startsWith('@') ? context : `@${context}`,
+        context: context === null ? null : asContext(context),
         waitingOn,
         due: t.dueDate === undefined ? null : when(t.dueDate),
         scheduled: null,
