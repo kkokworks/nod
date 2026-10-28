@@ -4,12 +4,9 @@
   "type": "module",
   "scripts": {
     "tauri": "tauri",
-    "build": "tauri build",
-    "vendor": "mkdir -p src/vendor && cp node_modules/@xterm/xterm/lib/xterm.mjs node_modules/@xterm/xterm/css/xterm.css node_modules/@xterm/addon-fit/lib/addon-fit.mjs src/vendor/"
+    "build": "tauri build"
   },
   "devDependencies": {
-    "@tauri-apps/cli": "^2",
-    "@xterm/addon-fit": "^0.11.0",
-    "@xterm/xterm": "^6.0.0"
+    "@tauri-apps/cli": "^2"
   }
 }

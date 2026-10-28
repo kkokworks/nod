@@ -18,7 +18,6 @@ import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as SomedayRouteImport } from './routes/someday'
 import { Route as WaitingRouteImport } from './routes/waiting'
 import { Route as TasksIdRouteImport } from './routes/tasks.$id'
-import { Route as TerminalIdRouteImport } from './routes/terminal.$id'
 import { Route as TodosIdRouteImport } from './routes/todos_.$id'
 
 const IndexRoute = IndexRouteImport.update({
@@ -66,11 +65,6 @@ const TasksIdRoute = TasksIdRouteImport.update({
   path: '/tasks/$id',
   getParentRoute: () => rootRouteImport,
 } as any)
-const TerminalIdRoute = TerminalIdRouteImport.update({
-  id: '/terminal/$id',
-  path: '/terminal/$id',
-  getParentRoute: () => rootRouteImport,
-} as any)
 const TodosIdRoute = TodosIdRouteImport.update({
   id: '/todos_/$id',
   path: '/todos/$id',
@@ -87,7 +81,6 @@ export interface FileRoutesByFullPath {
   '/someday': typeof SomedayRoute
   '/waiting': typeof WaitingRoute
   '/tasks/$id': typeof TasksIdRoute
-  '/terminal/$id': typeof TerminalIdRoute
   '/todos/$id': typeof TodosIdRoute
 }
 export interface FileRoutesByTo {
@@ -100,7 +93,6 @@ export interface FileRoutesByTo {
   '/someday': typeof SomedayRoute
   '/waiting': typeof WaitingRoute
   '/tasks/$id': typeof TasksIdRoute
-  '/terminal/$id': typeof TerminalIdRoute
   '/todos/$id': typeof TodosIdRoute
 }
 export interface FileRoutesById {
@@ -114,7 +106,6 @@ export interface FileRoutesById {
   '/someday': typeof SomedayRoute
   '/waiting': typeof WaitingRoute
   '/tasks/$id': typeof TasksIdRoute
-  '/terminal/$id': typeof TerminalIdRoute
   '/todos_/$id': typeof TodosIdRoute
 }
 export interface FileRouteTypes {
@@ -129,7 +120,6 @@ export interface FileRouteTypes {
     | '/someday'
     | '/waiting'
     | '/tasks/$id'
-    | '/terminal/$id'
     | '/todos/$id'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -142,7 +132,6 @@ export interface FileRouteTypes {
     | '/someday'
     | '/waiting'
     | '/tasks/$id'
-    | '/terminal/$id'
     | '/todos/$id'
   id:
     | '__root__'
@@ -155,7 +144,6 @@ export interface FileRouteTypes {
     | '/someday'
     | '/waiting'
     | '/tasks/$id'
-    | '/terminal/$id'
     | '/todos_/$id'
   fileRoutesById: FileRoutesById
 }
@@ -169,7 +157,6 @@ export interface RootRouteChildren {
   SomedayRoute: typeof SomedayRoute
   WaitingRoute: typeof WaitingRoute
   TasksIdRoute: typeof TasksIdRoute
-  TerminalIdRoute: typeof TerminalIdRoute
   TodosIdRoute: typeof TodosIdRoute
 }
 
@@ -238,13 +225,6 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof TasksIdRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/terminal/$id': {
-      id: '/terminal/$id'
-      path: '/terminal/$id'
-      fullPath: '/terminal/$id'
-      preLoaderRoute: typeof TerminalIdRouteImport
-      parentRoute: typeof rootRouteImport
-    }
     '/todos_/$id': {
       id: '/todos_/$id'
       path: '/todos/$id'
@@ -265,7 +245,6 @@ const rootRouteChildren: RootRouteChildren = {
   SomedayRoute: SomedayRoute,
   WaitingRoute: WaitingRoute,
   TasksIdRoute: TasksIdRoute,
-  TerminalIdRoute: TerminalIdRoute,
   TodosIdRoute: TodosIdRoute,
 }
 export const routeTree = rootRouteImport

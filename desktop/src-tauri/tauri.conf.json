@@ -4,9 +4,7 @@
   "version": "0.1.0",
   "identifier": "io.github.kkokworks.nod",
   "build": {
-    "frontendDist": "../src",
-    "beforeDevCommand": "bun run vendor",
-    "beforeBuildCommand": "bun run vendor"
+    "frontendDist": "../src"
   },
   "app": {
     "withGlobalTauri": true,

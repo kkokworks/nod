@@ -5,16 +5,8 @@ import type { Decision } from '../../../src/ledger'
 import { int } from '../input'
 import type { Message } from '../nod.server'
 import { detail, send } from '../nod.server'
-import {
-  DecisionCard,
-  duration,
-  localTime,
-  Markdown,
-  Screen,
-  Status,
-  statusClass,
-  Url,
-} from '../parts'
+import { DecisionCard, duration, localTime, Markdown, Status, statusClass, Url } from '../parts'
+import { Screen } from '../terminal'
 
 const getDetail = createServerFn({ method: 'GET' })
   .validator((id: number) => int(id, 'task id'))
@@ -232,13 +224,7 @@ function TaskPage() {
                 ))}
             </div>
           ) : (
-            <Screen id={task.id} screen={screen}>
-              {/* A document load, not the router's: the desktop app sees it and opens the
-                  worker's terminal in a window of its own, where the main window stays. */}
-              <Link to="/terminal/$id" params={{ id: String(task.id) }} reloadDocument>
-                Terminal
-              </Link>
-            </Screen>
+            <Screen id={task.id} screen={screen} />
           )}
           {/* Keyed, as moving to another task keeps this page: what was written does not go along. */}
           {canSend && (
@@ -250,7 +236,7 @@ function TaskPage() {
           )}
           {screen !== null && (
             <p className="muted small">
-              or in a terminal: <code>nod attach {task.id}</code>
+              Click the screen to type into it, or in a terminal: <code>nod attach {task.id}</code>
             </p>
           )}
         </aside>

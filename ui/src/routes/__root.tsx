@@ -7,6 +7,7 @@ import {
   useRouter,
 } from '@tanstack/react-router'
 import { createServerFn } from '@tanstack/react-start'
+import xtermCss from '@xterm/xterm/css/xterm.css?url'
 import { type ReactNode, type Ref, useEffect, useRef } from 'react'
 import { bindKeys, ignoreOnPage, KEYS } from '../keys'
 import { type Overview, overview } from '../nod.server'
@@ -29,6 +30,8 @@ export const Route = createRootRoute({
     ],
     links: [
       { rel: 'stylesheet', href: css },
+      // For the worker's terminal on a task page (terminal.tsx).
+      { rel: 'stylesheet', href: xtermCss },
       // The SVG follows the system's light or dark; the PNG is for browsers without SVG icons.
       { rel: 'icon', href: '/favicon.svg', type: 'image/svg+xml' },
       { rel: 'icon', href: '/favicon.png', type: 'image/png', sizes: '64x64' },

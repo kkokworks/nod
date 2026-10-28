@@ -1,6 +1,0 @@
-{
-  "identifier": "terminal",
-  "description": "A terminal window runs tmux attached to its task's worker in a PTY, and types into it. Only the app's own page (terminal.html) in a terminal window gets it; the UI server's pages get no capability.",
-  "windows": ["terminal-*"],
-  "permissions": ["allow-pty-open", "allow-pty-write", "allow-pty-resize"]
-}

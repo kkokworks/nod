@@ -7,6 +7,30 @@ import { tempDirs } from '../../test/tmp'
 GlobalRegistrator.register()
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 
+// The sockets a worker's live screen opens (terminal.tsx), connected to nothing: the server's side
+// has tests of its own (terminal.server.test.ts).
+class Socket {
+  static readonly OPEN = 1
+  static made: Socket[] = []
+  readyState = 0
+  binaryType = 'blob'
+  sent: unknown[] = []
+  onmessage: ((e: { data: ArrayBuffer }) => void) | null = null
+  onclose: (() => void) | null = null
+  constructor(readonly url: string) {
+    Socket.made.push(this)
+  }
+  send(data: string) {
+    this.sent.push(JSON.parse(data))
+  }
+  close() {
+    this.readyState = 3
+  }
+}
+Object.assign(globalThis, { WebSocket: Socket })
+// Loaded once here, so the screen's own import of them is done by the time a page settles.
+await Promise.all([import('@xterm/xterm'), import('@xterm/addon-fit')])
+
 // What a GET answers, what a POST does to it, and the POSTs sent. Bun keeps a module mock for the
 // rest of the run, which can't be undone, so no other test file may import the server functions.
 let answer: (data: unknown) => unknown = () => undefined
@@ -39,7 +63,6 @@ const { act } = await import('react')
 const { createRoot } = await import('react-dom/client')
 const R = await import('@tanstack/react-router')
 const tasks = await import('./routes/tasks.$id')
-const terminal = await import('./routes/terminal.$id')
 const todos = await import('./routes/todos_.$id')
 const { TodoRow } = await import('./todo-parts')
 const { Search } = await import('./search')
@@ -77,11 +100,6 @@ const router = R.createRouter({
     tasks.Route.update({
       id: '/tasks/$id',
       path: '/tasks/$id',
-      getParentRoute: () => root,
-    } as never),
-    terminal.Route.update({
-      id: '/terminal/$id',
-      path: '/terminal/$id',
       getParentRoute: () => root,
     } as never),
     todos.Route.update({
@@ -219,36 +237,70 @@ const detail = (id: number) => ({
   root: null,
 })
 
+test("a live worker's screen attaches to its session, takes keys, and lets go when the page moves on or the session ends", async () => {
+  answer = (id) => detail(id as number)
+  Socket.made.length = 0
+  await go('/tasks/20')
+  const [socket] = Socket.made
+  expect(socket?.url).toMatch(/^ws:\/\/[^/]*\/terminal\/20\?cols=\d+&rows=\d+$/)
+  if (socket === undefined) return
+  // The screen as it was shows until the first bytes come.
+  const shown = () => !field('.term-box .screen').hidden
+  expect(shown()).toBe(true)
+  socket.readyState = Socket.OPEN
+  act(() => socket.onmessage?.({ data: new TextEncoder().encode('live').buffer }))
+  expect(shown()).toBe(false)
+  // As a key typed into xterm.js's field comes.
+  act(() => {
+    field('.xterm-helper-textarea').dispatchEvent(
+      new InputEvent('input', { data: 'y', inputType: 'insertText', bubbles: true }),
+    )
+  })
+  expect(socket.sent).toContainEqual(['in', 'y'])
+  // The page's reload keeps it attached.
+  await reload()
+  expect(Socket.made).toEqual([socket])
+
+  await go('/tasks/21')
+  expect(socket.readyState).toBe(3)
+  const next = Socket.made[1]
+  expect(next?.url).toContain('/terminal/21?')
+  answer = (id) => ({ ...detail(id as number), screen: null })
+  await reload()
+  expect(next?.readyState).toBe(3)
+  expect(document.querySelector('.term')).toBeNull()
+})
+
 test('what is written to one task does not go to another', async () => {
   answer = (id) => detail(id as number)
   await go('/tasks/3')
-  type(field('textarea'), 'for three')
+  type(field('.composer textarea'), 'for three')
   await go('/tasks/4')
-  expect(field<HTMLTextAreaElement>('textarea').value).toBe('')
-  type(field('textarea'), 'for four')
-  await submit('textarea')
+  expect(field<HTMLTextAreaElement>('.composer textarea').value).toBe('')
+  type(field('.composer textarea'), 'for four')
+  await submit('.composer textarea')
   expect(posted.splice(0)).toEqual([{ taskId: 4, decisionId: null, text: 'for four' }])
 })
 
 test('a message does not answer a decision that opened while it was written', async () => {
   answer = (id) => detail(id as number)
   await go('/tasks/4')
-  type(field('textarea'), 'carry on')
+  type(field('.composer textarea'), 'carry on')
   open[4] = { id: 7, reason: 'question' }
   await reload()
-  await submit('textarea')
+  await submit('.composer textarea')
   expect(posted).toEqual([])
   expect(banners().join()).toContain('#7')
-  expect(field<HTMLTextAreaElement>('textarea').value).toBe('carry on')
+  expect(field<HTMLTextAreaElement>('.composer textarea').value).toBe('carry on')
   // Sent again, having seen it, it answers the decision.
-  await submit('textarea')
+  await submit('.composer textarea')
   expect(posted.splice(0)).toEqual([{ taskId: 4, decisionId: 7, text: 'carry on' }])
 
   // And an answer to a decision that closed meanwhile does not become a message.
-  type(field('textarea'), 'use the first')
+  type(field('.composer textarea'), 'use the first')
   open[4] = undefined
   await reload()
-  await submit('textarea')
+  await submit('.composer textarea')
   expect(posted).toEqual([])
   expect(banners().join()).toContain('#7')
 })
@@ -256,7 +308,7 @@ test('a message does not answer a decision that opened while it was written', as
 test('answering with a button keeps what was being written', async () => {
   answer = (id) => detail(id as number)
   await go('/tasks/5')
-  type(field('textarea'), 'half a thought')
+  type(field('.composer textarea'), 'half a thought')
   open[5] = { id: 8, reason: 'permission' }
   onPost = () => {
     open[5] = undefined
@@ -265,16 +317,16 @@ test('answering with a button keeps what was being written', async () => {
   setSystemTime(new Date(Date.now() + 1500))
   await click('Yes')
   expect(posted.splice(0)).toEqual([{ taskId: 5, decisionId: 8, text: 'yes' }])
-  expect(field<HTMLTextAreaElement>('textarea').value).toBe('half a thought')
+  expect(field<HTMLTextAreaElement>('.composer textarea').value).toBe('half a thought')
 })
 
 test('⌘↵ pressed again before the message is through sends it once', async () => {
   answer = (id) => detail(id as number)
   await go('/tasks/7')
-  type(field('textarea'), 'hi')
+  type(field('.composer textarea'), 'hi')
   const send = () =>
     act(() => {
-      field('textarea').dispatchEvent(
+      field('.composer textarea').dispatchEvent(
         new KeyboardEvent('keydown', { key: 'Enter', metaKey: true, bubbles: true }),
       )
     })
@@ -348,27 +400,6 @@ test('a task that failed before it started has no box to message it, having no c
   await go('/tasks/11')
   expect(document.querySelector('textarea')).toBeNull()
   expect(document.querySelector('.idle-note')).toBeNull()
-})
-
-test("a live worker's terminal is a link from its task, which a browser shows as the screen now", async () => {
-  answer = (id) => detail(id as number)
-  await go('/tasks/12')
-  const link = document.querySelector('.window-bar a')
-  expect(link?.textContent).toBe('Terminal')
-  expect(link?.getAttribute('href')).toBe('/terminal/12')
-
-  await go('/terminal/12')
-  expect(document.querySelector('.layout .page h1')?.textContent).toBe('Terminal')
-  expect(document.querySelector('.screen')?.textContent).toBe('working')
-  expect(document.querySelector('.crumbs a')?.getAttribute('href')).toBe('/tasks/12')
-  expect(document.querySelector('.subtitle')?.textContent).toContain('nod attach 12')
-  // The page does not link to itself.
-  expect(document.querySelector('.window-bar a')).toBeNull()
-
-  answer = (id) => ({ ...detail(id as number), screen: null })
-  await reload()
-  expect(document.querySelector('.screen')).toBeNull()
-  expect(document.querySelector('.idle-note')?.textContent).toContain('No live session')
 })
 
 test('a change to the todo keeps what is being typed in the form and says so', async () => {
@@ -580,8 +611,6 @@ test('a task or todo that is not there, an unknown page and a page that fails sh
     '/tasks/abc',
     '/todos/1.5',
     '/tasks/1e3',
-    '/terminal/999999',
-    '/terminal/abc',
   ]
   for (const href of hrefs) {
     await go(href)

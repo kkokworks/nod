@@ -1,10 +1,7 @@
 // nod's desktop app: a window onto the UI server (ui/, which a login agent keeps up apart from
 // the app), a menu bar icon, and global shortcuts that call the window or capture a todo from any
 // app. The UI's pages call nothing here: shortcuts, menus and windows are handled on this side,
-// and pages change by the app setting the main window's address. A link to a worker's terminal
-// opens it in a window of its own (terminal.rs).
-
-mod terminal;
+// and pages change by the app setting the main window's address.
 
 use std::io::ErrorKind;
 use std::net::TcpStream;
@@ -28,7 +25,7 @@ use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 const SERVER: &str = "127.0.0.1:4800";
 
 // The login agent desktop/launchd/ui.sh installs for the UI server, under the home folder, and
-// the variables nod gets from its environment only, unset when it has none.
+// the variables of its environment that `nod in` takes too.
 const AGENT: &str = "Library/LaunchAgents/io.github.kkokworks.nod.ui.plist";
 const AGENT_ENV: [&str; 3] = ["PATH", "NOD_HOME", "CLAUDE_CONFIG_DIR"];
 
@@ -66,15 +63,11 @@ fn main() {
         .menu(app_menu)
         .on_menu_event(on_menu)
         .on_window_event(|window, event| match event {
-            // Closing only hides: the app stays in the menu bar, and the window keeps its page. A
-            // terminal window closes, which ends its PTY.
-            WindowEvent::CloseRequested { api, .. }
-                if terminal::task_of(window.label()).is_none() =>
-            {
+            // Closing only hides: the app stays in the menu bar, and the window keeps its page.
+            WindowEvent::CloseRequested { api, .. } => {
                 api.prevent_close();
                 put_away(window.app_handle(), window.label());
             }
-            WindowEvent::Destroyed => terminal::closed(window.label()),
             // Like Spotlight, the capture window goes away once the person turns elsewhere.
             WindowEvent::Focused(false)
                 if window.label() == "capture" && !CAPTURING.load(Ordering::Relaxed) =>
@@ -83,29 +76,14 @@ fn main() {
             }
             _ => {}
         })
-        .invoke_handler(tauri::generate_handler![
-            capture,
-            dismiss,
-            retry,
-            terminal::pty_open,
-            terminal::pty_write,
-            terminal::pty_resize
-        ])
+        .invoke_handler(tauri::generate_handler![capture, dismiss, retry])
         .setup(|app| {
             let handle = app.handle().clone();
             let dev_url = handle.config().build.dev_url.clone();
-            let opener = handle.clone();
             WebviewWindowBuilder::new(app, "main", WebviewUrl::External(page(&handle, "/")))
                 .title("nod")
                 .inner_size(1200.0, 800.0)
                 .on_navigation(move |url| {
-                    // A worker's terminal opens in a window of its own, and this one stays. On a
-                    // thread of its own, as WebKit waits on this callback.
-                    if let Some(task) = terminal::task_at(url) {
-                        let app = opener.clone();
-                        std::thread::spawn(move || terminal::open(&app, task));
-                        return false;
-                    }
                     // Links out of the UI (a pull request, a doc, mailto:) open outside instead.
                     let shown = in_window(url, dev_url.as_ref());
                     if !shown {
@@ -154,15 +132,11 @@ async fn capture(app: AppHandle, text: String) -> Result<(), String> {
 }
 
 fn nod_in(app: &AppHandle, text: &str) -> Result<(), String> {
-    nod(app, &["in", "--", text.trim()]).map(|_| ())
-}
-
-// Runs nod in the UI server's environment, as the person at the desktop, and gives what it printed.
-fn nod(app: &AppHandle, args: &[&str]) -> Result<String, String> {
+    let env = agent_env(app)?;
     let mut nod = Command::new("nod");
-    nod.args(args).env("NOD_ACTOR", "human:desktop").stdin(Stdio::null());
-    for (name, value) in agent_vars(app)? {
-        match value {
+    nod.args(["in", "--", text.trim()]).env("NOD_ACTOR", "human:desktop").stdin(Stdio::null());
+    for name in AGENT_ENV {
+        match env.get(name).and_then(Value::as_str) {
             Some(value) => nod.env(name, value),
             None => nod.env_remove(name),
         };
@@ -173,27 +147,9 @@ fn nod(app: &AppHandle, args: &[&str]) -> Result<String, String> {
     })?;
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
-        return Err(format!(
-            "nod {} 명령이 실패했습니다({}): {}",
-            args[0],
-            out.status,
-            failure(&stderr)
-        ));
+        return Err(format!("nod in 이 실패했습니다({}): {}", out.status, failure(&stderr)));
     }
-    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
-}
-
-// The UI server's environment, to set over the app's own: each variable the login agent has, and
-// None for each of AGENT_ENV it has not, to unset. Among them the PATH nod is on, its home, and
-// where the workers' tmux server is (TMUX_TMPDIR).
-fn agent_vars(app: &AppHandle) -> Result<Vec<(String, Option<String>)>, String> {
-    let env = agent_env(app)?;
-    let unset = AGENT_ENV.iter().filter(|name| !env.contains_key(**name));
-    Ok(env
-        .iter()
-        .map(|(name, value)| (name.clone(), value.as_str().map(String::from)))
-        .chain(unset.map(|name| (name.to_string(), None)))
-        .collect())
+    Ok(())
 }
 
 // What went wrong, from a failed command's stderr. bun puts an uncaught error's message (`error:
@@ -228,7 +184,7 @@ async fn retry(window: WebviewWindow, path: String) -> Result<(), String> {
 
 // The UI server's environment, as the login agent gives it. An app opened from the Finder has
 // launchd's bare PATH and no NOD_HOME, while the agent has those of the shell that installed it.
-// Read each time nod runs, so installing the agent again needs no restart.
+// Read on each capture, so installing the agent again needs no restart.
 fn agent_env(app: &AppHandle) -> Result<Map<String, Value>, String> {
     let plist = app.path().home_dir().map_err(|e| e.to_string())?.join(AGENT);
     if !plist.exists() {
@@ -509,12 +465,8 @@ fn on_menu(app: &AppHandle, event: MenuEvent) {
         "capture" => open_capture(app),
         "close" => {
             let focused = app.webview_windows().into_values().find(|w| w.is_focused().unwrap_or(false));
-            match focused {
-                Some(window) if terminal::task_of(window.label()).is_some() => {
-                    let _ = window.close();
-                }
-                Some(window) => put_away(app, window.label()),
-                None => {}
+            if let Some(window) = focused {
+                put_away(app, window.label());
             }
         }
         "reload" => reload(app),

@@ -23,7 +23,7 @@ import {
   type Trigger,
 } from './ledger'
 import { pullRequests } from './prs'
-import { quote, Terminals } from './tmux'
+import { Terminals } from './tmux'
 import {
   actorFromEnv,
   capture,
@@ -133,9 +133,7 @@ const USAGE = `usage:
   nod resume <task>                reopen a task whose session ended, from its transcript; one that
                                    failed before its worker started starts again under the same
                                    number and branch, once you fixed what stopped it
-  nod attach [--print] <task>      open the worker's terminal (tmux); --print: print the command
-                                   that opens it instead, quoted for sh, for a program that runs
-                                   it in a terminal of its own (the desktop app)
+  nod attach <task>                open the worker's terminal (tmux)
   nod peek <task>                  print what the worker's terminal shows right now
   nod watch [--issue <key,...>] [--mine]
                                    print decisions as they open and, each time a task ends
@@ -331,15 +329,9 @@ switch (command) {
   case 'resume':
     console.log(await resume(ledger, home, taskRef(rest[0])))
     break
-  case 'attach': {
-    const { values, positionals } = parseArgs({
-      args: rest,
-      options: { print: { type: 'boolean' } },
-      allowPositionals: true,
-    })
-    attach(taskRef(positionals[0]), values.print ?? false)
+  case 'attach':
+    attach(taskRef(rest[0]))
     break
-  }
   case 'open':
     open(rest)
     break
@@ -868,18 +860,11 @@ async function permissionHook(): Promise<never> {
   process.exit(0)
 }
 
-// With `print`, the command is printed for another program to run, so the names of the socket and
-// the session stay nod's to make.
-function attach(taskId: number, print: boolean): void {
+function attach(taskId: number): void {
   if (!terminals.alive(sessionName(taskId))) throw noTerminal(taskId)
-  const argv = terminals.attachCommand(sessionName(taskId))
-  if (print) {
-    console.log(argv.map(quote).join(' '))
-    return
-  }
   // Unset TMUX so this also works from inside another tmux session.
   const { TMUX: _outer, ...env } = process.env
-  const result = Bun.spawnSync(argv, {
+  const result = Bun.spawnSync(terminals.attachCommand(sessionName(taskId)), {
     stdio: ['inherit', 'inherit', 'inherit'],
     env,
   })

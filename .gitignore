@@ -9,8 +9,6 @@ node_modules/
 # ui's build, which `bun run start` serves, and the one desktop/launchd/ui.sh makes beside it
 ui/dist/
 ui/dist.next/
-# xterm.js, which `bun run vendor` copies from desktop/node_modules for the app's terminal page
-desktop/src/vendor/
 # The desktop app's Rust build, and the schemas and command permissions tauri-build writes
 desktop/src-tauri/target/
 desktop/src-tauri/gen/
