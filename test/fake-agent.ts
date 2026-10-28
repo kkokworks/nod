@@ -233,11 +233,14 @@ async function turn(message: string, continuing: boolean): Promise<void> {
   } else if (head.includes('need-permission') && (await allowedByHook(head))) {
     reply = 'NOD: done | allowed by a hook'
   } else if (head.includes('need-permission')) {
-    await runHooks('Notification', {
-      session_id: sessionId,
-      notification_type: 'permission_prompt',
-      message: 'Claude needs your permission',
-    })
+    // Like Claude Code, only for a dialog still shown: one answered already notifies no one.
+    if (inputs.length === 0) {
+      await runHooks('Notification', {
+        session_id: sessionId,
+        notification_type: 'permission_prompt',
+        message: 'Claude needs your permission',
+      })
+    }
     // Like Claude Code: Escape denies and ends the turn on the spot, with no Stop hook.
     if ((await nextInput()) !== ENTER) {
       console.log('Interrupted · What should Claude do instead?')

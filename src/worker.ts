@@ -17,6 +17,7 @@ import { homedir, tmpdir } from 'node:os'
 import { basename, join, resolve } from 'node:path'
 import { z } from 'zod'
 import { accountChanged, accountRule, configDir } from './account'
+import type { PermissionEvent } from './allow'
 import { onlyCopy } from './gc'
 import {
   type Attempt,
@@ -230,6 +231,10 @@ const STOPPED_TURN = 'the person stopped it (Escape)'
 const HELD_BACK = 'a hook held the message back'
 // What a decision a turn showed gets once that turn is cut off with its terminal or Claude Code.
 const CUT = '(the turn was cut off)'
+// What a permission decision gets once the person stopped its turn with Escape (stoppedDialogs).
+const STOPPED_DIALOG = '(the person stopped its turn)'
+// What a permission decision gets once its turn ended otherwise: its dialog went with the turn.
+const TURN_ENDED = '(its turn ended)'
 
 // ponytail: fixed retry budget; make it per-task if real checks need more.
 const CHECK_RETRIES = 2
@@ -248,9 +253,11 @@ const MAX_TELLS = 4
 // The check and the review both run inside the Stop hook, so the hook outlasts them.
 const REVIEW_TIMEOUT_MS = 600_000
 const STOP_HOOK_TIMEOUT_SECS = 1800
-// Opening the ledger (its busy_timeout, 5 s) and a send (inbox.ts, 5 s), with room to spare; for the
-// permission hook too, which sends what it allowed.
+// Opening the ledger (its busy_timeout, 5 s) and a send (inbox.ts, 5 s), with room to spare.
 const INBOX_HOOK_SECS = 15
+// The permission hook sends what it allowed, or opens a decision, which also runs <home>/notify
+// (10 s). The dialog shows while it runs, so its time holds up no one.
+const PERMISSION_HOOK_SECS = 30
 // What `claude -p` prints first when a hook blocks the message it was given (2.1.310).
 const BLOCKED = 'UserPromptSubmit operation blocked by hook:'
 const TRUST_TIMEOUT_MS = 20_000
@@ -538,7 +545,8 @@ export async function answer(
     return true
   }
   // Escape answers no, but also ends the turn without a Stop hook (measured on 2.1.290), so close
-  // the attempt here and tell the worker in a new turn.
+  // the attempt here and tell the worker in a new turn. The turn's other dialogs go with it: tools
+  // that ran at once queue a dialog each, each its decision (onPermissionAsk).
   terminals.keys(name, 'Escape')
   await waitForScreen(terminals, name, 'Interrupted')
   ledger.endAttempt(decision.attemptId, {
@@ -546,6 +554,9 @@ export async function answer(
     summary: 'permission denied',
     report: null,
   })
+  const ofTurn = (d: Decision) => d.reason === 'permission' && d.attemptId === decision.attemptId
+  const gone = closeDecisions(ledger, decision.taskId, ofTurn, TURN_ENDED)
+  await announce(home, ledger.get(decision.taskId), gone, TURN_ENDED)
   await reply(`Human decision: permission denied. ${text}`)
   return true
 }
@@ -949,8 +960,42 @@ function forgetHeldBack(ledger: Ledger, home: string, open: Attempt): void {
   else ledger.forgetMessage(last.id)
 }
 
-// Called by the Notification hook. A permission prompt pauses the worker mid-turn, so it becomes a
-// decision; the other notifications need nothing from nod.
+// Called by the PermissionRequest hook for a prompt nod does not allow itself (allow.ts). A permission
+// prompt pauses the worker mid-turn, so it becomes a decision. Claude Code runs the hook as it shows
+// the dialog (2.1.310's binary), some 6 s before the dialog's Notification, so the decision opens
+// here: from then on deliver sends no message into the turn, whose Enter would answer the dialog.
+// Each dialog opens its own, as each Notification did. The dialog may not be on the screen yet, so
+// the question gives what the worker asked for. The decision goes in before what the turn's start
+// closed is told, which may take a while (notify). Not a subagent's: a background one's runs this
+// hook too, then is denied with no dialog (2.1.310's binary), so its decision waits for the
+// Notification, which comes only for a dialog shown, as before.
+// ponytail: beside the dialog, not before it: while the hook starts (Bun, the ledger), a message
+// can still go in; only Claude Code could close that. A foreground subagent's dialog keeps the 6 s
+// to its Notification; the hook cannot tell it from a background one's.
+export async function onPermissionAsk(
+  ledger: Ledger,
+  home: string,
+  event: z.infer<typeof PermissionEvent>,
+): Promise<void> {
+  if (event.agent_id !== undefined) return
+  const taskId = ledger.taskOfSession(event.session_id)
+  if (taskId === null) return
+  const turn = currentTurn(ledger, taskId, event.session_id)
+  const { command } = event.tool_input
+  const asked = typeof command === 'string' ? command : JSON.stringify(event.tool_input)
+  await decide(
+    ledger,
+    home,
+    taskId,
+    turn.id,
+    'permission',
+    `Claude needs your permission to use ${event.tool_name}. Answer yes to allow; anything else denies.\n${asked.slice(0, QUESTION_LIMIT)}`,
+  )
+  await announce(home, ledger.get(taskId), turn.closed, WENT_ON)
+}
+
+// Called by the Notification hook: a permission prompt still shown after some 6 s. The other
+// notifications need nothing from nod.
 export async function onNotification(
   ledger: Ledger,
   home: string,
@@ -960,6 +1005,10 @@ export async function onNotification(
   const taskId = ledger.taskOfSession(event.session_id)
   if (taskId === null) return
   const attemptId = await currentAttempt(ledger, home, taskId, event.session_id)
+  // The PermissionRequest hook opened the dialog's decision as it showed (onPermissionAsk). One
+  // Claude Code runs no hook for, a prompt only a person may answer (2.1.310), or whose hook
+  // failed, opens here.
+  if (asking(ledger, taskId, attemptId) !== undefined) return
   const screen = Terminals.of(home).screen(sessionName(taskId))
   const prompt = screen.trimEnd().split('\n').slice(-15).join('\n')
   await decide(
@@ -1037,14 +1086,13 @@ async function settle(
   // A permission dialog of this turn went with it: one a person answered in the worker's own
   // terminal waits on nothing.
   // And a turn that ran got past the trust dialog: one a person answered there waits on nothing.
-  const gone = '(its turn ended)'
   const past = '(it got past the trust dialog)'
   const dialogs = async (): Promise<void> => {
     const ofTurn = (d: Decision): boolean => d.reason === 'permission' && d.attemptId === attemptId
-    const closed = closeDecisions(ledger, task.id, ofTurn, gone)
+    const closed = closeDecisions(ledger, task.id, ofTurn, TURN_ENDED)
     const trusted = closeDecisions(ledger, task.id, (d) => d.reason === 'trust', past)
     goesOn(ledger, task.id, [...closed, ...trusted])
-    await announce(home, task, closed, gone)
+    await announce(home, task, closed, TURN_ENDED)
     await announce(home, task, trusted, past)
   }
   if (!done) {
@@ -1357,16 +1405,26 @@ async function currentAttempt(
   taskId: number,
   sessionId: string,
 ): Promise<number> {
+  const turn = currentTurn(ledger, taskId, sessionId)
+  await announce(home, ledger.get(taskId), turn.closed, WENT_ON)
+  return turn.id
+}
+
+// currentAttempt's turn, in the ledger only, with what it closed, for the caller to announce.
+function currentTurn(
+  ledger: Ledger,
+  taskId: number,
+  sessionId: string,
+): { id: number; closed: Decision[] } {
   const turn = openTurn(ledger, taskId, sessionId)
   // A turn nod sent closed these as it started (deliver). One the prompt hook opened leaves them
   // to here, the turn's end as before it was opened at its start, so a turn the person stops
   // (Escape, no Stop) leaves the question open and the task waiting on it.
-  if (!typedHere(turn.prompt)) return turn.id
+  if (!typedHere(turn.prompt)) return { id: turn.id, closed: [] }
   const asked = (d: Decision) => ASKED.includes(d.reason) && d.attemptId !== turn.id
   const closed = closeDecisions(ledger, taskId, asked, WENT_ON)
   goesOn(ledger, taskId, closed)
-  await announce(home, ledger.get(taskId), closed, WENT_ON)
-  return turn.id
+  return { id: turn.id, closed }
 }
 
 // The task's open turn, or one opened as a turn nod did not send, with `prompt`. In one transaction
@@ -1441,6 +1499,24 @@ function transcriptTail(ledger: Ledger, home: string, open: Attempt): string[] {
     console.error(`nod: could not read the transcript of task ${open.taskId}: ${message(error)}`)
     return []
   }
+}
+
+// Closes the permission decisions of the open turn once its transcript shows the person stopped it
+// with Escape: the dialog went with the turn (no Stop, 2.1.290). Since the dialog's decision opens
+// as it shows (onPermissionAsk), one they answered so within seconds is a decision too. Only before
+// a message, which goes on past it at once (deliver): elsewhere the decision stays as before, so a
+// typed turn it closes does not leave its task running with no turn. A transcript that cannot be
+// read leaves it open (transcriptTail).
+// ponytail: reads the transcript's end as endTurnWithoutStop does; a format that changes leaves
+// the decision open, as before.
+function stoppedDialogs(ledger: Ledger, home: string, taskId: number): Decision[] {
+  const open = ledger.openAttempt(taskId)
+  if (open === null || asking(ledger, taskId, open.id) === undefined) return []
+  if (endedWithoutStop(transcriptTail(ledger, home, open)) !== STOPPED_TURN) return []
+  const ofTurn = (d: Decision) => d.reason === 'permission' && d.attemptId === open.id
+  const closed = closeDecisions(ledger, taskId, ofTurn, STOPPED_DIALOG)
+  goesOn(ledger, taskId, closed)
+  return closed
 }
 
 // Where Claude Code keeps the transcript of the task's session `sessionId`: in the account its
@@ -1650,6 +1726,12 @@ function closeDecisions(
     .immediate()
 }
 
+// The turn's open permission decision: a dialog of that turn that may be on the screen.
+const asking = (ledger: Ledger, taskId: number, attemptId: number): Decision | undefined =>
+  ledger
+    .decisions(taskId)
+    .find((d) => d.answer === null && d.reason === 'permission' && d.attemptId === attemptId)
+
 // A task that ended for good: dropped, or a retrospective that has its outcome. A turn that ends
 // after (one its Stop hook still checked as it was dropped, or one typed into its terminal) is only
 // recorded, and changes nothing else.
@@ -1702,8 +1784,10 @@ async function deliver(
   from: number | null = null,
 ): Promise<void> {
   // A turn the person stopped takes no message: the message starts a turn of its own.
+  const stopped = stoppedDialogs(ledger, home, taskId)
   endTurnWithoutStop(ledger, home, taskId)
   const task = ledger.get(taskId)
+  await announce(home, task, stopped, STOPPED_DIALOG)
   const last = ledger.lastAttempt(taskId)
   const workspace = task.workspace
   if (last === null || workspace === null) throw notStarted(ledger, task)
@@ -1790,12 +1874,10 @@ async function deliver(
   // ledger keeps it with that turn, for the reviewer. Its Enter would answer a permission dialog
   // that turn shows, so that is answered first.
   if (!turn.started) {
-    const asking = ledger
-      .decisions(taskId)
-      .find((d) => d.answer === null && d.reason === 'permission' && d.attemptId === turn.attemptId)
-    if (asking !== undefined && !restarting) {
+    const dialog = asking(ledger, taskId, turn.attemptId)
+    if (dialog !== undefined && !restarting) {
       throw new Error(
-        `answer permission decision #${asking.id} first: Enter would answer its dialog`,
+        `answer permission decision #${dialog.id} first: Enter would answer its dialog`,
       )
     }
     if (restarting) leavePrompt(home, taskId, text)
@@ -2408,12 +2490,12 @@ function workerSettings(started: string | null, sockets: string): string {
         { hooks: [{ type: 'command', command: hook('stop'), timeout: STOP_HOOK_TIMEOUT_SECS }] },
       ],
       Notification: [{ hooks: [{ type: 'command', command: hook('notification') }] }],
-      // Only Bash's prompts: nod allows no other tool (allow.ts). Claude Code shows the prompt while
-      // the hook runs, and the Notification for it comes only after it has waited about 6 s (docs).
+      // Every tool's prompts: nod allows only Bash commands (allow.ts), and any prompt it does not
+      // becomes a decision here (onPermissionAsk). Claude Code shows the prompt while the hook runs,
+      // and the Notification for it comes only after it has waited about 6 s (docs).
       PermissionRequest: [
         {
-          matcher: 'Bash',
-          hooks: [{ type: 'command', command: hook('permission'), timeout: INBOX_HOOK_SECS }],
+          hooks: [{ type: 'command', command: hook('permission'), timeout: PERMISSION_HOOK_SECS }],
         },
       ],
       StopFailure: [{ hooks: [{ type: 'command', command: hook('stop-failure') }] }],

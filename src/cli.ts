@@ -72,6 +72,7 @@ import {
   NotificationEvent,
   onCompact,
   onNotification,
+  onPermissionAsk,
   onPrompt,
   onStop,
   onStopFailure,
@@ -241,7 +242,8 @@ const USAGE = `usage:
                                    rm -rf of paths holding no uncommitted work in its worktree,
                                    or a package manager adding or removing registry packages.
                                    nod show lists each, and the root session hears of it (nod
-                                   tells a project session; nod watch prints it)
+                                   tells a project session; nod watch prints it). Any other
+                                   prompt becomes a decision as it shows
   nod run <task> <claude...>       what runs in a worker's terminal: keeps its Claude Code running
 
 A <task> is a task's number, t<n> for the latest task doing todo t<n>, or r<n> for the task
@@ -830,10 +832,11 @@ async function inboxHook(): Promise<never> {
 }
 
 // A worker's PermissionRequest hook (allow.ts), the same way: it prints Claude Code's allow only for
-// a command nod allows, and else nothing, so the prompt shows and becomes a decision as before,
-// whatever goes wrong. Claude Code acts on it once the hook exits, so the task's project session
-// hears of it with a short limit: what does not go in time waits for the next send (a tick, an
-// event), and the allow is not held toward the prompt's Notification (about 6 s).
+// a command nod allows, and else nothing, so the prompt shows, whatever goes wrong. One it does not
+// allow becomes a decision here, as it shows (onPermissionAsk); if that fails, the prompt's
+// Notification opens it. Claude Code acts on an allow once the hook exits, so the task's project
+// session hears of it with a short limit: what does not go in time waits for the next send (a tick,
+// an event), and the allow is not held toward the prompt's Notification (about 6 s).
 async function permissionHook(): Promise<never> {
   console.log = console.error
   try {
@@ -842,9 +845,11 @@ async function permissionHook(): Promise<never> {
     if (onPermissionRequest(ledger, event)) {
       await Bun.write(Bun.stdout, `${JSON.stringify(ALLOW)}\n`)
       await sendNotices(ledger, (socket, line) => sendLine(socket, line, ALLOWED_SEND_MS))
+    } else {
+      await onPermissionAsk(ledger, home, event)
     }
   } catch (error) {
-    console.error(`nod: could not judge the permission prompt: ${message(error)}`)
+    console.error(`nod: could not judge or record the permission prompt: ${message(error)}`)
   }
   process.exit(0)
 }

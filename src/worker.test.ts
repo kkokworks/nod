@@ -374,6 +374,8 @@ test('a prompt nod is sure of it allows itself, with no decision, and records it
   const decision = await until(() => ledger.decisions(push)[0])
   expect(decision.reason).toBe('permission')
   expect(ledger.allowed(push)).toEqual([])
+  // The hook opens the decision before it exits, and the fake logs it once it has.
+  await until(() => entries('permission-hook')[1])
   expect(entries('permission-hook').map((e) => [e.command, e.out?.trim()])).toEqual([
     ['rm -rf node_modules', JSON.stringify(ALLOW)],
     ['git push', ''],
