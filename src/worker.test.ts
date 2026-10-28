@@ -2754,7 +2754,10 @@ function upTerminal(id: number): {
       pasted.push(text)
     }),
   ]
-  return { options, pasted, restore: () => spies.forEach((s) => s.mockRestore()) }
+  const restore = (): void => {
+    for (const s of spies) s.mockRestore()
+  }
+  return { options, pasted, restore }
 }
 
 // As Claude Code leaves a Stop hook it cut off at its time limit (one a sleep ran out, say) once the
@@ -2763,7 +2766,11 @@ function upTerminal(id: number): {
 function cutHook(id: number, terminal: { options: Map<string, string> }): void {
   const turn = ledger.lastAttempt(id)
   if (turn === null) throw new Error(`task ${id} has no turn`)
-  ledger.endAttempt(turn.id, { outcome: 'succeeded', summary: 'did it', report: 'NOD: done | did it' })
+  ledger.endAttempt(turn.id, {
+    outcome: 'succeeded',
+    summary: 'did it',
+    report: 'NOD: done | did it',
+  })
   terminal.options.set('nod_settling', `${Bun.spawnSync(['true']).pid} ${turn.id}`)
 }
 
@@ -2801,7 +2808,10 @@ it('a check cut off again, in the turn its worker reported again, goes to the pe
     terminal.restore()
   }
   expect(terminal.pasted).toHaveLength(1)
-  expect(ledger.get(id)).toMatchObject({ status: 'error', error: expect.stringContaining('so was') })
+  expect(ledger.get(id)).toMatchObject({
+    status: 'error',
+    error: expect.stringContaining('so was'),
+  })
   expect(events().find((e) => e.event === 'error')?.error).toContain('nod tell goes on')
 }, 30_000)
 
