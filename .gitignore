@@ -6,8 +6,9 @@ node_modules/
 *.db-wal
 # TanStack Router writes its generator scratch files here
 .tanstack/
-# ui's build, which `bun run start` serves
+# ui's build, which `bun run start` serves, and the one desktop/launchd/ui.sh makes beside it
 ui/dist/
+ui/dist.next/
 # The desktop app's Rust build, and the schemas and command permissions tauri-build writes
 desktop/src-tauri/target/
 desktop/src-tauri/gen/

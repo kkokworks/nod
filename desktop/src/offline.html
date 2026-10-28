@@ -36,10 +36,14 @@
       <h1>화면 서버가 떠 있지 않습니다</h1>
       <p>
         이 앱은 <code>http://127.0.0.1:4800</code> 의 nod 화면 서버를 보여 줍니다. 서버가 뜨면 이
-        창이 저절로 그 화면으로 넘어갑니다. nod 레포에서 서버를 띄웁니다.
+        창이 저절로 그 화면으로 넘어갑니다. 서버는 로그인 에이전트로 띄웁니다. 받아 적기도 이
+        에이전트의 환경으로 돌므로, <code>bun link</code> 를 한 셸에서 nod 레포의 이 명령을
+        돌립니다.
       </p>
-      <pre>sh desktop/launchd/ui.sh install   # 로그인할 때마다 띄우기
-cd ui &amp;&amp; bun run dev               # 지금 한 번만 띄우기</pre>
+      <pre>sh desktop/launchd/ui.sh install</pre>
+      <p>
+        설치했는데도 이 화면이면 서버 로그 <code>~/Library/Logs/nod-ui.log</code> 의 끝을 봅니다.
+      </p>
       <button id="retry" type="button">다시 시도</button><span id="status"></span>
     </main>
     <script src="offline.js"></script>

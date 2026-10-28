@@ -16,6 +16,22 @@ ui=$(cd "$here/../../ui" && pwd)
 plist="$HOME/Library/LaunchAgents/$label.plist"
 log="$HOME/Library/Logs/nod-ui.log"
 domain="gui/$(id -u)"
+url=http://127.0.0.1:4800
+
+# Waits up to $2 seconds for curl on the server's address to exit with $1: 0 once a server
+# answers there, 7 once nothing listens. Not through this shell's proxy, which would answer, nor
+# with ~/.curlrc (-q), whose options can change the exit code.
+await() {
+  tries=$2
+  while :; do
+    code=0
+    curl -q -s -o /dev/null --max-time 5 --noproxy '*' "$url" || code=$?
+    [ "$code" -ne "$1" ] || return 0
+    tries=$((tries - 1))
+    [ "$tries" -gt 0 ] || return 1
+    sleep 1
+  done
+}
 
 case "${1:-}" in
 install)
@@ -25,7 +41,10 @@ install)
   }
   # ui/ is a workspace of the repo, so this installs the whole repo from the root bun.lock, not
   # ui/ alone (--filter ./ui): the server imports ../src, which needs the root's dependencies.
-  (cd "$ui" && "$bun" install && "$bun" run build)
+  # Built aside and swapped in: building in place empties dist/, which the running server serves.
+  (cd "$ui" && "$bun" install && rm -rf dist.next && "$bun" run build --outDir dist.next)
+  rm -rf "$ui/dist"
+  mv "$ui/dist.next" "$ui/dist"
   mkdir -p "$(dirname "$plist")" "$(dirname "$log")"
   # Made aside and moved in last, so a failure leaves the agent as it was, not half made for the
   # next login to load.
@@ -58,8 +77,29 @@ for (const [name, value] of Object.entries(savedEnv())) console.log(name + '\t' 
   chmod 600 "$new"
   mv "$new" "$plist"
   launchctl bootout "$domain/$label" 2>/dev/null || true
-  launchctl bootstrap "$domain" "$plist"
-  echo "nod UI server: http://127.0.0.1:4800 (agent $plist, log $log)"
+  # The server exits at once while another holds the port (`bun run dev` serves on it too), and
+  # launchd would start it again and again.
+  if ! await 7 10; then
+    echo "another server answers on $url, a dev server perhaps (cd ui && bun run dev); stop it and run this again" >&2
+    exit 1
+  fi
+  # How much of the log is from earlier runs, which a failure below leaves out.
+  seen=$({ wc -c <"$log"; } 2>/dev/null || echo 0)
+  # Right after the bootout, launchd may still be letting the old agent go, and a bootstrap then
+  # fails with "5: Input/output error".
+  tries=5
+  until launchctl bootstrap "$domain" "$plist"; do
+    tries=$((tries - 1))
+    [ "$tries" -gt 0 ] || exit 1
+    sleep 1
+  done
+  # launchd loads the agent even when its server dies at once, so it is up only once it answers.
+  if ! await 0 15; then
+    echo "the nod UI server did not answer on $url; the end of what it wrote to $log:" >&2
+    tail -c "+$((seen + 1))" "$log" 2>/dev/null | tail -n 20 >&2
+    exit 1
+  fi
+  echo "nod UI server: $url (agent $plist, log $log)"
   ;;
 uninstall)
   launchctl bootout "$domain/$label" 2>/dev/null || true
