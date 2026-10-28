@@ -310,10 +310,13 @@ fn make_panel(window: &WebviewWindow) {
         Bool::YES
     }
     // Esc puts the panel away here, before the input method and the page get the key: sent on to
-    // them, it did not get to capture.js's keydown handler as Escape (2026-10-28 check).
+    // them, it did not get to capture.js's keydown handler as Escape (2026-10-28 check). While
+    // the input method is composing, Esc is its own (to cancel a conversion), so it goes on.
     extern "C" fn send_event(panel: &AnyObject, _: Sel, event: &AnyObject) {
         if let (true, Some(app)) = (is_escape(event), CAPTURE_APP.get()) {
-            return put_away(app, "capture");
+            if !composing(panel) {
+                return put_away(app, "capture");
+            }
         }
         unsafe { msg_send![super(panel, class!(NSPanel)), sendEvent: event] }
     }
@@ -364,6 +367,17 @@ fn is_escape(event: &AnyObject) -> bool {
         let flags: usize = msg_send![event, modifierFlags];
         // kVK_Escape, and none of ⇧⌃⌥⌘ (NSEventModifierFlagShift … Command)
         key == 53 && flags & 0x1e0000 == 0
+    }
+}
+
+// Whether the window's text field has text the input method is still composing.
+fn composing(window: &AnyObject) -> bool {
+    unsafe {
+        let field: *mut AnyObject = msg_send![window, firstResponder];
+        let Some(field) = field.as_ref() else { return false };
+        let marked = sel!(hasMarkedText);
+        let responds: bool = msg_send![field, respondsToSelector: marked];
+        responds && msg_send![field, hasMarkedText]
     }
 }
 
@@ -667,5 +681,44 @@ mod tests {
         assert!(!is_escape(&key(53, c"\x1b", 0, false)));
         assert!(!is_escape(&key(36, c"\r", 0, true)));
         assert!(!is_escape(&click));
+    }
+
+    #[test]
+    fn esc_goes_on_to_the_input_method_only_while_it_composes() {
+        // Stand-ins for the panel: AppKit makes windows only on the main thread, not in tests.
+        extern "C" fn this(obj: &AnyObject, _: Sel) -> *const AnyObject {
+            obj
+        }
+        extern "C" fn nobody(_: &AnyObject, _: Sel) -> *const AnyObject {
+            std::ptr::null()
+        }
+        extern "C" fn yes(_: &AnyObject, _: Sel) -> Bool {
+            Bool::YES
+        }
+        extern "C" fn no(_: &AnyObject, _: Sel) -> Bool {
+            Bool::NO
+        }
+        // A window whose first responder is itself, or nobody, and has marked text or not, or
+        // does not answer hasMarkedText.
+        let window = |name: &std::ffi::CStr, responder: bool, marked: Option<bool>| {
+            let mut class = ClassBuilder::new(name, class!(NSObject)).unwrap();
+            unsafe {
+                match responder {
+                    true => class.add_method(sel!(firstResponder), this as extern "C" fn(_, _) -> _),
+                    false => class.add_method(sel!(firstResponder), nobody as extern "C" fn(_, _) -> _),
+                }
+                match marked {
+                    Some(true) => class.add_method(sel!(hasMarkedText), yes as extern "C" fn(_, _) -> _),
+                    Some(false) => class.add_method(sel!(hasMarkedText), no as extern "C" fn(_, _) -> _),
+                    None => {}
+                }
+            }
+            let window: objc2::rc::Retained<AnyObject> = unsafe { msg_send![class.register(), new] };
+            composing(&window)
+        };
+        assert!(window(c"NodTestComposing", true, Some(true)));
+        assert!(!window(c"NodTestNotComposing", true, Some(false)));
+        assert!(!window(c"NodTestNoTextInput", true, None));
+        assert!(!window(c"NodTestNoFirstResponder", false, None));
     }
 }
