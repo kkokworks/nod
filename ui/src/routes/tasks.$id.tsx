@@ -310,10 +310,10 @@ function Composer({
   }
 
   // A live session is typed into on its screen, so the box shows there only to answer a decision,
-  // which what is typed on the screen does not, and while it holds what was written or what it
-  // said of it. Hidden, not gone: a decision that opens is still timed (`changed`), and an answer
-  // whose decision closes stays to be sent as a message.
-  if (live && open === undefined && text === '' && error === null) return null
+  // which what is typed on the screen does not, and while it holds what was written. Hidden, not
+  // gone: a decision that opens is still timed (`changed`), and an answer whose decision closes
+  // stays to be sent as a message. What it said of a decision since closed goes with it.
+  if (live && open === undefined && text === '') return null
   return (
     <form
       className="composer"

@@ -278,6 +278,10 @@ test('under a live terminal, a decision that opens is not answered by a click at
   await click('Yes')
   expect(posted).toEqual([])
   expect(banners().join()).toContain('#40')
+  // Answered elsewhere (in the dialog on the screen), it takes the box and what it said along.
+  open[24] = undefined
+  await reload()
+  expect(document.querySelector('.composer')).toBeNull()
   // An answer being written to a question that closes meanwhile stays, to go as a message.
   open[24] = { id: 41, reason: 'question' }
   await reload()
