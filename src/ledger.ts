@@ -741,7 +741,7 @@ const count = q.fn.countAll<number>().as('n')
 
 export const nodHome = (): string => process.env.NOD_HOME ?? join(homedir(), '.nod')
 
-const now = (): string => new Date().toISOString()
+export const now = (): string => new Date().toISOString()
 
 // Every ledger transaction writes, so each begins immediate and waits busy_timeout for the write
 // lock. A deferred one that reads first fails at its first write, at once and without the wait,

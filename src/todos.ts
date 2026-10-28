@@ -15,6 +15,7 @@ import {
   type Decision,
   type Ledger,
   type NewTask,
+  now,
   queryBuilder,
   runQuery,
   type Task,
@@ -170,7 +171,6 @@ type Tables = {
 }
 
 const q = queryBuilder<Tables>()
-const now = (): string => new Date().toISOString()
 const ChangeJson = z.record(z.string(), z.tuple([z.unknown(), z.unknown()]))
 
 const REF_NAMES = { t: 'todo', p: 'project', r: 'retrospective' } as const
