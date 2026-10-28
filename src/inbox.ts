@@ -166,7 +166,7 @@ export async function sendNotices(ledger: Ledger, send = sendLine): Promise<void
 }
 
 // One message for a project's session: which project, then each notice.
-export function noticesText(ledger: Ledger, project: Project, notices: Notice[]): string {
+function noticesText(ledger: Ledger, project: Project, notices: Notice[]): string {
   const count = notices.length === 1 ? 'a notice' : `${notices.length} notices, oldest first`
   const head = `nod, project p${project.id} ${project.title}: ${count}`
   return [head, ...notices.map((n) => noticeText(ledger, n))].join('\n\n')
@@ -181,7 +181,7 @@ const NEXT = {
 
 // A notice as `nod watch` prints it, with the turn it came on (its attempt, counted from 1, or the
 // decision's number) to tell one sent twice, and what to do next.
-export function noticeText(ledger: Ledger, n: Notice): string {
+function noticeText(ledger: Ledger, n: Notice): string {
   if (n.event === 'tell') return n.note ?? ''
   if (n.event === 'allowed') return allowedLine(n)
   const task = ledger.get(n.taskId ?? 0)

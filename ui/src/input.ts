@@ -2,7 +2,7 @@
 // day) are checked on the server, where the ledger's lists of them live.
 
 // The todo fields a page edits as text; an empty string clears one.
-export const TEXT_FIELDS = [
+const TEXT_FIELDS = [
   'title',
   'notes',
   'addNote',
@@ -47,7 +47,7 @@ function shown(v: unknown, what: string): number {
 }
 
 // The Done page's three lists, each with how many of it to show.
-export const DONE_LISTS = ['done', 'dropped', 'collected'] as const
+const DONE_LISTS = ['done', 'dropped', 'collected'] as const
 export type DoneShown = Record<(typeof DONE_LISTS)[number], number>
 
 export function doneShown(v: unknown): DoneShown {

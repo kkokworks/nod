@@ -34,6 +34,7 @@ import { askedAgain, type Changes, reviewBrief } from './review'
 import { activeRules, hadTrouble, isNoRule, retroBrief } from './rules'
 import { pasted, quote, Terminals } from './tmux'
 import { Todos } from './todos'
+import { oneLine } from './view'
 
 // Each worker is an interactive Claude Code session in tmux. It reports when it stops through
 // Claude Code's Stop hook, and answers and follow-ups go into the same live session, so the worker
@@ -418,7 +419,8 @@ export function firstMessage(ledger: Ledger, task: Task, start: string | null): 
   const after = ledger.after(task.id)
   if (after.length === 0) return `${task.brief}${since}${check}`
   const reports = after.map(
-    (a) => `- #${a.id} ${oneLine(a.brief)}: ${ledger.lastAttempt(a.id)?.summary || '(no summary)'}`,
+    (a) =>
+      `- #${a.id} ${oneLine(a.brief, 200)}: ${ledger.lastAttempt(a.id)?.summary || '(no summary)'}`,
   )
   const base = baseOf(ledger, task)
   const branch =
@@ -1075,7 +1077,7 @@ async function settle(
 ): Promise<string | null> {
   const text = event.last_assistant_message.trim()
   const report = parseReport(text)
-  const summary = report?.text ?? oneLine(text)
+  const summary = report?.text ?? oneLine(text, 200)
   // A worker that keeps going after a failed check often drops the report line; the check decides.
   const done = report?.status === 'done' || (report === null && event.stop_hook_active)
   // A message that came while this hook ran started another turn, which Claude Code runs once the
@@ -2354,7 +2356,7 @@ async function cutOff(
     taskId,
     attempt.id,
     'interrupted',
-    `${why}\nThe turn did not finish, and part of it may be done. It was on:\n> ${oneLine(attempt.prompt)}\nAnswer with how to go on, such as to check what is done and carry on; the answer goes into the same conversation.`,
+    `${why}\nThe turn did not finish, and part of it may be done. It was on:\n> ${oneLine(attempt.prompt, 200)}\nAnswer with how to go on, such as to check what is done and carry on; the answer goes into the same conversation.`,
   )
   return true
 }
@@ -3154,7 +3156,7 @@ async function verifyLanding(
 
 // The pull request's text a worker writes above its report line: the title on its first line,
 // then the body. The `NOD:` lines are nod's. Null without a title.
-export function prText(report: string): { title: string; body: string } | null {
+function prText(report: string): { title: string; body: string } | null {
   const lines = report.split('\n').filter((l) => nodLine(l) === null)
   const at = lines.findIndex((l) => l.trim() !== '')
   const first = lines[at]
@@ -3261,10 +3263,6 @@ export async function readAtOnce<T, R>(items: T[], read: (item: T) => Promise<R>
   const first = failed.toSorted((a, b) => a.i - b.i)[0]
   if (first !== undefined) throw first.error
   return out
-}
-
-function oneLine(s: string): string {
-  return s.replaceAll('\n', ' ').slice(0, 200)
 }
 
 export function message(error: unknown): string {

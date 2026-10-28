@@ -150,7 +150,7 @@ export function capture(todos: Todos, args: string[]): void {
 const SESSION_NAME_CHARS = 40
 
 // A project session's name: the project's title, or `p<n>` and the start of it when that is long.
-export function sessionTitle(p: Project): string {
+function sessionTitle(p: Project): string {
   const name = p.title.length <= SESSION_NAME_CHARS ? p.title : `p${p.id} ${p.title}`
   return oneLine(name, SESSION_NAME_CHARS).trim()
 }

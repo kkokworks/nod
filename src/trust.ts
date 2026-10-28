@@ -11,7 +11,7 @@ export const REVIEW_SOURCE = 'review'
 // reminder: a watch that fails for good shows here too.
 export const STALE_DAYS = 7
 // GTD's weekly review.
-export const REVIEW_DAYS = 7
+const REVIEW_DAYS = 7
 
 export type Trust = {
   inbox: number

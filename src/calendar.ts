@@ -28,7 +28,7 @@ const TIMEOUT_MS = 60_000
 
 export const calendarBuild = join(import.meta.dirname, '..', 'calendar', 'build.sh')
 // The Calendar permission belongs to the app, so build.sh puts it in nod's home, once.
-export const calendarApp = (home: string): string => join(home, 'CalendarEvents.app')
+const calendarApp = (home: string): string => join(home, 'CalendarEvents.app')
 
 // The events of `days` days from `from`, or null when there is no calendar app.
 export async function readEvents(
