@@ -222,7 +222,9 @@ const USAGE = `usage:
                                    watches, landing and gc every fifth minute.
                                    It also asks about turns whose terminal is gone (a restart of
                                    the machine or tmux) and about tasks that have waited an hour
-                                   on background work, and restarts the workers due a restart
+                                   on background work, has a worker report again when Claude Code
+                                   cut off the Stop hook checking its turn (its time limit, a
+                                   sleep), and restarts the workers due a restart
   nod restart [<task...>]          start the Claude Code of these workers, or of every worker,
                                    again in the same terminal and conversation: at once between
                                    turns, after its turn otherwise, and only once nobody is
@@ -428,7 +430,7 @@ switch (command) {
     break
   case 'tick': {
     // Run by hand, it checks the watches now too, not only on their every fifth minute.
-    const { added, passed, collected, lost, waited, restarted, closed, landed } = await tick(
+    const { added, passed, collected, lost, waited, cut, restarted, closed, landed } = await tick(
       ledger,
       home,
       new Date(),
@@ -439,10 +441,11 @@ switch (command) {
     if (collected.length > 0) console.log(`collected task(s) ${collected.join(', ')}`)
     if (lost.length > 0) console.log(`turn(s) lost with their terminal: ${lost.join(', ')}`)
     if (waited.length > 0) console.log(`waited too long on background work: ${waited.join(', ')}`)
+    if (cut.length > 0) console.log(`went on from a check cut off: ${cut.join(', ')}`)
     if (restarted.length > 0) console.log(`restarted task(s) ${restarted.join(', ')}`)
     if (closed.length > 0) console.log(`closed the terminal(s) of task(s) ${closed.join(', ')}`)
     for (const m of landed) console.log(`landing #${m.id}: ${m.did}`)
-    const did = [added, passed, collected, lost, waited, restarted, closed, landed]
+    const did = [added, passed, collected, lost, waited, cut, restarted, closed, landed]
     if (did.every((x) => x.length === 0)) console.log('nothing due')
     break
   }

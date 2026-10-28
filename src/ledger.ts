@@ -1539,6 +1539,21 @@ export class Ledger {
     this.run(q.updateTable('messages').set({ attemptId }).where('id', 'in', rest))
   }
 
+  // Records the check of a turn as failed with `output`, the mark of a check cut off, only while it
+  // has no such mark, in one statement: of two that find it cut off at once (ticks, say), one goes
+  // on from it. Returns whether this one did.
+  cutCheck(id: number, output: string): boolean {
+    const cut = this.first(
+      q
+        .updateTable('attempts')
+        .set({ checkResult: 'failed', checkOutput: output })
+        .where('id', '=', id)
+        .where('checkOutput', 'is not', output)
+        .returning('id'),
+    )
+    return cut !== null
+  }
+
   recordCheck(id: number, passed: boolean, output: string): void {
     this.run(
       q

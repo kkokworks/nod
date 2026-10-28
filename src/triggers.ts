@@ -13,6 +13,7 @@ import { type Todo, Todos } from './todos'
 import { oneLine } from './view'
 import {
   closeFinished,
+  cutChecks,
   lostTurns,
   message,
   overdueWaits,
@@ -81,10 +82,11 @@ export async function addTrigger(
 }
 
 // Runs the triggers due at `now` and starts the tasks they add, asks about the turns whose terminal
-// is gone and the tasks that waited too long on background work, restarts the workers due a
-// restart, and closes the terminals of tasks finished a while ago (worker.ts), then, with
-// `watches`, the watches and gc of the finished tasks a signal says are done with (done.ts). A run
-// missed while the machine slept happens once, on the first tick after.
+// is gone and the tasks that waited too long on background work, goes on from the checks Stop hooks
+// did not finish, restarts the workers due a restart, and closes the terminals of tasks finished a
+// while ago (worker.ts), then, with `watches`, the watches and gc of the finished tasks a signal
+// says are done with (done.ts). A run missed while the machine slept happens once, on the first
+// tick after.
 export async function tick(
   ledger: Ledger,
   home: string,
@@ -96,6 +98,7 @@ export async function tick(
   collected: number[]
   lost: number[]
   waited: number[]
+  cut: number[]
   restarted: number[]
   closed: number[]
   landed: Moved[]
@@ -124,6 +127,7 @@ export async function tick(
   )
   const lost = await lostTurns(ledger, home, now)
   const waited = await overdueWaits(ledger, home, now)
+  const cut = await cutChecks(ledger, home)
   // An account rule that cannot be read must not stop the watches.
   const restarted = await restartDue(ledger, home).catch((error) => {
     console.error(`nod: could not restart workers: ${message(error)}`)
@@ -151,7 +155,7 @@ export async function tick(
   await sendNotices(ledger).catch((error) =>
     console.error(`nod: could not tell the project sessions: ${message(error)}`),
   )
-  return { added, passed, collected, lost, waited, restarted, closed, landed }
+  return { added, passed, collected, lost, waited, cut, restarted, closed, landed }
 }
 
 // A watch passes when it exits 0. A command the shell cannot run (126, 127) never will; anything
@@ -342,7 +346,7 @@ export async function tickHome(home: string): Promise<void> {
   const ledger = new Ledger(home)
   const now = new Date()
   const watches = now.getMinutes() % WATCH_EVERY_MINUTES === 0
-  const { added, passed, collected, lost, restarted, closed } = await tick(
+  const { added, passed, collected, lost, cut, restarted, closed } = await tick(
     ledger,
     home,
     now,
@@ -354,6 +358,7 @@ export async function tickHome(home: string): Promise<void> {
     console.log(`${at} watch passed: ${passed.map((id) => `t${id}`).join(', ')}`)
   if (collected.length > 0) console.log(`${at} collected task(s) ${collected.join(', ')}`)
   if (lost.length > 0) console.log(`${at} turn(s) lost with their terminal: ${lost.join(', ')}`)
+  if (cut.length > 0) console.log(`${at} went on from a check cut off: ${cut.join(', ')}`)
   if (restarted.length > 0) console.log(`${at} restarted task(s) ${restarted.join(', ')}`)
   if (closed.length > 0) console.log(`${at} closed the terminal(s) of task(s) ${closed.join(', ')}`)
 }
