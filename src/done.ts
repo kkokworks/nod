@@ -2,7 +2,7 @@ import { collect, type GcReport, hasRef, landed } from './gc'
 import { FINISHED, type Ledger, type Task } from './ledger'
 import { Terminals } from './tmux'
 import { Todos } from './todos'
-import { createdFrom, message, readAtOnce, sessionName } from './worker'
+import { message, readAtOnce, sessionName } from './worker'
 
 // When a finished task is done with, so gc can collect it without the human naming it. gc keeps
 // the session's transcript and resume rebuilds the worktree (restore in worker.ts), so collecting
@@ -84,7 +84,7 @@ async function signal(
   prs: PrLookup,
   now: Date,
 ): Promise<string | null> {
-  const branch = await branchState(task)
+  const branch = branchState(task)
   if (branch?.unpushed) return null
   if (ledger.waiting(task.id).length > 0) return null
   if (task.finishedAt !== null && Date.parse(task.finishedAt) <= now.getTime() - STALE_DAYS * DAY) {
@@ -131,9 +131,7 @@ async function signal(
 // not merged either. Null without a repo, once the branch is gone, or for a task that never started
 // and so keeps no branch of its own (dropBranch in gc.ts): one by its name is someone else's. Only
 // as fresh as the repo's last fetch.
-async function branchState(
-  task: Task,
-): Promise<{ own: number; landed: boolean; unpushed: boolean } | null> {
+function branchState(task: Task): { own: number; landed: boolean; unpushed: boolean } | null {
   const { repo, branch } = task
   if (repo === null || branch === null || task.workspace === null) return null
   const ref = `refs/heads/${branch}`
@@ -148,8 +146,9 @@ async function branchState(
   // commits no remote has. The oldest entry of the branch's reflog says where it was created.
   // ponytail: reflog entries expire (90 days by default); without the creation entry every commit
   // counts, as if the task made them.
-  const start = await createdFrom(repo, branch)
-  const notTheirs = start === null ? [] : [`^${start}`]
+  const oldest = git('reflog', 'show', '--format=%H %gs', ref).stdout.toString().trim().split('\n')
+  const [start, ...subject] = (oldest.at(-1) ?? '').split(' ')
+  const notTheirs = subject.join(' ').startsWith('branch: Created from') ? [`^${start}`] : []
   const notOnRemotes = count(ref, ...notTheirs, '--not', '--remotes')
   const main = 'refs/remotes/origin/HEAD'
   const own = hasRef(repo, main) ? count(`${main}..${ref}`, ...notTheirs) : 0
