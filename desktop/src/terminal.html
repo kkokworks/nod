@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <title>터미널</title>
+    <link rel="stylesheet" href="vendor/xterm.css" />
+    <style>
+      html,
+      body {
+        height: 100%;
+        margin: 0;
+        overflow: hidden;
+        background: #000;
+      }
+      /* xterm.js fits the terminal to this box. */
+      #terminal {
+        position: absolute;
+        inset: 6px;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="terminal"></div>
+    <script type="module" src="terminal.js"></script>
+  </body>
+</html>

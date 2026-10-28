@@ -39,6 +39,7 @@ const { act } = await import('react')
 const { createRoot } = await import('react-dom/client')
 const R = await import('@tanstack/react-router')
 const tasks = await import('./routes/tasks.$id')
+const terminal = await import('./routes/terminal.$id')
 const todos = await import('./routes/todos_.$id')
 const { TodoRow } = await import('./todo-parts')
 const { Search } = await import('./search')
@@ -76,6 +77,11 @@ const router = R.createRouter({
     tasks.Route.update({
       id: '/tasks/$id',
       path: '/tasks/$id',
+      getParentRoute: () => root,
+    } as never),
+    terminal.Route.update({
+      id: '/terminal/$id',
+      path: '/terminal/$id',
       getParentRoute: () => root,
     } as never),
     todos.Route.update({
@@ -344,6 +350,27 @@ test('a task that failed before it started has no box to message it, having no c
   expect(document.querySelector('.idle-note')).toBeNull()
 })
 
+test("a live worker's terminal is a link from its task, which a browser shows as the screen now", async () => {
+  answer = (id) => detail(id as number)
+  await go('/tasks/12')
+  const link = document.querySelector('.window-bar a')
+  expect(link?.textContent).toBe('Terminal')
+  expect(link?.getAttribute('href')).toBe('/terminal/12')
+
+  await go('/terminal/12')
+  expect(document.querySelector('.layout .page h1')?.textContent).toBe('Terminal')
+  expect(document.querySelector('.screen')?.textContent).toBe('working')
+  expect(document.querySelector('.crumbs a')?.getAttribute('href')).toBe('/tasks/12')
+  expect(document.querySelector('.subtitle')?.textContent).toContain('nod attach 12')
+  // The page does not link to itself.
+  expect(document.querySelector('.window-bar a')).toBeNull()
+
+  answer = (id) => ({ ...detail(id as number), screen: null })
+  await reload()
+  expect(document.querySelector('.screen')).toBeNull()
+  expect(document.querySelector('.idle-note')?.textContent).toContain('No live session')
+})
+
 test('a change to the todo keeps what is being typed in the form and says so', async () => {
   let todo = todoItem(9, 'old title')
   const changes = [{ actor: 'human', at: AT, text: 'captured' }]
@@ -553,6 +580,8 @@ test('a task or todo that is not there, an unknown page and a page that fails sh
     '/tasks/abc',
     '/todos/1.5',
     '/tasks/1e3',
+    '/terminal/999999',
+    '/terminal/abc',
   ]
   for (const href of hrefs) {
     await go(href)

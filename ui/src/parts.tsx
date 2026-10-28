@@ -104,6 +104,33 @@ export function Status({ status }: { status: string }) {
   )
 }
 
+// What the worker's terminal shows right now, as a window; `children` go in its bar.
+export function Screen({
+  id,
+  screen,
+  children,
+}: {
+  id: number
+  screen: string
+  children?: ReactNode
+}) {
+  return (
+    <div className="window">
+      <div className="window-bar">
+        <span className="lights">
+          <i />
+          <i />
+          <i />
+        </span>
+        <span className="window-title">task-{id}</span>
+        {children}
+        <span className="live">live</span>
+      </div>
+      <pre className="screen">{screen}</pre>
+    </div>
+  )
+}
+
 // A decision on one card; `head` puts its task above it, where the card stands alone.
 export function DecisionCard({ d, head }: { d: Decision; head?: ReactNode }) {
   return (

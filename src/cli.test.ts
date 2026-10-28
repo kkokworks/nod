@@ -11,6 +11,7 @@ import {
 import { join, resolve } from 'node:path'
 import { tempDirs } from '../test/tmp'
 import { Ledger } from './ledger'
+import { homeId } from './tmux'
 import { Todos } from './todos'
 import { endLine, watch } from './view'
 import { openSettings, workspaceOf } from './worker'
@@ -1236,7 +1237,7 @@ test('repo sets how far nod lands a repo, records who changed what, and refuses 
   expect(await ok('land')).toEqual(['nothing to land'])
 }, 20_000)
 
-test('attach and peek of a finished task whose terminal is closed say a message goes on in its conversation', () => {
+test('attach, attach --print and peek of a finished task whose terminal is closed say a message goes on in its conversation', () => {
   const home = tmp.make('nod-closed-')
   const ledger = new Ledger(home)
   const spec = {
@@ -1281,19 +1282,52 @@ test('attach and peek of a finished task whose terminal is closed say a message 
   const nod = (...args: string[]) =>
     Bun.spawnSync(['bun', cli, ...args], { env: { ...process.env, NOD_HOME: home } })
 
-  for (const command of ['attach', 'peek']) {
-    const closed = nod(command, String(finished))
+  for (const command of [['attach'], ['attach', '--print'], ['peek']]) {
+    const closed = nod(...command, String(finished))
     expect(closed.exitCode).not.toBe(0)
     expect(closed.stderr.toString()).toContain(
       `task #${finished} finished and its terminal is closed; nod tell ${finished} <message> goes on in the same conversation`,
     )
     for (const id of [queued, neverStarted, retro]) {
-      const none = nod(command, String(id))
+      const none = nod(...command, String(id))
       expect(none.exitCode).not.toBe(0)
       expect(none.stderr.toString()).toContain(`task #${id} has no live session`)
       expect(none.stderr.toString()).not.toContain('nod tell')
     }
   }
+  // Twelve runs of nod, where checks run beside other work.
+}, 15_000)
+
+test("attach --print prints the command that opens a live worker's terminal, quoted for sh", () => {
+  const home = tmp.make('nod-attach-')
+  const id = new Ledger(home).add({
+    brief: 'some task',
+    repo: null,
+    branch: null,
+    checkCmd: null,
+    model: null,
+    after: [],
+    triggerId: null,
+    issue: null,
+  })
+  // A tmux that has every session.
+  const bin = tmp.make('nod-attach-bin-')
+  writeFileSync(join(bin, 'tmux'), '#!/bin/sh\nexit 0\n', { mode: 0o755 })
+  const printed = Bun.spawnSync(['bun', cli, 'attach', '--print', String(id)], {
+    env: { ...process.env, NOD_HOME: home, PATH: `${bin}:${process.env.PATH}` },
+  })
+  expect(printed.exitCode).toBe(0)
+  // What sh makes of it, a word a line: zsh would take an unquoted =task-<n> for a program's path.
+  const line = printed.stdout.toString().trim()
+  const words = Bun.spawnSync(['sh', '-c', `set -- ${line}; printf '%s\\n' "$@"`])
+  expect(words.stdout.toString().split('\n').slice(0, -1)).toEqual([
+    'tmux',
+    '-L',
+    `nod-${homeId(home)}`,
+    'attach',
+    '-t',
+    `=task-${id}`,
+  ])
 })
 
 test("the prompt hook opens the turn typed into a worker's terminal, printing nothing and never failing, and keeps no words while no one is attached", () => {
