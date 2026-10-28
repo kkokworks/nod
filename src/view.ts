@@ -6,7 +6,7 @@ import {
   type Task,
   type TaskStatus,
 } from './ledger'
-import { quote, type Terminals } from './tmux'
+import { quote } from './tmux'
 import type { Change, SessionPlace } from './todos'
 import { sessionName } from './worker'
 
@@ -85,9 +85,10 @@ export function reopenCommand({ session, project, latest }: SessionPlace): strin
 
 // How ls and the UI name a task's state. A running task without a session lost its terminal (a
 // restart of the machine or of tmux): the tick asks about the turn it was in (lostTurns), and
-// `nod resume` reopens it.
-export function taskStatus(t: Task, terminals: Terminals): string {
-  return t.status === 'running' && !terminals.alive(sessionName(t.id)) ? 'session ended' : t.status
+// `nod resume` reopens it. `live`: the sessions there are (Terminals.sessions), read once for all
+// the tasks shown.
+export function taskStatus(t: Task, live: ReadonlySet<string>): string {
+  return t.status === 'running' && !live.has(sessionName(t.id)) ? 'session ended' : t.status
 }
 
 // The one line shown beside a task: what went wrong, what it waits for, where its landing stands,

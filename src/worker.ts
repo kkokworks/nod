@@ -2443,22 +2443,31 @@ const continueAfter = (error: string): string =>
 // Claude Code runs as another account than the current one. `only`: just that task, for its Stop
 // hook. Returns the tasks restarted now.
 export async function restartDue(ledger: Ledger, home: string, only?: number): Promise<number[]> {
+  // Read in the one call that lists the sessions, not one a session: this runs at the end of every
+  // nod command. The restart waited on comes last, as the one value with spaces (sessionOptions).
   const terminals = Terminals.of(home)
-  const live = terminals.sessions()
+  const read = () => terminals.sessionOptions(RESTARTING_OPTION, RESTART_OPTION)
+  let live = read()
   const tasks = (only === undefined ? ledger.list() : [ledger.get(only)]).filter(
     (t) => t.account !== null && live.has(sessionName(t.id)),
   )
   if (tasks.length === 0) return []
-  const current = accountRule(home) === null ? null : (configDir(home) ?? '')
+  const rule = accountRule(home) !== null
+  const current = rule ? (configDir(home) ?? '') : null
+  // Again after the account rule's command, which may take a while (account.ts).
+  if (rule) live = read()
   const restarted: number[] = []
   for (const t of tasks) {
+    const [restarting, waiting] = live.get(sessionName(t.id)) ?? []
     // Already starting again, as the account it records once it is up.
-    if (terminals.option(sessionName(t.id), RESTARTING_OPTION) !== '') continue
+    if (restarting) continue
     const changed = current !== null && current !== t.account
     const why =
-      terminals.option(sessionName(t.id), RESTART_OPTION) ||
-      (changed ? `the account is now ${current || "Claude Code's default"}` : '')
-    if (why !== '' && (await restart(ledger, home, t.id, why)) === 'restarted') restarted.push(t.id)
+      waiting || (changed ? `the account is now ${current || "Claude Code's default"}` : '')
+    if (why === '') continue
+    if ((await restart(ledger, home, t.id, why)) === 'restarted') restarted.push(t.id)
+    // Again after the wait (a notify), as the next worker's own Stop hook may have restarted it.
+    live = read()
   }
   return restarted
 }
@@ -3157,6 +3166,32 @@ export async function spawn(
     timeoutMs: opts.timeoutMs,
   })
   return { code, stdout, output: stdout + stderr }
+}
+
+// How many tasks ls and doneTasks read at once, each running a command at a time: all of a long
+// ledger at once runs out of processes (a crash with EAGAIN under `ulimit -u`, measured), and takes
+// them from everything else the user runs.
+export const AT_ONCE = 8
+
+// `read` of each item, `AT_ONCE` at a time, in the items' order. Once one fails no more start,
+// and it rejects as reading them in turn would: with the failure of the first item that failed.
+export async function readAtOnce<T, R>(items: T[], read: (item: T) => Promise<R>): Promise<R[]> {
+  const out: R[] = []
+  const failed: { i: number; error: unknown }[] = []
+  let next = 0
+  const reader = async (): Promise<void> => {
+    for (let i = next++; i < items.length && failed.length === 0; i = next++) {
+      try {
+        out[i] = await read(items[i] as T)
+      } catch (error) {
+        failed.push({ i, error })
+      }
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(AT_ONCE, items.length) }, reader))
+  const first = failed.toSorted((a, b) => a.i - b.i)[0]
+  if (first !== undefined) throw first.error
+  return out
 }
 
 function oneLine(s: string): string {

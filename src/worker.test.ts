@@ -29,6 +29,7 @@ import { quote, Terminals } from './tmux'
 import { Todos } from './todos'
 import { addTrigger, tick } from './triggers'
 import {
+  AT_ONCE,
   answer,
   askToLand,
   claudeArgs,
@@ -43,6 +44,7 @@ import {
   parseCaptures,
   parseReport,
   parseTells,
+  readAtOnce,
   restart,
   restartDue,
   restartMark,
@@ -1927,6 +1929,34 @@ it('a retrospective that sends its fix to the inbox ends as todo, and one that a
   expect(inbox()).toEqual(['Fix nod', 'Add a check'])
 })
 
+it('readAtOnce reads AT_ONCE items at a time, no more, and gives what each read in their order', async () => {
+  let reading = 0
+  let most = 0
+  const read = async (n: number): Promise<number> => {
+    most = Math.max(most, ++reading)
+    // Ends after the reads begun with it: the later ones end first.
+    for (let i = n; i < 30; i++) await null
+    reading--
+    return n * 2
+  }
+  const items = Array.from({ length: 3 * AT_ONCE }, (_, i) => i)
+  expect(await readAtOnce(items, read)).toEqual(items.map((n) => n * 2))
+  expect(most).toBe(AT_ONCE)
+  expect(await readAtOnce([], read)).toEqual([])
+
+  // Item 3 fails after item 5: item 3's failure is the one told, as in turn, and once item 5 has
+  // failed no more start.
+  const started: number[] = []
+  const failing = async (n: number): Promise<number> => {
+    started.push(n)
+    for (let i = n; i < 30; i++) await null
+    if (n === 3 || n === 5) throw new Error(`item ${n}`)
+    return n
+  }
+  await expect(readAtOnce(items, failing)).rejects.toThrow('item 3')
+  expect(started.length).toBeLessThan(items.length)
+})
+
 it('a worker learns its task through NOD_TASK, so the todos it changes name it', () => {
   expect(workerEnv('/h', 5)).toMatchObject({ NOD_HOME: '/h', NOD_TASK: '5' })
   expect(workerEnv('/h', null)).not.toHaveProperty('NOD_TASK')
@@ -2275,6 +2305,24 @@ test('a Claude Code that keeps exiting as it starts is not started again: the pe
   await reaches(id, 'succeeded')
   expect(entries('turn').map((t) => t.message)).toEqual(['first', 'again'])
 }, 30_000)
+
+test('the sessions come in one call with the values nod keeps on each, unset ones empty and the last one whole', () => {
+  const terminals = Terminals.of(home)
+  terminals.start('kept', home, ['/bin/sleep', '30'], {})
+  terminals.start('bare', home, ['/bin/sleep', '30'], {})
+  terminals.setOption('kept', 'nod_restarting', '1')
+  terminals.setOption('kept', 'nod_restart', 'the account is now /a b')
+
+  expect(terminals.sessionOptions('nod_restarting', 'nod_restart')).toEqual(
+    new Map([
+      ['bare', ['', '']],
+      ['kept', ['1', 'the account is now /a b']],
+    ]),
+  )
+  expect(terminals.sessionOptions('nod_restart').get('kept')).toEqual(['the account is now /a b'])
+  terminals.killServer()
+  expect(terminals.sessionOptions('nod_restart')).toEqual(new Map())
+})
 
 test('with an account rule, a worker starts again as the current account: at once between turns, after a turn in progress, and with the message that finds it on the old one', async () => {
   const current = join(home, 'account')

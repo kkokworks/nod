@@ -202,6 +202,52 @@ test('done signals: dropped, taken over, merged into the default branch, every p
   expect((await doneTasks(ledger, home, lookup, NOW)).done).toEqual([])
 }, 30_000)
 
+test("the finished tasks' signals are read at once, a slow git service waited on once for all of them, and told in the tasks' order", async () => {
+  const home = tmp.make('nod-done-at-once-')
+  const ledger = new Ledger(home)
+  const repo = join(home, 'repo')
+  mkdirSync(repo)
+  sh(['git', 'init', '-q'], repo)
+  const finished = (brief: string, url: string): number => {
+    const id = ledger.add({
+      brief,
+      repo,
+      branch: `feat/${brief}`,
+      checkCmd: null,
+      model: null,
+      after: [],
+      triggerId: null,
+      issue: null,
+    })
+    ledger.setRunning(id, repo)
+    ledger.succeed(id)
+    ledger.db.query('update tasks set finished_at = $at where id = $id').run({ id, at: RECENT })
+    ledger.link(id, [url])
+    return id
+  }
+  const first = finished('first', `${PR}1`)
+  const second = finished('second', `${PR}2`)
+  // The first pull request answers only once the second has been asked about: asked one task after
+  // the other, the signals would wait for good.
+  let askedSecond = (): void => {}
+  const secondAsked = new Promise<void>((resolve) => {
+    askedSecond = resolve
+  })
+  const lookup: PrLookup = async (url) => {
+    if (url === `${PR}1`) await secondAsked
+    else askedSecond()
+    return { state: 'merged', approvedAt: null }
+  }
+
+  expect(await doneTasks(ledger, home, lookup, NOW)).toEqual({
+    done: [
+      { id: first, reason: `merged: ${PR}1` },
+      { id: second, reason: `merged: ${PR}2` },
+    ],
+    unchecked: [],
+  })
+})
+
 test("a task that never started leaves the branch it was named for alone: it is someone else's", async () => {
   const home = tmp.make('nod-done-')
   process.env.CLAUDE_CONFIG_DIR = tmp.make('nod-done-claude-')
