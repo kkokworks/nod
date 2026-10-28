@@ -20,6 +20,7 @@ import {
   type Send,
   sessionName,
   spawn,
+  TEXT_ONLY,
 } from './worker'
 
 // Lands what the person lets nod land (`nod repo`): a repo task that succeeded goes onto the repo's
@@ -224,8 +225,10 @@ async function landTask(
     if (failed === null) l = ledger.setLanding(task.id, { ready: head })
   }
 
-  // What needs the worker goes to it in one turn.
-  const text = l.pr === null && l.title === null
+  // What needs the worker goes to it in one turn, but the pull request's text in a turn of its own:
+  // written under a conflict's or a fix's report, that report's first line became its title. Once
+  // that work is done, its Stop asks for the text (verifyLanding).
+  const text = conflict === null && failed === null && l.pr === null && l.title === null
   if (conflict !== null || failed !== null || text) {
     const said = landingMessage({ tip, base: l.base ?? base, conflict, failed, check, text })
     try {
@@ -434,9 +437,7 @@ function landingMessage(m: {
     parts.push(`Your branch now starts at commit ${m.base}.`)
   }
   if (m.text) parts.push(PR_TEXT)
-  if (m.conflict === null && m.failed === null) {
-    parts.push('Change nothing else this turn, and skip the subagent review: nothing changes.')
-  }
+  if (m.conflict === null && m.failed === null) parts.push(TEXT_ONLY)
   return parts.join('\n\n')
 }
 

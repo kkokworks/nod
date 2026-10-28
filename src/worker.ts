@@ -1766,9 +1766,15 @@ function refuseEnded(ledger: Ledger, task: Task): void {
 }
 
 function trailingRetries(ledger: Ledger, taskId: number): number {
-  const kinds = ledger.attempts(taskId).map((a) => a.kind)
-  const lastOther = kinds.findLastIndex((kind) => kind !== 'retry')
-  return kinds.length - 1 - lastOther
+  return nodsTurns(ledger, taskId).filter((a) => a.kind === 'retry').length
+}
+
+// The turns since the last one someone else asked for: nod's retries, and its asks to report a turn
+// whose check was cut off again (goOnCut), which leave the retries as they were.
+function nodsTurns(ledger: Ledger, taskId: number): Attempt[] {
+  const turns = ledger.attempts(taskId)
+  const ours = (a: Attempt): boolean => a.kind === 'retry' || a.prompt === REPORT_AGAIN
+  return turns.slice(turns.findLastIndex((a) => !ours(a)) + 1)
 }
 
 // Sends a message into the task's session so the worker keeps its context. A session that has ended
@@ -2229,21 +2235,78 @@ async function trustOnStart(
   if (attempt !== null) await awaitStart(ledger, home, ledger.get(taskId), attempt.id, started)
 }
 
-// A Stop hook that was checking the turn of the Claude Code that ended. One that goes without
-// finishing (it clears its pid when it does) leaves the task running with nothing open, so the
-// task errors and the person hears why.
+// A Stop hook that was checking the turn of the Claude Code that ended: once the hook ends too, a
+// check it did not finish goes on (goOnCut).
 async function watchSettling(ledger: Ledger, home: string, taskId: number): Promise<void> {
   const terminals = Terminals.of(home)
   const name = sessionName(taskId)
   while (settling(terminals, name)) await Bun.sleep(SETTLE_POLL_MS)
-  if (!terminals.alive(name) || terminals.option(name, SETTLING_OPTION) === '') return
+  if (terminals.alive(name)) await goOnCut(ledger, home, taskId)
+}
+
+// Goes on from the checks Stop hooks did not finish (goOnCut) of the workers whose terminal is up,
+// whose Claude Code went on without them; keepWorker does it as soon as one's Claude Code ends
+// (watchSettling). Every such terminal, so the mark of a hook gone goes whatever the task's status.
+// The tick runs it. Returns the tasks it went on with.
+export async function cutChecks(ledger: Ledger, home: string): Promise<number[]> {
+  const live = Terminals.of(home).sessions()
+  const went: number[] = []
+  for (const t of ledger.list()) {
+    if (!live.has(sessionName(t.id))) continue
+    // One that goes meanwhile must not keep the rest from going on.
+    try {
+      if (await goOnCut(ledger, home, t.id)) went.push(t.id)
+    } catch (error) {
+      console.error(`nod: could not go on with task ${t.id}: ${message(error)}`)
+    }
+  }
+  return went
+}
+
+// What a turn whose check was cut off records as its check, and what its worker is told then.
+const CUT_MARK = "nod's check of this turn was cut off before it finished."
+const REPORT_AGAIN =
+  "nod's check of your last turn was cut off before it finished: its Stop hook ran out of time (a machine that sleeps in the middle of it runs it out too) or ended with Claude Code, so nothing came of your report. Change nothing and skip the subagent review: report again as you did, with your NOD line, and nod checks it."
+
+// Goes on from a Stop hook that ended without a result for the turn it closed (onStop clears its pid
+// once it has one): Claude Code cut it off at the hook's time limit, which it counts across a sleep
+// that nod's own limits do not, or as it ended. Nothing else picks up a task left running with no
+// turn open, so its worker reports that turn again, and that turn's Stop hook checks it. Once in a
+// row: one cut off again, a check that outlasts the hook, goes to the person, and nod tell goes on.
+// Returns whether it went on.
+async function goOnCut(ledger: Ledger, home: string, taskId: number): Promise<boolean> {
+  const terminals = Terminals.of(home)
+  const name = sessionName(taskId)
+  const [pid = '', checked] = terminals.option(name, SETTLING_OPTION).split(' ')
+  if (pid === '' || running(Number(pid))) return false
+  // The hook is gone, so its mark goes, whatever it left: a pid another process takes later would
+  // read as a hook still checking (settling).
   terminals.setOption(name, SETTLING_OPTION, null)
-  const task = ledger.get(taskId)
-  if (task.status !== 'running' || ledger.openAttempt(taskId) !== null) return
-  const why =
-    'Claude Code ended while nod checked its last turn, so the check did not finish. nod tell goes on.'
-  ledger.error(taskId, why)
-  await notify(home, { event: 'error', task: taskRef(task), error: why })
+  if (checked === undefined) return false
+  // That turn, closed, and nothing since: a turn that came since decides at its own stop.
+  const cut = ledger.lastAttempt(taskId)
+  if (cut?.id !== Number(checked) || ledger.get(taskId).status !== 'running') return false
+  // Waiting on background work: Claude Code starts the next turn itself (overdueWaits otherwise).
+  if (cut.outcome === null || cut.outcome === 'waiting') return false
+  // A decision it raised on that turn is its result: an answer going on from it is on its way.
+  const raised = (d: Decision): boolean =>
+    d.attemptId === cut.id && d.reason !== 'permission' && d.reason !== 'trust'
+  if (ledger.decisions(taskId).some(raised)) return false
+  if (!ledger.cutCheck(cut.id, CUT_MARK)) return false
+  const cutOff = "nod's check of its last turn was cut off before it finished"
+  let why = `${cutOff}, the second time since nod had its worker report a turn again for that: a check that takes longer than its Stop hook may (${STOP_HOOK_TIMEOUT_SECS / 60} minutes) never finishes. nod tell goes on.`
+  if (!nodsTurns(ledger, taskId).some((a) => a.prompt === REPORT_AGAIN)) {
+    try {
+      await deliver(ledger, home, taskId, 'resume', REPORT_AGAIN, null)
+      return true
+    } catch (error) {
+      why = `${cutOff}, and nod could not have its worker report it again: ${message(error)}. nod tell goes on.`
+    }
+  }
+  // Ended meanwhile (dropped), it stays as it ended.
+  if (ledger.get(taskId).status === 'running') ledger.error(taskId, why)
+  await notify(home, { event: 'error', task: taskRef(ledger.get(taskId)), error: why })
+  return true
 }
 
 // Claude Code keeps ending as it starts, so its terminal closes and the person hears why, with its
@@ -2849,8 +2912,9 @@ async function initSubmodules(repo: string, worktree: string): Promise<void> {
 // What nod checks itself before a "done" counts: the task's check command, then, in a repo, that
 // the work is committed, since later tasks start from the branch and gc keeps only commits, then
 // an independent review. Null for a retrospective, whose rule the human decides on instead.
-// What a check of a done came to. `next`: a rebase nod went on with stopped at another conflict, which
-// the worker resolves next (verifyLanding); `head`: the head that passed.
+// What a check of a done came to. `next`: the landing goes on with more work for the worker, not a
+// failure (verifyLanding): a rebase nod went on with stopped at another conflict, or the pull
+// request's text is due; `head`: the head that passed.
 type Check = { passed: boolean; output: string; next?: boolean; head?: string }
 
 // `checkCmd`: the task's, or as it lands the repo's (verifyLanding).
@@ -3030,9 +3094,9 @@ async function headOf(worktree: string): Promise<string> {
 // nod last checked passes the check (the repo's full one, else the task's) and the independent
 // review, both on the commits since the branch now starts. Until nod opens the pull request, the
 // done brings its text: from a done with its report line (one that follows a blocked stop often
-// leaves the line out, and the text with it), in a turn nod asked for the text (`prompt`). Other
-// words that end landing work (an answer, a tell, a fixed check) report on that work; their first
-// line would be no title.
+// leaves the line out, and the text with it), in a turn nod asked for the text (`prompt`), which
+// asks for nothing else. Other words that end landing work (a resolved conflict, an answer, a tell,
+// a fixed check) report on that work; their first line would be no title.
 async function verifyLanding(
   ledger: Ledger,
   task: Task,
@@ -3074,8 +3138,10 @@ async function verifyLanding(
     ledger.setLanding(task.id, { base: onto, ready: null })
   }
   const landing = ledger.landing(task.id)
+  // Asked now, once the work nod asked for is done: the landing going on. Asked again, a turn that
+  // was to bring it and did not, as a failure to fix.
   if (landing?.pr === null && landing.title === null) {
-    return { passed: false, output: PR_TEXT }
+    return { passed: false, output: `${PR_TEXT}\n\n${TEXT_ONLY}`, next: !prompt.includes(PR_TEXT) }
   }
   const head = await headOf(ws)
   if (head === landing?.ready && (await uncommittedChanges(ws)) === '') {
@@ -3134,7 +3200,10 @@ export async function conflictBrief(ws: string): Promise<string> {
   return `The rebase stopped at your commit ${at.code === 0 ? at.stdout.trim() : '?'} with conflicts in:\n${listed}\n${RESOLVE}`
 }
 
-// What a worker is asked when nod needs the pull request's text (land.ts).
+// What a worker is asked when nod needs the pull request's text (land.ts), in a turn with nothing
+// else to do (TEXT_ONLY).
+export const TEXT_ONLY =
+  'Change nothing else this turn, and skip the subagent review: nothing changes.'
 export const PR_TEXT =
   "nod then opens a pull request for your branch. Above your report line, write it for the repo's readers: its title on the first line, then its body in Markdown (what changed and why, how it was checked, and the conflict table if you resolved any). It goes out as you write it, so leave out anything that must not be published."
 

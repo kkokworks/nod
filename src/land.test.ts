@@ -282,7 +282,7 @@ test('a conflict goes to the worker, which stages its resolution; nod goes on wi
   expect((await land(ledger, home, { send }))[0]?.did).toBe('its worker resolves a conflict')
   expect(handed[0]?.text).toContain('with conflicts in:\n- f.txt')
   expect(handed[0]?.text).toContain('dropping neither side silently')
-  expect(handed[0]?.text).toContain("write it for the repo's readers")
+  expect(handed[0]?.text).not.toContain("write it for the repo's readers")
 
   // Unstaged, it goes back as a failure to fix.
   const unstaged = await stops(id, 'Change f\n\nNOD: done | resolved')
@@ -296,9 +296,12 @@ test('a conflict goes to the worker, which stages its resolution; nod goes on wi
 
   writeFileSync(join(ws(id), 'f.txt'), 'main\ntwo\n')
   git(ws(id), 'add', 'f.txt')
-  expect(await stops(id, 'Fixed it.', true)).toBeNull()
+  // The rebase done, the pull request's text goes on the landing too.
+  const text = await stops(id, 'Fixed it.', true)
+  expect(JSON.parse(text ?? '{}').reason).toContain("write it for the repo's readers")
+  expect(ledger.attempts(id).at(-1)?.kind).toBe('land')
+  expect(await stops(id, 'Change f\n\nNOD: done | wrote it', true)).toBeNull()
   expect(ledger.get(id).status).toBe('succeeded')
-  // The text of the done that had its report line.
   expect(ledger.landing(id)).toMatchObject({ title: 'Change f', handedAt: null, ready: head(id) })
   expect(git(ws(id), 'show', 'HEAD:f.txt')).toBe('main\ntwo')
   expect(git(ws(id), 'log', '--format=%s', 'origin/main..HEAD').split('\n')).toEqual([
@@ -431,14 +434,41 @@ test('a later done of the same landing does not write over the pull request text
   setRepo('pr', { checkCmd: 'test -f ok.txt' })
   const id = finished('feat/c', { 'c.txt': 'c\n' })
   expect((await land(ledger, home, { send }))[0]?.did).toBe('its worker fixes the check')
+  expect(handed[0]?.text).not.toContain("write it for the repo's readers")
   // The text first, but the check still fails; then the fix, reported in words of its own.
-  const again = await stops(id, 'Add c\n\nAdds c.\nNOD: done | wrote it')
+  await stops(id, 'I looked at it.\nNOD: done | looked')
+  const again = await stops(id, 'Add c\n\nAdds c.\nNOD: done | wrote it', true)
   expect(JSON.parse(again ?? '{}').reason).toContain('test -f ok.txt')
   writeFileSync(join(ws(id), 'ok.txt'), 'ok\n')
   git(ws(id), 'add', '-A')
   git(ws(id), 'commit', '-qm', 'add ok')
   expect(await stops(id, 'I added ok.txt and committed it.\nNOD: done | fixed', true)).toBeNull()
   expect(ledger.landing(id)).toMatchObject({ title: 'Add c', body: 'Adds c.' })
+}, 30_000)
+
+test('a conflict report above the pull request text is no title: the text is asked once the rebase is done', async () => {
+  setRepo('pr')
+  const id = conflicting('feat/t')
+  await land(ledger, home, { send })
+  writeFileSync(join(ws(id), 'f.txt'), 'main\nmine\n')
+  git(ws(id), 'add', 'f.txt')
+  // As a worker asked for both writes them: what it did with the conflict, then the text.
+  const resolved = [
+    'The rebase conflict in `f.txt` is resolved and staged; both lines are kept.',
+    '',
+    '| f.txt | main | mine | both, main first |',
+    '',
+    'Change f',
+    '',
+    'Keeps both lines.',
+    'NOD: done | resolved',
+  ].join('\n')
+  const asked = await stops(id, resolved)
+  expect(JSON.parse(asked ?? '{}').reason).toContain("write it for the repo's readers")
+  expect(ledger.landing(id)?.title).toBeNull()
+  expect(await stops(id, 'Change f\n\nKeeps both lines.\nNOD: done | wrote it', true)).toBeNull()
+  expect(ledger.landing(id)).toMatchObject({ title: 'Change f', body: 'Keeps both lines.' })
+  expect(ledger.get(id).status).toBe('succeeded')
 }, 30_000)
 
 test('a conflict nod cannot hand to the worker goes back as it was, so yes starts over', async () => {

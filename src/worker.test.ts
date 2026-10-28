@@ -2779,6 +2779,132 @@ it('a message that comes while nod checks a turn it closed starts the next turn,
   ])
 }, 30_000)
 
+// The terminal of task `id` as tmux keeps it while its Claude Code runs, for a test with no tmux
+// server: its options, and what is pasted into it.
+function upTerminal(id: number): {
+  options: Map<string, string>
+  pasted: string[]
+  restore: () => void
+} {
+  const options = new Map<string, string>()
+  const pasted: string[] = []
+  const name = sessionName(id)
+  const spies = [
+    spyOn(Terminals.prototype, 'alive').mockImplementation((n) => n === name),
+    spyOn(Terminals.prototype, 'sessions').mockImplementation(() => new Set([name])),
+    spyOn(Terminals.prototype, 'attached').mockImplementation(() => false),
+    spyOn(Terminals.prototype, 'option').mockImplementation((_, key) => options.get(key) ?? ''),
+    spyOn(Terminals.prototype, 'setOption').mockImplementation((_, key, value) => {
+      if (value === null) options.delete(key)
+      else options.set(key, value)
+    }),
+    spyOn(Terminals.prototype, 'send').mockImplementation((_, text) => {
+      pasted.push(text)
+    }),
+  ]
+  const restore = (): void => {
+    for (const s of spies) s.mockRestore()
+  }
+  return { options, pasted, restore }
+}
+
+// As Claude Code leaves a Stop hook it cut off at its time limit (one a sleep ran out, say) once the
+// hook had closed the last turn of task `id`: the hook's pid and that turn still marked (onStop),
+// the pid gone.
+function cutHook(id: number, terminal: { options: Map<string, string> }): void {
+  const turn = ledger.lastAttempt(id)
+  if (turn === null) throw new Error(`task ${id} has no turn`)
+  ledger.endAttempt(turn.id, {
+    outcome: 'succeeded',
+    summary: 'did it',
+    report: 'NOD: done | did it',
+  })
+  terminal.options.set('nod_settling', `${Bun.spawnSync(['true']).pid} ${turn.id}`)
+}
+
+it('a turn whose Stop hook was cut off once it had closed it goes on: the tick has the worker report it again, and that stop checks it', async () => {
+  const id = started('write it', 'cut-once')
+  const terminal = upTerminal(id)
+  try {
+    cutHook(id, terminal)
+    await tick(ledger, home, new Date(), false)
+    expect(terminal.pasted).toEqual([expect.stringContaining('report again as you did')])
+    expect(terminal.options.has('nod_settling')).toBe(false)
+    expect(ledger.attempts(id).map((a) => [a.kind, a.outcome, a.checkResult])).toEqual([
+      ['start', 'succeeded', 'failed'],
+      ['resume', null, null],
+    ])
+    // A later tick finds that turn running, and asks nothing more of it.
+    await tick(ledger, home, new Date(), false)
+    expect(terminal.pasted).toHaveLength(1)
+    expect(await stopped('cut-once', 'NOD: done | did it')).toBeNull()
+  } finally {
+    terminal.restore()
+  }
+  expect(status(id)).toBe('succeeded')
+}, 30_000)
+
+it('the mark of a Stop hook gone goes whatever became of its turn, and a turn it raised a decision on is not reported again', async () => {
+  const id = started('ask-first', 'cut-asked')
+  const terminal = upTerminal(id)
+  try {
+    expect(await stopped('cut-asked', 'Should I?\nNOD: question | May I?')).toBeNull()
+    const turn = ledger.lastAttempt(id)?.id
+    // Cut off past its decision (its notify, say): the task waits on that decision.
+    const gone = (): string => `${Bun.spawnSync(['true']).pid} ${turn}`
+    terminal.options.set('nod_settling', gone())
+    await tick(ledger, home, new Date(), false)
+    expect(terminal.options.has('nod_settling')).toBe(false)
+    // As an answer sets it running before it goes to the worker (answer).
+    ledger.setRunning(id, ledger.get(id).workspace ?? '')
+    terminal.options.set('nod_settling', gone())
+    await tick(ledger, home, new Date(), false)
+  } finally {
+    terminal.restore()
+  }
+  expect(terminal.pasted).toEqual([])
+  expect(terminal.options.has('nod_settling')).toBe(false)
+}, 30_000)
+
+it('a turn nod has its worker report again leaves the retries of its checks as they were', async () => {
+  const id = started('review-strict: write it', 'cut-retries')
+  const terminal = upTerminal(id)
+  let last: string | null
+  try {
+    // The review fails: the first retry, whose check is then cut off.
+    expect(await stopped('cut-retries', 'NOD: done | did it')).not.toBeNull()
+    cutHook(id, terminal)
+    await tick(ledger, home, new Date(), false)
+    expect(await stopped('cut-retries', 'NOD: done | did it')).not.toBeNull()
+    last = await stopped('cut-retries', 'NOD: done | did it')
+  } finally {
+    terminal.restore()
+  }
+  // Two retries in all, so the person decides.
+  expect(last).toBeNull()
+  expect(ledger.decisions(id).find((d) => d.answer === null)?.reason).toBe('check_failed')
+}, 30_000)
+
+it('a check cut off again, in the turn its worker reported again, goes to the person', async () => {
+  const events = listen()
+  const id = started('write it', 'cut-twice')
+  const terminal = upTerminal(id)
+  try {
+    cutHook(id, terminal)
+    await tick(ledger, home, new Date(), false)
+    cutHook(id, terminal)
+    await tick(ledger, home, new Date(), false)
+  } finally {
+    terminal.restore()
+  }
+  expect(terminal.pasted).toHaveLength(1)
+  expect(ledger.get(id)).toMatchObject({
+    status: 'error',
+    error: expect.stringContaining('the second time'),
+  })
+  expect(events().find((e) => e.event === 'error')?.error).toContain('nod tell goes on')
+}, 30_000)
+
 it('a message its worker had not taken in by the end of the turn it was told in goes on as the next turn, which decides; one it took in stays', async () => {
   const config = tmp.make('nod-transcripts-')
   mkdirSync(join(config, 'projects', 'work'), { recursive: true })
