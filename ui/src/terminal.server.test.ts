@@ -154,17 +154,19 @@ test("only the UI's own page attaches to a worker's terminal: another site, a na
 // tmux on this home's socket.
 const tmux = (...args: string[]) =>
   Bun.spawn(['tmux', '-L', `nod-${homeId(home)}`, ...args], { env: process.env }).exited
-const size = (name: string): string =>
+// The size of the terminals attached to a session, as tmux has them. The window's own follows by
+// tmux's rules: a row less with the status line, none of it with a manual window-size.
+const sizes = (name: string): string =>
   Bun.spawnSync(
     [
       'tmux',
       '-L',
       `nod-${homeId(home)}`,
-      'display-message',
-      '-p',
+      'list-clients',
       '-t',
-      `=${name}:`,
-      '#{window_width}x#{window_height}',
+      `=${name}`,
+      '-F',
+      '#{client_width}x#{client_height}',
     ],
     { env: process.env },
   )
@@ -188,35 +190,46 @@ process.stdin.on('data', (d) => { appendFileSync(${JSON.stringify(typed)}, d); p
     )
     writeFileSync(typed, '')
     terminals.start(name, home, [process.execPath, recorder], { HOME: home })
+    // With no locale, as launchd starts the server: tmux would then draw Korean as underscores.
+    const locale = {
+      LANG: process.env.LANG,
+      LC_ALL: process.env.LC_ALL,
+      LC_CTYPE: process.env.LC_CTYPE,
+    }
+    for (const key of Object.keys(locale)) delete process.env[key]
+    try {
+      const page = await upgrade('/terminal/2?cols=90&rows=20', PAGE)
+      expect(page.status).toStartWith('HTTP/1.1 101')
+      await page.until('ready')
+      // As a person in a terminal is: gc and the tick leave the session alone.
+      expect(terminals.attached(name)).toBe(true)
+      expect(sizes(name)).toBe('90x20')
 
-    const page = await upgrade('/terminal/2?cols=90&rows=20', PAGE)
-    expect(page.status).toStartWith('HTTP/1.1 101')
-    await page.until('ready')
-    // As a person in a terminal is: gc and the tick leave the session alone.
-    expect(terminals.attached(name)).toBe(true)
-    expect(size(name)).toBe('90x20')
+      await tmux('set-hook', '-g', 'client-resized', 'wait-for -S resized')
+      page.send(['size', 100, 30])
+      await tmux('wait-for', 'resized')
+      expect(sizes(name)).toBe('100x30')
 
-    await tmux('set-hook', '-g', 'window-resized', 'wait-for -S resized')
-    page.send(['size', 100, 30])
-    await tmux('wait-for', 'resized')
-    expect(size(name)).toBe('100x30')
+      page.send(['in', 'ab한'])
+      await page.until('한')
+      expect(readFileSync(typed, 'utf8')).toBe('ab한')
 
-    // In UTF-8, though the server has no locale of its own (launchd).
-    page.send(['in', 'ab한'])
-    await page.until('한')
-    expect(readFileSync(typed, 'utf8')).toBe('ab한')
-
-    // The page goes as a closed tab does. Then a key sent past it shows whether leaving typed any.
-    await tmux('set-hook', '-g', 'client-detached', 'wait-for -S left')
-    page.end()
-    await tmux('wait-for', 'left')
-    expect(terminals.attached(name)).toBe(false)
-    await tmux('send-keys', '-t', `=${name}:`, '-l', 'Z')
-    const again = await upgrade('/terminal/2?cols=90&rows=20', PAGE)
-    await again.until('Z')
-    expect(readFileSync(typed, 'utf8')).toBe('ab한Z')
-    again.end()
-    expect(terminals.alive(name)).toBe(true)
+      // The page goes as a closed tab does. Then a key sent past it shows whether leaving typed any.
+      await tmux('set-hook', '-g', 'client-detached', 'wait-for -S left')
+      page.end()
+      await tmux('wait-for', 'left')
+      expect(terminals.attached(name)).toBe(false)
+      await tmux('send-keys', '-t', `=${name}:`, '-l', 'Z')
+      const again = await upgrade('/terminal/2?cols=90&rows=20', PAGE)
+      await again.until('Z')
+      expect(readFileSync(typed, 'utf8')).toBe('ab한Z')
+      again.end()
+      expect(terminals.alive(name)).toBe(true)
+    } finally {
+      for (const [key, value] of Object.entries(locale)) {
+        if (value !== undefined) process.env[key] = value
+      }
+    }
   },
   20_000,
 )
