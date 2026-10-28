@@ -1,4 +1,6 @@
-// The capture window: Enter runs `nod in` through the app, Esc puts the window away.
+// The capture window: Enter runs `nod in` through the app, Esc puts the window away. As a panel
+// (make_panel in main.rs) the window takes Esc itself before this page; this is for the plain
+// window it stays if it cannot be one.
 const { invoke } = window.__TAURI__.core
 const text = document.getElementById('text')
 const error = document.getElementById('error')
