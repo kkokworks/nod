@@ -1927,9 +1927,10 @@ function settling(terminals: Terminals, name: string): boolean {
 // Whether the live session's Claude Code is starting again, or the one keepWorker started is gone
 // before keepWorker marks the restart.
 function restartingClaude(terminals: Terminals, name: string): boolean {
-  if (terminals.option(name, RESTARTING_OPTION) !== '') return true
+  // The pid first: keepWorker marks the restart before it starts the next Claude Code, so a pid
+  // read before the mark is of the one that ended.
   const claude = Number(terminals.option(name, CLAUDE_OPTION))
-  return claude !== 0 && !running(claude)
+  return terminals.option(name, RESTARTING_OPTION) !== '' || (claude !== 0 && !running(claude))
 }
 
 // The arguments a worker's Claude Code starts with; makes the folder it keeps sockets in.
@@ -3155,12 +3156,12 @@ export function rebasing(ws: string): boolean {
   return existsSync(gitPath(ws, 'rebase-merge')) || existsSync(gitPath(ws, 'rebase-apply'))
 }
 
-// The commit a stopped rebase is on and the files in conflict, with how to resolve them.
 // The files a stopped rebase left unmerged, one per line.
 async function unmergedFiles(ws: string): Promise<string> {
   return (await spawn(['git', 'diff', '--name-only', '--diff-filter=U'], ws)).stdout.trim()
 }
 
+// The commit a stopped rebase is on and the files in conflict, with how to resolve them.
 export async function conflictBrief(ws: string): Promise<string> {
   const files = (await unmergedFiles(ws)).split('\n').filter(Boolean)
   const at = await spawn(['git', 'log', '-1', '--format=%h %s', 'REBASE_HEAD'], ws)
