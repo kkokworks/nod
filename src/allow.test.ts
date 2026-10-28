@@ -445,6 +445,39 @@ test("a prompt's decision whose turn the person stopped with Escape closes as th
   expect(ledger.get(id).status).toBe('running')
 }, 15_000)
 
+test('what a person types into a turn they stopped is kept even when closing its dialog’s decision fails', async () => {
+  const { home, ledger, id, attemptId, event } = running()
+  const config = tmp.make('nod-allow-claude-')
+  mkdirSync(join(config, 'projects', 'work'), { recursive: true })
+  ledger.setAccount(id, config)
+  const stop = { type: 'text', text: '[Request interrupted by user for tool use]' }
+  writeFileSync(
+    join(config, 'projects', 'work', 's1.jsonl'),
+    `${JSON.stringify({ type: 'user', message: { role: 'user', content: [stop] } })}\n`,
+  )
+  expect(hook(home, JSON.stringify(event('git push origin feat/x')))).toBe('')
+  const attached = spyOn(Terminals.prototype, 'attached').mockReturnValue(true)
+  const option = spyOn(Terminals.prototype, 'option').mockReturnValue('')
+  // The ledger is busy as the decision closes.
+  const dismiss = spyOn(Ledger.prototype, 'dismiss').mockImplementation(() => {
+    throw new Error('database is locked')
+  })
+  try {
+    await expect(
+      onPrompt(ledger, home, { session_id: 's1', prompt: 'push to the fork' }),
+    ).rejects.toThrow('database is locked')
+  } finally {
+    attached.mockRestore()
+    option.mockRestore()
+    dismiss.mockRestore()
+  }
+  expect(ledger.messages(id).map((m) => [m.attemptId, m.text])).toEqual([
+    [attemptId, '(typed into the terminal)\npush to the fork'],
+  ])
+  // The decision is left as it was, to close as before.
+  expect(ledger.decisions(id).map((d) => d.answer)).toEqual([null])
+}, 15_000)
+
 test("no to one of the prompts tools that ran at once queued closes the others' decisions too: Escape ends the turn and every dialog of it", async () => {
   const { home, ledger, id, attemptId, event } = running()
   expect(hook(home, JSON.stringify(event('git push origin feat/x')))).toBe('')

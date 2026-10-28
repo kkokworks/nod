@@ -884,7 +884,6 @@ export async function onPrompt(
   const terminals = Terminals.of(home)
   const name = sessionName(taskId)
   const typed = terminals.attached(name) && !OWN_MESSAGE.test(event.prompt)
-  const stopped = typed ? stoppedDialogs(ledger, home, taskId) : []
   // What a restart after an API error left for the new start (restart), which nod keeps nowhere
   // else; the mark stays until a Stop.
   const stalled = typed ? terminals.option(name, STALLED_OPTION) : ''
@@ -898,6 +897,9 @@ export async function onPrompt(
     }
     ledger.addMessage(taskId, open.id, said)
   })
+  // After their words are in: closing the dialog's decision may fail (the ledger busy), and those
+  // words are what the review and a question's answer go by. The turn stays the one it was.
+  const stopped = typed ? stoppedDialogs(ledger, home, taskId) : []
   await announce(home, ledger.get(taskId), stopped, STOPPED_DIALOG)
 }
 
