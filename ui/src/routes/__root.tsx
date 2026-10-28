@@ -65,22 +65,30 @@ function Shell({ children }: { children: ReactNode }) {
   )
 }
 
+// Whether a field of the page holds something (a message being written, a todo's form, a search).
+// xterm.js's own field holds nothing of the person's.
+const typing = (): boolean =>
+  [...document.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>('input, textarea')].some(
+    (f) => f.value !== '' && f.closest('.xterm') === null && !UNTYPED.has(f.type),
+  )
+const UNTYPED = new Set(['checkbox', 'radio', 'hidden', 'button', 'submit', 'reset'])
+
 function Root() {
   const data = Route.useLoaderData()
-  const build = 'failed' in data ? null : data.build
   // A page from before the server was built again (`ui.sh install`) goes on running the old code,
-  // which the app's window keeps until it loads a page anew, so the page loads itself again. Once
-  // for each build of the server's: a page and a server that do not agree must not reload for good.
+  // which the app's window keeps until it loads a page anew, so the page loads itself again: at a
+  // refresh with nothing typed in it that loading would lose, and once for each build of the
+  // server's, as a page and a server that do not agree must not reload for good.
   useEffect(() => {
-    if (build === null || build === BUILD) return
+    if ('failed' in data || data.build === BUILD || typing()) return
     try {
-      if (sessionStorage.getItem(RELOADED) === build) return
-      sessionStorage.setItem(RELOADED, build)
+      if (sessionStorage.getItem(RELOADED) === data.build) return
+      sessionStorage.setItem(RELOADED, data.build)
     } catch {
       return
     }
     location.reload()
-  }, [build])
+  }, [data])
   return 'failed' in data ? (
     <Layout data={null}>
       <Failed error={data.failed} />

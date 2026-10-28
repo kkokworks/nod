@@ -227,12 +227,9 @@ function TaskPage() {
           ) : (
             <Screen key={`screen-${task.id}`} id={task.id} screen={screen} />
           )}
-          {/* Keyed, as moving to another task keeps this page: what was written does not go along.
-              A live session is typed into on its screen, so the box is there only to answer a
-              decision, which what is typed there does not, and to message a worker whose session
-              is gone. */}
-          {canSend && (screen === null || open !== undefined) && (
-            <Composer key={task.id} taskId={task.id} open={open} />
+          {/* Keyed, as moving to another task keeps this page: what was written does not go along. */}
+          {canSend && (
+            <Composer key={task.id} taskId={task.id} open={open} live={screen !== null} />
           )}
         </aside>
       )}
@@ -246,7 +243,16 @@ const YES_OR_NO = new Set(['permission', 'trust', 'rule', 'land'])
 // How long the buttons wait after the open decision changed under them.
 const CHANGED_MS = 1000
 
-function Composer({ taskId, open }: { taskId: number; open: Decision | undefined }) {
+// `live`: the session is alive, and typed into on its screen.
+function Composer({
+  taskId,
+  open,
+  live,
+}: {
+  taskId: number
+  open: Decision | undefined
+  live: boolean
+}) {
   const router = useRouter()
   const [text, setText] = useState('')
   // The decision the text was begun for, or null for a message. The page reloads under the person
@@ -303,6 +309,11 @@ function Composer({ taskId, open }: { taskId: number; open: Decision | undefined
     void submit(reply, d.id)
   }
 
+  // A live session is typed into on its screen, so the box shows there only to answer a decision,
+  // which what is typed on the screen does not, and while it holds what was written or what it
+  // said of it. Hidden, not gone: a decision that opens is still timed (`changed`), and an answer
+  // whose decision closes stays to be sent as a message.
+  if (live && open === undefined && text === '' && error === null) return null
   return (
     <form
       className="composer"

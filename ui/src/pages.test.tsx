@@ -268,6 +268,28 @@ test('a live session is typed into on its screen, with the box below only to ans
   expect(field<HTMLTextAreaElement>('.composer textarea').placeholder).toBe('Message the worker…')
 })
 
+test('under a live terminal, a decision that opens is not answered by a click at once, and an answer whose decision closes stays', async () => {
+  answer = (id) => live(id as number)
+  await go('/tasks/24')
+  expect(document.querySelector('.composer')).toBeNull()
+  // The box comes where the person was about to click on the screen.
+  open[24] = { id: 40, reason: 'permission' }
+  await reload()
+  await click('Yes')
+  expect(posted).toEqual([])
+  expect(banners().join()).toContain('#40')
+  // An answer being written to a question that closes meanwhile stays, to go as a message.
+  open[24] = { id: 41, reason: 'question' }
+  await reload()
+  type(field('.composer textarea'), 'use the first')
+  open[24] = undefined
+  await reload()
+  expect(field<HTMLTextAreaElement>('.composer textarea').value).toBe('use the first')
+  await submit('.composer textarea')
+  expect(posted).toEqual([])
+  expect(banners().join()).toContain('#41')
+})
+
 test("a live worker's screen attaches to its session, takes keys, and lets go when the page moves on or the session ends", async () => {
   answer = (id) => live(id as number)
   Socket.made.length = 0
@@ -715,7 +737,10 @@ const overview = (build: string) => ({
   build,
 })
 
-test("a page from another build than the server's loads itself again, once for that build", async () => {
+test("a page from another build than the server's loads itself again, once for that build, when nothing typed in it would be lost", async () => {
+  // The other pages' router shows a page with no fields meanwhile.
+  rows = []
+  await go('/rows')
   const reloads = spyOn(location, 'reload').mockImplementation(() => {})
   const box = document.body.appendChild(document.createElement('div'))
   let own = createRoot(box)
@@ -729,8 +754,15 @@ test("a page from another build than the server's loads itself again, once for t
     const app = realRoot()
     await load(app)
     expect(reloads).not.toHaveBeenCalled()
-    // The server was built again (ui.sh install) while the page was open.
+    // The server was built again (ui.sh install) while a search was being typed: not yet.
     answer = () => overview('newer')
+    const search = box.querySelector<HTMLInputElement>('.side-search input')
+    if (search === null) throw new Error('no search box')
+    type(search, 'r2')
+    await act(() => app.invalidate())
+    await settle()
+    expect(reloads).not.toHaveBeenCalled()
+    type(search, '')
     await act(() => app.invalidate())
     await settle()
     expect(reloads).toHaveBeenCalledTimes(1)
