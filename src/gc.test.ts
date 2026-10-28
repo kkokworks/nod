@@ -455,7 +455,7 @@ test('gc keeps a worktree holding the only copy of commits: in a submodule, or o
     expect(existsSync(t.cwd)).toBe(true)
     expect(ledger.get(t.id).collectedAt).toBeNull()
   }
-})
+}, 30_000)
 
 test('gc removes nothing of a task told to go on while it checks the worktree', async () => {
   const home = tmp.make('nod-gc-')

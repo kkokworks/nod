@@ -2,7 +2,7 @@ import { collect, type GcReport, landed } from './gc'
 import { FINISHED, type Ledger, type Task } from './ledger'
 import { Terminals } from './tmux'
 import { Todos } from './todos'
-import { message, sessionName } from './worker'
+import { message, readAtOnce, sessionName } from './worker'
 
 // When a finished task is done with, so gc can collect it without the human naming it. gc keeps
 // the session's transcript and resume rebuilds the worktree (restore in worker.ts), so collecting
@@ -30,9 +30,9 @@ export type Done = { id: number; reason: string }
 // A task whose signals could not be read, a git service call that failed, say: it waits.
 export type Unchecked = { id: number; error: string }
 
-// `tasks`: the ledger's tasks, as read once for the signals. The tasks' signals are read at once,
-// as a git service may take a while on each (up to TIMEOUT_MS in prs.ts); what they say stays in
-// the tasks' order.
+// `tasks`: the ledger's tasks, as read once for the signals. Several tasks' signals are read at
+// once (readAtOnce), as a git service may take a while on each (up to TIMEOUT_MS in prs.ts); what
+// they say stays in the tasks' order.
 export async function doneTasks(
   ledger: Ledger,
   home: string,
@@ -41,20 +41,18 @@ export async function doneTasks(
   tasks: Task[] = ledger.list(),
 ): Promise<{ done: Done[]; unchecked: Unchecked[] }> {
   const terminals = Terminals.of(home)
-  const read = await Promise.all(
-    tasks.map(async (task): Promise<Done | Unchecked | null> => {
-      if (task.collectedAt !== null) return null
-      if (!FINISHED.has(task.status)) return null
-      // A turn the person types in keeps the status succeeded until it ends.
-      if (terminals.attached(sessionName(task.id))) return null
-      try {
-        const reason = await signal(ledger, tasks, task, prs, now)
-        return reason === null ? null : { id: task.id, reason }
-      } catch (error) {
-        return { id: task.id, error: message(error) }
-      }
-    }),
-  )
+  const read = await readAtOnce(tasks, async (task): Promise<Done | Unchecked | null> => {
+    if (task.collectedAt !== null) return null
+    if (!FINISHED.has(task.status)) return null
+    // A turn the person types in keeps the status succeeded until it ends.
+    if (terminals.attached(sessionName(task.id))) return null
+    try {
+      const reason = await signal(ledger, tasks, task, prs, now)
+      return reason === null ? null : { id: task.id, reason }
+    } catch (error) {
+      return { id: task.id, error: message(error) }
+    }
+  })
   return {
     done: read.filter((r): r is Done => r !== null && 'reason' in r),
     unchecked: read.filter((r): r is Unchecked => r !== null && 'error' in r),

@@ -2445,7 +2445,9 @@ const continueAfter = (error: string): string =>
 export async function restartDue(ledger: Ledger, home: string, only?: number): Promise<number[]> {
   // Read in the one call that lists the sessions, not one a session: this runs at the end of every
   // nod command. The restart waited on comes last, as the one value with spaces (sessionOptions).
-  const live = Terminals.of(home).sessionOptions(RESTARTING_OPTION, RESTART_OPTION)
+  const terminals = Terminals.of(home)
+  const read = () => terminals.sessionOptions(RESTARTING_OPTION, RESTART_OPTION)
+  let live = read()
   const tasks = (only === undefined ? ledger.list() : [ledger.get(only)]).filter(
     (t) => t.account !== null && live.has(sessionName(t.id)),
   )
@@ -2459,7 +2461,10 @@ export async function restartDue(ledger: Ledger, home: string, only?: number): P
     const changed = current !== null && current !== t.account
     const why =
       waiting || (changed ? `the account is now ${current || "Claude Code's default"}` : '')
-    if (why !== '' && (await restart(ledger, home, t.id, why)) === 'restarted') restarted.push(t.id)
+    if (why === '') continue
+    if ((await restart(ledger, home, t.id, why)) === 'restarted') restarted.push(t.id)
+    // Again after the wait (a notify), as the next worker's own Stop hook may have restarted it.
+    live = read()
   }
   return restarted
 }
@@ -3158,6 +3163,23 @@ export async function spawn(
     timeoutMs: opts.timeoutMs,
   })
   return { code, stdout, output: stdout + stderr }
+}
+
+// How many tasks ls and doneTasks read at once, each running a command at a time: all of a long
+// ledger at once runs out of processes (a crash with EAGAIN under `ulimit -u`, measured), and takes
+// them from everything else the user runs.
+export const AT_ONCE = 8
+
+// `read` of each item, `AT_ONCE` at a time, in the items' order. Rejects as the first read to
+// reject does.
+export async function readAtOnce<T, R>(items: T[], read: (item: T) => Promise<R>): Promise<R[]> {
+  const out: R[] = []
+  let next = 0
+  const reader = async (): Promise<void> => {
+    for (let i = next++; i < items.length; i = next++) out[i] = await read(items[i] as T)
+  }
+  await Promise.all(Array.from({ length: Math.min(AT_ONCE, items.length) }, reader))
+  return out
 }
 
 function oneLine(s: string): string {

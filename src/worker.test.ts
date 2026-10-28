@@ -29,6 +29,7 @@ import { quote, Terminals } from './tmux'
 import { Todos } from './todos'
 import { addTrigger, tick } from './triggers'
 import {
+  AT_ONCE,
   answer,
   askToLand,
   claudeArgs,
@@ -43,6 +44,7 @@ import {
   parseCaptures,
   parseReport,
   parseTells,
+  readAtOnce,
   restart,
   restartDue,
   restartMark,
@@ -1925,6 +1927,22 @@ it('a retrospective that sends its fix to the inbox ends as todo, and one that a
   )
   expect(ledger.decisions(both).map((d) => d.reason)).toEqual(['rule'])
   expect(inbox()).toEqual(['Fix nod', 'Add a check'])
+})
+
+it('readAtOnce reads AT_ONCE items at a time, no more, and gives what each read in their order', async () => {
+  let reading = 0
+  let most = 0
+  const read = async (n: number): Promise<number> => {
+    most = Math.max(most, ++reading)
+    // Ends after the reads begun with it: the later ones end first.
+    for (let i = n; i < 30; i++) await null
+    reading--
+    return n * 2
+  }
+  const items = Array.from({ length: 3 * AT_ONCE }, (_, i) => i)
+  expect(await readAtOnce(items, read)).toEqual(items.map((n) => n * 2))
+  expect(most).toBe(AT_ONCE)
+  expect(await readAtOnce([], read)).toEqual([])
 })
 
 it('a worker learns its task through NOD_TASK, so the todos it changes name it', () => {

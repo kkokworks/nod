@@ -78,6 +78,7 @@ import {
   onStopFailure,
   PromptEvent,
   type Restart,
+  readAtOnce,
   restart,
   restartDue,
   resume,
@@ -372,11 +373,9 @@ switch (command) {
     })
     const session = mySession(values.mine)
     const live = terminals.sessions()
-    const tasks = await Promise.all(
-      ledger
-        .list()
-        .filter((t) => (values.all || t.collectedAt === null) && isMine(session, t))
-        .map((t) => lsTask(t, live)),
+    const tasks = await readAtOnce(
+      ledger.list().filter((t) => (values.all || t.collectedAt === null) && isMine(session, t)),
+      (t) => lsTask(t, live),
     )
     const listed = lsGroups(tasks).flatMap((g) => g.tasks)
     const mode = lsMode(values, process.stdout.isTTY, process.env.NO_COLOR)
@@ -1142,10 +1141,7 @@ function printTask(t: Task, live: ReadonlySet<string>, pushed: string[]): void {
 // The remote branches holding a succeeded task's branch, while it has no link: its result was
 // pushed, maybe under another name, and is waiting to be linked. Only as fresh as the repo's last
 // fetch; nod fetches only as it lands a repo's tasks (land.ts). Not waited on in turn: ls asks of
-// every task at once.
-// ponytail: no cap on the gits at once. Bun raises the soft limit on open files to the hard one
-// (500 at once ran under macOS's soft 256); a hard limit under about 4 a task would fail some with
-// EMFILE, which a few at a time would fix.
+// several tasks at once (readAtOnce).
 async function unlinkedPushes(t: Task): Promise<string[]> {
   const { repo } = t
   if (repo === null || t.status !== 'succeeded' || ledger.links(t.id).length > 0) return []
