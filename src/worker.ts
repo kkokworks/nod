@@ -18,7 +18,7 @@ import { basename, join, resolve } from 'node:path'
 import { z } from 'zod'
 import { accountChanged, accountRule, configDir } from './account'
 import type { PermissionEvent } from './allow'
-import { onlyCopy } from './gc'
+import { hasRef, onlyCopy } from './gc'
 import {
   type Attempt,
   type AttemptKind,
@@ -239,7 +239,7 @@ const TURN_ENDED = '(its turn ended)'
 
 // ponytail: fixed retry budget; make it per-task if real checks need more.
 const CHECK_RETRIES = 2
-const OUTPUT_LIMIT = 4000
+export const OUTPUT_LIMIT = 4000
 const QUESTION_LIMIT = 2000
 // More than this in one report is more than a person can clarify, or a worker gone wrong.
 const MAX_CAPTURES = 50
@@ -429,7 +429,7 @@ export function firstMessage(ledger: Ledger, task: Task, start: string | null): 
 }
 
 // The task whose branch this task's worktree starts from: the one it comes after in the same repo.
-function baseOf(ledger: Ledger, task: Task): Task | null {
+export function baseOf(ledger: Ledger, task: Task): Task | null {
   return ledger.after(task.id).find((a) => task.repo !== null && a.repo === task.repo) ?? null
 }
 
@@ -2773,9 +2773,7 @@ async function prepareWorkspace(
   // Starting from the earlier task's branch keeps tasks on the same files in sequence, not in
   // conflict.
   const base = baseOf(ledger, task)
-  const had =
-    Bun.spawnSync(['git', '-C', repo, 'rev-parse', '--verify', '-q', `refs/heads/${branch}`])
-      .exitCode === 0
+  const had = hasRef(repo, `refs/heads/${branch}`)
   // 32 concurrent `worktree add` on one repo all succeeded when measured, so no lock here.
   const { code, output } = await spawn([
     'git',
@@ -2837,9 +2835,7 @@ async function rebuildWorktree(
   cwd: string,
   head: string | null,
 ): Promise<void> {
-  const has = (ref: string): boolean =>
-    Bun.spawnSync(['git', '-C', repo, 'rev-parse', '--verify', '-q', `${ref}^{commit}`])
-      .exitCode === 0
+  const has = (ref: string): boolean => hasRef(repo, `${ref}^{commit}`)
   const from = (): string => {
     const ref = [head, `refs/remotes/origin/${branch}`, 'refs/remotes/origin/HEAD'].find(
       (r): r is string => r !== null && has(r),
