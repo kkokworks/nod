@@ -2002,9 +2002,9 @@ async function withoutAutocompact(body: () => unknown): Promise<void> {
   }
 }
 
-test('a worker compacts at 70% of its window, unless the environment nod starts from says how early', () =>
+test('a worker compacts at 60% of its window, unless the environment nod starts from says how early', () =>
   withoutAutocompact(() => {
-    expect(workerEnv('/h', 5).CLAUDE_AUTOCOMPACT_PCT_OVERRIDE).toBe('70')
+    expect(workerEnv('/h', 5).CLAUDE_AUTOCOMPACT_PCT_OVERRIDE).toBe('60')
     process.env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE = '50'
     expect(workerEnv('/h', 5).CLAUDE_AUTOCOMPACT_PCT_OVERRIDE).toBe('50')
   }))
@@ -2019,8 +2019,8 @@ test(
       endClaude(id) // a crash, a person's /exit: keepWorker starts it again
       await until(() => entries('launch').length === 2)
       expect(entries('launch').map((l) => [l.resumed, l.autocompact])).toEqual([
-        [false, '70'],
-        [true, '70'],
+        [false, '60'],
+        [true, '60'],
       ])
     }),
   30_000,
