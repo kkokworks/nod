@@ -403,9 +403,28 @@ test('answering with a button keeps what was being written', async () => {
     open[5] = undefined
   }
   await reload()
+  setSystemTime(new Date(Date.now() + 1500))
   await click('Yes')
   expect(posted.splice(0)).toEqual([{ taskId: 5, decisionId: 8, text: 'yes' }])
   expect(field<HTMLTextAreaElement>('.composer textarea').value).toBe('half a thought')
+})
+
+test('a button does not answer a decision that just took the place of another', async () => {
+  answer = (id) => detail(id as number)
+  open[6] = { id: 10, reason: 'land' }
+  await go('/tasks/6')
+  // The answer is taken, and the next asks just as the person clicks again.
+  onPost = () => {
+    open[6] = { id: 11, reason: 'land' }
+  }
+  await click('Yes')
+  await click('Yes')
+  expect(posted.splice(0)).toEqual([{ taskId: 6, decisionId: 10, text: 'yes' }])
+  expect(banners().join()).toContain('#11')
+  // A moment on, the person has seen it.
+  setSystemTime(new Date(Date.now() + 1500))
+  await click('Yes')
+  expect(posted.splice(0)).toEqual([{ taskId: 6, decisionId: 11, text: 'yes' }])
 })
 
 test('⌘↵ pressed again before the message is through sends it once', async () => {

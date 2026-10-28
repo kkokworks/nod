@@ -866,18 +866,25 @@ export async function onStopFailure(
 // Claude Code went on to by itself.
 // A command (/exit) or bash mode does not come here: it does not go through prompt.submit, as the
 // 2.1.310 binary says of a prompt with no submit outcome. So a message that starts with `/` (a path)
-// is a turn like any other.
+// is a turn like any other. A permission dialog the person stopped with Escape closes here, as
+// before nod's message (deliver): the message goes on past it at once, and the decision would
+// otherwise hold the task and refuse nod's messages through the turn it goes on to.
 // ponytail: not measured in an interactive session; a command that did come here would open a
 // turn its Stop never closes, read as cut off once Claude Code starts again. Nor whether Claude Code
 // runs this hook for a message it gives the worker in the middle of a turn, or how it passes one
 // nod pasted: words of nod's it changed read as the person's, and are kept twice. A message Claude
 // Code gives by itself while a person is attached, in a shape OWN_MESSAGE misses, reads as theirs.
-export function onPrompt(ledger: Ledger, home: string, event: z.infer<typeof PromptEvent>): void {
+export async function onPrompt(
+  ledger: Ledger,
+  home: string,
+  event: z.infer<typeof PromptEvent>,
+): Promise<void> {
   const taskId = ledger.taskOfSession(event.session_id)
   if (taskId === null) return
   const terminals = Terminals.of(home)
   const name = sessionName(taskId)
   const typed = terminals.attached(name) && !OWN_MESSAGE.test(event.prompt)
+  const stopped = typed ? stoppedDialogs(ledger, home, taskId) : []
   // What a restart after an API error left for the new start (restart), which nod keeps nowhere
   // else; the mark stays until a Stop.
   const stalled = typed ? terminals.option(name, STALLED_OPTION) : ''
@@ -891,6 +898,7 @@ export function onPrompt(ledger: Ledger, home: string, event: z.infer<typeof Pro
     }
     ledger.addMessage(taskId, open.id, said)
   })
+  await announce(home, ledger.get(taskId), stopped, STOPPED_DIALOG)
 }
 
 // A message Claude Code gives the worker by itself, while a person may be attached: a background
@@ -973,7 +981,7 @@ export async function onPermissionAsk(
     'permission',
     `Claude needs your permission to use ${event.tool_name}. Answer yes to allow; anything else denies.\n${asked.slice(0, QUESTION_LIMIT)}`,
   )
-  await announce(home, ledger.get(taskId), turn.closed, WENT_ON)
+  await announce(home, ledger.get(taskId), turn.closed, turn.why)
 }
 
 // Called by the Notification hook: a permission prompt still shown after some 6 s. The other
@@ -1388,25 +1396,29 @@ async function currentAttempt(
   sessionId: string,
 ): Promise<number> {
   const turn = currentTurn(ledger, taskId, sessionId)
-  await announce(home, ledger.get(taskId), turn.closed, WENT_ON)
+  await announce(home, ledger.get(taskId), turn.closed, turn.why)
   return turn.id
 }
 
-// currentAttempt's turn, in the ledger only, with what it closed, for the caller to announce.
+// currentAttempt's turn, in the ledger only, with what it closed and with what, for the caller to
+// announce.
 function currentTurn(
   ledger: Ledger,
   taskId: number,
   sessionId: string,
-): { id: number; closed: Decision[] } {
+): { id: number; closed: Decision[]; why: string } {
   const turn = openTurn(ledger, taskId, sessionId)
   // A turn nod sent closed these as it started (deliver). One the prompt hook opened leaves them
   // to here, the turn's end as before it was opened at its start, so a turn the person stops
-  // (Escape, no Stop) leaves the question open and the task waiting on it.
-  if (!typedHere(turn.prompt)) return { id: turn.id, closed: [] }
+  // (Escape, no Stop) leaves the question open and the task waiting on it. What the person typed to
+  // start it answers them: the worker took it in after what it asked. One with no words of theirs
+  // (Claude Code went on by itself) went on without an answer.
+  if (!typedHere(turn.prompt)) return { id: turn.id, closed: [], why: WENT_ON }
+  const why = turn.prompt === TYPED ? WENT_ON : turn.prompt.slice(TYPED.length + 1)
   const asked = (d: Decision) => ASKED.includes(d.reason) && d.attemptId !== turn.id
-  const closed = closeDecisions(ledger, taskId, asked, WENT_ON)
+  const closed = closeDecisions(ledger, taskId, asked, why)
   goesOn(ledger, taskId, closed)
-  return { id: turn.id, closed }
+  return { id: turn.id, closed, why }
 }
 
 // The task's open turn, or one opened as a turn nod did not send, with `prompt`. In one transaction
@@ -1503,9 +1515,12 @@ function transcriptTail(ledger: Ledger, home: string, open: Attempt): string[] {
 // Closes the permission decisions of the open turn once its transcript shows the person stopped it
 // with Escape: the dialog went with the turn (no Stop, 2.1.290). Since the dialog's decision opens
 // as it shows (onPermissionAsk), one they answered so within seconds is a decision too. Only before
-// a message, which goes on past it at once (deliver): elsewhere the decision stays as before, so a
-// typed turn it closes does not leave its task running with no turn. A transcript that cannot be
-// read leaves it open (transcriptTail).
+// a message, nod's (deliver) or one they type (onPrompt), which goes on past it at once: elsewhere
+// the decision stays as before, so a typed turn it closes does not leave its task running with no
+// turn. A transcript that cannot be read leaves it open (transcriptTail).
+// ponytail: the prompt hook runs before Claude Code writes the message to the transcript, as a
+// message a hook holds back leaves none (2.1.310), so its end still shows the stop; not measured
+// with a dialog stopped.
 // ponytail: reads the transcript's end as endTurnWithoutStop does; a format that changes leaves
 // the decision open, as before.
 function stoppedDialogs(ledger: Ledger, home: string, taskId: number): Decision[] {

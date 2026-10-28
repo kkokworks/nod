@@ -1620,7 +1620,13 @@ test("Claude Code's default folder trusts nod's work folder for itself, whatever
   expect(checks.map((l) => l.config)).toEqual([null])
 })
 
-type Heard = { event: string; task?: { id: number }; error?: string; reason?: string }
+type Heard = {
+  event: string
+  task?: { id: number }
+  error?: string
+  reason?: string
+  decision?: { answer: string }
+}
 
 // Makes <home>/notify keep each event, and returns what it has kept so far. One file per event,
 // renamed into place, so a read never sees half an event.
@@ -3076,7 +3082,7 @@ it('a turn a person types in opens at its start, and what it changes of the task
   const id = started('ask first', 'typed-in')
   await stopped('typed-in', 'NOD: question | Which one?')
   // The person types an answer into the terminal instead: its turn opens, the question stays.
-  onPrompt(ledger, home, { session_id: 'typed-in', prompt: 'the first' })
+  await onPrompt(ledger, home, { session_id: 'typed-in', prompt: 'the first' })
   expect(status(id)).toBe('needs_decision')
   expect(ledger.attempts(id).map((a) => [a.kind, a.finishedAt === null])).toEqual([
     ['start', false],
@@ -3108,7 +3114,7 @@ it('a typed turn whose transcript shows it ended without a Stop is ended, not ta
     ledger.endAttempt(start, { outcome: 'needs_decision', summary: 'which?', report: 'which?' })
     ledger.ask(id, start, 'question', 'which?')
     ledger.setAccount(id, config)
-    onPrompt(ledger, home, { session_id: session, prompt: 'the first' })
+    void onPrompt(ledger, home, { session_id: session, prompt: 'the first' })
     const lines = [said('the first'), ...last].map((l) => JSON.stringify(l))
     writeFileSync(join(config, 'projects', 'work', `${session}.jsonl`), `${lines.join('\n')}\n`)
     return id
@@ -3170,7 +3176,7 @@ it('a task waiting on background work that a person typed into and stopped is st
     const id = started(`waits, ${session}`, session)
     ledger.setAccount(id, config)
     await stopped(session, 'NOD: question | which?', ['agent'])
-    onPrompt(ledger, home, { session_id: session, prompt: 'status?' })
+    await onPrompt(ledger, home, { session_id: session, prompt: 'status?' })
     const file = join(config, 'projects', 'work', `${session}.jsonl`)
     writeFileSync(file, `${JSON.stringify({ type: 'user', message: stop })}\n`)
     return id
@@ -4034,7 +4040,7 @@ it('the review hears what the human told the worker in the middle of a turn, in 
 // What Claude Code's prompt hook passes for each message it takes in, a person's or one nod pasted,
 // in the session `session`.
 const prompted = (session: string, prompt: string): void =>
-  onPrompt(ledger, home, { session_id: session, prompt })
+  void onPrompt(ledger, home, { session_id: session, prompt })
 // As while a person is attached to a worker (nod attach), with the API error its last turn stopped
 // on as `stalled`, '' for none.
 const attachedWhile = (run: () => void, stalled = ''): void => {
@@ -4049,6 +4055,19 @@ const attachedWhile = (run: () => void, stalled = ''): void => {
     option.mockRestore()
   }
 }
+
+it('a question a person answers by typing into the worker’s terminal closes with what they typed once that turn goes on, not as gone on without an answer', async () => {
+  const events = listen()
+  const id = started('ask first', 'answered-here')
+  await stopped('answered-here', 'NOD: question | Which one?')
+  attachedWhile(() => prompted('answered-here', 'the first,\nthen the second'))
+  await stopped('answered-here', 'NOD: done | did both')
+  expect(status(id)).toBe('succeeded')
+  expect(ledger.decisions(id).map((d) => d.answer)).toEqual(['the first,\nthen the second'])
+  // A to-do list that mirrors open decisions hears it closed so.
+  const answered = events().filter((e) => e.event === 'answered')
+  expect(answered.map((e) => e.decision?.answer)).toEqual(['the first,\nthen the second'])
+})
 
 it('what a person types into the worker’s terminal is kept once each, marked as typed, with what nod sent, and what nod pasted is not kept again', () => {
   const id = started('write it\nin full', 's')

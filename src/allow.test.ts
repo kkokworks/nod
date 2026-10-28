@@ -17,7 +17,7 @@ import { Ledger, type NewTask, type Task } from './ledger'
 import { Terminals } from './tmux'
 import { Todos } from './todos'
 import { allowedLine, watch } from './view'
-import { answer, onNotification, tell } from './worker'
+import { answer, onNotification, onPrompt, tell } from './worker'
 
 const tmp = tempDirs()
 afterAll(tmp.removeAll)
@@ -398,6 +398,49 @@ test("a prompt's decision whose turn the person stopped with Escape closes as th
   ])
   expect(ledger.messages(id).map((m) => [m.attemptId, m.text])).toEqual([
     [attemptId, 'push to the fork'],
+  ])
+  expect(ledger.get(id).status).toBe('running')
+}, 15_000)
+
+test("a prompt's decision whose turn the person stopped with Escape closes as they type the next message into its terminal: nod's messages follow theirs into the turn", async () => {
+  const { home, ledger, id, attemptId, event } = running()
+  const config = tmp.make('nod-allow-claude-')
+  mkdirSync(join(config, 'projects', 'work'), { recursive: true })
+  ledger.setAccount(id, config)
+  const transcript = (...entries: object[]) =>
+    writeFileSync(
+      join(config, 'projects', 'work', 's1.jsonl'),
+      entries.map((e) => `${JSON.stringify(e)}\n`).join(''),
+    )
+  const said = (content: unknown) => ({ type: 'user', message: { role: 'user', content } })
+  const stop = { type: 'text', text: '[Request interrupted by user for tool use]' }
+  expect(hook(home, JSON.stringify(event('git push origin feat/x')))).toBe('')
+  // A person at the worker's terminal, which tmux stands in for.
+  const alive = spyOn(Terminals.prototype, 'alive').mockReturnValue(true)
+  const attached = spyOn(Terminals.prototype, 'attached').mockReturnValue(true)
+  const option = spyOn(Terminals.prototype, 'option').mockReturnValue('')
+  const send = spyOn(Terminals.prototype, 'send').mockImplementation(() => {})
+  try {
+    // They answer the dialog no with Escape, which ends the turn with no Stop (2.1.290), and type
+    // what to do instead: the prompt hook runs before Claude Code keeps it.
+    transcript(said([stop]))
+    await onPrompt(ledger, home, { session_id: 's1', prompt: 'push to the fork' })
+    expect(ledger.get(id).status).toBe('running')
+    transcript(said([stop]), said('push to the fork'))
+    await tell(ledger, home, id, 'and tag it')
+    expect(send.mock.calls.map(([, text]) => text)).toEqual(['and tag it'])
+  } finally {
+    alive.mockRestore()
+    attached.mockRestore()
+    option.mockRestore()
+    send.mockRestore()
+  }
+  expect(ledger.decisions(id).map((d) => [d.reason, d.answer])).toEqual([
+    ['permission', '(the person stopped its turn)'],
+  ])
+  expect(ledger.messages(id).map((m) => [m.attemptId, m.text])).toEqual([
+    [attemptId, '(typed into the terminal)\npush to the fork'],
+    [attemptId, 'and tag it'],
   ])
   expect(ledger.get(id).status).toBe('running')
 }, 15_000)
