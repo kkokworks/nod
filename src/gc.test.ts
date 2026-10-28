@@ -551,14 +551,12 @@ test('a task gc cannot finish after its worktree went stays listed, and a later 
   ledger.setRunning(id, cwd)
   ledger.succeed(id)
   // Looking for the remote branches that hold the branch fails, so it cannot be deleted.
-  const spawnSync = Bun.spawnSync
-  const spy = spyOn(Bun, 'spawnSync').mockImplementation(((
-    ...args: Parameters<typeof spawnSync>
-  ) => {
+  const spawn = Bun.spawn
+  const spy = spyOn(Bun, 'spawn').mockImplementation(((...args: Parameters<typeof spawn>) => {
     const [cmd] = args
     if (Array.isArray(cmd) && cmd.includes('--contains')) throw new Error('for-each-ref failed')
-    return spawnSync.apply(Bun, args)
-  }) as typeof spawnSync)
+    return spawn.apply(Bun, args)
+  }) as typeof spawn)
 
   const failed = await collect(ledger, home, { ids: [id] }).finally(() => spy.mockRestore())
 

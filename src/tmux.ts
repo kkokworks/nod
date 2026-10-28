@@ -51,6 +51,23 @@ export class Terminals {
     return new Set(list.stdout.toString().split('\n').filter(Boolean))
   }
 
+  // The sessions there are, each with the values nod keeps on it (option) under `keys`, '' when
+  // unset, in one call; none when the server is not running. A format names a session's user
+  // option as it does any option. The values are spaced apart, so all but the last hold no space.
+  sessionOptions(...keys: string[]): Map<string, string[]> {
+    const format = ['#{session_name}', ...keys.map((key) => `#{@${key}}`)].join(' ')
+    const list = this.run(['list-sessions', '-F', format])
+    if (list.exitCode !== 0) return new Map()
+    const lines = list.stdout.toString().split('\n').filter(Boolean)
+    return new Map(
+      lines.map((line) => {
+        const [name = '', ...values] = line.split(' ')
+        const last = keys.length - 1
+        return [name, [...values.slice(0, last), values.slice(last).join(' ')]]
+      }),
+    )
+  }
+
   // A value nod keeps on a session, gone with it; '' when unset.
   option(name: string, key: string): string {
     return this.tmux(['show-options', '-qv', '-t', `=${name}:`, `@${key}`]).trim()

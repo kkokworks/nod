@@ -1,5 +1,13 @@
 import { afterAll, expect, test } from 'bun:test'
-import { mkdirSync, realpathSync, writeFileSync } from 'node:fs'
+import {
+  closeSync,
+  constants,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  realpathSync,
+  writeFileSync,
+} from 'node:fs'
 import { join, resolve } from 'node:path'
 import { tempDirs } from '../test/tmp'
 import { Ledger } from './ledger'
@@ -712,6 +720,116 @@ test('ls shows where an unlinked task was pushed, under any name, until it is li
   expect(await ls()).toBe('origin/feat/work')
   ledger.link(task, ['https://example.com/pr/1'])
   expect(await ls()).toBe('https://example.com/pr/1')
+})
+
+test('ls asks git where each unlinked task was pushed at once, not waiting on one task before the next', async () => {
+  const home = tmp.make('nod-pushed-at-once-')
+  const repo = tmp.make('nod-pushed-at-once-repo-')
+  const bin = tmp.make('nod-pushed-at-once-bin-')
+  const git = (...args: string[]): void => {
+    const r = Bun.spawnSync([
+      'git',
+      '-C',
+      repo,
+      '-c',
+      'user.email=t@t',
+      '-c',
+      'user.name=t',
+      ...args,
+    ])
+    if (r.exitCode !== 0) throw new Error(r.stderr.toString())
+  }
+  git('init', '-q')
+  git('commit', '-q', '--allow-empty', '-m', 'init')
+  const ledger = new Ledger(home)
+  for (const name of ['a', 'b']) {
+    const task = ledger.add({
+      brief: name,
+      repo,
+      branch: `local/${name}`,
+      checkCmd: null,
+      model: null,
+      after: [],
+      triggerId: null,
+      issue: null,
+    })
+    ledger.setRunning(task, repo)
+    ledger.succeed(task)
+    // A commit of its own, so only its remote branch holds it.
+    git('checkout', '-q', '-b', `local/${name}`)
+    git('commit', '-q', '--allow-empty', '-m', name)
+    git('checkout', '-q', '-')
+    git('update-ref', `refs/remotes/origin/feat/${name}`, `local/${name}`)
+  }
+  // The first git to ask which remote branches hold a task's branch goes on only once the second
+  // has asked too, so asked one task after the other, ls would wait for good.
+  const meet = join(bin, 'meet')
+  Bun.spawnSync(['mkfifo', meet])
+  writeFileSync(
+    join(bin, 'git'),
+    `#!/bin/sh
+case " $* " in *" --contains "*)
+  if mkdir ${JSON.stringify(join(bin, 'first'))} 2>/dev/null; then cat ${JSON.stringify(meet)} >/dev/null; else echo >${JSON.stringify(meet)}; fi ;;
+esac
+exec ${JSON.stringify(Bun.which('git'))} "$@"
+`,
+    { mode: 0o755 },
+  )
+
+  const p = Bun.spawn(['bun', cli, 'ls'], {
+    env: { ...process.env, NOD_HOME: home, PATH: `${bin}:${process.env.PATH}` },
+    timeout: 10_000,
+  })
+  const code = await p.exited
+  // Lets a git still waiting go, should ls have asked in turn and been stopped.
+  try {
+    closeSync(openSync(meet, constants.O_WRONLY | constants.O_NONBLOCK))
+  } catch {}
+  expect(code).toBe(0)
+  const out = (await new Response(p.stdout).text()).trim().split('\n')
+  expect(out.map((l) => l.split('\t').at(-1)).sort()).toEqual(['origin/feat/a', 'origin/feat/b'])
+}, 20_000)
+
+test('ls reads the tmux sessions, with what their restarts wait on, in one call each, however many workers run', async () => {
+  const home = tmp.make('nod-ls-tmux-')
+  const bin = tmp.make('nod-ls-tmux-bin-')
+  const calls = join(home, 'tmux.log')
+  // A tmux whose server has the sessions of tasks 1 to 3, none waiting on a restart.
+  writeFileSync(
+    join(bin, 'tmux'),
+    `#!/bin/sh
+echo "$3" >> ${JSON.stringify(calls)}
+[ "$3" = list-sessions ] && printf 'task-1\\ntask-2\\ntask-3\\n'
+exit 0
+`,
+    { mode: 0o755 },
+  )
+  const ledger = new Ledger(home)
+  for (const brief of ['one', 'two', 'three']) {
+    const id = ledger.add({
+      brief,
+      repo: null,
+      branch: null,
+      checkCmd: null,
+      model: null,
+      after: [],
+      triggerId: null,
+      issue: null,
+    })
+    ledger.setRunning(id, home)
+    // Kept running by keepWorker, which restartDue may start again.
+    ledger.setAccount(id, '')
+  }
+
+  const p = Bun.spawn(['bun', cli, 'ls'], {
+    env: { ...process.env, NOD_HOME: home, PATH: `${bin}:${process.env.PATH}` },
+  })
+  expect(await p.exited).toBe(0)
+  const out = (await new Response(p.stdout).text()).trim().split('\n')
+  // Their sessions are there: running, not `session ended`.
+  expect(out.map((l) => l.split('\t')[2])).toEqual(['running', 'running', 'running'])
+  // One for the statuses, one for restartDue at the end of the command.
+  expect(readFileSync(calls, 'utf8')).toBe('list-sessions\nlist-sessions\n')
 })
 
 test('ls keeps tasks of one status together and gives each its issue; --plain and --json for scripts', async () => {

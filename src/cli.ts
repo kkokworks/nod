@@ -85,6 +85,7 @@ import {
   StopEvent,
   StopFailureEvent,
   sessionName,
+  spawn,
   startReady,
   startTask,
   tell,
@@ -370,10 +371,13 @@ switch (command) {
       },
     })
     const session = mySession(values.mine)
-    const tasks = ledger
-      .list()
-      .filter((t) => (values.all || t.collectedAt === null) && isMine(session, t))
-      .map(lsTask)
+    const live = terminals.sessions()
+    const tasks = await Promise.all(
+      ledger
+        .list()
+        .filter((t) => (values.all || t.collectedAt === null) && isMine(session, t))
+        .map((t) => lsTask(t, live)),
+    )
     const listed = lsGroups(tasks).flatMap((g) => g.tasks)
     const mode = lsMode(values, process.stdout.isTTY, process.env.NO_COLOR)
     if (mode === 'json') {
@@ -391,7 +395,7 @@ switch (command) {
     break
   }
   case 'show':
-    show(taskRef(rest[0]))
+    await show(taskRef(rest[0]))
     break
   case 'search':
     await search(rest)
@@ -982,9 +986,11 @@ function gcPick(tasks: string[], olderThan: string | undefined): GcPick {
   return { before: new Date(Date.now() - days * 86_400_000) }
 }
 
-function show(id: number): void {
+async function show(id: number): Promise<void> {
   const task = ledger.get(id)
-  printTask(task)
+  const live = terminals.sessions()
+  const pushed = await unlinkedPushes(task)
+  printTask(task, live, pushed)
   if (task.issue !== null) console.log(`  issue: ${task.issue}`)
   // The project session whose work it is now, by its project, with the command that goes back
   // into it, and the session that added it when that was another.
@@ -1016,7 +1022,7 @@ function show(id: number): void {
   }
   if (task.todoId !== null) console.log(`  todo: t${task.todoId}`)
   for (const url of ledger.links(id)) console.log(`  link: ${url}`)
-  for (const ref of unlinkedPushes(task)) console.log(`  pushed: ${ref}`)
+  for (const ref of pushed) console.log(`  pushed: ${ref}`)
   const landing = ledger.landing(id)
   if (landing !== null) {
     const short = (sha: string | null): string => sha?.slice(0, 12) ?? '—'
@@ -1032,7 +1038,7 @@ function show(id: number): void {
   if (after.length > 0) {
     console.log(`  after: ${after.map((a) => `#${a.id} (${a.status})`).join(', ')}`)
   }
-  if (terminals.alive(sessionName(id))) console.log(`  terminal: nod attach ${id}`)
+  if (live.has(sessionName(id))) console.log(`  terminal: nod attach ${id}`)
   for (const a of ledger.attempts(id)) printAttempt(a)
   for (const d of ledger.decisions(id)) {
     const answered = d.answeredAt
@@ -1052,7 +1058,7 @@ async function search(args: string[]): Promise<void> {
   const [ref, ...extra] = args
   if (ref === undefined || extra.length > 0) throw new Error(USAGE)
   const todos = new Todos(ledger)
-  const found = todos.find(ref, (t) => taskStatus(t, terminals))
+  const found = todos.find(ref, (t) => taskStatus(t, terminals.sessions()))
   const [one, ...more] = found
   if (one === undefined) {
     console.error(`no match for ${ref}`)
@@ -1076,7 +1082,7 @@ async function search(args: string[]): Promise<void> {
       console.log(`${one.status}: ${d.answer}`)
     }
   } else {
-    show(one.taskId)
+    await show(one.taskId)
   }
 }
 
@@ -1102,14 +1108,15 @@ function printDecision(d: Decision): void {
   console.log(`${indent(d.question)}\n`)
 }
 
-function lsTask(t: Task): LsTask {
+// `live`: the sessions there are, read once for every task listed.
+async function lsTask(t: Task, live: ReadonlySet<string>): Promise<LsTask> {
   const attempts = ledger.attempts(t.id)
   return {
     id: t.id,
     todoId: t.todoId,
     retroId: t.retroId,
     status: t.status,
-    sessionEnded: taskStatus(t, terminals) === 'session ended',
+    sessionEnded: taskStatus(t, live) === 'session ended',
     turns: attempts.length,
     createdAt: t.createdAt,
     startedAt: attempts.at(-1)?.startedAt ?? null,
@@ -1118,29 +1125,33 @@ function lsTask(t: Task): LsTask {
     note: taskNote(ledger, t),
     issue: t.issue,
     links: ledger.links(t.id),
-    pushed: unlinkedPushes(t),
+    pushed: await unlinkedPushes(t),
   }
 }
 
-function printTask(t: Task): void {
+function printTask(t: Task, live: ReadonlySet<string>, pushed: string[]): void {
   const turns = ledger.attempts(t.id).length
-  const status = taskStatus(t, terminals)
+  const status = taskStatus(t, live)
   console.log(
     `#${String(t.id).padEnd(4)} ${owner(t).padEnd(5)} ${status.padEnd(14)} ${String(turns).padStart(2)} turns  ${oneLine(taskNote(ledger, t), 80)}`,
   )
   for (const url of ledger.links(t.id)) console.log(`      link ${url}`)
-  for (const ref of unlinkedPushes(t)) console.log(`      pushed ${ref}`)
+  for (const ref of pushed) console.log(`      pushed ${ref}`)
 }
 
 // The remote branches holding a succeeded task's branch, while it has no link: its result was
 // pushed, maybe under another name, and is waiting to be linked. Only as fresh as the repo's last
-// fetch; nod fetches only as it lands a repo's tasks (land.ts).
-function unlinkedPushes(t: Task): string[] {
+// fetch; nod fetches only as it lands a repo's tasks (land.ts). Not waited on in turn: ls asks of
+// every task at once.
+// ponytail: no cap on the gits at once. Bun raises the soft limit on open files to the hard one
+// (500 at once ran under macOS's soft 256); a hard limit under about 4 a task would fail some with
+// EMFILE, which a few at a time would fix.
+async function unlinkedPushes(t: Task): Promise<string[]> {
   const { repo } = t
   if (repo === null || t.status !== 'succeeded' || ledger.links(t.id).length > 0) return []
   const branch = `refs/heads/${branchOf(t)}`
   // The repo or the branch is gone: nothing left to look in.
-  if (Bun.spawnSync(['git', '-C', repo, 'rev-parse', '--verify', '-q', branch]).exitCode !== 0) {
+  if ((await spawn(['git', '-C', repo, 'rev-parse', '--verify', '-q', branch])).code !== 0) {
     return []
   }
   return remotesHolding(repo, branch)

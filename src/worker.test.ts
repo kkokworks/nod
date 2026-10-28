@@ -2276,6 +2276,24 @@ test('a Claude Code that keeps exiting as it starts is not started again: the pe
   expect(entries('turn').map((t) => t.message)).toEqual(['first', 'again'])
 }, 30_000)
 
+test('the sessions come in one call with the values nod keeps on each, unset ones empty and the last one whole', () => {
+  const terminals = Terminals.of(home)
+  terminals.start('kept', home, ['/bin/sleep', '30'], {})
+  terminals.start('bare', home, ['/bin/sleep', '30'], {})
+  terminals.setOption('kept', 'nod_restarting', '1')
+  terminals.setOption('kept', 'nod_restart', 'the account is now /a b')
+
+  expect(terminals.sessionOptions('nod_restarting', 'nod_restart')).toEqual(
+    new Map([
+      ['bare', ['', '']],
+      ['kept', ['1', 'the account is now /a b']],
+    ]),
+  )
+  expect(terminals.sessionOptions('nod_restart').get('kept')).toEqual(['the account is now /a b'])
+  terminals.killServer()
+  expect(terminals.sessionOptions('nod_restart')).toEqual(new Map())
+})
+
 test('with an account rule, a worker starts again as the current account: at once between turns, after a turn in progress, and with the message that finds it on the old one', async () => {
   const current = join(home, 'account')
   const [a, b, c, d] = accounts('a', 'b', 'c', 'd')

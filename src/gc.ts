@@ -57,9 +57,9 @@ export async function collect(ledger: Ledger, home: string, pick: GcPick): Promi
       now.collectedAt === judged.collectedAt
     // What gc does once the task is marked; if it fails, the task is listed again as gc found it,
     // so a later gc tries again.
-    const afterMark = (finish: () => void): void => {
+    const afterMark = async (finish: () => Promise<void>): Promise<void> => {
       try {
-        finish()
+        await finish()
       } catch (error) {
         if (judged.collectedAt === null) ledger.uncollected(id)
         throw error
@@ -88,7 +88,7 @@ export async function collect(ledger: Ledger, home: string, pick: GcPick): Promi
           skip('told to go on while gc ran')
           continue
         }
-        afterMark(() => dropBranch(task))
+        await afterMark(() => dropBranch(task))
         report.clean.push(task.id)
         continue
       }
@@ -143,8 +143,8 @@ export async function collect(ledger: Ledger, home: string, pick: GcPick): Promi
         continue
       }
       const { workspace } = task
-      afterMark(() => {
-        dropBranch(task)
+      await afterMark(async () => {
+        await dropBranch(task)
         // A worktree sits in folders named after its repo and branch; drop the ones it leaves
         // empty.
         for (
@@ -227,14 +227,14 @@ function submoduleNames(dir: string, name = ''): string[] {
 // copy of the work. So does a branch still checked out somewhere, which git refuses to delete.
 // A task that never started keeps no branch of its own, since a start that fails after making one
 // takes it back (prepareWorkspace in worker.ts): one by its name is someone else's.
-function dropBranch(task: Task): void {
+async function dropBranch(task: Task): Promise<void> {
   const { repo, branch } = task
   if (repo === null || branch === null || task.workspace === null) return
   const ref = `refs/heads/${branch}`
   const git = (...args: string[]) => Bun.spawnSync(['git', '-C', repo, ...args])
   // The repo or the branch is gone: nothing to delete.
   if (git('rev-parse', '--verify', '-q', ref).exitCode !== 0) return
-  if (remotesHolding(repo, ref).length > 0 || landed(repo, ref)) git('branch', '-D', branch)
+  if ((await remotesHolding(repo, ref)).length > 0 || landed(repo, ref)) git('branch', '-D', branch)
 }
 
 // The commit a repo task's branch points at, or null without a repo or once the branch is gone.
@@ -270,9 +270,9 @@ export function landed(repo: string, ref: string): boolean {
 }
 
 // The remote branches holding `ref`'s commits. Only as fresh as the repo's last fetch; nod fetches
-// only as it lands a repo's tasks (land.ts).
-export function remotesHolding(repo: string, ref: string): string[] {
-  const refs = Bun.spawnSync([
+// only as it lands a repo's tasks (land.ts). Async, so ls can ask for each of its tasks at once.
+export async function remotesHolding(repo: string, ref: string): Promise<string[]> {
+  const refs = await spawn([
     'git',
     '-C',
     repo,
@@ -282,9 +282,6 @@ export function remotesHolding(repo: string, ref: string): string[] {
     '--format=%(refname:lstrip=2)',
     'refs/remotes',
   ])
-  if (refs.exitCode !== 0) throw new Error(`git for-each-ref in ${repo}: ${refs.stderr}`)
-  return refs.stdout
-    .toString()
-    .split('\n')
-    .filter((r) => r !== '' && !r.endsWith('/HEAD'))
+  if (refs.code !== 0) throw new Error(`git for-each-ref in ${repo}: ${refs.output}`)
+  return refs.stdout.split('\n').filter((r) => r !== '' && !r.endsWith('/HEAD'))
 }

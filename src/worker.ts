@@ -2443,8 +2443,9 @@ const continueAfter = (error: string): string =>
 // Claude Code runs as another account than the current one. `only`: just that task, for its Stop
 // hook. Returns the tasks restarted now.
 export async function restartDue(ledger: Ledger, home: string, only?: number): Promise<number[]> {
-  const terminals = Terminals.of(home)
-  const live = terminals.sessions()
+  // Read in the one call that lists the sessions, not one a session: this runs at the end of every
+  // nod command. The restart waited on comes last, as the one value with spaces (sessionOptions).
+  const live = Terminals.of(home).sessionOptions(RESTARTING_OPTION, RESTART_OPTION)
   const tasks = (only === undefined ? ledger.list() : [ledger.get(only)]).filter(
     (t) => t.account !== null && live.has(sessionName(t.id)),
   )
@@ -2452,12 +2453,12 @@ export async function restartDue(ledger: Ledger, home: string, only?: number): P
   const current = accountRule(home) === null ? null : (configDir(home) ?? '')
   const restarted: number[] = []
   for (const t of tasks) {
+    const [restarting, waiting] = live.get(sessionName(t.id)) ?? []
     // Already starting again, as the account it records once it is up.
-    if (terminals.option(sessionName(t.id), RESTARTING_OPTION) !== '') continue
+    if (restarting) continue
     const changed = current !== null && current !== t.account
     const why =
-      terminals.option(sessionName(t.id), RESTART_OPTION) ||
-      (changed ? `the account is now ${current || "Claude Code's default"}` : '')
+      waiting || (changed ? `the account is now ${current || "Claude Code's default"}` : '')
     if (why !== '' && (await restart(ledger, home, t.id, why)) === 'restarted') restarted.push(t.id)
   }
   return restarted

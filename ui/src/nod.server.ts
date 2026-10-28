@@ -91,7 +91,8 @@ export type Detail = {
 export function overview(): Overview {
   const todos = new Todos(ledger)
   const tasks = ledger.list()
-  const rows = tasks.filter((t) => t.collectedAt === null).map((t) => row(todos, t))
+  const live = terminals.sessions()
+  const rows = tasks.filter((t) => t.collectedAt === null).map((t) => row(todos, t, live))
   return {
     decisions: ledger.openDecisions().map((d) => {
       const t = ledger.get(d.taskId)
@@ -108,7 +109,7 @@ export function overview(): Overview {
           Number(a.project === null) - Number(b.project === null) ||
           (a.project?.id ?? 0) - (b.project?.id ?? 0),
       ),
-    collected: latestCollected(todos, tasks, SIDE_COLLECTED),
+    collected: latestCollected(todos, tasks, SIDE_COLLECTED, live),
     triggers: ledger.triggers(),
     stats: ledger.stats(),
     inbox: todos.list({
@@ -123,17 +124,22 @@ export function overview(): Overview {
 
 // The sidebar's search, as `nod search` finds.
 export const find = (ref: string): Found[] =>
-  new Todos(ledger).find(ref, (t) => taskStatus(t, terminals))
+  new Todos(ledger).find(ref, (t) => taskStatus(t, terminals.sessions()))
 
 export const collected = (limit: number): Shown<TaskRow> =>
-  latestCollected(new Todos(ledger), ledger.list(), limit)
+  latestCollected(new Todos(ledger), ledger.list(), limit, terminals.sessions())
 
-// The latest collected first; a row is made only for those shown.
-function latestCollected(todos: Todos, tasks: Task[], limit: number): Shown<TaskRow> {
+// The latest collected first; a row is made only for those shown. `live`: the sessions there are.
+function latestCollected(
+  todos: Todos,
+  tasks: Task[],
+  limit: number,
+  live: ReadonlySet<string>,
+): Shown<TaskRow> {
   const all = tasks
     .filter((t) => t.collectedAt !== null)
     .sort((a, b) => (b.collectedAt ?? '').localeCompare(a.collectedAt ?? '') || b.id - a.id)
-  return { items: all.slice(0, limit).map((t) => row(todos, t)), total: all.length }
+  return { items: all.slice(0, limit).map((t) => row(todos, t, live)), total: all.length }
 }
 
 // null for a number no task has, as an old link may name: the page says it is not there.
@@ -142,12 +148,13 @@ export function detail(id: number): Detail | null {
   if (task === null) return null
   const attempts = ledger.attempts(id)
   const name = sessionName(id)
+  const live = terminals.sessions()
   const todos = new Todos(ledger)
   const root = todos.rootPlace(task)
   const added = task.rootSession === root?.session.sessionId ? null : task.rootSession
   return {
     task,
-    status: taskStatus(task, terminals),
+    status: taskStatus(task, live),
     links: ledger.links(id),
     after: ledger.after(id).map((a) => ({ id: a.id, status: a.status })),
     attempts: attempts.map(({ prompt: _, ...a }) => a),
@@ -155,7 +162,7 @@ export function detail(id: number): Detail | null {
     report: attempts.filter((a) => a.report).at(-1)?.report ?? null,
     place: place(todos, task),
     retro: task.retroId === null ? null : retroOf(task.retroId),
-    screen: terminals.alive(name) ? terminals.screen(name).trimEnd() : null,
+    screen: live.has(name) ? terminals.screen(name).trimEnd() : null,
     root:
       root === null
         ? null
@@ -229,11 +236,11 @@ function place(todos: Todos, t: Task): Place {
   return { todo, project: todo.projectId === null ? null : todos.project(todo.projectId) }
 }
 
-function row(todos: Todos, t: Task): TaskRow {
+function row(todos: Todos, t: Task, live: ReadonlySet<string>): TaskRow {
   const { todo, project } = place(todos, t)
   return {
     id: t.id,
-    status: taskStatus(t, terminals),
+    status: taskStatus(t, live),
     turns: ledger.attempts(t.id).length,
     title: todo?.title ?? t.brief.replace(/\n[\s\S]*/, ''),
     note: taskNote(ledger, t),
