@@ -1766,9 +1766,15 @@ function refuseEnded(ledger: Ledger, task: Task): void {
 }
 
 function trailingRetries(ledger: Ledger, taskId: number): number {
-  const kinds = ledger.attempts(taskId).map((a) => a.kind)
-  const lastOther = kinds.findLastIndex((kind) => kind !== 'retry')
-  return kinds.length - 1 - lastOther
+  return nodsTurns(ledger, taskId).filter((a) => a.kind === 'retry').length
+}
+
+// The turns since the last one someone else asked for: nod's retries, and its asks to report a turn
+// whose check was cut off again (goOnCut), which leave the retries as they were.
+function nodsTurns(ledger: Ledger, taskId: number): Attempt[] {
+  const turns = ledger.attempts(taskId)
+  const ours = (a: Attempt): boolean => a.kind === 'retry' || a.prompt === REPORT_AGAIN
+  return turns.slice(turns.findLastIndex((a) => !ours(a)) + 1)
 }
 
 // Sends a message into the task's session so the worker keeps its context. A session that has ended
@@ -2268,9 +2274,9 @@ const REPORT_AGAIN =
 // row: one cut off again, a check that outlasts the hook, goes to the person, and nod tell goes on.
 // Returns whether it went on.
 async function goOnCut(ledger: Ledger, home: string, taskId: number): Promise<boolean> {
-  const [pid = '', checked] = Terminals.of(home)
-    .option(sessionName(taskId), SETTLING_OPTION)
-    .split(' ')
+  const terminals = Terminals.of(home)
+  const name = sessionName(taskId)
+  const [pid = '', checked] = terminals.option(name, SETTLING_OPTION).split(' ')
   if (pid === '' || running(Number(pid)) || checked === undefined) return false
   // That turn, closed, and nothing since: a turn that came since decides at its own stop.
   const cut = ledger.lastAttempt(taskId)
@@ -2278,13 +2284,12 @@ async function goOnCut(ledger: Ledger, home: string, taskId: number): Promise<bo
   // Waiting on background work: Claude Code starts the next turn itself (overdueWaits otherwise).
   if (cut.outcome === null || cut.outcome === 'waiting') return false
   if (!ledger.cutCheck(cut.id, CUT_MARK)) return false
-  // The turns since one someone else asked for: nod's retries, and its earlier asks to report again.
-  const turns = ledger.attempts(taskId)
-  const ours = (a: Attempt): boolean => a.kind === 'retry' || a.prompt === REPORT_AGAIN
-  const since = turns.slice(turns.findLastIndex((a) => !ours(a)) + 1)
+  // No hook runs now, the turn closed and none since: a pid another process takes later would read
+  // as one still checking (settling).
+  terminals.setOption(name, SETTLING_OPTION, null)
   const cutOff = "nod's check of its last turn was cut off before it finished"
-  let why = `${cutOff}, and so was the check of the turn nod then had its worker report it again in: a check that takes longer than its Stop hook may (${STOP_HOOK_TIMEOUT_SECS / 60} minutes) never finishes. nod tell goes on.`
-  if (!since.some((a) => a.prompt === REPORT_AGAIN)) {
+  let why = `${cutOff}, the second time since nod had its worker report a turn again for that: a check that takes longer than its Stop hook may (${STOP_HOOK_TIMEOUT_SECS / 60} minutes) never finishes. nod tell goes on.`
+  if (!nodsTurns(ledger, taskId).some((a) => a.prompt === REPORT_AGAIN)) {
     try {
       await deliver(ledger, home, taskId, 'resume', REPORT_AGAIN, null)
       return true

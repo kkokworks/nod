@@ -2781,6 +2781,7 @@ it('a turn whose Stop hook was cut off once it had closed it goes on: the tick h
     cutHook(id, terminal)
     await tick(ledger, home, new Date(), false)
     expect(terminal.pasted).toEqual([expect.stringContaining('report again as you did')])
+    expect(terminal.options.has('nod_settling')).toBe(false)
     expect(ledger.attempts(id).map((a) => [a.kind, a.outcome, a.checkResult])).toEqual([
       ['start', 'succeeded', 'failed'],
       ['resume', null, null],
@@ -2793,6 +2794,25 @@ it('a turn whose Stop hook was cut off once it had closed it goes on: the tick h
     terminal.restore()
   }
   expect(status(id)).toBe('succeeded')
+}, 30_000)
+
+it('a turn nod has its worker report again leaves the retries of its checks as they were', async () => {
+  const id = started('review-strict: write it', 'cut-retries')
+  const terminal = upTerminal(id)
+  let last: string | null
+  try {
+    // The review fails: the first retry, whose check is then cut off.
+    expect(await stopped('cut-retries', 'NOD: done | did it')).not.toBeNull()
+    cutHook(id, terminal)
+    await tick(ledger, home, new Date(), false)
+    expect(await stopped('cut-retries', 'NOD: done | did it')).not.toBeNull()
+    last = await stopped('cut-retries', 'NOD: done | did it')
+  } finally {
+    terminal.restore()
+  }
+  // Two retries in all, so the person decides.
+  expect(last).toBeNull()
+  expect(ledger.decisions(id).find((d) => d.answer === null)?.reason).toBe('check_failed')
 }, 30_000)
 
 it('a check cut off again, in the turn its worker reported again, goes to the person', async () => {
@@ -2810,7 +2830,7 @@ it('a check cut off again, in the turn its worker reported again, goes to the pe
   expect(terminal.pasted).toHaveLength(1)
   expect(ledger.get(id)).toMatchObject({
     status: 'error',
-    error: expect.stringContaining('so was'),
+    error: expect.stringContaining('the second time'),
   })
   expect(events().find((e) => e.event === 'error')?.error).toContain('nod tell goes on')
 }, 30_000)
