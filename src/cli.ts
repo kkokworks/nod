@@ -988,8 +988,8 @@ function gcPick(tasks: string[], olderThan: string | undefined): GcPick {
 async function show(id: number): Promise<void> {
   const task = ledger.get(id)
   const live = terminals.sessions()
-  const pushed = await unlinkedPushes(task)
-  printTask(task, live, pushed)
+  const pushed = unlinkedPushes(task)
+  await printTask(task, live, pushed)
   if (task.issue !== null) console.log(`  issue: ${task.issue}`)
   // The project session whose work it is now, by its project, with the command that goes back
   // into it, and the session that added it when that was another.
@@ -1021,7 +1021,7 @@ async function show(id: number): Promise<void> {
   }
   if (task.todoId !== null) console.log(`  todo: t${task.todoId}`)
   for (const url of ledger.links(id)) console.log(`  link: ${url}`)
-  for (const ref of pushed) console.log(`  pushed: ${ref}`)
+  for (const ref of await pushed) console.log(`  pushed: ${ref}`)
   const landing = ledger.landing(id)
   if (landing !== null) {
     const short = (sha: string | null): string => sha?.slice(0, 12) ?? '—'
@@ -1128,14 +1128,19 @@ async function lsTask(t: Task, live: ReadonlySet<string>): Promise<LsTask> {
   }
 }
 
-function printTask(t: Task, live: ReadonlySet<string>, pushed: string[]): void {
+// `pushed`: unlinkedPushes, waited on once the line above it is out.
+async function printTask(
+  t: Task,
+  live: ReadonlySet<string>,
+  pushed: Promise<string[]>,
+): Promise<void> {
   const turns = ledger.attempts(t.id).length
   const status = taskStatus(t, live)
   console.log(
     `#${String(t.id).padEnd(4)} ${owner(t).padEnd(5)} ${status.padEnd(14)} ${String(turns).padStart(2)} turns  ${oneLine(taskNote(ledger, t), 80)}`,
   )
   for (const url of ledger.links(t.id)) console.log(`      link ${url}`)
-  for (const ref of pushed) console.log(`      pushed ${ref}`)
+  for (const ref of await pushed) console.log(`      pushed ${ref}`)
 }
 
 // The remote branches holding a succeeded task's branch, while it has no link: its result was

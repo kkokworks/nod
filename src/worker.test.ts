@@ -1943,6 +1943,18 @@ it('readAtOnce reads AT_ONCE items at a time, no more, and gives what each read 
   expect(await readAtOnce(items, read)).toEqual(items.map((n) => n * 2))
   expect(most).toBe(AT_ONCE)
   expect(await readAtOnce([], read)).toEqual([])
+
+  // Item 3 fails after item 5: item 3's failure is the one told, as in turn, and once item 5 has
+  // failed no more start.
+  const started: number[] = []
+  const failing = async (n: number): Promise<number> => {
+    started.push(n)
+    for (let i = n; i < 30; i++) await null
+    if (n === 3 || n === 5) throw new Error(`item ${n}`)
+    return n
+  }
+  await expect(readAtOnce(items, failing)).rejects.toThrow('item 3')
+  expect(started.length).toBeLessThan(items.length)
 })
 
 it('a worker learns its task through NOD_TASK, so the todos it changes name it', () => {

@@ -2452,7 +2452,10 @@ export async function restartDue(ledger: Ledger, home: string, only?: number): P
     (t) => t.account !== null && live.has(sessionName(t.id)),
   )
   if (tasks.length === 0) return []
-  const current = accountRule(home) === null ? null : (configDir(home) ?? '')
+  const rule = accountRule(home) !== null
+  const current = rule ? (configDir(home) ?? '') : null
+  // Again after the account rule's command, which may take a while (account.ts).
+  if (rule) live = read()
   const restarted: number[] = []
   for (const t of tasks) {
     const [restarting, waiting] = live.get(sessionName(t.id)) ?? []
@@ -3170,15 +3173,24 @@ export async function spawn(
 // them from everything else the user runs.
 export const AT_ONCE = 8
 
-// `read` of each item, `AT_ONCE` at a time, in the items' order. Rejects as the first read to
-// reject does.
+// `read` of each item, `AT_ONCE` at a time, in the items' order. Once one fails no more start,
+// and it rejects as reading them in turn would: with the failure of the first item that failed.
 export async function readAtOnce<T, R>(items: T[], read: (item: T) => Promise<R>): Promise<R[]> {
   const out: R[] = []
+  const failed: { i: number; error: unknown }[] = []
   let next = 0
   const reader = async (): Promise<void> => {
-    for (let i = next++; i < items.length; i = next++) out[i] = await read(items[i] as T)
+    for (let i = next++; i < items.length && failed.length === 0; i = next++) {
+      try {
+        out[i] = await read(items[i] as T)
+      } catch (error) {
+        failed.push({ i, error })
+      }
+    }
   }
   await Promise.all(Array.from({ length: Math.min(AT_ONCE, items.length) }, reader))
+  const first = failed.toSorted((a, b) => a.i - b.i)[0]
+  if (first !== undefined) throw first.error
   return out
 }
 
