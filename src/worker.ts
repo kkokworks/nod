@@ -632,9 +632,7 @@ async function startRetro(ledger: Ledger, home: string, task: Task): Promise<voi
   if (task.retroId !== null || ledger.retroFor(task.id) !== null) return
   if (!hadTrouble(ledger, task.id)) return
   const id = ledger.addRetro(task, retroBrief(ledger, task, workerPrompt(ledger, null)))
-  await startTask(ledger, home, id).catch((error) =>
-    notify(home, { event: 'error', task: taskRef(ledger.get(id)), error: message(error) }),
-  )
+  await startTask(ledger, home, id).catch(notifyError(ledger, home, id))
 }
 
 export async function tell(
@@ -2077,12 +2075,8 @@ export async function keepWorker(
       exited = child.exited
       failure = ''
       if (next.started !== null) {
-        void trustOnStart(ledger, home, taskId, next.fresh, next.started).catch((error) =>
-          notify(home, {
-            event: 'error',
-            task: taskRef(ledger.get(taskId)),
-            error: message(error),
-          }),
+        void trustOnStart(ledger, home, taskId, next.fresh, next.started).catch(
+          notifyError(ledger, home, taskId),
         )
       }
     } catch (error) {
@@ -2105,13 +2099,7 @@ export async function keepWorker(
       // A turn cut off goes on in a message the person sent since, which the new start got: there
       // is nothing to decide, and the stop of the turn it runs closes that turn.
       if (turn !== null && left === null && late === null) {
-        await cutOff(ledger, home, taskId, turn, RESTARTED).catch((error) =>
-          notify(home, {
-            event: 'error',
-            task: taskRef(ledger.get(taskId)),
-            error: message(error),
-          }),
-        )
+        await cutOff(ledger, home, taskId, turn, RESTARTED).catch(notifyError(ledger, home, taskId))
       }
       await exited
     }
@@ -2127,9 +2115,7 @@ export async function keepWorker(
     // that start in the prompt file (deliver).
     terminals.setOption(name, RESTARTING_OPTION, '1')
     if (terminals.option(name, SETTLING_OPTION) !== '') {
-      void watchSettling(ledger, home, taskId).catch((error) =>
-        notify(home, { event: 'error', task: taskRef(ledger.get(taskId)), error: message(error) }),
-      )
+      void watchSettling(ledger, home, taskId).catch(notifyError(ledger, home, taskId))
     }
     // A restart ends Claude Code between turns, or with deliver's message still to come; a turn
     // open with no message left for the new start began in between, and was cut off.
@@ -3248,3 +3234,9 @@ export async function readAtOnce<T, R>(items: T[], read: (item: T) => Promise<R>
 export function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
+
+// For a .catch on work nobody watches: the person hears the task's error (notify).
+export const notifyError =
+  (ledger: Ledger, home: string, taskId: number) =>
+  (error: unknown): Promise<void> =>
+    notify(home, { event: 'error', task: taskRef(ledger.get(taskId)), error: message(error) })
