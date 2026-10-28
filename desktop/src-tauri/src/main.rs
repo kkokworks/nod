@@ -7,6 +7,7 @@ use std::io::ErrorKind;
 use std::net::TcpStream;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use objc2::runtime::{AnyObject, Bool, ClassBuilder, Sel};
@@ -30,6 +31,9 @@ const AGENT_ENV: [&str; 3] = ["PATH", "NOD_HOME", "CLAUDE_CONFIG_DIR"];
 
 // Whether make_panel made the capture window a panel. If not, showing it activates the app.
 static PANEL: AtomicBool = AtomicBool::new(false);
+
+// The app, for the panel's own methods, which AppKit calls with only the window.
+static CAPTURE_APP: OnceLock<AppHandle> = OnceLock::new();
 
 // Whether `nod in` is running. The capture window then stays up when it loses focus, so that a
 // failure shows.
@@ -287,8 +291,7 @@ fn bring(window: &WebviewWindow) {
 
 // Hides the window. Once none of the app's windows is showing, it hides the app as well, which
 // hands the keyboard back to the app the person came from if nod was active. The capture panel
-// does not make nod active (make_panel), but a click on it may, as can the plain window it stays
-// when make_panel fails.
+// does not make nod active (make_panel), but the plain window it stays when make_panel fails does.
 fn put_away(app: &AppHandle, label: &str) {
     if let Some(window) = app.get_webview_window(label) {
         let _ = window.hide();
@@ -306,12 +309,29 @@ fn make_panel(window: &WebviewWindow) {
     extern "C" fn yes(_: &AnyObject, _: Sel) -> Bool {
         Bool::YES
     }
+    // Esc puts the panel away here, before the input method and the page get the key: sent on to
+    // them, it did not get to capture.js's keydown handler as Escape (2026-10-28 check). While
+    // the input method is composing, Esc is its own (it ends a Hangul syllable, as Enter does in
+    // capture.js, or cancels a conversion), so it goes on; the next Esc puts the panel away. So
+    // does an Esc while `nod in` runs, which keeps the panel up as losing focus does.
+    extern "C" fn send_event(panel: &AnyObject, _: Sel, event: &AnyObject) {
+        if let (true, Some(app)) = (is_escape(event), CAPTURE_APP.get()) {
+            if !composing(panel) && !CAPTURING.load(Ordering::Relaxed) {
+                return put_away(app, "capture");
+            }
+        }
+        unsafe { msg_send![super(panel, class!(NSPanel)), sendEvent: event] }
+    }
     let Ok(ns_window) = window.ns_window() else { return };
     let ns_window = ns_window.cast::<AnyObject>();
     let Some(mut panel) = ClassBuilder::new(c"NodCapturePanel", class!(NSPanel)) else { return };
-    // A borderless window takes the keyboard only if its class says so.
-    unsafe { panel.add_method(sel!(canBecomeKeyWindow), yes as extern "C" fn(_, _) -> _) };
+    unsafe {
+        // A borderless window takes the keyboard only if its class says so.
+        panel.add_method(sel!(canBecomeKeyWindow), yes as extern "C" fn(_, _) -> _);
+        panel.add_method(sel!(sendEvent:), send_event as extern "C" fn(_, _, _));
+    }
     let panel = panel.register();
+    let _ = CAPTURE_APP.set(window.app_handle().clone());
     unsafe {
         // The object stays the size tao allocated, so the new class must not need more.
         if panel.instance_size() > (*ns_window).class().instance_size() {
@@ -322,8 +342,46 @@ fn make_panel(window: &WebviewWindow) {
         // NSWindowStyleMaskNonactivatingPanel
         let () = msg_send![ns_window, setStyleMask: mask | 1 << 7];
         let () = msg_send![ns_window, setHidesOnDeactivate: false];
+        // What NSPanel does when it is made non-activating, which a style set afterwards does not:
+        // without it, a click on the panel activates nod (2026-10-28 check). A private method, so
+        // on a macOS without it a click activates nod again.
+        let prevents = sel!(_setPreventsActivation:);
+        if msg_send![ns_window, respondsToSelector: prevents] {
+            let () = msg_send![ns_window, _setPreventsActivation: Bool::YES];
+        }
+        // NSWindowCollectionBehaviorFullScreenAuxiliary. AppKit puts a window on another app's
+        // full screen Space only if it is a non-activating panel with this; otherwise it comes up
+        // on the desktop's Space, out of sight, and still takes the keyboard (2026-10-28 check).
+        let behavior: usize = msg_send![ns_window, collectionBehavior];
+        let () = msg_send![ns_window, setCollectionBehavior: behavior | 1 << 8];
     }
     PANEL.store(true, Ordering::Relaxed);
+}
+
+// Whether event is Esc going down, alone or with Caps Lock (which switches Hangul input).
+fn is_escape(event: &AnyObject) -> bool {
+    unsafe {
+        // NSEventTypeKeyDown: keyCode is only for key events.
+        let kind: usize = msg_send![event, type];
+        if kind != 10 {
+            return false;
+        }
+        let key: u16 = msg_send![event, keyCode];
+        let flags: usize = msg_send![event, modifierFlags];
+        // kVK_Escape, and none of ⇧⌃⌥⌘ (NSEventModifierFlagShift … Command)
+        key == 53 && flags & 0x1e0000 == 0
+    }
+}
+
+// Whether the window's text field has text the input method is still composing.
+fn composing(window: &AnyObject) -> bool {
+    unsafe {
+        let field: *mut AnyObject = msg_send![window, firstResponder];
+        let Some(field) = field.as_ref() else { return false };
+        let marked = sel!(hasMarkedText);
+        let responds: bool = msg_send![field, respondsToSelector: marked];
+        responds && msg_send![field, hasMarkedText]
+    }
 }
 
 // Centers the window on the screen the pointer is on, which is where the person is looking.
@@ -590,5 +648,80 @@ mod tests {
             objc2::runtime::AnyClass::get(name).unwrap().instance_size()
         };
         assert!(size(c"NSPanel") <= size(c"NSWindow"));
+    }
+
+    #[test]
+    fn the_panel_takes_esc_alone_or_with_caps_lock_and_lets_the_rest_through() {
+        #[repr(C)]
+        struct Point(f64, f64);
+        unsafe impl objc2::Encode for Point {
+            const ENCODING: objc2::Encoding =
+                objc2::Encoding::Struct("CGPoint", &[f64::ENCODING, f64::ENCODING]);
+        }
+        type Event = objc2::rc::Retained<AnyObject>;
+        let key = |code: u16, chars: &std::ffi::CStr, flags: usize, down: bool| -> Event {
+            unsafe {
+                let chars: *mut AnyObject =
+                    msg_send![class!(NSString), stringWithUTF8String: chars.as_ptr()];
+                msg_send![class!(NSEvent), keyEventWithType: if down { 10usize } else { 11 },
+                    location: Point(0.0, 0.0), modifierFlags: flags, timestamp: 0.0f64,
+                    windowNumber: 0isize, context: std::ptr::null_mut::<AnyObject>(),
+                    characters: chars, charactersIgnoringModifiers: chars, isARepeat: Bool::NO,
+                    keyCode: code]
+            }
+        };
+        let click: Event = unsafe {
+            msg_send![class!(NSEvent), mouseEventWithType: 1usize, location: Point(0.0, 0.0),
+                modifierFlags: 0usize, timestamp: 0.0f64, windowNumber: 0isize,
+                context: std::ptr::null_mut::<AnyObject>(), eventNumber: 0isize, clickCount: 1isize,
+                pressure: 1.0f32]
+        };
+        let caps_lock = 1 << 16;
+        let command = 1 << 20;
+        assert!(is_escape(&key(53, c"\x1b", 0, true)));
+        assert!(is_escape(&key(53, c"\x1b", caps_lock, true)));
+        assert!(!is_escape(&key(53, c"\x1b", command, true)));
+        assert!(!is_escape(&key(53, c"\x1b", 0, false)));
+        assert!(!is_escape(&key(36, c"\r", 0, true)));
+        assert!(!is_escape(&click));
+    }
+
+    #[test]
+    fn esc_goes_on_to_the_input_method_only_while_it_composes() {
+        // Stand-ins for the panel: AppKit makes windows only on the main thread, not in tests.
+        extern "C" fn this(obj: &AnyObject, _: Sel) -> *const AnyObject {
+            obj
+        }
+        extern "C" fn nobody(_: &AnyObject, _: Sel) -> *const AnyObject {
+            std::ptr::null()
+        }
+        extern "C" fn yes(_: &AnyObject, _: Sel) -> Bool {
+            Bool::YES
+        }
+        extern "C" fn no(_: &AnyObject, _: Sel) -> Bool {
+            Bool::NO
+        }
+        // A window whose first responder is itself, or nobody, and has marked text or not, or
+        // does not answer hasMarkedText.
+        let window = |name: &std::ffi::CStr, responder: bool, marked: Option<bool>| {
+            let mut class = ClassBuilder::new(name, class!(NSObject)).unwrap();
+            unsafe {
+                match responder {
+                    true => class.add_method(sel!(firstResponder), this as extern "C" fn(_, _) -> _),
+                    false => class.add_method(sel!(firstResponder), nobody as extern "C" fn(_, _) -> _),
+                }
+                match marked {
+                    Some(true) => class.add_method(sel!(hasMarkedText), yes as extern "C" fn(_, _) -> _),
+                    Some(false) => class.add_method(sel!(hasMarkedText), no as extern "C" fn(_, _) -> _),
+                    None => {}
+                }
+            }
+            let window: objc2::rc::Retained<AnyObject> = unsafe { msg_send![class.register(), new] };
+            composing(&window)
+        };
+        assert!(window(c"NodTestComposing", true, Some(true)));
+        assert!(!window(c"NodTestNotComposing", true, Some(false)));
+        assert!(!window(c"NodTestNoTextInput", true, None));
+        assert!(!window(c"NodTestNoFirstResponder", false, None));
     }
 }
