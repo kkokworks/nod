@@ -102,12 +102,13 @@ const CUT_OFF_PROMPT =
 // summary: before a worker that takes on more work for hours fills up. Claude Code's own default
 // with a 1M window is about 967K tokens, and the variable can only lower it. A value the person set
 // stays: their shell's passes on (PASS_ENV), and `env` in their Claude Code settings replaces the
-// environment's. Measured on 2.1.310 with a 1M window: at 70 it compacted once the conversation was
-// between 654,459 and 699,430 tokens; at 10, the turn went on after compacting, in the same session.
-// ponytail: a nod command run inside a session nod started takes the 70 it inherits for the
+// environment's. Measured on 2.1.310 with a 1M window, when this was 70 (60 is not measured): at 70
+// it compacted once the conversation was between 654,459 and 699,430 tokens; at 10, the turn went
+// on after compacting, in the same session.
+// ponytail: a nod command run inside a session nod started takes the value it inherits for the
 // person's, and `nod schedule on` or the UI server's install (savedEnv) there saves it; after
 // changing this, do both again from outside, or mark nod's own value if that bites.
-export const AUTOCOMPACT_PCT = '70'
+export const AUTOCOMPACT_PCT = '60'
 
 // What a worker keeps of the environment it starts from: these names only. A terminal or an agent
 // host marks each of its panes with variables of its own, and a worker that kept them would pass

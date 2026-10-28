@@ -615,7 +615,7 @@ exit 3
   expect(usage.stderr.toString()).toContain('nod open <project> [--new]')
 })
 
-test('nod open has claude compact at 70% of its window, unless the shell says how early', () => {
+test('nod open has claude compact at 60% of its window, unless the shell says how early', () => {
   const home = tmp.make('nod-open-compact-')
   const bin = tmp.make('nod-open-compact-bin-')
   writeFileSync(join(bin, 'claude'), '#!/bin/sh\necho "$CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"\n', {
@@ -635,7 +635,7 @@ test('nod open has claude compact at 70% of its window, unless the shell says ho
         ...extra,
       },
     }).stdout.toString()
-  expect(open({})).toBe('70\n')
+  expect(open({})).toBe('60\n')
   expect(open({ CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: '50' })).toBe('50\n')
 })
 
