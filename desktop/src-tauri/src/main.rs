@@ -311,10 +311,12 @@ fn make_panel(window: &WebviewWindow) {
     }
     // Esc puts the panel away here, before the input method and the page get the key: sent on to
     // them, it did not get to capture.js's keydown handler as Escape (2026-10-28 check). While
-    // the input method is composing, Esc is its own (to cancel a conversion), so it goes on.
+    // the input method is composing, Esc is its own (it ends a Hangul syllable, as Enter does in
+    // capture.js, or cancels a conversion), so it goes on; the next Esc puts the panel away. So
+    // does an Esc while `nod in` runs, which keeps the panel up as losing focus does.
     extern "C" fn send_event(panel: &AnyObject, _: Sel, event: &AnyObject) {
         if let (true, Some(app)) = (is_escape(event), CAPTURE_APP.get()) {
-            if !composing(panel) {
+            if !composing(panel) && !CAPTURING.load(Ordering::Relaxed) {
                 return put_away(app, "capture");
             }
         }
@@ -341,7 +343,8 @@ fn make_panel(window: &WebviewWindow) {
         let () = msg_send![ns_window, setStyleMask: mask | 1 << 7];
         let () = msg_send![ns_window, setHidesOnDeactivate: false];
         // What NSPanel does when it is made non-activating, which a style set afterwards does not:
-        // without it, a click on the panel activates nod (2026-10-28 check).
+        // without it, a click on the panel activates nod (2026-10-28 check). A private method, so
+        // on a macOS without it a click activates nod again.
         let prevents = sel!(_setPreventsActivation:);
         if msg_send![ns_window, respondsToSelector: prevents] {
             let () = msg_send![ns_window, _setPreventsActivation: Bool::YES];
