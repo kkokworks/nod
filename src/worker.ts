@@ -1410,11 +1410,16 @@ function currentTurn(
   const turn = openTurn(ledger, taskId, sessionId)
   // A turn nod sent closed these as it started (deliver). One the prompt hook opened leaves them
   // to here, the turn's end as before it was opened at its start, so a turn the person stops
-  // (Escape, no Stop) leaves the question open and the task waiting on it. What the person typed to
-  // start it answers them: the worker took it in after what it asked. One with no words of theirs
-  // (Claude Code went on by itself) went on without an answer.
+  // (Escape, no Stop) leaves the question open and the task waiting on it. What the person typed in
+  // it so far answers them, all of it, in order: the worker took it in after what it asked, and a
+  // turn they stopped takes what they type next. One with no words of theirs (Claude Code went on
+  // by itself, or a hook of theirs held them back) went on without an answer.
   if (!typedHere(turn.prompt)) return { id: turn.id, closed: [], why: WENT_ON }
-  const why = turn.prompt === TYPED ? WENT_ON : turn.prompt.slice(TYPED.length + 1)
+  const said = ledger.messages(taskId).filter((m) => m.attemptId === turn.id)
+  const words = [turn.prompt, ...said.map((m) => m.text)]
+    .filter((t) => typedHere(t) && t !== TYPED)
+    .map((t) => t.slice(TYPED.length + 1))
+  const why = words.length === 0 ? WENT_ON : words.join('\n')
   const asked = (d: Decision) => ASKED.includes(d.reason) && d.attemptId !== turn.id
   const closed = closeDecisions(ledger, taskId, asked, why)
   goesOn(ledger, taskId, closed)

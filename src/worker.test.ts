@@ -4067,6 +4067,17 @@ it('a question a person answers by typing into the worker’s terminal closes wi
   // A to-do list that mirrors open decisions hears it closed so.
   const answered = events().filter((e) => e.event === 'answered')
   expect(answered.map((e) => e.decision?.answer)).toEqual(['the first,\nthen the second'])
+
+  // They stop that turn with Escape before any hook of it runs, and say otherwise: the turn takes
+  // it, and the question closes with all they typed, in order.
+  const again = started('ask again', 'answered-twice')
+  await stopped('answered-twice', 'NOD: question | Which one?')
+  attachedWhile(() => {
+    prompted('answered-twice', 'the first')
+    prompted('answered-twice', 'no, the second')
+  })
+  await stopped('answered-twice', 'NOD: done | did the second')
+  expect(ledger.decisions(again).map((d) => d.answer)).toEqual(['the first\nno, the second'])
 })
 
 it('what a person types into the worker’s terminal is kept once each, marked as typed, with what nod sent, and what nod pasted is not kept again', () => {

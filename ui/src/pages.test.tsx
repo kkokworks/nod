@@ -11,6 +11,7 @@ import {
 } from 'bun:test'
 import { GlobalRegistrator } from '@happy-dom/global-registrator'
 import type { AnyRoute } from '@tanstack/react-router'
+import type { ITerminalAddon, Terminal as XTerm } from '@xterm/xterm'
 import { tempDirs } from '../../test/tmp'
 
 // The real pages and rows, in a DOM, under a router; the server functions are answered here.
@@ -22,12 +23,18 @@ Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 class Socket {
   static readonly OPEN = 1
   static made: Socket[] = []
+  // How many of the next sockets fail to open, as `new WebSocket` throws.
+  static refuse = 0
   readyState = 0
   binaryType = 'blob'
   sent: unknown[] = []
   onmessage: ((e: { data: ArrayBuffer }) => void) | null = null
   onclose: (() => void) | null = null
   constructor(readonly url: string) {
+    if (Socket.refuse > 0) {
+      Socket.refuse--
+      throw new Error('refused')
+    }
     Socket.made.push(this)
   }
   send(data: string) {
@@ -39,7 +46,12 @@ class Socket {
 }
 Object.assign(globalThis, { WebSocket: Socket })
 // Loaded once here, so the screen's own import of them is done by the time a page settles.
-await Promise.all([import('@xterm/xterm'), import('@xterm/addon-fit')])
+const [{ Terminal }, , { Unicode11Addon }, { WebglAddon }] = await Promise.all([
+  import('@xterm/xterm'),
+  import('@xterm/addon-fit'),
+  import('@xterm/addon-unicode11'),
+  import('@xterm/addon-webgl'),
+])
 
 // What a GET answers, what a POST does to it, and the POSTs sent. Bun keeps a module mock for the
 // rest of the run, which can't be undone, so no other test file may import the server functions.
@@ -273,22 +285,65 @@ test('a live session is only its terminal, a decision open on it too; a task wit
   expect(field<HTMLTextAreaElement>('.composer textarea').placeholder).toBe('Message the worker…')
 })
 
-test("a worker's terminal looks as the person's terminals in Orca do: its font, weights, cursor and dark theme, to the box's edges", async () => {
+test("a worker's terminal looks as in a terminal app: its font, weights, cursor and dark theme to the box's edges, drawn with WebGL at Unicode 11 widths, its colours as the worker sets them", async () => {
   expect(TERMINAL).toMatchObject({
     fontSize: 14,
     fontWeight: '300',
     fontWeightBold: '500',
     cursorStyle: 'block',
     cursorBlink: true,
-    minimumContrastRatio: 3,
   })
+  // xterm.js's own, 1: no colour of the worker's is lightened.
+  expect(TERMINAL).not.toHaveProperty('minimumContrastRatio')
   expect(TERMINAL.fontFamily).toStartWith('"SF Mono", "Menlo", "Monaco"')
   expect(TERMINAL.theme).toMatchObject({ background: '#282c34', foreground: '#ffffff' })
-  answer = (id) => live(id as number)
-  await go('/tasks/25')
+  // What the screen loads into its terminal. WebGL fails to start here, as where a browser has
+  // none, and the terminal goes on with the renderer it has.
+  const loadAddon = Terminal.prototype.loadAddon
+  const loaded: { term: XTerm; addon: ITerminalAddon }[] = []
+  const loading = spyOn(Terminal.prototype, 'loadAddon').mockImplementation(function (
+    this: XTerm,
+    addon: ITerminalAddon,
+  ) {
+    loaded.push({ term: this, addon })
+    loadAddon.call(this, addon)
+  })
+  try {
+    answer = (id) => live(id as number)
+    await go('/tasks/25')
+  } finally {
+    loading.mockRestore()
+  }
   expect(document.querySelector<HTMLElement>('.term')?.style.background).toMatch(
     /#282c34|rgb\(40, 44, 52\)/,
   )
+  expect(loaded.some(({ addon }) => addon instanceof Unicode11Addon)).toBe(true)
+  expect(loaded.some(({ addon }) => addon instanceof WebglAddon)).toBe(true)
+  expect(loaded.map(({ term }) => term.unicode.activeVersion)).toContain('11')
+})
+
+test('a live screen whose attach failed leaves no terminal of it behind once it attaches again', async () => {
+  answer = (id) => live(id as number)
+  Socket.made.length = 0
+  Socket.refuse = 1
+  await go('/tasks/27')
+  expect(Socket.made).toHaveLength(0)
+  // Out of sight and back, which attaches again at once, as the retry does after a while.
+  const sight = (state: string) =>
+    act(() => {
+      Object.defineProperty(document, 'visibilityState', { value: state, configurable: true })
+      document.dispatchEvent(new Event('visibilitychange'))
+    })
+  try {
+    sight('hidden')
+    await settle()
+    sight('visible')
+    await settle()
+  } finally {
+    Reflect.deleteProperty(document, 'visibilityState')
+  }
+  expect(Socket.made).toHaveLength(1)
+  expect(document.querySelectorAll('.term .xterm')).toHaveLength(1)
 })
 
 test("a live worker's screen attaches to its session, takes keys, and lets go when the page moves on or the session ends", async () => {

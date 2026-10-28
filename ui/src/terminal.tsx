@@ -56,10 +56,9 @@ export function Screen({ id, screen }: { id: number; screen: string }) {
   )
 }
 
-// The worker's terminal as the person sees terminals elsewhere: Orca's defaults, its renderer
-// (WebGL), its widths (Unicode 11) and its dark theme (Ghostty Default Style Dark), the colours a
-// program does not set itself. Orca also turns on the kitty keyboard protocol, which xterm.js 6.0
-// does not have.
+// The worker's terminal as the person sees it in a terminal app: drawn with WebGL, with Unicode 11
+// widths (attach), a macOS monospace font, and a common dark theme for the colours a program does
+// not set itself. The colours it does set show as they are: no minimum contrast lightens them.
 export const TERMINAL = {
   allowProposedApi: true,
   cursorBlink: true,
@@ -70,8 +69,6 @@ export const TERMINAL = {
     '"SF Mono", "Menlo", "Monaco", "Cascadia Mono", "Consolas", "DejaVu Sans Mono", "Liberation Mono", "Symbols Nerd Font Mono", "MesloLGS Nerd Font", "JetBrainsMono Nerd Font", "Hack Nerd Font", monospace',
   fontWeight: '300',
   fontWeightBold: '500',
-  // Orca's for a dark theme.
-  minimumContrastRatio: 3,
   macOptionIsMeta: false,
   macOptionClickForcesSelection: true,
   drawBoldTextInBrightColors: true,
@@ -124,13 +121,15 @@ async function attach(
   ])
   if (leave.aborted) return
   const term = new Terminal(TERMINAL)
+  // Gone with the attempt, also one that fails below and is tried again: not one more in the box.
+  leave.addEventListener('abort', () => term.dispose())
   const fit = new FitAddon()
   term.loadAddon(fit)
   term.loadAddon(new Unicode11Addon())
   term.unicode.activeVersion = '11'
   term.open(box)
-  // Drawn with WebGL, as Orca draws; where WebGL cannot run, or loses its context, the DOM renderer
-  // xterm.js starts with draws instead.
+  // Drawn with WebGL; where WebGL cannot run, or loses its context, the DOM renderer xterm.js starts
+  // with draws instead.
   try {
     const webgl = new WebglAddon()
     webgl.onContextLoss(() => webgl.dispose())
@@ -167,6 +166,5 @@ async function attach(
   leave.addEventListener('abort', () => {
     resized.disconnect()
     ws.close()
-    term.dispose()
   })
 }
