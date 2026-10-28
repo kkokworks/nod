@@ -1,4 +1,4 @@
-import { Link } from '@tanstack/react-router'
+import { Link, useLocation } from '@tanstack/react-router'
 import { type ComponentProps, createContext, type ReactNode, useContext } from 'react'
 import ReactMarkdown, { type ExtraProps } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -133,6 +133,40 @@ export function duration(from: string, to: string): string {
   if (secs < 60) return `${secs}s`
   if (secs < 3600) return `${Math.floor(secs / 60)}m ${secs % 60}s`
   return `${Math.floor(secs / 3600)}h ${Math.floor((secs % 3600) / 60)}m`
+}
+
+// What the router shows for a page that is not there (an unknown address, a task or todo no longer
+// in the ledger) and for one that failed to load. Both sit in the layout, the sidebar beside them,
+// with a way on: the desktop app's window has no address bar or back button.
+export function NotFound() {
+  const path = useLocation({ select: (l) => l.pathname })
+  return (
+    <WayOut title="Not found">
+      <p className="subtitle">
+        Nothing is at <code>{path}</code>.
+      </p>
+    </WayOut>
+  )
+}
+
+export function Failed({ error }: { error: unknown }) {
+  return (
+    <WayOut title="Something went wrong">
+      <div className="banner">{error instanceof Error ? error.message : String(error)}</div>
+    </WayOut>
+  )
+}
+
+function WayOut({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <div className="page">
+      <h1 className="title">{title}</h1>
+      {children}
+      <Link to="/focus" className="todo-open">
+        Go to Focus →
+      </Link>
+    </div>
+  )
 }
 
 // A fixed format, not toLocaleString or "3m ago": the server and the browser must render the same

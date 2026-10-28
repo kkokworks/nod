@@ -131,7 +131,9 @@ export function donePage(shown: DoneShown): DonePage {
   }
 }
 
-export function todoPage(id: number): TodoPage {
+// null for a number no todo has, as an old link may name: the page says it is not there.
+export function todoPage(id: number): TodoPage | null {
+  if (todos.find(`t${id}`).length === 0) return null
   return {
     today: localDay(new Date()),
     todo: item(todos.get(id)),

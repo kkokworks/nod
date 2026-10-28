@@ -11,7 +11,10 @@ export const Route = createFileRoute('/')({ component: Home })
 // The decisions waiting for the person, the tasks not yet collected by project, how hands-off nod
 // has been, and the triggers that add work on a schedule.
 function Home() {
-  const { decisions, groups, triggers, stats } = root.useLoaderData()
+  const data = root.useLoaderData()
+  // Not shown then: the root shows its failure in place of the pages.
+  if ('failed' in data) return null
+  const { decisions, groups, triggers, stats } = data
   const finished = stats.tasks.succeeded
   return (
     <div className="page">
