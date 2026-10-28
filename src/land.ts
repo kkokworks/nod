@@ -4,7 +4,7 @@ import { hasRef, landed } from './gc'
 import type { Landing, Ledger, Repo, Task } from './ledger'
 import { notify, taskRef } from './notify'
 import { type GitService, type OwnPr, serviceOf } from './prs'
-import { Terminals } from './tmux'
+import { running, Terminals } from './tmux'
 import {
   askToLand,
   baseOf,
@@ -18,7 +18,6 @@ import {
   PR_TEXT,
   rebasing,
   restore,
-  running,
   type Send,
   sessionName,
   spawn,

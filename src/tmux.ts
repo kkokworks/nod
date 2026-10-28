@@ -130,7 +130,7 @@ export class Terminals {
     const pid = this.panePid(name)
     this.kill(name)
     const deadline = Date.now() + EXIT_TIMEOUT_MS
-    while (isRunning(pid)) {
+    while (running(pid)) {
       if (Date.now() > deadline) throw new Error(`${name} did not exit (pid ${pid})`)
       await Bun.sleep(100)
     }
@@ -188,12 +188,15 @@ export function quote(s: string): string {
   return `'${s.replaceAll("'", `'\\''`)}'`
 }
 
-function isRunning(pid: number): boolean {
+export function running(pid: number): boolean {
+  if (!pid) return false
   try {
     process.kill(pid, 0)
     return true
   } catch (error) {
-    // EPERM: the process exists but belongs to someone else.
+    // ESRCH: gone. EPERM: it runs, but this process may not signal it, as from inside a sandbox
+    // that keeps nod off processes outside it (macOS sandbox-exec answers EPERM for those).
+    // ponytail: a pid another user's process took since counts too.
     return error instanceof Error && 'code' in error && error.code === 'EPERM'
   }
 }
