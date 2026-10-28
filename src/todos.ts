@@ -189,6 +189,10 @@ export function parseRef(ref: string, prefix: keyof typeof REF_NAMES): number {
 // GTD contexts start with `@`; `phone` and `@phone` are the same context.
 export const asContext = (c: string): string => (c.startsWith('@') ? c : `@${c}`)
 
+// Text up to its first newline, as it is: a brief or question as a title. view.ts firstLine also
+// trims it and takes out control characters.
+export const firstLineOf = (s: string): string => s.replace(/\n[\s\S]*/, '')
+
 // Reads the tasks and decisions through the ledger and writes only the todo tables, so nothing in
 // the ledger depends on todos.
 export class Todos {
@@ -419,7 +423,7 @@ export class Todos {
   // their lists, in the project when one is given. The brief's first line is its title.
   delegateNew(task: NewTask, projectId: number | null, actor: string): number {
     return this.db.transaction(() => {
-      const title = task.brief.replace(/\n[\s\S]*/, '')
+      const title = firstLineOf(task.brief)
       const { todo } = this.capture(
         { title, notes: null, source: 'nod', sourceKey: null, url: null, projectId },
         actor,
@@ -457,14 +461,13 @@ export class Todos {
     const todo = this.first(q.selectFrom('todos').selectAll().where('id', '=', n))
     const project = this.first(q.selectFrom('projects').selectAll().where('id', '=', n))
     const { task, retro, decision } = this.ledger.numbered(n)
-    const firstLine = (s: string) => s.replace(/\n[\s\S]*/, '')
     const all: (Found | null)[] = [
       todo && { kind: 'todo', id: n, ref: `t${n}`, title: todo.title, status: todo.status },
       task && {
         kind: 'task',
         id: n,
         ref: `#${n}`,
-        title: firstLine(task.brief),
+        title: firstLineOf(task.brief),
         status: status(task),
         taskId: n,
       },
@@ -472,7 +475,7 @@ export class Todos {
         kind: 'retro',
         id: n,
         ref: `r${n}`,
-        title: `of #${retro.retro.ofTaskId}: ${firstLine(this.ledger.get(retro.retro.ofTaskId).brief)}`,
+        title: `of #${retro.retro.ofTaskId}: ${firstLineOf(this.ledger.get(retro.retro.ofTaskId).brief)}`,
         status: retro.retro.outcome ?? status(retro.task),
         taskId: retro.task.id,
       },
@@ -487,7 +490,7 @@ export class Todos {
         kind: 'decision',
         id: n,
         ref: String(n),
-        title: firstLine(decision.question),
+        title: firstLineOf(decision.question),
         status:
           decision.answer === null ? 'open' : decision.answeredAt === null ? 'closed' : 'answered',
         taskId: decision.taskId,

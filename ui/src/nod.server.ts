@@ -12,7 +12,7 @@ import {
   type Trigger,
 } from '../../src/ledger'
 import { Terminals } from '../../src/tmux'
-import { type Found, type Project, type Todo, Todos } from '../../src/todos'
+import { type Found, firstLineOf, type Project, type Todo, Todos } from '../../src/todos'
 import { reopenCommand, taskNote, taskStatus } from '../../src/view'
 import { answer, sessionName, tell } from '../../src/worker'
 
@@ -221,16 +221,8 @@ const rank = (t: TaskRow): number => RANK[t.status] ?? 5
 // A retrospective does no todo of its own; it sits in the project of the task it looks back on.
 function place(todos: Todos, t: Task): Place {
   const todo = t.todoId === null ? null : todos.get(t.todoId)
-  if (todo === null) {
-    return {
-      todo: null,
-      project:
-        t.retroId === null
-          ? null
-          : place(todos, ledger.get(ledger.retro(t.retroId).ofTaskId)).project,
-    }
-  }
-  return { todo, project: todo.projectId === null ? null : todos.project(todo.projectId) }
+  const projectId = todo === null ? todos.projectOf(t) : todo.projectId
+  return { todo, project: projectId === null ? null : todos.project(projectId) }
 }
 
 function row(todos: Todos, t: Task, live: ReadonlySet<string>): TaskRow {
@@ -238,7 +230,7 @@ function row(todos: Todos, t: Task, live: ReadonlySet<string>): TaskRow {
   return {
     id: t.id,
     status: taskStatus(t, live),
-    title: todo?.title ?? t.brief.replace(/\n[\s\S]*/, ''),
+    title: todo?.title ?? firstLineOf(t.brief),
     note: taskNote(ledger, t),
     issue: t.issue,
     todoId: todo?.id ?? null,

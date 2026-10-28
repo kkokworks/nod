@@ -933,8 +933,7 @@ function pastedByNod(ledger: Ledger, open: Attempt, prompt: string, left: string
 function forgetHeldBack(ledger: Ledger, home: string, open: Attempt): void {
   const last = ledger
     .messages(open.taskId)
-    .filter((m) => m.attemptId === open.id && typedHere(m.text))
-    .at(-1)
+    .findLast((m) => m.attemptId === open.id && typedHere(m.text))
   const words = last?.text ?? (typedHere(open.prompt) ? open.prompt : TYPED)
   if (words === TYPED) return
   const lines = transcriptLines(ledger, home, open.taskId, open.sessionId)
@@ -1559,7 +1558,7 @@ const TranscriptEntry = z.object({
 // (`interruptedByShutdown`), a turn cut off. A message a hook held back leaves no message of the
 // person's but a system entry with `promptSubmitEnding` (measured on 2.1.310 with `claude -p`).
 function endedWithoutStop(lines: string[]): string | null {
-  for (const line of [...lines].reverse()) {
+  for (const line of lines.toReversed()) {
     const parsed = TranscriptEntry.safeParse(jsonOrNull(line))
     if (!parsed.success || parsed.data.isSidechain === true) continue
     const entry = parsed.data
@@ -2406,7 +2405,7 @@ export async function closeFinished(ledger: Ledger, home: string, now: Date): Pr
 // waited, in a row up to the last one; null when its last finished turn did not wait.
 function waitingSince(ledger: Ledger, taskId: number): number | null {
   const ended = ledger.attempts(taskId).filter((a) => a.finishedAt !== null && !noTurn(a))
-  const first = ended.slice(ended.findLastIndex((a) => a.outcome !== 'waiting') + 1)[0]
+  const first = ended[ended.findLastIndex((a) => a.outcome !== 'waiting') + 1]
   return first?.finishedAt ? Date.parse(first.finishedAt) : null
 }
 
@@ -2425,7 +2424,7 @@ export async function overdueWaits(ledger: Ledger, home: string, now: Date): Pro
     // A turn the person typed that ended without a Stop came while it waited, and changed nothing
     // of that: the work it waits on still runs or is gone.
     const turns = ledger.attempts(t.id)
-    const last = turns.filter((a) => !noTurn(a)).at(-1) ?? null
+    const last = turns.findLast((a) => !noTurn(a)) ?? null
     const since = waitingSince(ledger, t.id)
     if (last === null || last.outcome !== 'waiting' || since === null) continue
     if (now.getTime() - since < WAIT_LIMIT_MS) continue
