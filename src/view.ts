@@ -157,9 +157,8 @@ const shownStatus = (t: LsTask): string => (t.sessionEnded ? 'session ended' : t
 
 // Since its end once it has ended, else since its last turn started, else since it was added. A
 // task that runs again keeps its old finished_at (setRunning), so only an ended status counts it.
-const ENDED: readonly string[] = ['succeeded', 'cancelled', 'error']
 const sinceOf = (t: LsTask): string =>
-  (ENDED.includes(t.status) ? t.finishedAt : null) ?? t.startedAt ?? t.createdAt
+  (FINISHED.has(t.status) ? t.finishedAt : null) ?? t.startedAt ?? t.createdAt
 
 // ls's groups in order, the latest first in each, with the empty ones left out.
 export function lsGroups(tasks: LsTask[]): { name: string; tasks: LsTask[] }[] {

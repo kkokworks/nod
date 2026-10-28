@@ -9,6 +9,7 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { join, resolve } from 'node:path'
+import { git } from '../test/remote'
 import { tempDirs } from '../test/tmp'
 import { ALLOW, harmless, onPermissionRequest } from './allow'
 import { sendNotices } from './inbox'
@@ -22,25 +23,6 @@ const tmp = tempDirs()
 afterAll(tmp.removeAll)
 
 const cli = resolve(import.meta.dir, 'cli.ts')
-
-function git(cwd: string, ...args: string[]): void {
-  const run = Bun.spawnSync(
-    [
-      'git',
-      '-c',
-      'user.name=nod test',
-      '-c',
-      'user.email=nod-test@example.invalid',
-      '-c',
-      'core.hooksPath=/dev/null',
-      '-c',
-      'commit.gpgsign=false',
-      ...args,
-    ],
-    { cwd },
-  )
-  if (run.exitCode !== 0) throw new Error(`git ${args[0]}: ${run.stderr.toString()}`)
-}
 
 // A repo whose worktree a task works in, as nod makes one: a branch in a folder of its own, its git
 // folder shared with the repo's. Committed: a package, a source file, and what git ignores. Not:

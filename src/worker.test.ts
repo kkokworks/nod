@@ -13,6 +13,7 @@ import {
 } from 'node:fs'
 import { basename, dirname, join, resolve } from 'node:path'
 import { projectFolder } from '../test/projects'
+import { git } from '../test/remote'
 import { tempDirs } from '../test/tmp'
 import { testTmux } from '../test/tmux'
 // Most tests here run workers in tmux: `test` skips them where tmux cannot start a server. Those
@@ -801,26 +802,6 @@ test('a task that comes after another starts once that one succeeds, and hears i
   const message = entries('turn').find((t) => t.message?.startsWith('then this'))?.message
   expect(message).toContain(`- #${first} ask-first: did it`)
 })
-
-// A fixed identity and no hooks, so commits do not depend on this machine's git config.
-function git(cwd: string, ...args: string[]): void {
-  const result = Bun.spawnSync(
-    [
-      'git',
-      '-c',
-      'user.name=nod test',
-      '-c',
-      'user.email=nod-test@example.invalid',
-      '-c',
-      'core.hooksPath=/dev/null',
-      '-c',
-      'commit.gpgsign=false',
-      ...args,
-    ],
-    { cwd },
-  )
-  if (result.exitCode !== 0) throw new Error(`git ${args[0]}: ${result.stderr.toString()}`)
-}
 
 test('in a repo, done needs the work committed, and the next task starts from that branch', async () => {
   const repo = newRepo()

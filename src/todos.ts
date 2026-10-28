@@ -187,7 +187,7 @@ export function parseRef(ref: string, prefix: keyof typeof REF_NAMES): number {
 }
 
 // GTD contexts start with `@`; `phone` and `@phone` are the same context.
-const asContext = (c: string): string => (c.startsWith('@') ? c : `@${c}`)
+export const asContext = (c: string): string => (c.startsWith('@') ? c : `@${c}`)
 
 // Reads the tasks and decisions through the ledger and writes only the todo tables, so nothing in
 // the ledger depends on todos.
