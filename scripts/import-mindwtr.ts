@@ -303,10 +303,10 @@ if (import.meta.main) {
   console.log(`projects   ${String(data.projects.length).padStart(7)}  ${projects.length}`)
   same &&= projects.length === data.projects.length
   if (unlinked.missing.length > 0) {
-    console.log(`nod tasks not in the ledger: ${unlinked.missing.map((n) => `#${n}`).join(', ')}`)
+    console.log(`nod tasks not in the ledger: ${unlinked.missing.map((n) => `n${n}`).join(', ')}`)
   }
   for (const { task, todos: ts } of unlinked.shared) {
-    console.log(`task #${task} does another todo, so not ${ts.map((t) => `t${t}`).join(', ')}`)
+    console.log(`task n${task} does another todo, so not ${ts.map((t) => `t${t}`).join(', ')}`)
   }
   if (!same) throw new Error('the counts differ')
 }
