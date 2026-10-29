@@ -362,7 +362,7 @@ switch (command) {
   case 'link': {
     const id = taskRef(rest[0])
     const urls = rest.slice(1)
-    if (!Number.isInteger(id) || urls.length === 0) throw new Error(USAGE)
+    if (urls.length === 0) throw new Error(USAGE)
     ledger.link(id, urls)
     console.log(`linked n${id}: ${ledger.links(id).join(' ')}`)
     break
