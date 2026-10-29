@@ -1,5 +1,5 @@
 import { afterAll, expect, spyOn, test } from 'bun:test'
-import { chmodSync, createReadStream, existsSync, writeFileSync } from 'node:fs'
+import { chmodSync, createReadStream, existsSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tempDirs } from '../test/tmp'
 import { notify, runGroup } from './notify'
@@ -8,6 +8,24 @@ const tmp = tempDirs()
 afterAll(tmp.removeAll)
 
 const event = { event: 'cancelled', task: { id: 1, brief: 'b', issue: null } } as const
+
+// What a limit below leaves, on top of what its run takes alone, for other work on the machine: a
+// notify that takes half a second alone took three and a half under load.
+const LOAD_MS = 5000
+// The limit given to a command that does not end of itself, long enough for what it starts to be
+// running when it passes. Were it not, under load, a test would check less, not fail.
+const LIMIT_MS = 1000
+
+// A shell loop that runs until the test lets it go, so that the test, not the clock, says when what
+// runs it ends. Removing the temp dirs lets it go too: a test that failed leaves nothing running.
+function hold(): { loop: string; release: () => void } {
+  const file = join(tmp.make('nod-hold-'), 'held')
+  writeFileSync(file, '')
+  return {
+    loop: `while [ -e ${JSON.stringify(file)} ]; do sleep 0.05; done`,
+    release: () => rmSync(file, { force: true }),
+  }
+}
 
 // A home whose <home>/notify is `body`, with `mode`.
 function withNotify(body: string, mode: number): string {
@@ -31,45 +49,69 @@ test('a notify script that cannot run is reported on stderr and throws nothing',
   }
 })
 
-test('a notify script past its time ends with what it started, which holds its stderr', async () => {
-  const errors = spyOn(console, 'error').mockImplementation(() => {})
-  try {
-    const started = Date.now()
-    // A limit long enough for `sleep` to be running when it passes.
-    await notify(withNotify('#!/bin/sh\nsleep 5\n', 0o755), event, 1000)
-    expect(Date.now() - started).toBeLessThan(3000)
-    expect(errors).toHaveBeenCalledTimes(1)
-  } finally {
-    errors.mockRestore()
-  }
-})
+test(
+  'a notify script past its time ends with what it started, which holds its stderr',
+  async () => {
+    // The script runs until the test lets it go, once notify has returned: notify returns only
+    // because the limit ended it.
+    const errors = spyOn(console, 'error').mockImplementation(() => {})
+    const held = hold()
+    try {
+      await notify(withNotify(`#!/bin/sh\n${held.loop}\n`, 0o755), event, LIMIT_MS)
+      expect(errors).toHaveBeenCalledTimes(1)
+    } finally {
+      held.release()
+      errors.mockRestore()
+    }
+  },
+  LIMIT_MS + LOAD_MS,
+)
 
-test('a notify script that ends leaves what it put in the background running, unwaited', async () => {
-  const home = tmp.make('nod-notify-')
-  const mark = join(home, 'sent')
-  writeFileSync(join(home, 'notify'), `#!/bin/sh\n(sleep 2; touch ${JSON.stringify(mark)}) &\n`)
-  chmodSync(join(home, 'notify'), 0o755)
-  const started = Date.now()
-  await notify(home, event)
-  expect(Date.now() - started).toBeLessThan(1500)
-  const deadline = Date.now() + 4000
-  while (!existsSync(mark) && Date.now() < deadline) await Bun.sleep(50)
-  expect(existsSync(mark)).toBe(true)
-})
+test(
+  'a notify script that ends leaves what it put in the background running, unwaited',
+  async () => {
+    // What the script puts in the background holds its output and runs until the test lets it go,
+    // once notify has returned: had notify waited for it, notify would not return. So no clock, and
+    // the grace notify gives the output can change without this test changing.
+    const home = tmp.make('nod-notify-')
+    const sent = join(home, 'sent')
+    const held = hold()
+    const script = `#!/bin/sh\n(${held.loop}; touch ${JSON.stringify(sent)}) &\n`
+    writeFileSync(join(home, 'notify'), script)
+    chmodSync(join(home, 'notify'), 0o755)
+    try {
+      await notify(home, event)
+      expect(existsSync(sent)).toBe(false)
+    } finally {
+      held.release()
+    }
+    // Let go, it goes on: notify left it running. Had notify ended it, this would wait out the test's
+    // limit: a second for notify alone (the grace it gives the output included), and the load.
+    while (!existsSync(sent)) await Bun.sleep(50)
+  },
+  1000 + LOAD_MS,
+)
 
-test('a command past its time ends with what it started, which holds its output', async () => {
-  // `sleep` is the child of `sh` (`; :` keeps `sh` from becoming it) and holds the output. Killing
-  // only `sh` would leave it running, and the run waiting out the grace for the output to close.
-  // A limit long enough for `sleep` to be running when it passes.
-  const started = Date.now()
-  const run = await runGroup(['sh', '-c', 'sleep 30; :'], {
-    env: process.env,
-    timeoutMs: 1000,
-    graceMs: 5000,
-  })
-  expect(run.code).not.toBe(0)
-  expect(Date.now() - started).toBeLessThan(5000)
-}, 15_000)
+test(
+  'a command past its time ends with what it started, which holds its output',
+  async () => {
+    // The subshell is the child of `sh` (`; :` keeps `sh` from becoming it) and holds the output
+    // until the test lets it go, once the run has returned. Killing only `sh` would leave it holding
+    // the output, and the run waiting out a grace longer than this test.
+    const held = hold()
+    try {
+      const run = await runGroup(['sh', '-c', `(${held.loop}); :`], {
+        env: process.env,
+        timeoutMs: LIMIT_MS,
+        graceMs: 2 * (LIMIT_MS + LOAD_MS),
+      })
+      expect(run.code).not.toBe(0)
+    } finally {
+      held.release()
+    }
+  },
+  LIMIT_MS + LOAD_MS,
+)
 
 // A nod process of its own running `body` with runGroup, and a reader of the lines it prints.
 function nodProcess(body: string) {
@@ -131,13 +173,20 @@ console.log((await run).code)
   expect(await proc.exited).toBe(0)
 }, 10_000)
 
-test('a command that ended in time is not killed while its output is waited on', async () => {
-  // The limit passes during the wait once `sh` has ended within it (it takes milliseconds, and the
-  // limit leaves seconds for a slow start): the wait is longer than the limit and ends only when
-  // what was left in the background, holding the output, has done its work.
-  const mark = join(tmp.make('nod-group-'), 'sent')
-  const left = ['sh', '-c', `(sleep 4; touch ${JSON.stringify(mark)}) &`]
-  const run = await runGroup(left, { env: process.env, timeoutMs: 3000, graceMs: 10_000 })
-  expect(run.code).toBe(0)
-  expect(existsSync(mark)).toBe(true)
-}, 15_000)
+test(
+  'a command that ended in time is not killed while its output is waited on',
+  async () => {
+    // `sh` ends within the limit (it takes milliseconds alone, so the limit is all load) and leaves
+    // in the background what holds the output. The test lets that go once the limit has passed: a
+    // timer set after runGroup's, for as long, fires after it. Killed by then, it would not mark that
+    // it went on. The grace outlasts the limit, so the run waits for it.
+    const mark = join(tmp.make('nod-group-'), 'sent')
+    const held = hold()
+    const left = ['sh', '-c', `(${held.loop}; touch ${JSON.stringify(mark)}) &`]
+    const run = runGroup(left, { env: process.env, timeoutMs: LOAD_MS, graceMs: 2 * LOAD_MS })
+    setTimeout(held.release, LOAD_MS)
+    expect((await run).code).toBe(0)
+    expect(existsSync(mark)).toBe(true)
+  },
+  3 * LOAD_MS,
+)
