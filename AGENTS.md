@@ -27,6 +27,6 @@ Claude Code 는 `.claude/rules/` 를 자동으로 읽습니다. 다른 에이전
 
 ## 검증
 
-커밋 전에 `bun test`, `bun run typecheck`, `bun run lint` 가 모두 통과해야 합니다. `ui/` 를 고쳤으면 `ui/` 에서 `bun run typecheck` 도 통과해야 합니다. nod 가 띄운 워커의 샌드박스는 자기 소켓 폴더(`NOD_SOCKETS`)에서만 Unix 소켓을 열게 하고, 가상 터미널은 막습니다(`openpty: Operation not permitted`). 그래서 워커 안의 `bun test` 는 소켓 시험(`inboxTest`, `test/inbox-server.ts`)까지 돌리고, tmux 서버를 띄우는 시험(`tmuxTest`, `test/tmux-server.ts`)은 모두 건너뜁니다. 출력의 `tmux cannot start a server in this sandbox` 한 줄이 그 표시입니다. 보고에는 건너뛴 시험 수를 적고, 그 시험까지 든 전체 시험은 done 뒤 nod 의 수락 검사가 샌드박스 밖에서 돌린다고 씁니다. 소켓 폴더를 쓰지 못하는 다른 샌드박스(독립 리뷰어 등)에서는 소켓 시험도 건너뜁니다. 잰 값: [docs/design.md](docs/design.md) 「워커 샌드박스의 Unix 소켓」(2026-10-29, Claude Code 2.1.312).
+커밋 전에 `bun test`, `bun run typecheck`, `bun run lint` 가 모두 통과해야 합니다. `ui/` 를 고쳤으면 `ui/` 에서 `bun run typecheck` 도 통과해야 합니다. nod 가 띄운 워커의 샌드박스는 자기 소켓 폴더(`NOD_SOCKETS`)에서만 Unix 소켓을 열게 하고, 가상 터미널은 막습니다(`openpty: Operation not permitted`). 그래서 워커 안의 `bun test` 는 소켓 시험(`inboxTest`, `test/inbox-server.ts`)까지 돌리고, tmux 서버를 띄우는 시험(`tmuxTest`, `test/tmux-server.ts`)은 모두 건너뜁니다. 출력의 `tmux cannot start a server in this sandbox` 한 줄이 그 표시입니다. 보고에는 건너뛴 시험 수를 적습니다. 건너뛴 시험은 첫 메시지에 적힌 수락 검사가 `bun test` 를 돌릴 때만 done 뒤 샌드박스 밖에서 돌고, 그렇지 않으면 아무도 돌리지 않았다고 씁니다. 소켓 폴더를 쓰지 못하거나 그 실제 경로가 소켓 경로 한도에 비해 긴 곳(독립 리뷰어, 홈 경로가 긴 PC 등, `test/tmp.ts`)에서는 소켓 시험도 건너뜁니다. 잰 값: [docs/design.md](docs/design.md) 「워커 샌드박스의 Unix 소켓」(2026-10-29, Claude Code 2.1.312).
 
 > 규칙·스킬을 더하면 이 표에도 한 줄을 더합니다.
