@@ -4,7 +4,7 @@ import { spawn } from './proc'
 
 // A task's branch in its worktree, as nod's own git reads it: where its own commits start, its head,
 // and a rebase stopped on it, with what the worker is asked to do about that. For the checks of a
-// task's work (worker.ts) and its landing (land.ts).
+// task's work (verify.ts) and its landing (land.ts).
 
 // Where the branch was created: its oldest reflog entry, since `worktree add -b` records it and later
 // commits only add entries. Null once that entry is gone.
