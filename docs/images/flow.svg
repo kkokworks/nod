@@ -69,7 +69,7 @@
   <rect class="box hot" x="822" y="478" width="330" height="214" rx="16"/>
   <circle class="n" cx="858" cy="518" r="17"/><text class="nt" x="858" y="524" text-anchor="middle">4</text>
   <text class="t" x="888" y="527">결정</text>
-  <text class="c" x="846" y="572">nod 3 '그렇게 해'</text>
+  <text class="c" x="846" y="572">nod d3 '그렇게 해'</text>
   <text class="m" x="846" y="612">질문·실패·권한만 사람에게</text>
   <text class="m" x="846" y="642">nod watch 가 바로 알림</text>
   <text class="m" x="846" y="672">답이 없으면 기다림</text>
