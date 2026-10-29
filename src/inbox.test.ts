@@ -1,8 +1,9 @@
 import { afterAll, expect, spyOn, test } from 'bun:test'
+import { writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { inboxServer, inboxTest } from '../test/inbox-server'
 import { socketsParent, tempDirs } from '../test/tmp'
-import { onCommand, onInbox, sendNotices, tellProject } from './inbox'
+import { onCommand, onInbox, sendNotices, tellProject, unheardWork } from './inbox'
 import { Ledger, type NewTask } from './ledger'
 import { notify } from './notify'
 import { Todos } from './todos'
@@ -530,3 +531,84 @@ inboxTest(
   },
   15_000,
 )
+
+test("a Claude session that sets a project's work going hears, once per project, that the project's latest session cannot hear it either; a shell, that latest session, one that hears, and work in no project hear nothing", () => {
+  const { home, ledger, todos, p, q, task } = setup()
+  // What C, a session nod open did not open, added; task() adds as another session did.
+  const ofC = (text: string, project: number | null): number =>
+    todos.delegateNew({ ...brief(text), rootSession: C }, project, 'human')
+  const mine = ofC('Mine', p.id)
+  const theirs = task('Theirs')
+  const loose = ofC('In no project', null)
+  const health = ofC('Health work', q.id)
+  const deaf = (project: string, why: string, watch = 'nod watch --mine', it = 'it again') =>
+    `nod: ${project}'s session hears nothing from nod (${why}), so the decisions and ends of this work wait unheard; run ${watch} here, or nod open ${project} opens ${it}`
+
+  // No session of p1 yet: one line for its two tasks; --mine would leave out another's task.
+  const never = 'nod open never opened one'
+  expect(unheardWork(ledger, C, [mine, mine])).toEqual([deaf('p1', never, undefined, 'one')])
+  expect(unheardWork(ledger, C, [mine, theirs])).toEqual([deaf('p1', never, 'nod watch', 'one')])
+  expect(unheardWork(ledger, C, [loose])).toEqual([])
+  expect(unheardWork(ledger, null, [mine, health])).toEqual([])
+
+  // p1's session ended (no socket), ended without its hook (socket file gone), and runs.
+  todos.addSession(p.id, A, '/work/one')
+  expect(unheardWork(ledger, C, [mine, loose, health])).toEqual([
+    deaf('p1', 'it is not running'),
+    deaf('p2', never, undefined, 'one'),
+  ])
+  const socket = join(home, 'a.sock')
+  todos.setSocket(A, socket)
+  expect(unheardWork(ledger, C, [mine])).toEqual([deaf('p1', 'its inbox socket is gone')])
+  writeFileSync(socket, '')
+  expect(unheardWork(ledger, C, [mine, theirs])).toEqual([])
+
+  // The latest session itself hears nothing here, as onCommand speaks for it; an older one of the
+  // project does, and has all the project's tasks as its own.
+  todos.addSession(p.id, B, '/work/two')
+  expect(unheardWork(ledger, B, [mine])).toEqual([])
+  expect(unheardWork(ledger, A, [theirs])).toEqual([deaf('p1', 'it is not running')])
+})
+
+test('nod add, tell and an answer run in a Claude session say on stderr that no session of the project hears the work; in a shell, or once the project session runs, they say nothing', () => {
+  const { home, ledger, todos, p } = setup()
+  const {
+    CLAUDECODE: _,
+    CLAUDE_CODE_SESSION_ID: __,
+    CLAUDE_CODE_MESSAGING_SOCKET: ___,
+    NOD_TASK: ____,
+    NOD_ACTOR: _____,
+    ...shell
+  } = process.env
+  const nod = (session: string | null, ...args: string[]): string => {
+    const claude = session === null ? {} : { CLAUDECODE: '1', CLAUDE_CODE_SESSION_ID: session }
+    const r = Bun.spawnSync(['bun', cli, ...args], { env: { ...shell, NOD_HOME: home, ...claude } })
+    return r.stderr.toString()
+  }
+  // Each waits on a task that never starts here, so no worker runs, and tell and the answer stop
+  // once the warning is out: the task has not started.
+  const never = ledger.add(brief('never starts'))
+  const added = nod(C, 'add', 'Ship it', '--project', 'p1', '--after', `n${never}`)
+  const id = ledger.list().find((t) => t.brief === 'Ship it')?.id ?? 0
+  const attemptId = ledger.startAttempt({
+    taskId: id,
+    kind: 'start',
+    decisionId: null,
+    sessionId: 's',
+    prompt: 'p',
+  })
+  const d = ledger.ask(id, attemptId, 'question', 'Which way?')
+  const line =
+    "nod: p1's session hears nothing from nod (nod open never opened one), so the decisions and ends of this work wait unheard; run nod watch --mine here, or nod open p1 opens one\n"
+  expect(added).toContain(line)
+  expect(nod(C, 'tell', `n${id}`, 'and the docs')).toContain(line)
+  expect(nod(B, 'tell', `n${id}`, 'and the docs')).toContain(line.replace('--mine ', ''))
+  expect(nod(C, `d${d}`, 'left')).toContain(line)
+  expect(nod(null, 'tell', `n${id}`, 'and the docs')).not.toContain('hears nothing')
+
+  todos.addSession(p.id, A, '/work/one')
+  const socket = join(home, 'a.sock')
+  todos.setSocket(A, socket)
+  writeFileSync(socket, '')
+  expect(nod(C, 'tell', `n${id}`, 'and the docs')).not.toContain('hears nothing')
+}, 30_000)

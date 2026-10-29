@@ -1,5 +1,6 @@
+import { existsSync } from 'node:fs'
 import { z } from 'zod'
-import { Ledger, type Notice } from './ledger'
+import { Ledger, type Notice, type Task } from './ledger'
 import { type Project, Todos } from './todos'
 import { allowedLine, firstLine, indent, oneLine, taskLabel } from './view'
 import { message } from './worker'
@@ -48,7 +49,8 @@ export async function onInbox(
 // process ran until /clear or /resume with no hook to say so, whose old ID the socket drops now.
 // Returns what to tell stderr, or null: why a project's session still hears nothing (it is not the
 // project's latest, which alone hears, or nod knows no socket of it), and which project's latest
-// session lost its socket to this one. Any other session is told nothing and changes nothing.
+// session lost its socket to this one. Any other session is told nothing here (unheardWork speaks
+// to it as it sets a project's work going) and changes nothing.
 // ponytail: with no SessionEnd hook such a session ends, or goes on under a new ID, without saying
 // so: its socket stays until a send finds it gone (sendNotices) or another session says it, and a
 // line sent to the old ID there meanwhile is dropped yet counts as sent.
@@ -86,6 +88,42 @@ export async function onCommand(
     }
   }
   return told.length === 0 ? null : told.join('\n')
+}
+
+// What a Claude session hears as it sets a project's work going (nod add, tell, an answer, resume,
+// restart) though it is not the project's latest session, the one nod tells: a line for stderr for
+// each project of the tasks `ids` whose latest session cannot hear either (there is none, nod knows
+// no socket of it, or its socket file is gone), so the decisions and ends that work brings wait
+// unheard. Each project once. Nothing for a person's shell (no session), nor for the project's
+// latest session, which onCommand speaks for. `nod watch --mine` shows only the session's own
+// tasks, so the line names plain `nod watch` for work another session added.
+export function unheardWork(ledger: Ledger, session: string | null, ids: number[]): string[] {
+  if (session === null) return []
+  const todos = new Todos(ledger)
+  const work = new Map<number, Task[]>()
+  for (const id of ids) {
+    const task = ledger.get(id)
+    const project = todos.projectOf(task)
+    if (project !== null) work.set(project, [...(work.get(project) ?? []), task])
+  }
+  const told: string[] = []
+  for (const [projectId, tasks] of work) {
+    const latest = todos.latestSession(projectId)
+    if (latest?.sessionId === session) continue
+    if (latest?.socket && existsSync(latest.socket)) continue
+    const p = `p${projectId}`
+    const why =
+      latest === null
+        ? 'nod open never opened one'
+        : latest.socket === null
+          ? 'it is not running'
+          : 'its inbox socket is gone'
+    const watch = tasks.every((t) => todos.isMine(session, t)) ? 'nod watch --mine' : 'nod watch'
+    told.push(
+      `nod: ${p}'s session hears nothing from nod (${why}), so the decisions and ends of this work wait unheard; run ${watch} here, or nod open ${p} opens ${latest === null ? 'one' : 'it again'}`,
+    )
+  }
+  return told
 }
 
 // `nod tell p<n>`: a person's words for the project's session, by the same way. Returns whether
