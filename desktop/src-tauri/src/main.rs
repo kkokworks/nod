@@ -14,7 +14,7 @@ use objc2::runtime::{AnyObject, Bool, ClassBuilder, Sel};
 use objc2::{class, msg_send, sel};
 use serde_json::{Map, Value};
 use tauri::menu::{IsMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
-use tauri::webview::NewWindowResponse;
+use tauri::webview::{NewWindowResponse, PageLoadEvent};
 use tauri::{
     AppHandle, LogicalPosition, Manager, RunEvent, Url, WebviewUrl, WebviewWindow,
     WebviewWindowBuilder, WindowEvent, Wry,
@@ -38,6 +38,9 @@ static CAPTURE_APP: OnceLock<AppHandle> = OnceLock::new();
 // Whether `nod in` is running. The capture window then stays up when it loses focus, so that a
 // failure shows.
 static CAPTURING: AtomicBool = AtomicBool::new(false);
+
+// Whether the main window shows a page of the UI server that loaded (shows_nod_page).
+static NOD_PAGE: AtomicBool = AtomicBool::new(false);
 
 // The 이동 menu, ⌘1 to ⌘6, in the UI sidebar's order.
 const PAGES: [(&str, &str); 6] = [
@@ -76,6 +79,19 @@ fn main() {
             }
             _ => {}
         })
+        // A page whose web process died is gone, and tauri loads it again only without this hook.
+        // The main window first counts as holding no page, so that if the server is down and the
+        // load fails, the watch sends it to the offline page.
+        .on_web_content_process_terminate(|webview| {
+            if webview.label() == "main" {
+                NOD_PAGE.store(false, Ordering::Relaxed);
+            }
+            // Not here: on the main thread the reload would run inside the event loop's call.
+            let webview = webview.clone();
+            std::thread::spawn(move || {
+                let _ = webview.reload();
+            });
+        })
         .invoke_handler(tauri::generate_handler![capture, dismiss, retry])
         .setup(|app| {
             let handle = app.handle().clone();
@@ -94,6 +110,9 @@ fn main() {
                 .on_new_window(|url, _| {
                     open_outside(&url);
                     NewWindowResponse::Deny
+                })
+                .on_page_load(|_, load| {
+                    NOD_PAGE.store(shows_nod_page(load.event(), load.url()), Ordering::Relaxed)
                 })
                 .build()?;
             if let Some(capture) = handle.get_webview_window("capture") {
@@ -243,18 +262,37 @@ fn shown_path(url: &Url) -> String {
     format!("{}{}", url.path(), url.query().map(|q| format!("?{q}")).unwrap_or_default())
 }
 
-// The server can also go down under a page already shown (a reinstall, a crash), so every few
-// seconds the main window goes to the offline page if so. That page comes back once it is up.
+// The server can also go down while the main window is on it (a reinstall, a crash). A page of
+// the server's that loaded handles that itself: it keeps what it shows and what was typed in it,
+// says its refresh failed, and comes back once the server is up (keep in ui/src/parts.tsx). So
+// every few seconds only a window with no such page goes to the offline page, which comes back.
 fn watch_server(app: AppHandle) {
     std::thread::spawn(move || loop {
         std::thread::sleep(Duration::from_secs(3));
         let Some(window) = app.get_webview_window("main") else { continue };
         let Ok(url) = window.url() else { continue };
-        if url.origin() == server_page("/").origin() && !server_up() {
+        if leaves_for_offline(&url, NOD_PAGE.load(Ordering::Relaxed)) && !server_up() {
             // Not page(), which asks again: a server back in between would reload the page.
             let _ = window.navigate(offline_page(&app, &shown_path(&url)));
         }
     });
+}
+
+// Whether a page load event leaves a page of the UI server's in the main window: once one has
+// loaded, until a load commits another document in its place. A load the server does not answer
+// never commits, and the page that was there stays.
+fn shows_nod_page(event: PageLoadEvent, url: &Url) -> bool {
+    matches!(event, PageLoadEvent::Finished) && on_server(url)
+}
+
+// Whether the main window at url goes to the offline page while the server is down: on the
+// server's origin with no page of it loaded, as while one loads or after its load failed.
+fn leaves_for_offline(url: &Url, nod_page: bool) -> bool {
+    on_server(url) && !nod_page
+}
+
+fn on_server(url: &Url) -> bool {
+    url.origin() == server_page("/").origin()
 }
 
 // Whether the main window goes to url itself: the UI server's pages, the app's own (on tauri://
@@ -264,8 +302,7 @@ fn watch_server(app: AppHandle) {
 fn in_window(url: &Url, dev_url: Option<&Url>) -> bool {
     match url.scheme() {
         "http" | "https" => {
-            url.origin() == server_page("/").origin()
-                || dev_url.is_some_and(|dev| url.origin() == dev.origin())
+            on_server(url) || dev_url.is_some_and(|dev| url.origin() == dev.origin())
         }
         "tauri" | "about" | "blob" | "data" => true,
         _ => false,
@@ -622,6 +659,25 @@ mod tests {
         assert!(in_window(&url("about:blank"), None));
         assert!(!in_window(&url("mailto:someone@example.com"), None));
         assert!(!in_window(&url("file:///Applications/Calculator.app"), None));
+    }
+
+    #[test]
+    fn only_a_window_with_no_loaded_ui_page_goes_to_the_offline_page() {
+        let url = |s: &str| s.parse::<Url>().unwrap();
+        let task = url("http://127.0.0.1:4800/tasks/1");
+        let offline = url("tauri://localhost/offline.html?path=%2Ftasks%2F1");
+        // A page of the server's that loaded keeps what it shows while the server is down.
+        assert!(shows_nod_page(PageLoadEvent::Finished, &task));
+        assert!(!leaves_for_offline(&task, true));
+        // One still loading, or left blank by a failed load, has nothing to keep.
+        assert!(!shows_nod_page(PageLoadEvent::Started, &task));
+        assert!(leaves_for_offline(&task, false));
+        // The app's own pages are none of the server's, and the offline page stays put.
+        assert!(!shows_nod_page(PageLoadEvent::Finished, &offline));
+        assert!(!leaves_for_offline(&offline, false));
+        let dev_offline = url("http://localhost:1430/offline.html?path=%2F");
+        assert!(!shows_nod_page(PageLoadEvent::Finished, &dev_offline));
+        assert!(!leaves_for_offline(&dev_offline, false));
     }
 
     #[test]
