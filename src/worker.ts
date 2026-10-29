@@ -13,10 +13,19 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { join } from 'node:path'
 import { z } from 'zod'
 import { accountChanged, accountRule, configDir, transcriptPath } from './account'
 import type { PermissionEvent } from './allow'
+import {
+  conflictBrief,
+  gitPath,
+  headOf,
+  NOD_GIT,
+  ownStart,
+  rebasing,
+  unmergedFiles,
+} from './branch'
 import { hasRef, onlyCopy } from './gc'
 import {
   type Attempt,
@@ -30,6 +39,18 @@ import {
 import { notify, notifyError, taskRef } from './notify'
 import { branchOf, sessionName, socketsDir, workspaceOf } from './place'
 import { message, OUTPUT_LIMIT, spawn } from './proc'
+import {
+  type Capture,
+  jsonOrNull,
+  nodLines,
+  PR_TEXT,
+  parseCaptures,
+  parseReport,
+  parseTells,
+  prText,
+  TEXT_ONLY,
+  type Tell,
+} from './report'
 import { askedAgain, type Changes, reviewBrief } from './review'
 import { activeRules, hadTrouble, isNoRule, retroBrief } from './rules'
 import { pasted, quote, running, type Terminals } from './tmux'
@@ -229,8 +250,6 @@ const ALLOWED_HERE = '(allowed in the terminal)'
 // ponytail: fixed retry budget; make it per-task if real checks need more.
 const CHECK_RETRIES = 2
 const QUESTION_LIMIT = 2000
-// More than this in one report is more than a person can clarify, or a worker gone wrong.
-const MAX_CAPTURES = 50
 // A task waits on background work this long in a row at most; past it, its next stop or the tick
 // asks the person what it last asked. Work that never ends (a server left running) or that went
 // with its Claude Code would keep it waiting for good.
@@ -262,23 +281,6 @@ const CLI = join(import.meta.dirname, 'cli.ts')
 // Who moves a delegated todo along with its task, or a watched one once its watch passes: nod
 // itself. Not the environment's actor, which in a worker's hook is that worker.
 export const SELF = 'nod'
-
-// A todo a worker asks nod to capture. Its sandbox keeps it out of the ledger, so nod captures for
-// it, into the inbox only, where the person clarifies it.
-const Capture = z
-  .object({
-    title: z.string().trim().min(1),
-    notes: z.string().trim().min(1).optional(),
-    link: z.string().trim().min(1).optional(),
-    source: z.string().trim().min(1).optional(),
-    key: z.string().trim().min(1).optional(),
-  })
-  .refine((c) => c.key === undefined || c.source !== undefined, 'a key needs its source')
-type Capture = z.infer<typeof Capture>
-
-// A message a worker asks nod to send another task's worker (`NOD: tell`). Its sandbox keeps it off
-// the ledger and that worker's terminal, so its Stop hook sends it, the way `nod tell` does.
-type Tell = { to: number; text: string }
 
 // What Claude Code's hooks pass on stdin (measured on 2.1.290); only the fields nod reads.
 export const StopEvent = z.object({
@@ -317,8 +319,6 @@ export const ToolEvent = z.object({
   tool_input: z.record(z.string(), z.unknown()),
   agent_id: z.string().optional(),
 })
-
-type Report = { status: 'done' | 'question' | 'failed'; text: string }
 
 export async function startTask(
   ledger: Ledger,
@@ -1268,69 +1268,6 @@ async function settle(
   return retried ? JSON.stringify({ decision: 'block', reason }) : null
 }
 
-// The last `NOD: <status> | <text>` line, ignoring Markdown emphasis around it.
-export function parseReport(text: string): Report | null {
-  for (const line of text.split('\n').reverse()) {
-    const match = /^NOD:\s*(done|question|failed)\s*\|\s*(.*)$/i.exec(
-      line.replace(/[*`]/g, '').trim(),
-    )
-    const status = match?.[1]?.toLowerCase()
-    if (status === 'done' || status === 'question' || status === 'failed') {
-      return { status, text: match?.[2]?.trim() ?? '' }
-    }
-  }
-  return null
-}
-
-// A report's `NOD: <word>` lines, without the code ticks or Markdown emphasis around them.
-const nodLines = (text: string, word: string): string[] =>
-  text
-    .split('\n')
-    .map(nodLine)
-    .filter((l): l is string => l !== null && new RegExp(`^NOD:\\s*${word}\\b`, 'i').test(l))
-
-// A report line as `NOD:…`, or null for one that is not. The ticks or emphasis it opens with close
-// right after its `NOD:` (`**NOD:** tell …`) or at its end (`**NOD: tell …**`), and no more of
-// them goes than opened, so a message that ends in `*` or a tick keeps it. Counted, not matched by
-// a pattern that backtracks: a worker's line may be long.
-function nodLine(raw: string): string | null {
-  const line = raw.trim()
-  const [opened, marks = ''] = /^([`*]*)NOD:/i.exec(line) ?? []
-  if (opened === undefined) return null
-  const rest = line.slice(opened.length)
-  if (marks !== '' && rest.startsWith(marks)) return `NOD:${rest.slice(marks.length)}`
-  let end = rest.length
-  while (end > 0 && rest.length - end < marks.length && '`*'.includes(rest.charAt(end - 1))) end--
-  return `NOD:${rest.slice(0, end)}`
-}
-
-// The `NOD: in {…}` lines of a report, or what is wrong with them, to send back to the worker.
-export function parseCaptures(text: string): { captures: Capture[] } | { error: string } {
-  const lines = nodLines(text, 'in')
-  if (lines.length > MAX_CAPTURES) {
-    return { error: `${lines.length} \`NOD: in\` lines; report at most ${MAX_CAPTURES}` }
-  }
-  const captures: Capture[] = []
-  for (const line of lines) {
-    const parsed = Capture.safeParse(jsonOrNull(line.replace(/^NOD:\s*in\s*/i, '')))
-    if (!parsed.success) {
-      return {
-        error: `A \`NOD: in\` line nod cannot read: ${line}\n${z.prettifyError(parsed.error)}\nWrite it as NOD: in {"title": "…"} with JSON, or leave it out.`,
-      }
-    }
-    captures.push(parsed.data)
-  }
-  return { captures }
-}
-
-function jsonOrNull(text: string): unknown {
-  try {
-    return JSON.parse(text)
-  } catch {
-    return null
-  }
-}
-
 // Recorded as the worker's: what goes in is its judgment, nod only writes it down.
 function captureFor(ledger: Ledger, task: Task, captures: Capture[]): void {
   const todos = new Todos(ledger)
@@ -1344,22 +1281,6 @@ function captureFor(ledger: Ledger, task: Task, captures: Capture[]): void {
     }
     todos.capture(todo, `worker:${task.id}`)
   }
-}
-
-// The `NOD: tell n<task> <message>` lines of a report, or what is wrong with one, to send back to
-// the worker. `#<task>` is how workers wrote it before `n`, and one started then still may.
-export function parseTells(text: string): { tells: Tell[] } | { error: string } {
-  const tells: Tell[] = []
-  for (const line of nodLines(text, 'tell')) {
-    const [, to, said] = /^NOD:\s*tell\s+[n#](\d+)\s+(\S.*)$/i.exec(line) ?? []
-    if (to === undefined || said === undefined) {
-      return {
-        error: `A \`NOD: tell\` line nod cannot read: ${line}\nWrite it as NOD: tell n<task> <message>, on one line, or leave it out.`,
-      }
-    }
-    tells.push({ to: Number(to), text: said.trim() })
-  }
-  return { tells }
 }
 
 // Why nod cannot send what `from`'s worker tells task `to`; null when it can. Only to another task
@@ -3133,53 +3054,6 @@ async function changesOf(
   return { start, head, stat: await git('diff', '--no-color', '--stat', range), saved }
 }
 
-// Where the branch was created: its oldest reflog entry, since `worktree add -b` records it and later
-// commits only add entries. Null once that entry is gone.
-export async function createdFrom(worktree: string, branch: string): Promise<string | null> {
-  const log = await spawn(
-    ['git', 'reflog', 'show', '--format=%H %gs', `refs/heads/${branch}`],
-    worktree,
-  )
-  const [start, ...subject] = (log.stdout.trim().split('\n').at(-1) ?? '').split(' ')
-  return log.code === 0 && start && subject.join(' ').startsWith('branch: Created from')
-    ? start
-    : null
-}
-
-// Where the task's own commits start, for its review and where landing rebases it from: where
-// landing last recorded them to start (`recorded`), else where the branch was created
-// (createdFrom). A worker that brought the remote's default branch (`defaultBranch`) in itself (a
-// rebase onto it, or a merge), before landing or in a landing turn, leaves that start behind where
-// HEAD now leaves the default branch, or off HEAD once the earlier task the branch started on was
-// squash-merged, and the commits between are others': then they start where HEAD leaves it. Null
-// with none recorded once the created start is gone.
-// ponytail: a branch started on an earlier task's branch that merged the default branch in, rather
-// than rebasing onto it, keeps the created start, so its reviewer reads the merged commits too;
-// diff from both if that shows up.
-export async function ownStart(
-  worktree: string,
-  branch: string,
-  head: string,
-  defaultBranch: string,
-  recorded: string | null,
-): Promise<string | null> {
-  const start = recorded ?? (await createdFrom(worktree, branch))
-  if (start === null) return null
-  // Fails without a default branch fetched, or with no commit in common.
-  const left = await spawn(['git', 'merge-base', head, defaultBranch], worktree)
-  const main = left.code === 0 ? left.stdout.trim() : start
-  if (main === start) return start
-  const isAncestor = async (a: string, b: string): Promise<boolean> =>
-    (await spawn(['git', 'merge-base', '--is-ancestor', a, b], worktree)).code === 0
-  return !(await isAncestor(start, head)) || (await isAncestor(start, main)) ? main : start
-}
-
-async function headOf(worktree: string): Promise<string> {
-  const { code, stdout, output } = await spawn(['git', 'rev-parse', 'HEAD'], worktree)
-  if (code !== 0) throw new Error(`git rev-parse failed: ${output.trim()}`)
-  return stdout.trim()
-}
-
 // A done of landing work (land.ts), checked as the branch now lands. A rebase whose conflict the
 // worker resolved goes on, and stops again at the next one. What the worker changed since the head
 // nod last checked passes the check (the repo's full one, else the task's) and the independent
@@ -3242,66 +3116,6 @@ async function verifyLanding(
   const verdict = await verify(ledger, task, report, check)
   return verdict === null ? null : { ...verdict, head }
 }
-
-// The pull request's text a worker writes above its report line: the title on its first line,
-// then the body. The `NOD:` lines are nod's. Null without a title.
-function prText(report: string): { title: string; body: string } | null {
-  const lines = report.split('\n').filter((l) => nodLine(l) === null)
-  const at = lines.findIndex((l) => l.trim() !== '')
-  const first = lines[at]
-  if (first === undefined) return null
-  const title = first
-    .replace(/^#+\s*/, '')
-    .replace(/^[*`]+|[*`]+$/g, '')
-    .trim()
-    .slice(0, 256)
-  if (title === '') return null
-  return {
-    title,
-    body: lines
-      .slice(at + 1)
-      .join('\n')
-      .trim(),
-  }
-}
-
-// nod's own git calls run no hooks: one the branch brings (a core.hooksPath into the worktree) would
-// run outside the sandbox. A rebase going on takes its messages as they are.
-export const NOD_GIT = ['git', '-c', 'core.hooksPath=/dev/null', '-c', 'core.editor=true']
-
-const gitPath = (ws: string, path: string): string =>
-  resolve(
-    ws,
-    Bun.spawnSync(['git', 'rev-parse', '--git-path', path], { cwd: ws }).stdout.toString().trim(),
-  )
-
-// Whether a rebase is going on in the worktree, stopped at a conflict.
-export function rebasing(ws: string): boolean {
-  return existsSync(gitPath(ws, 'rebase-merge')) || existsSync(gitPath(ws, 'rebase-apply'))
-}
-
-// The files a stopped rebase left unmerged, one per line.
-async function unmergedFiles(ws: string): Promise<string> {
-  return (await spawn(['git', 'diff', '--name-only', '--diff-filter=U'], ws)).stdout.trim()
-}
-
-// The commit a stopped rebase is on and the files in conflict, with how to resolve them.
-export async function conflictBrief(ws: string): Promise<string> {
-  const files = (await unmergedFiles(ws)).split('\n').filter(Boolean)
-  const at = await spawn(['git', 'log', '-1', '--format=%h %s', 'REBASE_HEAD'], ws)
-  const listed = files.length > 0 ? files.map((f) => `- ${f}`).join('\n') : '- (see git status)'
-  return `The rebase stopped at your commit ${at.code === 0 ? at.stdout.trim() : '?'} with conflicts in:\n${listed}\n${RESOLVE}`
-}
-
-// What a worker is asked when nod needs the pull request's text (land.ts), in a turn with nothing
-// else to do (TEXT_ONLY).
-export const TEXT_ONLY =
-  'Change nothing else this turn, and skip the subagent review: nothing changes.'
-export const PR_TEXT =
-  "nod then opens a pull request for your branch. Above your report line, write it for the repo's readers: its title on the first line, then its body in Markdown (what changed and why, how it was checked, and the conflict table if you resolved any). It goes out as you write it, so leave out anything that must not be published."
-
-const RESOLVE =
-  "Resolve them in this worktree: keep what the default branch changed and put your branch's change on top of it, dropping neither side silently. Stage each resolved file with `git add <file>`; do not commit, and do not continue or abort the rebase: nod continues it once you report done, and sends you the next conflict if there is one. Skip the subagent review this turn; nod's independent review reads the result. Report each conflict as a table row: | file and place | what the default branch changed | what your branch changed | what you kept and why |. Where numbers or conditions differ and the right one is not clear, ask with NOD: question instead of choosing."
 
 async function runCheck(cmd: string, cwd: string): Promise<{ passed: boolean; output: string }> {
   const { code, output } = await spawn(['sh', '-c', cmd], cwd)
