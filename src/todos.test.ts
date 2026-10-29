@@ -585,6 +585,10 @@ test('a task can be named by its todo: the latest task doing it', () => {
   expect(todos.taskRef(String(first))).toBe(first)
   expect(todos.taskRef(`n${first}`)).toBe(first)
   expect(todos.taskRef(`n${second}`)).toBe(second)
+  // Another kind's letter, or nothing, names no task, rather than a task numbered NaN.
+  for (const wrong of [`d${first}`, `c${first}`, `#${first}`, `p${first}`, 'n', 'x1', '', ' ']) {
+    expect(() => todos.taskRef(wrong)).toThrow(`not a task: ${wrong} (write n<n>, t<n> or r<n>)`)
+  }
   const idle = captured(todos, 'Read the spec')
   expect(() => todos.taskRef(`t${idle.id}`)).toThrow(`t${idle.id} has no task`)
   expect(ledger.get(second).todoId).toBe(t.id)

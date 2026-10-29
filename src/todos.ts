@@ -459,7 +459,12 @@ export class Todos {
       if (task === undefined) throw new Error(`r${id} not found`)
       return task.id
     }
-    if (!ref.startsWith('t')) return Number(ref)
+    if (!ref.startsWith('t')) {
+      // A number as Number reads it, as before (` 12`); `d5` or `c5` names no task.
+      const n = Number(ref)
+      if (ref.trim() !== '' && Number.isInteger(n)) return n
+      throw new Error(`not a task: ${ref} (write n<n>, t<n> or r<n>)`)
+    }
     const id = parseRef(ref, 't')
     const last = this.ledger.tasksOf(id).at(-1)
     if (last === undefined)

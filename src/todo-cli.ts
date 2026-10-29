@@ -380,7 +380,6 @@ async function setTodo(todos: Todos, home: string, args: string[]): Promise<void
   const watch = cleared(values.watch)
   const backToRef = cleared(values['back-to'])
   const backTo = typeof backToRef === 'string' ? todos.taskRef(backToRef) : backToRef
-  if (Number.isNaN(backTo)) throw new Error(`--back-to takes n<n> or t<n>: ${backToRef}`)
   const edit = {
     status,
     title: values.title,

@@ -544,7 +544,6 @@ async function add(args: string[]): Promise<void> {
       ? [todo.title, todo.notes].filter((x) => x !== null).join('\n\n')
       : words(positionals)
   const after = (values.after ?? '').split(',').filter(Boolean).map(taskRef)
-  if (!after.every(Number.isInteger)) throw new Error(`--after takes task numbers: ${values.after}`)
   const repo = repoPath(values.repo)
   const task = {
     brief,
