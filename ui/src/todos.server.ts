@@ -2,6 +2,7 @@
 // through the same ledger.
 import { type CalendarEvent, readEvents } from '../../src/calendar'
 import { localDay, REPEATS } from '../../src/days'
+import { message } from '../../src/proc'
 import {
   cleared,
   oneOf,
@@ -18,7 +19,6 @@ import {
 } from '../../src/todos'
 import type { Trust } from '../../src/trust'
 import { changeText } from '../../src/view'
-import { message } from '../../src/worker'
 import type { DoneShown, RawEdit, RawProjectEdit } from './input'
 import { ACTOR, collected, home, ledger, type Shown, type TaskRow } from './nod.server'
 

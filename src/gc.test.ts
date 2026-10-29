@@ -5,7 +5,8 @@ import { projectFolder } from '../test/projects'
 import { tempDirs } from '../test/tmp'
 import { collect, landed } from './gc'
 import { Ledger } from './ledger'
-import { branchOf, restore, workspaceOf } from './worker'
+import { branchOf, workspaceOf } from './place'
+import { restore } from './worker'
 
 const tmp = tempDirs()
 afterAll(tmp.removeAll)

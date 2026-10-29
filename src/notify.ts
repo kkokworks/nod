@@ -1,11 +1,10 @@
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { tellSessions } from './inbox'
-import type { DecisionReason, Task } from './ledger'
+import type { DecisionReason, Ledger, Task } from './ledger'
+import { message, runGroup } from './proc'
 
 const NOTIFY_TIMEOUT_MS = 10_000
-// How long a run waits, once its process has ended, for its output to close.
-const OUTPUT_GRACE_MS = 500
 
 type TaskRef = { id: number; brief: string; issue: string | null }
 
@@ -62,91 +61,8 @@ export async function notify(
   }
 }
 
-// The groups of the commands running now (runGroup). Out of this process's group, they would outlive
-// a signal that ends it, and their limit with it: a Stop hook's check ran on after its session
-// closed (review). Such a signal goes to them first, as it did in this process's group.
-const running = new Set<number>()
-const ENDING = ['SIGHUP', 'SIGTERM', 'SIGINT'] as const
-
-function killGroup(pid: number, signal: NodeJS.Signals = 'SIGKILL'): void {
-  try {
-    process.kill(-pid, signal)
-  } catch {
-    // The group has ended already.
-  }
-}
-
-function endRunning(signal: NodeJS.Signals): void {
-  // A process with a handler of its own decides what the signal ends (the keeper ignores Ctrl-C).
-  if (process.listenerCount(signal) > 1) return
-  // The signal itself, not SIGKILL, so git removes its lock as it goes (review).
-  for (const pid of running) killGroup(pid, signal)
-  running.clear()
-  for (const s of ENDING) process.off(s, endRunning)
-  // The process ends on the signal, as it did without this handler.
-  process.kill(process.pid, signal)
-}
-
-// Runs a command in a process group of its own, so the timeout ends all of a pipeline: killing only
-// the first process leaves the rest holding its output open, and the wait goes on (measured). Once
-// the command has ended, killed or not, what still holds its output (one it put in the background,
-// one that left the group with setsid and outlived the kill) is not waited for past a short grace:
-// the run returns what it read by then, and what was left keeps running. The sources and watches
-// (shell) and the worker's commands (spawn) run here too.
-export async function runGroup(
-  cmd: string[],
-  opts: {
-    cwd?: string
-    env: Record<string, string | undefined>
-    stdin?: string
-    // Without it, the command is not killed.
-    timeoutMs?: number
-    // How long output is waited on once the command has ended; a test sets it.
-    graceMs?: number
-  },
-): Promise<{ code: number; stdout: string; stderr: string }> {
-  const proc = Bun.spawn(cmd, {
-    cwd: opts.cwd,
-    env: opts.env,
-    stdin: opts.stdin === undefined ? 'ignore' : new Blob([opts.stdin]),
-    stdout: 'pipe',
-    stderr: 'pipe',
-    detached: true,
-  })
-  if (running.size === 0) for (const s of ENDING) process.on(s, endRunning)
-  running.add(proc.pid)
-  // Readers, not Response.text(): a read that is let go must be cancelled, or Bun stays up until the
-  // process holding the pipe ends (measured). What each has read is kept as it comes.
-  const read = { stdout: '', stderr: '' }
-  const readers = { stdout: proc.stdout.getReader(), stderr: proc.stderr.getReader() }
-  const output = Promise.all(
-    (['stdout', 'stderr'] as const).map(async (key) => {
-      const decoder = new TextDecoder()
-      for (let r = await readers[key].read(); !r.done; r = await readers[key].read()) {
-        read[key] += decoder.decode(r.value, { stream: true })
-      }
-      read[key] += decoder.decode()
-    }),
-  )
-  const timer =
-    opts.timeoutMs === undefined ? undefined : setTimeout(() => killGroup(proc.pid), opts.timeoutMs)
-  let grace: ReturnType<typeof setTimeout> | undefined
-  try {
-    const code = await proc.exited
-    // Ended in time, it is not killed while its output is waited on, nor is what it left.
-    clearTimeout(timer)
-    running.delete(proc.pid)
-    if (running.size === 0) for (const s of ENDING) process.off(s, endRunning)
-    await Promise.race([
-      output,
-      new Promise((resolve) => {
-        grace = setTimeout(resolve, opts.graceMs ?? OUTPUT_GRACE_MS)
-      }),
-    ])
-    return { code, ...read }
-  } finally {
-    clearTimeout(timer)
-    clearTimeout(grace)
-    await Promise.all([readers.stdout.cancel(), readers.stderr.cancel()])
-  }
-}
+// For a .catch on work nobody watches: the person hears the task's error (notify).
+export const notifyError =
+  (ledger: Ledger, home: string, taskId: number) =>
+  (error: unknown): Promise<void> =>
+    notify(home, { event: 'error', task: taskRef(ledger.get(taskId)), error: message(error) })

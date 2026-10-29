@@ -2,7 +2,8 @@ import { afterAll, expect, spyOn, test } from 'bun:test'
 import { chmodSync, createReadStream, existsSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tempDirs } from '../test/tmp'
-import { notify, runGroup } from './notify'
+import { notify } from './notify'
+import { runGroup } from './proc'
 
 const tmp = tempDirs()
 afterAll(tmp.removeAll)
@@ -122,7 +123,7 @@ test(
 
 // A nod process of its own running `body` with runGroup, and a reader of the lines it prints.
 function nodProcess(body: string) {
-  const script = `import { runGroup } from ${JSON.stringify(join(import.meta.dir, 'notify.ts'))}\n${body}`
+  const script = `import { runGroup } from ${JSON.stringify(join(import.meta.dir, 'proc.ts'))}\n${body}`
   const proc = Bun.spawn([process.execPath, '-e', script], { stdout: 'pipe', stderr: 'inherit' })
   const reader = proc.stdout.getReader()
   let buffer = ''

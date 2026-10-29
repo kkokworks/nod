@@ -19,18 +19,19 @@ import { testTmux } from '../test/tmux'
 // Most tests here run workers in tmux: `test` skips them where tmux cannot start a server. Those
 // that need none are `it`, bun's own, so they run there too.
 import { tmuxTest as test } from '../test/tmux-server'
-import { setAccountRule } from './account'
+import { setAccountRule, transcriptPath } from './account'
 import { ALLOW } from './allow'
 import { collect } from './gc'
 import { Ledger, RETRO_STATUS, type RetroOutcome, type Task, type TaskStatus } from './ledger'
 import { notify } from './notify'
+import { sessionName, socketsDir, workspaceOf } from './place'
+import { AT_ONCE, readAtOnce, spawn } from './proc'
 import { askedAgain, reviewBrief } from './review'
 import { retroBrief } from './rules'
 import { quote, Terminals } from './tmux'
 import { Todos } from './todos'
 import { addTrigger, tick } from './triggers'
 import {
-  AT_ONCE,
   answer,
   askToLand,
   claudeArgs,
@@ -45,24 +46,18 @@ import {
   parseCaptures,
   parseReport,
   parseTells,
-  readAtOnce,
   restart,
   restartDue,
   restartMark,
   resume,
   StopEvent,
-  sessionName,
-  socketsDir,
-  spawn,
   startReady,
   startTask,
   tell,
-  transcriptPath,
   trustedBy,
   trustedFile,
   workerEnv,
   workerPrompt,
-  workspaceOf,
 } from './worker'
 
 const tmp = tempDirs()

@@ -6,7 +6,8 @@ import { sweep } from './done'
 import { sendNotices } from './inbox'
 import { land, type Moved } from './land'
 import { Ledger, type Trigger } from './ledger'
-import { notify, runGroup } from './notify'
+import { notify, notifyError } from './notify'
+import { message, runGroup } from './proc'
 import { pullRequests } from './prs'
 import { quote } from './review'
 import { homeId } from './tmux'
@@ -16,8 +17,6 @@ import {
   closeFinished,
   cutChecks,
   lostTurns,
-  message,
-  notifyError,
   overdueWaits,
   restartDue,
   SELF,

@@ -1,8 +1,9 @@
 import { collect, type GcReport, hasRef, landed } from './gc'
 import { FINISHED, type Ledger, type Task } from './ledger'
+import { sessionName } from './place'
+import { message, readAtOnce } from './proc'
 import { Terminals } from './tmux'
 import { Todos } from './todos'
-import { message, readAtOnce, sessionName } from './worker'
 
 // When a finished task is done with, so gc can collect it without the human naming it. gc keeps
 // the session's transcript and resume rebuilds the worktree (restore in worker.ts), so collecting

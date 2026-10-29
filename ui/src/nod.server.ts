@@ -11,10 +11,11 @@ import {
   type Task,
   type Trigger,
 } from '../../src/ledger'
+import { sessionName } from '../../src/place'
 import { Terminals } from '../../src/tmux'
 import { type Found, firstLineOf, type Project, type Todo, Todos } from '../../src/todos'
 import { reopenCommand, taskNote, taskStatus } from '../../src/view'
-import { answer, sessionName, tell } from '../../src/worker'
+import { answer, tell } from '../../src/worker'
 import { BUILD } from './build'
 
 export const home = nodHome()

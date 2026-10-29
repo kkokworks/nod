@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import type { PrLookup, PullRequest } from './done'
-import { spawn } from './worker'
+import { spawn } from './proc'
 
 // Reads a linked pull request through its git service's own CLI, already logged in: gh for GitHub,
 // tea for Gitea and Forgejo. This is the one place nod asks a git service anything. It reads, and

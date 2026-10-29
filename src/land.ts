@@ -3,6 +3,8 @@ import { join } from 'node:path'
 import { hasRef, landed } from './gc'
 import type { Landing, Ledger, Repo, Task } from './ledger'
 import { notify, taskRef } from './notify'
+import { sessionName } from './place'
+import { message, OUTPUT_LIMIT, spawn } from './proc'
 import { type GitService, type OwnPr, serviceOf } from './prs'
 import { running, Terminals } from './tmux'
 import {
@@ -11,16 +13,12 @@ import {
   conflictBrief,
   createdFrom,
   handOff,
-  message,
   NOD_GIT,
-  OUTPUT_LIMIT,
   ownStart,
   PR_TEXT,
   rebasing,
   restore,
   type Send,
-  sessionName,
-  spawn,
   TEXT_ONLY,
 } from './worker'
 

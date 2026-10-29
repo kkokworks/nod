@@ -1,9 +1,9 @@
 import { existsSync } from 'node:fs'
 import { z } from 'zod'
 import { Ledger, type Notice, type Task } from './ledger'
+import { message } from './proc'
 import { type Project, Todos } from './todos'
 import { allowedLine, firstLine, indent, oneLine, taskLabel } from './view'
-import { message } from './worker'
 
 // nod tells a project's session, the one nod open opened for it last, what `nod watch` would print
 // for it: each of the project's tasks that ends (once its check and review are done) and each of

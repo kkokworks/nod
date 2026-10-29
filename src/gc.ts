@@ -1,8 +1,9 @@
 import { existsSync, readdirSync, rmdirSync, rmSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { FINISHED, type Ledger, type Task } from './ledger'
+import { branchOf, sessionName } from './place'
+import { message, spawn } from './proc'
 import { Terminals } from './tmux'
-import { branchOf, message, sessionName, spawn } from './worker'
 
 // `clean`: tasks that had nothing left to remove, because gc or something else already removed it.
 export type GcReport = {

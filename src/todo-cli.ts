@@ -1,8 +1,10 @@
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { parseArgs } from 'node:util'
+import { transcriptPath } from './account'
 import { type CalendarEvent, calendarBuild, readEvents } from './calendar'
 import { addDays, dayOf, localDay, localTime, parseWhen, REPEATS, type Repeat } from './days'
+import { message } from './proc'
 import {
   type Change,
   cleared,
@@ -21,7 +23,7 @@ import {
 import { SCHEDULE_OFF, scheduleEnv, tryWatch } from './triggers'
 import { nudgeLine, STALE_DAYS, type Trust } from './trust'
 import { changeText, indent, oneLine } from './view'
-import { message, openSettings, transcriptPath } from './worker'
+import { openSettings } from './worker'
 
 export const TODO_USAGE = `  nod in <what...> [--notes <text>] [--source <channel> --key <id>] [--link <url>]
          [--project <p>]

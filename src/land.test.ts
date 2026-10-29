@@ -13,9 +13,10 @@ import { tempDirs } from '../test/tmp'
 import { testTmux } from '../test/tmux'
 import { land } from './land'
 import { type LandLevel, Ledger } from './ledger'
+import { workspaceOf } from './place'
 import { Terminals } from './tmux'
 import { tick } from './triggers'
-import { answer, drop, onStop, type Send, tell, workspaceOf } from './worker'
+import { answer, drop, onStop, type Send, tell } from './worker'
 
 // Landing runs without a terminal here: what nod hands the worker (`send`) starts its turn as
 // deliver does, and each test ends that turn itself through the Stop hook, as the worker would.
