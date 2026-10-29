@@ -1,13 +1,13 @@
 import { createFileRoute, Link } from '@tanstack/react-router'
 import { createServerFn } from '@tanstack/react-start'
 import { rules } from '../nod.server'
-import { localTime } from '../parts'
+import { keep, localTime } from '../parts'
 import { Section } from '../todo-parts'
 
 const getRules = createServerFn({ method: 'GET' }).handler(() => rules())
 
 export const Route = createFileRoute('/settings')({
-  loader: () => getRules(),
+  loader: (ctx) => keep(ctx, () => getRules()),
   component: SettingsPage,
 })
 

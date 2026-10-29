@@ -1,10 +1,11 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { useState } from 'react'
+import { keep } from '../parts'
 import { captureTodo, getLists } from '../todo-fns'
 import { Section, TodoRow, useChange } from '../todo-parts'
 
 export const Route = createFileRoute('/inbox')({
-  loader: () => getLists(),
+  loader: (ctx) => keep(ctx, () => getLists()),
   component: InboxPage,
 })
 

@@ -1,7 +1,7 @@
 import { createFileRoute, Link } from '@tanstack/react-router'
 import { type DoneShown, doneSearch, SHOWN_MAX, SHOWN_STEP } from '../input'
 import type { Shown } from '../nod.server'
-import { TaskItem } from '../parts'
+import { keep, TaskItem } from '../parts'
 import { getDone } from '../todo-fns'
 import { Section, TodoRow } from '../todo-parts'
 
@@ -14,7 +14,7 @@ export const Route = createFileRoute('/done')({
     dropped: search.dropped ?? SHOWN_STEP,
     collected: search.collected ?? SHOWN_STEP,
   }),
-  loader: ({ deps }) => getDone({ data: deps }),
+  loader: (ctx) => keep(ctx, () => getDone({ data: ctx.deps })),
   component: DoneView,
 })
 

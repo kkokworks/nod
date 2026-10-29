@@ -12,7 +12,7 @@ import { type ReactNode, type Ref, useEffect, useRef } from 'react'
 import { BUILD } from '../build'
 import { bindKeys, ignoreOnPage, KEYS } from '../keys'
 import { type Overview, overview } from '../nod.server'
-import { Failed, TaskId, TaskItem } from '../parts'
+import { Failed, keep, keepShown, TaskId, TaskItem, useStale } from '../parts'
 import { Search } from '../search'
 import css from '../styles.css?url'
 import { focusRow, STATUS_ICONS, UndoBar } from '../todo-parts'
@@ -41,12 +41,14 @@ export const Route = createRootRoute({
       { rel: 'apple-touch-icon', href: '/apple-touch-icon.png' },
     ],
   }),
-  // The sidebar's own data failing to load leaves the layout without its lists, the error in place
-  // of the page, and the refresh brings the page back once the ledger reads again. Caught here, not
-  // in an error component, which each failed refresh would build anew, losing what the sidebar
-  // holds (a search being typed).
-  loader: () =>
-    getOverview().catch((e: unknown) => ({ failed: e instanceof Error ? e.message : String(e) })),
+  // A refresh failing keeps the sidebar's lists (`keep`). Its data failing to load with none to keep
+  // leaves the layout without its lists, the error in place of the page, and the refresh brings the
+  // page back once the ledger reads again. Caught here, not in an error component, which each failed
+  // refresh would build anew, losing what the sidebar holds (a search being typed).
+  loader: (ctx) =>
+    keep(ctx, () => getOverview()).catch((e: unknown) => ({
+      failed: e instanceof Error ? e.message : String(e),
+    })),
   shellComponent: Shell,
   component: Root,
 })
@@ -106,6 +108,11 @@ function Layout({ data, children }: { data: Overview | null; children: ReactNode
     const timer = setInterval(() => router.invalidate(), REFRESH_MS)
     return () => clearInterval(timer)
   }, [router])
+  // The page came with its data from the server, which no `keep` here loaded: noted, for a refresh
+  // that fails before one works. The sidebar's failing to load is no data to keep.
+  useEffect(() => {
+    if (data !== null) keepShown(router.state.matches)
+  }, [router, data])
   const help = useRef<HTMLDivElement>(null)
   useEffect(
     () =>
@@ -214,6 +221,7 @@ const NOTHING: Pick<Overview, 'decisions' | 'groups' | 'collected' | 'inbox'> = 
 
 function Sidebar({ data }: { data: Overview | null }) {
   const { decisions, groups, collected, inbox } = data ?? NOTHING
+  const stale = useStale()
   const active = groups.reduce((n, g) => n + g.tasks.length, 0)
   return (
     <aside className="sidebar">
@@ -334,7 +342,13 @@ function Sidebar({ data }: { data: Overview | null }) {
         >
           Keyboard shortcuts <kbd>{KEYS.help.show}</kbd>
         </button>
-        refreshes every {REFRESH_MS / 1000}s
+        {stale === undefined ? (
+          `refreshes every ${REFRESH_MS / 1000}s`
+        ) : (
+          <span className="attention" role="status">
+            Refresh failed: {stale}. Trying again every {REFRESH_MS / 1000}s.
+          </span>
+        )}
       </div>
     </aside>
   )
