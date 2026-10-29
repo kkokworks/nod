@@ -75,6 +75,7 @@ import {
   answer,
   branchOf,
   drop,
+  finished,
   keepWorker,
   message,
   NotificationEvent,
@@ -279,7 +280,7 @@ of nod open, or opened before nod open gave it hooks, reports its socket at its 
 (Claude Code exports it to Bash too), and hears nothing before. A nod command in a project's
 session that cannot hear (not the project's latest, or no socket) says so on stderr. So does nod
 add, tell, resume, restart or an answer in any other Claude session, for a project whose latest
-session cannot hear either (none, not running, or its socket gone): what that work brings waits
+session cannot hear either (none, no socket known, or its socket gone): what that work brings waits
 unheard until nod watch runs there or nod open opens the project's session. /clear goes
 on under an ID nod open did not open: it hears nothing until nod open opens the project's session
 again. One with no hooks cannot say it cleared, so what went to it after, until its next nod
@@ -504,7 +505,7 @@ switch (command) {
       console.error(USAGE)
       process.exit(1)
     }
-    const { taskId, reason } = ledger.decision(id)
+    const { taskId, reason, answer: answered } = ledger.decision(id)
     // Yes to a rule decision adds a rule, which `nod rule` refuses a worker, and yes to a trust
     // decision trusts the repo for later tasks too (trustedBy in worker.ts).
     if (process.env.NOD_TASK !== undefined && reason === 'rule') {
@@ -514,7 +515,8 @@ switch (command) {
       throw new Error('a worker cannot trust a repo')
     }
     const said = words(rest)
-    warnUnheard([taskId])
+    // One answered already, or left open on a task that finished, sets nothing going.
+    if (answered === null && !finished(ledger, taskId)) warnUnheard([taskId])
     const took = await answer(ledger, home, id, said, actorFromEnv())
     if (reason === 'land') {
       console.log(/^y(es)?$/i.test(said) ? 'landing it again' : 'stopped landing it')

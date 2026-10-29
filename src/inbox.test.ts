@@ -554,7 +554,7 @@ test("a Claude session that sets a project's work going hears, once per project,
   // p1's session ended (no socket), ended without its hook (socket file gone), and runs.
   todos.addSession(p.id, A, '/work/one')
   expect(unheardWork(ledger, C, [mine, loose, health])).toEqual([
-    deaf('p1', 'it is not running'),
+    deaf('p1', 'it takes no messages now'),
     deaf('p2', never, undefined, 'one'),
   ])
   const socket = join(home, 'a.sock')
@@ -567,11 +567,11 @@ test("a Claude session that sets a project's work going hears, once per project,
   // project does, and has all the project's tasks as its own.
   todos.addSession(p.id, B, '/work/two')
   expect(unheardWork(ledger, B, [mine])).toEqual([])
-  expect(unheardWork(ledger, A, [theirs])).toEqual([deaf('p1', 'it is not running')])
+  expect(unheardWork(ledger, A, [theirs])).toEqual([deaf('p1', 'it takes no messages now')])
 })
 
 test('nod add, tell and an answer run in a Claude session say on stderr that no session of the project hears the work; in a shell, or once the project session runs, they say nothing', () => {
-  const { home, ledger, todos, p } = setup()
+  const { home, ledger, todos, p, task } = setup()
   const {
     CLAUDECODE: _,
     CLAUDE_CODE_SESSION_ID: __,
@@ -590,20 +590,28 @@ test('nod add, tell and an answer run in a Claude session say on stderr that no 
   const never = ledger.add(brief('never starts'))
   const added = nod(C, 'add', 'Ship it', '--project', 'p1', '--after', `n${never}`)
   const id = ledger.list().find((t) => t.brief === 'Ship it')?.id ?? 0
-  const attemptId = ledger.startAttempt({
-    taskId: id,
-    kind: 'start',
-    decisionId: null,
-    sessionId: 's',
-    prompt: 'p',
-  })
-  const d = ledger.ask(id, attemptId, 'question', 'Which way?')
+  const ask = (taskId: number, question: string): number => {
+    const attemptId = ledger.startAttempt({
+      taskId,
+      kind: 'start',
+      decisionId: null,
+      sessionId: 's',
+      prompt: 'p',
+    })
+    return ledger.ask(taskId, attemptId, 'question', question)
+  }
+  const d = ask(id, 'Which way?')
+  // An answer that only closes a decision left open on a task that succeeded sets nothing going.
+  const done = task('Done already')
+  const stale = ask(done, 'Still?')
+  ledger.succeed(done)
   const line =
     "nod: p1's session hears nothing from nod (nod open never opened one), so the decisions and ends of this work wait unheard; run nod watch --mine here, or nod open p1 opens one\n"
   expect(added).toContain(line)
   expect(nod(C, 'tell', `n${id}`, 'and the docs')).toContain(line)
   expect(nod(B, 'tell', `n${id}`, 'and the docs')).toContain(line.replace('--mine ', ''))
   expect(nod(C, `d${d}`, 'left')).toContain(line)
+  expect(nod(C, `d${stale}`, 'never mind')).not.toContain('hears nothing')
   expect(nod(null, 'tell', `n${id}`, 'and the docs')).not.toContain('hears nothing')
 
   todos.addSession(p.id, A, '/work/one')

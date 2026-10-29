@@ -116,7 +116,7 @@ export function unheardWork(ledger: Ledger, session: string | null, ids: number[
       latest === null
         ? 'nod open never opened one'
         : latest.socket === null
-          ? 'it is not running'
+          ? 'it takes no messages now'
           : 'its inbox socket is gone'
     const watch = tasks.every((t) => todos.isMine(session, t)) ? 'nod watch --mine' : 'nod watch'
     told.push(
