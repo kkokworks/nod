@@ -79,6 +79,19 @@ fn main() {
             }
             _ => {}
         })
+        // A page whose web process died is gone, and tauri loads it again only without this hook.
+        // The main window first counts as holding no page, so that if the server is down and the
+        // load fails, the watch sends it to the offline page.
+        .on_web_content_process_terminate(|webview| {
+            if webview.label() == "main" {
+                NOD_PAGE.store(false, Ordering::Relaxed);
+            }
+            // Not here: on the main thread the reload would run inside the event loop's call.
+            let webview = webview.clone();
+            std::thread::spawn(move || {
+                let _ = webview.reload();
+            });
+        })
         .invoke_handler(tauri::generate_handler![capture, dismiss, retry])
         .setup(|app| {
             let handle = app.handle().clone();
