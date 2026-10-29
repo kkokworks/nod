@@ -1011,9 +1011,11 @@ function permissionQuestion(tool: string, input: Record<string, unknown>): strin
 // with this input: the dialogs tools that ran at once queued may still show. Every tool run of
 // every worker comes here, so with no permission decision open it ends at the first looks. Not a
 // subagent's: its dialog's decision is worded from the screen (onNotification), and could match a
-// main thread's by chance.
+// main thread's by chance. Nor one whose turn has the same dialog nod answered: this run may be
+// that one's, and the next such dialog still show, which a message's Enter would answer.
 // ponytail: matched by the question as onPermissionAsk words it; an input Claude Code changed
-// between the two hooks (a hook's updatedInput) leaves the decision to close at its turn's end.
+// between the two hooks (a hook's updatedInput), or the same command asked twice in a turn with
+// one answered through nod, leaves the decision to close at its turn's end, as before.
 export async function onToolRan(
   ledger: Ledger,
   home: string,
@@ -1025,16 +1027,11 @@ export async function onToolRan(
   const open = ledger.openAttempt(taskId)
   if (open === null) return
   const asked = permissionQuestion(event.tool_name, event.tool_input)
-  const ran = ledger
+  const same = ledger
     .decisions(taskId)
-    .find(
-      (d) =>
-        d.answer === null &&
-        d.reason === 'permission' &&
-        d.attemptId === open.id &&
-        d.question === asked,
-    )
-  if (ran === undefined) return
+    .filter((d) => d.reason === 'permission' && d.attemptId === open.id && d.question === asked)
+  const ran = same.find((d) => d.answer === null)
+  if (ran === undefined || same.some((d) => d.answeredAt !== null)) return
   const closed = closeDecisions(ledger, taskId, (d) => d.id === ran.id, ALLOWED_HERE)
   // A dialog another tool queued still holds the task.
   if (ledger.decisions(taskId).every((d) => d.answer !== null)) goesOn(ledger, taskId, closed)

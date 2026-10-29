@@ -245,6 +245,9 @@ const YES_OR_NO = new Set(['permission', 'trust', 'rule', 'land'])
 const CHANGED_MS = 1000
 // The decisions a live worker's terminal shows no dialog for: answered here even then.
 const NO_DIALOG = new Set(['land', 'rule'])
+// What No does where it does not end the task (answer): a permission is denied, and landing stops
+// while the work stands.
+const NO_SAYS: Record<string, string> = { permission: 'No', land: 'No — stop landing' }
 
 // `live`: the session is alive, and typed into on its screen.
 function Composer({
@@ -340,7 +343,7 @@ function Composer({
             disabled={busy}
             onClick={() => press('no', open)}
           >
-            {open.reason === 'permission' ? 'No' : 'No — end the task'}
+            {NO_SAYS[open.reason] ?? 'No — end the task'}
           </button>
         </div>
       ) : (

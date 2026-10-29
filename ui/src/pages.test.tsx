@@ -290,14 +290,15 @@ test('a live session shows Yes and No under its terminal for landing and rules o
   await go('/tasks/24')
   expect(document.querySelector('.composer')).toBeNull()
   const buttons = () => [...document.querySelectorAll('.composer button')].map((b) => b.textContent)
-  for (const [id, reason] of [
-    [31, 'land'],
-    [32, 'rule'],
+  // No on landing only stops it: the work stands.
+  for (const [id, reason, no] of [
+    [31, 'land', 'No — stop landing'],
+    [32, 'rule', 'No — end the task'],
   ] as const) {
     open[24] = { id, reason }
     await reload()
     expect(document.querySelector('.term')).not.toBeNull()
-    expect(buttons()).toEqual(['Yes', 'No — end the task'])
+    expect(buttons()).toEqual(['Yes', no])
     expect(document.querySelector('.composer textarea')).toBeNull()
     // Just opened where the person may be about to click: not yet an answer.
     await click('Yes')

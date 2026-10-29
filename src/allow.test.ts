@@ -519,6 +519,31 @@ test("a tool that ran closes its dialog's decision, as allowed in the terminal, 
   }
 }, 15_000)
 
+test("a tool that ran leaves a dialog's decision for the same command open when nod answered one like it in the turn: the run may be the one nod allowed", async () => {
+  const { home, ledger, id, event } = running()
+  // The same push twice at once, each its dialog.
+  expect(hook(home, JSON.stringify(event('git push origin feat/x')))).toBe('')
+  expect(hook(home, JSON.stringify(event('git push origin feat/x')))).toBe('')
+  const [first = 0, second = 0] = ledger.decisions(id).map((d) => d.id)
+  const alive = spyOn(Terminals.prototype, 'alive').mockReturnValue(true)
+  const option = spyOn(Terminals.prototype, 'option').mockReturnValue('')
+  const keys = spyOn(Terminals.prototype, 'keys').mockImplementation(() => {})
+  try {
+    await answer(ledger, home, first, 'yes', 'human')
+    expect(keys.mock.calls.map(([, key]) => key)).toEqual(['Enter'])
+  } finally {
+    alive.mockRestore()
+    option.mockRestore()
+    keys.mockRestore()
+  }
+  // The push nod allowed runs. The second's dialog still shows, its decision holding nod tell back.
+  expect(hook(home, JSON.stringify(event('git push origin feat/x')), 'tool')).toBe('')
+  expect(ledger.decisions(id).map((d) => [d.id, d.answer])).toEqual([
+    [first, 'yes'],
+    [second, null],
+  ])
+}, 15_000)
+
 test("no to one of the prompts tools that ran at once queued closes the others' decisions too: Escape ends the turn and every dialog of it", async () => {
   const { home, ledger, id, attemptId, event } = running()
   expect(hook(home, JSON.stringify(event('git push origin feat/x')))).toBe('')
