@@ -6,7 +6,15 @@ import { accountRule, configDir, describeRule, setAccountRule } from './account'
 import { ALLOW, onPermissionRequest, PermissionEvent } from './allow'
 import { sweep } from './done'
 import { collect, type GcPick, type GcReport, remotesHolding } from './gc'
-import { InboxEvent, onCommand, onInbox, sendLine, sendNotices, tellProject } from './inbox'
+import {
+  InboxEvent,
+  onCommand,
+  onInbox,
+  sendLine,
+  sendNotices,
+  tellProject,
+  unheardWork,
+} from './inbox'
 import { land } from './land'
 import {
   type Attempt,
@@ -67,6 +75,7 @@ import {
   answer,
   branchOf,
   drop,
+  finished,
   keepWorker,
   message,
   NotificationEvent,
@@ -269,7 +278,10 @@ socket answers nothing: a line Claude Code drops counts as sent. A session that 
 prompts holds such messages for the person to approve. One reopened with claude --resume instead
 of nod open, or opened before nod open gave it hooks, reports its socket at its first nod command
 (Claude Code exports it to Bash too), and hears nothing before. A nod command in a project's
-session that cannot hear (not the project's latest, or no socket) says so on stderr. /clear goes
+session that cannot hear (not the project's latest, or no socket) says so on stderr. So does nod
+add, tell, resume, restart <task> or an answer in any other Claude session, for a project whose
+latest session cannot hear either (none, no socket known, or its socket gone): what that work
+brings waits unheard until nod watch runs there or nod open opens the project's session. /clear goes
 on under an ID nod open did not open: it hears nothing until nod open opens the project's session
 again. One with no hooks cannot say it cleared, so what went to it after, until its next nod
 command, is lost: once nod open opens it again, nod ls --mine and nod --mine show what it missed.
@@ -286,12 +298,16 @@ if (command === 'hook' && rest[0] === 'inbox') await inboxHook()
 if (command === 'hook' && rest[0] === 'permission') await permissionHook()
 if (command === 'hook' && rest[0] === 'tool') await toolHook()
 const ledger = new Ledger(home)
+// The projects this command told stderr nobody hears, each told once (onCommand, warnUnheard).
+const warned = new Set<number>()
 // A project session its hooks never told nod of says where it takes messages (onCommand); what
 // goes wrong only goes to stderr, as the command still runs.
 const unheard = await onCommand(
   ledger,
   sessionFromEnv(),
   process.env.CLAUDE_CODE_MESSAGING_SOCKET,
+  sendLine,
+  warned,
 ).catch((error) => `nod: could not record this session's inbox: ${message(error)}`)
 if (unheard !== null) console.error(unheard)
 const terminals = Terminals.of(home)
@@ -318,7 +334,7 @@ switch (command) {
   case 'add':
     await add(rest)
     break
-  case 'tell':
+  case 'tell': {
     if (/^p\d+$/.test(rest[0] ?? '')) {
       const p = parseRef(rest[0] ?? '', 'p')
       const sent = await tellProject(ledger, p, words(rest.slice(1)), actorFromEnv())
@@ -327,12 +343,18 @@ switch (command) {
       )
       break
     }
-    await tell(ledger, home, taskRef(rest[0]), words(rest.slice(1)))
+    const id = taskRef(rest[0])
+    warnUnheard([id])
+    await tell(ledger, home, id, words(rest.slice(1)))
     console.log('sent')
     break
-  case 'resume':
-    console.log(await resume(ledger, home, taskRef(rest[0])))
+  }
+  case 'resume': {
+    const id = taskRef(rest[0])
+    warnUnheard([id])
+    console.log(await resume(ledger, home, id))
     break
+  }
   case 'attach':
     attach(taskRef(rest[0]))
     break
@@ -487,7 +509,7 @@ switch (command) {
       console.error(USAGE)
       process.exit(1)
     }
-    const { taskId, reason } = ledger.decision(id)
+    const { taskId, reason, answer: answered } = ledger.decision(id)
     // Yes to a rule decision adds a rule, which `nod rule` refuses a worker, and yes to a trust
     // decision trusts the repo for later tasks too (trustedBy in worker.ts).
     if (process.env.NOD_TASK !== undefined && reason === 'rule') {
@@ -497,6 +519,10 @@ switch (command) {
       throw new Error('a worker cannot trust a repo')
     }
     const said = words(rest)
+    // What sets nothing going: an answer to one answered already, or left open on a task that
+    // finished, and no to landing again.
+    const stops = reason === 'land' && !/^y(es)?$/i.test(said)
+    if (answered === null && !finished(ledger, taskId) && !stops) warnUnheard([taskId])
     const took = await answer(ledger, home, id, said, actorFromEnv())
     if (reason === 'land') {
       console.log(/^y(es)?$/i.test(said) ? 'landing it again' : 'stopped landing it')
@@ -561,6 +587,7 @@ async function add(args: string[]): Promise<void> {
     todo === null
       ? todos.delegateNew(task, projectId, actor)
       : todos.delegate(todo.id, task, actor, projectId)
+  warnUnheard([id])
   // A task that comes after others starts here only if they have all succeeded already.
   if (after.length === 0) await startTask(ledger, home, id)
   else await startReady(ledger, home)
@@ -746,9 +773,15 @@ async function restartCommand(refs: string[]): Promise<void> {
           .filter((t) => t.account !== null && live.has(sessionName(t.id)))
           .map((t) => t.id)
   if (ids.length === 0) console.log('no worker to restart')
+  const going: number[] = []
   for (const id of ids) {
-    console.log(`n${id} ${said[await restart(ledger, home, id, 'nod restart')]}`)
+    const how = await restart(ledger, home, id, 'nod restart')
+    console.log(`n${id} ${said[how]}`)
+    if (how !== 'no terminal') going.push(id)
   }
+  // Restarting every worker (no task named) is an account switch, not this session taking on
+  // their work.
+  if (refs.length > 0) warnUnheard(going)
 }
 
 function accountCommand([how, ...args]: string[]): void {
@@ -964,6 +997,16 @@ function mySession(mine: boolean | undefined): string | null {
     throw new Error("--mine picks a Claude session's tasks; run it in that session")
   }
   return session
+}
+
+// Before a command sets these tasks going: a Claude session whose work no project session hears
+// is told so (unheardWork); what goes wrong only goes to stderr, as the command still runs.
+function warnUnheard(ids: number[]): void {
+  try {
+    for (const line of unheardWork(ledger, sessionFromEnv(), ids, warned)) console.error(line)
+  } catch (error) {
+    console.error(`nod: could not check who hears this work: ${message(error)}`)
+  }
 }
 
 // The session's work (Todos.isMine): in a session nod open opened, its project's tasks.

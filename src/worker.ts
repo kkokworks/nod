@@ -1806,7 +1806,7 @@ function ended(ledger: Ledger, taskId: number): boolean {
 }
 
 // A task that ended, or succeeded: a decision left open on it only closes (answer, drop).
-const finished = (ledger: Ledger, taskId: number): boolean =>
+export const finished = (ledger: Ledger, taskId: number): boolean =>
   ledger.get(taskId).status === 'succeeded' || ended(ledger, taskId)
 
 // Tells a to-do list that mirrors open decisions that these closed.
