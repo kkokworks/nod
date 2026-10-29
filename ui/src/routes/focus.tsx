@@ -2,12 +2,13 @@ import { createFileRoute, Link } from '@tanstack/react-router'
 import { Fragment, useState } from 'react'
 import type { CalendarEvent } from '../../../src/calendar'
 import { inboxSince, reviewDue } from '../../../src/trust'
+import { keep } from '../parts'
 import { getFocus } from '../todo-fns'
 import { relDay, Section, TodoRow } from '../todo-parts'
 import type { EventsRead, FocusPage as Page, TodoItem } from '../todos.server'
 
 export const Route = createFileRoute('/focus')({
-  loader: () => getFocus(),
+  loader: (ctx) => keep(ctx, () => getFocus()),
   component: FocusPage,
 })
 

@@ -1,11 +1,12 @@
 import { createFileRoute, useLocation } from '@tanstack/react-router'
 import { useState } from 'react'
+import { keep } from '../parts'
 import { changeProject, getProjects, newProject } from '../todo-fns'
 import { Section, TodoRow, useChange } from '../todo-parts'
 import type { ProjectsPage } from '../todos.server'
 
 export const Route = createFileRoute('/projects')({
-  loader: () => getProjects(),
+  loader: (ctx) => keep(ctx, () => getProjects()),
   component: ProjectsView,
 })
 

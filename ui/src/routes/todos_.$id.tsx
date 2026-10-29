@@ -2,7 +2,7 @@ import { createFileRoute, Link, notFound, useNavigate } from '@tanstack/react-ro
 import { useState } from 'react'
 import { REPEATS } from '../../../src/days'
 import type { RawEdit } from '../input'
-import { localTime, Url } from '../parts'
+import { keep, localTime, Url } from '../parts'
 import { changeTodo, getTodo } from '../todo-fns'
 import {
   MoreMenu,
@@ -20,11 +20,13 @@ export const Route = createFileRoute('/todos_/$id')({
   validateSearch: (s: Record<string, unknown>): { edit?: true } =>
     s.edit === true ? { edit: true } : {},
   // An address no todo has, its number not one in digits (1e3, 0x10) or no todo's, is not found.
-  loader: async ({ params }) => {
-    const page = /^\d+$/.test(params.id) ? await getTodo({ data: Number(params.id) }) : null
-    if (page === null) throw notFound()
-    return page
-  },
+  loader: (ctx) =>
+    keep(ctx, async () => {
+      const { id } = ctx.params
+      const page = /^\d+$/.test(id) ? await getTodo({ data: Number(id) }) : null
+      if (page === null) throw notFound()
+      return page
+    }),
   component: TodoDetail,
 })
 

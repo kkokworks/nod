@@ -1,4 +1,11 @@
-import { Link, useLocation } from '@tanstack/react-router'
+import {
+  isNotFound,
+  isRedirect,
+  Link,
+  rootRouteId,
+  useLocation,
+  useMatches,
+} from '@tanstack/react-router'
 import { type ComponentProps, createContext, type ReactNode, useContext } from 'react'
 import ReactMarkdown, { type ExtraProps } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -156,6 +163,82 @@ export function Failed({ error }: { error: unknown }) {
     </WayOut>
   )
 }
+
+// What each route last loaded, for which params and deps, how many loads of it have begun, and why
+// the data a page shows is from before a refresh that failed.
+const shown = new Map<string, { key: string; data: unknown }>()
+const begun = new Map<string, number>()
+const stale = new WeakMap<object, string>()
+// Every match has all the address's params. The root's data, the sidebar's, is the same on every
+// page, and the root does not load again as the page changes.
+const keyOf = (routeId: string, params: object, deps: unknown) =>
+  JSON.stringify([routeId === rootRouteId ? {} : params, deps])
+
+// The data the page came with from the server, which no `keep` in the browser loaded, kept for a
+// refresh that fails before one works.
+export function keepShown(
+  matches: readonly {
+    routeId: string
+    status: string
+    params: object
+    loaderDeps: unknown
+    loaderData?: unknown
+  }[],
+) {
+  for (const m of matches) {
+    if (m.status === 'success') {
+      shown.set(m.routeId, { key: keyOf(m.routeId, m.params, m.loaderDeps), data: m.loaderData })
+    }
+  }
+}
+
+// A loader's work, run so that a refresh failing (the server restarting, the connection dropping
+// a moment) keeps the page as it was, with what is typed in it, and the layout says so
+// (`useStale`); the next refresh that works shows the new data. A page that fails as it opens, or
+// as another task or todo comes in its place, has nothing of its own to show: its error shows.
+export async function keep<T>(
+  ctx: {
+    cause: 'enter' | 'stay' | 'preload'
+    route: { id: string }
+    params: object
+    deps: unknown
+  },
+  load: () => Promise<T>,
+): Promise<T> {
+  // A page loaded ahead, not shown: what it loads is not what the page shows.
+  if (ctx.cause === 'preload') return load()
+  const id = ctx.route.id
+  const key = keyOf(id, ctx.params, ctx.deps)
+  // A load that a later one of the route overtook (a refresh still out as the page moved on) is
+  // the router's to drop: it leaves what the later one noted.
+  const n = (begun.get(id) ?? 0) + 1
+  begun.set(id, n)
+  try {
+    const data = await load()
+    if (begun.get(id) === n) shown.set(id, { key, data })
+    return data
+  } catch (e) {
+    if (begun.get(id) !== n) throw e
+    const last = shown.get(id)
+    const kept =
+      ctx.cause === 'stay' && last?.key === key && !isNotFound(e) && !isRedirect(e)
+        ? last.data
+        : undefined
+    if (typeof kept !== 'object' || kept === null) {
+      shown.delete(id)
+      throw e
+    }
+    stale.set(kept, e instanceof Error ? e.message : String(e))
+    return kept as T
+  }
+}
+
+// Why some of what the page shows is from before the last refresh, or undefined.
+export const useStale = (): string | undefined =>
+  useMatches({
+    select: (ms) =>
+      ms.map((m) => stale.get(m.loaderData as object)).find((why) => why !== undefined),
+  })
 
 function WayOut({ title, children }: { title: string; children: ReactNode }) {
   return (

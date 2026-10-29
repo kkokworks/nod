@@ -640,6 +640,27 @@ test('a change to the todo keeps what is being typed in the form and says so', a
   ])
 })
 
+test("a refresh that fails keeps a todo's form as it is being typed", async () => {
+  const todo = todoItem(12, 'old title')
+  answer = () => ({ today: '2026-10-23', todo, links: [], tasks: [], changes: [], projects: [] })
+  await go('/todos/12?edit=true')
+  const title = () => field<HTMLInputElement>('.todo-form input')
+  type(title(), 'new title')
+  act(() => title().focus())
+  // The server restarts.
+  answer = () => {
+    throw new Error('server restarting')
+  }
+  await reload()
+  expect(banners()).toEqual([])
+  expect(title().value).toBe('new title')
+  expect(document.activeElement === title()).toBe(true)
+  // The todo is gone from the ledger: that is no failure to keep the page through.
+  answer = () => null
+  await reload()
+  expect(document.querySelector('.layout .page h1')?.textContent).toBe('Not found')
+})
+
 test('a key pressed as the refresh takes its row away does not act on the next row', async () => {
   rows = [todoItem(1, 'one'), todoItem(2, 'two'), todoItem(3, 'three')]
   await go('/rows')
@@ -904,11 +925,149 @@ test("the sidebar's data failing to load leaves the layout without its lists, an
     type(search, 'r2')
     await refresh()
     expect(box.querySelector<HTMLInputElement>('.side-search input')?.value).toBe('r2')
+    // Nothing loaded is kept, so none of it is said to be from before.
+    expect(box.querySelector('.main h1')?.textContent).toBe('Something went wrong')
+    expect(box.querySelector('.side-foot [role="status"]')?.textContent).toBeUndefined()
 
     answer = () => ({ ...overview(''), inbox: 2 })
     await refresh()
     expect(box.querySelector('.side-summary')?.textContent).toContain('0 tasks')
     expect(box.querySelector('.main .here')).not.toBeNull()
+  } finally {
+    act(() => own.unmount())
+    box.remove()
+  }
+})
+
+test('a refresh that fails, the first after the page came from the server too, keeps the page as it was, what is typed in it and where, and says so until one works; a task that fails as it opens shows its error', async () => {
+  // The real root with a task's page in it, the error component as router.tsx has it. The first
+  // load stands for the server's, which the page comes with: the browser's loaders do not run.
+  let served = false
+  type Loader = (ctx: never) => unknown
+  const rootLoader = shell.Route.options.loader as Loader
+  const taskLoader = tasks.Route.options.loader as Loader
+  const top = R.createRootRoute({
+    loader: (ctx: never) => (served ? rootLoader(ctx) : answer(undefined)),
+    component: shell.Route.options.component,
+  } as never) as unknown as AnyRoute
+  const app = R.createRouter({
+    routeTree: top.addChildren([
+      R.createRoute({
+        getParentRoute: () => top,
+        path: '/tasks/$id',
+        loader: (ctx: never) => (served ? taskLoader(ctx) : answer(14)),
+        component: tasks.Route.options.component,
+      } as never),
+    ]),
+    history: R.createMemoryHistory({ initialEntries: ['/tasks/14'] }),
+    defaultErrorComponent: Failed,
+  })
+  const box = document.body.appendChild(document.createElement('div'))
+  const own = createRoot(box)
+  const refresh = async () => {
+    await act(() => app.invalidate())
+    await settle()
+  }
+  const text = (selector: string) => box.querySelector(selector)?.textContent
+  const composer = () => box.querySelector<HTMLTextAreaElement>('.composer textarea')
+  // The sidebar's data, and each task's page; `down` fails to answer.
+  let brief = 'task 14'
+  const page = (id: number) => {
+    const d = detail(id)
+    return { ...d, task: { ...d.task, brief: id === 14 ? brief : d.task.brief } }
+  }
+  const down = () => {
+    throw new Error('server restarting')
+  }
+  try {
+    answer = (id) => (id === undefined ? { ...overview(''), inbox: 2 } : page(id as number))
+    await act(async () => own.render(<R.RouterProvider router={app as never} />))
+    await settle()
+    served = true
+    expect(text('.main .task-title')).toBe('task 14')
+    expect(text('.side-foot')).toContain('refreshes every 5s')
+    const box14 = composer()
+    if (box14 === null) throw new Error('no box to message the worker')
+    type(box14, 'half a thought')
+    act(() => box14.focus())
+
+    // Everything fails: the page, the sidebar's lists and what is typed stay, and the sidebar says so.
+    answer = down
+    await refresh()
+    expect(text('.main .task-title')).toBe('task 14')
+    expect(composer() === box14).toBe(true)
+    expect(box14.value).toBe('half a thought')
+    expect(document.activeElement === box14).toBe(true)
+    expect(box.querySelector('.side-nav .side-count')?.textContent).toBe('2')
+    expect(box.querySelectorAll('.banner').length).toBe(0)
+    expect(text('.side-foot [role="status"]')).toBe(
+      'Refresh failed: server restarting. Trying again every 5s.',
+    )
+    // The sidebar reads again, the page not yet.
+    answer = (id) => (id === undefined ? overview('') : down())
+    await refresh()
+    expect(text('.side-nav .side-count')).toBeUndefined()
+    expect(text('.main .task-title')).toBe('task 14')
+    expect(text('.side-foot')).toContain('Refresh failed: server restarting.')
+    // Both read again: the page's new data shows, and the note goes.
+    brief = 'task 14, renamed'
+    answer = (id) => (id === undefined ? overview('') : page(id as number))
+    await refresh()
+    expect(text('.main .task-title')).toBe('task 14, renamed')
+    expect(composer()?.value).toBe('half a thought')
+    expect(text('.side-foot')).toContain('refreshes every 5s')
+    expect(text('.side-foot [role="status"]')).toBeUndefined()
+
+    // On another task, the first refresh failing keeps that page too. The sidebar's data was loaded
+    // on the task before, and is the same on every page.
+    await act(() => app.navigate({ href: '/tasks/16' }))
+    await settle()
+    const box16 = composer()
+    if (box16 === null) throw new Error('no box to message the worker')
+    type(box16, 'for sixteen')
+    answer = down
+    await refresh()
+    expect(text('.main .task-title')).toBe('task 16')
+    expect(composer()?.value).toBe('for sixteen')
+    expect(text('.side-summary')).toContain('0 tasks')
+    expect(text('.side-foot')).toContain('Refresh failed: server restarting.')
+
+    // A refresh still out as the page moves on, which fails once that page is gone, leaves the next
+    // page's data to keep.
+    let release = () => {}
+    answer = (id) =>
+      id === 16
+        ? new Promise((_, fail) => {
+            release = () => fail(new Error('too late'))
+          })
+        : id === undefined
+          ? overview('')
+          : page(id as number)
+    void app.invalidate()
+    await settle()
+    await act(() => app.navigate({ href: '/tasks/17' }))
+    await settle()
+    expect(text('.main .task-title')).toBe('task 17')
+    const box17 = composer()
+    if (box17 === null) throw new Error('no box to message the worker')
+    type(box17, 'for seventeen')
+    await act(async () => release())
+    await settle()
+    answer = down
+    await refresh()
+    expect(text('.main .task-title')).toBe('task 17')
+    expect(composer()?.value).toBe('for seventeen')
+
+    // Another task, which fails as it opens, has nothing to keep: its error shows, and its refresh
+    // failing again keeps the error.
+    answer = (id) => (id === undefined ? overview('') : id === 15 ? down() : page(id as number))
+    await act(() => app.navigate({ href: '/tasks/15' }))
+    await settle()
+    expect(text('.main h1')).toBe('Something went wrong')
+    expect(text('.main .banner')).toBe('server restarting')
+    await refresh()
+    expect(text('.main h1')).toBe('Something went wrong')
+    expect(text('.main .task-title')).toBeUndefined()
   } finally {
     act(() => own.unmount())
     box.remove()

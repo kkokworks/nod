@@ -5,7 +5,16 @@ import type { Decision } from '../../../src/ledger'
 import { int } from '../input'
 import type { Message } from '../nod.server'
 import { detail, send } from '../nod.server'
-import { DecisionCard, duration, localTime, Markdown, Status, statusClass, Url } from '../parts'
+import {
+  DecisionCard,
+  duration,
+  keep,
+  localTime,
+  Markdown,
+  Status,
+  statusClass,
+  Url,
+} from '../parts'
 import { Screen } from '../terminal'
 
 const getDetail = createServerFn({ method: 'GET' })
@@ -25,11 +34,13 @@ const sendMessage = createServerFn({ method: 'POST' })
 
 export const Route = createFileRoute('/tasks/$id')({
   // An address no task has, its number not one in digits (1e3, 0x10) or no task's, is not found.
-  loader: async ({ params }) => {
-    const page = /^\d+$/.test(params.id) ? await getDetail({ data: Number(params.id) }) : null
-    if (page === null) throw notFound()
-    return page
-  },
+  loader: (ctx) =>
+    keep(ctx, async () => {
+      const { id } = ctx.params
+      const page = /^\d+$/.test(id) ? await getDetail({ data: Number(id) }) : null
+      if (page === null) throw notFound()
+      return page
+    }),
   component: TaskPage,
 })
 
