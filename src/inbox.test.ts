@@ -532,8 +532,8 @@ inboxTest(
   15_000,
 )
 
-test("a Claude session that sets a project's work going hears, once per project, that the project's latest session cannot hear it either; a shell, that latest session, one that hears, and work in no project hear nothing", () => {
-  const { home, ledger, todos, p, q, task } = setup()
+test("a Claude session that sets a project's work going hears, once per project and command, that the project's latest session cannot hear it either; a shell, that latest session, one that hears, and work in no project hear nothing", async () => {
+  const { home, ledger, todos, p, q, task, send } = setup()
   // What C, a session nod open did not open, added; task() adds as another session did.
   const ofC = (text: string, project: number | null): number =>
     todos.delegateNew({ ...brief(text), rootSession: C }, project, 'human')
@@ -562,12 +562,31 @@ test("a Claude session that sets a project's work going hears, once per project,
   expect(unheardWork(ledger, C, [mine])).toEqual([deaf('p1', 'its inbox socket is gone')])
   writeFileSync(socket, '')
   expect(unheardWork(ledger, C, [mine, theirs])).toEqual([])
+  // Once per command: a project told of already is not told of again.
+  const once = new Set<number>()
+  expect(unheardWork(ledger, C, [health], once)).toHaveLength(1)
+  expect(unheardWork(ledger, C, [health, mine], once)).toEqual([])
+
+  // /clear in p1's session, one with no hooks: its new ID C brings A's socket, and onCommand,
+  // which runs first, takes it from A and tells of p1, so the command tells of p1 no more.
+  const cleared = new Set<number>()
+  expect(await onCommand(ledger, C, socket, send, cleared)).toStartWith(
+    "nod: p1's session took messages at this session's inbox socket",
+  )
+  expect(unheardWork(ledger, C, [mine], cleared)).toEqual([])
+  expect(unheardWork(ledger, C, [mine])).toEqual([deaf('p1', 'it takes no messages now')])
 
   // The latest session itself hears nothing here, as onCommand speaks for it; an older one of the
   // project does, and has all the project's tasks as its own.
   todos.addSession(p.id, B, '/work/two')
   expect(unheardWork(ledger, B, [mine])).toEqual([])
   expect(unheardWork(ledger, A, [theirs])).toEqual([deaf('p1', 'it takes no messages now')])
+  // In a command, onCommand tells that older session of p1 first, and that is all it hears of p1.
+  const older = new Set<number>()
+  expect(await onCommand(ledger, A, undefined, send, older)).toStartWith(
+    'nod: this session of p1 hears nothing from nod',
+  )
+  expect(unheardWork(ledger, A, [theirs], older)).toEqual([])
 })
 
 test('nod add, tell and an answer run in a Claude session say on stderr that no session of the project hears the work; in a shell, or once the project session runs, they say nothing', () => {
@@ -590,7 +609,7 @@ test('nod add, tell and an answer run in a Claude session say on stderr that no 
   const never = ledger.add(brief('never starts'))
   const added = nod(C, 'add', 'Ship it', '--project', 'p1', '--after', `n${never}`)
   const id = ledger.list().find((t) => t.brief === 'Ship it')?.id ?? 0
-  const ask = (taskId: number, question: string): number => {
+  const ask = (taskId: number, question: string, reason: 'question' | 'land' = 'question') => {
     const attemptId = ledger.startAttempt({
       taskId,
       kind: 'start',
@@ -598,13 +617,15 @@ test('nod add, tell and an answer run in a Claude session say on stderr that no 
       sessionId: 's',
       prompt: 'p',
     })
-    return ledger.ask(taskId, attemptId, 'question', question)
+    return ledger.ask(taskId, attemptId, reason, question)
   }
   const d = ask(id, 'Which way?')
   // An answer that only closes a decision left open on a task that succeeded sets nothing going.
   const done = task('Done already')
   const stale = ask(done, 'Still?')
   ledger.succeed(done)
+  // No to landing again only stops landing it.
+  const landing = ask(task('Land it'), 'Try landing again?', 'land')
   const line =
     "nod: p1's session hears nothing from nod (nod open never opened one), so the decisions and ends of this work wait unheard; run nod watch --mine here, or nod open p1 opens one\n"
   expect(added).toContain(line)
@@ -612,6 +633,10 @@ test('nod add, tell and an answer run in a Claude session say on stderr that no 
   expect(nod(B, 'tell', `n${id}`, 'and the docs')).toContain(line.replace('--mine ', ''))
   expect(nod(C, `d${d}`, 'left')).toContain(line)
   expect(nod(C, `d${stale}`, 'never mind')).not.toContain('hears nothing')
+  expect(nod(C, `d${landing}`, 'no')).not.toContain('hears nothing')
+  expect(ledger.decision(landing).answer).toBe('no')
+  // A restart that finds no terminal to start again sets nothing going either.
+  expect(nod(C, 'restart', `n${id}`)).not.toContain('hears nothing')
   expect(nod(null, 'tell', `n${id}`, 'and the docs')).not.toContain('hears nothing')
 
   todos.addSession(p.id, A, '/work/one')

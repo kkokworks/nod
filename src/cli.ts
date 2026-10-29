@@ -279,9 +279,9 @@ prompts holds such messages for the person to approve. One reopened with claude 
 of nod open, or opened before nod open gave it hooks, reports its socket at its first nod command
 (Claude Code exports it to Bash too), and hears nothing before. A nod command in a project's
 session that cannot hear (not the project's latest, or no socket) says so on stderr. So does nod
-add, tell, resume, restart or an answer in any other Claude session, for a project whose latest
-session cannot hear either (none, no socket known, or its socket gone): what that work brings waits
-unheard until nod watch runs there or nod open opens the project's session. /clear goes
+add, tell, resume, restart <task> or an answer in any other Claude session, for a project whose
+latest session cannot hear either (none, no socket known, or its socket gone): what that work
+brings waits unheard until nod watch runs there or nod open opens the project's session. /clear goes
 on under an ID nod open did not open: it hears nothing until nod open opens the project's session
 again. One with no hooks cannot say it cleared, so what went to it after, until its next nod
 command, is lost: once nod open opens it again, nod ls --mine and nod --mine show what it missed.
@@ -298,12 +298,16 @@ if (command === 'hook' && rest[0] === 'inbox') await inboxHook()
 if (command === 'hook' && rest[0] === 'permission') await permissionHook()
 if (command === 'hook' && rest[0] === 'tool') await toolHook()
 const ledger = new Ledger(home)
+// The projects this command told stderr nobody hears, each told once (onCommand, warnUnheard).
+const warned = new Set<number>()
 // A project session its hooks never told nod of says where it takes messages (onCommand); what
 // goes wrong only goes to stderr, as the command still runs.
 const unheard = await onCommand(
   ledger,
   sessionFromEnv(),
   process.env.CLAUDE_CODE_MESSAGING_SOCKET,
+  sendLine,
+  warned,
 ).catch((error) => `nod: could not record this session's inbox: ${message(error)}`)
 if (unheard !== null) console.error(unheard)
 const terminals = Terminals.of(home)
@@ -515,8 +519,10 @@ switch (command) {
       throw new Error('a worker cannot trust a repo')
     }
     const said = words(rest)
-    // One answered already, or left open on a task that finished, sets nothing going.
-    if (answered === null && !finished(ledger, taskId)) warnUnheard([taskId])
+    // What sets nothing going: an answer to one answered already, or left open on a task that
+    // finished, and no to landing again.
+    const stops = reason === 'land' && !/^y(es)?$/i.test(said)
+    if (answered === null && !finished(ledger, taskId) && !stops) warnUnheard([taskId])
     const took = await answer(ledger, home, id, said, actorFromEnv())
     if (reason === 'land') {
       console.log(/^y(es)?$/i.test(said) ? 'landing it again' : 'stopped landing it')
@@ -767,10 +773,15 @@ async function restartCommand(refs: string[]): Promise<void> {
           .filter((t) => t.account !== null && live.has(sessionName(t.id)))
           .map((t) => t.id)
   if (ids.length === 0) console.log('no worker to restart')
-  warnUnheard(ids)
+  const going: number[] = []
   for (const id of ids) {
-    console.log(`n${id} ${said[await restart(ledger, home, id, 'nod restart')]}`)
+    const how = await restart(ledger, home, id, 'nod restart')
+    console.log(`n${id} ${said[how]}`)
+    if (how !== 'no terminal') going.push(id)
   }
+  // Restarting every worker (no task named) is an account switch, not this session taking on
+  // their work.
+  if (refs.length > 0) warnUnheard(going)
 }
 
 function accountCommand([how, ...args]: string[]): void {
@@ -992,7 +1003,7 @@ function mySession(mine: boolean | undefined): string | null {
 // is told so (unheardWork); what goes wrong only goes to stderr, as the command still runs.
 function warnUnheard(ids: number[]): void {
   try {
-    for (const line of unheardWork(ledger, sessionFromEnv(), ids)) console.error(line)
+    for (const line of unheardWork(ledger, sessionFromEnv(), ids, warned)) console.error(line)
   } catch (error) {
     console.error(`nod: could not check who hears this work: ${message(error)}`)
   }
