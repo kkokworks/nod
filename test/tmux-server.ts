@@ -4,18 +4,20 @@ import { join } from 'node:path'
 import { socketsParent } from './tmp'
 
 // Why to skip the tests that need a tmux server, or null to run them. `up`: whether a server
-// answered once started; tmux exits 0 even when it cannot make the server's socket.
-// Measured in a Claude Code worker sandbox (tmux 3.6a, Claude Code 2.1.310): new-session prints
-// `error creating <socket> (Operation not permitted)`, exits 0, and no server answers. Claude Code
-// adds SANDBOX_RUNTIME=1 to the environment of only the commands it runs in its sandbox, with
-// the sandbox's TMPDIR and proxy. Skipping takes both, and anything else that keeps tmux from
-// starting fails the run: nod's check runs these tests outside the sandbox and must not pass
-// without them. A worker nod starts now has a folder its sandbox lets it keep sockets in
-// (NOD_SOCKETS), where the probe and the tests make theirs, so they run there too; the skip stays
-// for a worker started before that, and any sandbox without the rule. A sandbox that lets tmux make
-// its socket there but opens no pseudo-terminal (`script` says `openpty: Operation not permitted`)
-// gets the server up with no window: new-session prints `create window failed: fork failed:
-// Operation not permitted`, and that skips too.
+// answered once started. Claude Code adds SANDBOX_RUNTIME=1 to the environment of only the
+// commands it runs in its sandbox, with the sandbox's TMPDIR and proxy. Skipping takes that and
+// tmux's `Operation not permitted`, which a sandbox gives it two ways (tmux 3.6a, measured):
+// - No pseudo-terminal, in a worker nod starts now whose own folder is of use (Claude Code
+//   2.1.312). Its sandbox lets it keep sockets in that folder (NOD_SOCKETS), where the probe makes
+//   its, but opens no pseudo-terminal (`openpty: Operation not permitted`). new-session makes the
+//   socket, prints `create window failed: fork failed: Operation not permitted`, exits 1, and the
+//   server ends at once. worker.test.ts runs its workers in fake terminals for this
+//   (test/fake-terminals.ts).
+// - No socket, where that folder is missing or of no use (a worker started before it, nod's
+//   reviewer, too long a path: test/tmp.ts) and in other sandboxes (2.1.310). new-session prints
+//   `error creating <socket> (Operation not permitted)`, exits 0, and no server answers.
+// Anything else that keeps tmux from starting fails the run: nod's check runs these tests outside
+// the sandbox, when it runs `bun test`, and must not pass without them.
 export function tmuxSkip(
   up: boolean,
   stderr: string,
@@ -23,7 +25,14 @@ export function tmuxSkip(
 ): string | null {
   if (up) return null
   if (env.SANDBOX_RUNTIME === '1' && stderr.includes('Operation not permitted')) {
-    return "tmux cannot start a server in this sandbox: skipping the tests that need one, which nod's check runs outside it"
+    const blocked = stderr.includes('fork failed')
+      ? 'opens no pseudo-terminal, so tmux cannot open a window'
+      : 'lets tmux make no socket here'
+    return (
+      `skipping the tests that need a tmux server: this sandbox ${blocked} (${stderr.trim()}). ` +
+      "They run outside the sandbox only if one of nod's checks runs `bun test`: the task's " +
+      'acceptance check, or the check nod runs as it lands the branch'
+    )
   }
   throw new Error(`tmux cannot start a server: ${stderr.trim() || '(it said nothing)'}`)
 }

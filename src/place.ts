@@ -19,8 +19,10 @@ export function branchOf(task: Task): string {
 
 export const sessionName = (taskId: number): string => `task-${taskId}`
 
-// The one folder a worker's sandbox lets it make and reach Unix sockets in, so its tests can start
-// a tmux server or listen on a socket, which the sandbox refuses anywhere else (EPERM, 2.1.310).
+// The one folder a worker's sandbox lets it make and reach Unix sockets in, so its tests can listen
+// on a socket, which the sandbox refuses anywhere else (EPERM, 2.1.310). tmux makes its socket here
+// too, but its server ends at once: the sandbox opens no pseudo-terminal for its window (2.1.312,
+// test/tmux-server.ts).
 // Its tests find it in NOD_SOCKETS (workerEnv). Each worker's own, in nod's home, where no other
 // worker can write. Not the sandbox's TMPDIR, `/tmp/claude-<uid>` for every Claude Code session of
 // the user, where any worker could remove or replace another's sockets, nor a folder in the
@@ -29,7 +31,8 @@ export const sessionName = (taskId: number): string => `task-${taskId}`
 // make theirs in it.
 // ponytail: gc leaves the folder, as it leaves `.started-<task>`: what is in it is the worker's, and
 // nod going through it outside the sandbox could follow a link the worker left to nod's own tmux
-// server. A tmux server a cut-off test run left in it stays until the worker's next run ends it
+// server. A worker's sandbox now keeps no tmux server up in it (no pseudo-terminal); in one that
+// did, a server a cut-off test run left would stay until the worker's next run ends it
 // (test/tmux.ts), or until a reboot.
 export const socketsDir = (home: string, taskId: number): string =>
   join(home, 'sockets', String(taskId))

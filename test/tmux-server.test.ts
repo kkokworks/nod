@@ -6,8 +6,9 @@ const denied = 'error creating /tmp/x/tmux-501/probe (Operation not permitted)\n
 const noPty = 'create window failed: fork failed: Operation not permitted\n'
 
 test('tmux tests skip only in the sandbox that keeps tmux from starting, and fail anywhere else it cannot', () => {
-  expect(tmuxSkip(false, denied, { SANDBOX_RUNTIME: '1' })).toContain('sandbox')
-  expect(tmuxSkip(false, noPty, { SANDBOX_RUNTIME: '1' })).toContain('sandbox')
+  // Saying what the sandbox kept from tmux.
+  expect(tmuxSkip(false, denied, { SANDBOX_RUNTIME: '1' })).toContain('no socket')
+  expect(tmuxSkip(false, noPty, { SANDBOX_RUNTIME: '1' })).toContain('no pseudo-terminal')
   // Outside the sandbox, nod's check must not pass without them.
   expect(() => tmuxSkip(false, denied, {})).toThrow(denied.trim())
   expect(() => tmuxSkip(false, noPty, {})).toThrow(noPty.trim())
