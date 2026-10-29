@@ -1,4 +1,11 @@
-import { isNotFound, isRedirect, Link, useLocation, useMatches } from '@tanstack/react-router'
+import {
+  isNotFound,
+  isRedirect,
+  Link,
+  rootRouteId,
+  useLocation,
+  useMatches,
+} from '@tanstack/react-router'
 import { type ComponentProps, createContext, type ReactNode, useContext } from 'react'
 import ReactMarkdown, { type ExtraProps } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -157,11 +164,15 @@ export function Failed({ error }: { error: unknown }) {
   )
 }
 
-// What each route last loaded, for which params and deps, and why the data a page shows is from
-// before a refresh that failed.
+// What each route last loaded, for which params and deps, how many loads of it have begun, and why
+// the data a page shows is from before a refresh that failed.
 const shown = new Map<string, { key: string; data: unknown }>()
+const begun = new Map<string, number>()
 const stale = new WeakMap<object, string>()
-const keyOf = (params: object, deps: unknown) => JSON.stringify([params, deps])
+// Every match has all the address's params. The root's data, the sidebar's, is the same on every
+// page, and the root does not load again as the page changes.
+const keyOf = (routeId: string, params: object, deps: unknown) =>
+  JSON.stringify([routeId === rootRouteId ? {} : params, deps])
 
 // The data the page came with from the server, which no `keep` in the browser loaded, kept for a
 // refresh that fails before one works.
@@ -176,7 +187,7 @@ export function keepShown(
 ) {
   for (const m of matches) {
     if (m.status === 'success') {
-      shown.set(m.routeId, { key: keyOf(m.params, m.loaderDeps), data: m.loaderData })
+      shown.set(m.routeId, { key: keyOf(m.routeId, m.params, m.loaderDeps), data: m.loaderData })
     }
   }
 }
@@ -194,19 +205,25 @@ export async function keep<T>(
   },
   load: () => Promise<T>,
 ): Promise<T> {
-  const key = keyOf(ctx.params, ctx.deps)
+  const id = ctx.route.id
+  const key = keyOf(id, ctx.params, ctx.deps)
+  // A load that a later one of the route overtook (a refresh still out as the page moved on) is
+  // the router's to drop: it leaves what the later one noted.
+  const n = (begun.get(id) ?? 0) + 1
+  begun.set(id, n)
   try {
     const data = await load()
-    shown.set(ctx.route.id, { key, data })
+    if (begun.get(id) === n) shown.set(id, { key, data })
     return data
   } catch (e) {
-    const last = shown.get(ctx.route.id)
+    if (begun.get(id) !== n) throw e
+    const last = shown.get(id)
     const kept =
       ctx.cause === 'stay' && last?.key === key && !isNotFound(e) && !isRedirect(e)
         ? last.data
         : undefined
     if (typeof kept !== 'object' || kept === null) {
-      shown.delete(ctx.route.id)
+      shown.delete(id)
       throw e
     }
     stale.set(kept, e instanceof Error ? e.message : String(e))

@@ -655,6 +655,10 @@ test("a refresh that fails keeps a todo's form as it is being typed", async () =
   expect(banners()).toEqual([])
   expect(title().value).toBe('new title')
   expect(document.activeElement === title()).toBe(true)
+  // The todo is gone from the ledger: that is no failure to keep the page through.
+  answer = () => null
+  await reload()
+  expect(document.querySelector('.layout .page h1')?.textContent).toBe('Not found')
 })
 
 test('a key pressed as the refresh takes its row away does not act on the next row', async () => {
@@ -1013,6 +1017,46 @@ test('a refresh that fails, the first after the page came from the server too, k
     expect(composer()?.value).toBe('half a thought')
     expect(text('.side-foot')).toContain('refreshes every 5s')
     expect(text('.side-foot [role="status"]')).toBeUndefined()
+
+    // On another task, the first refresh failing keeps that page too. The sidebar's data was loaded
+    // on the task before, and is the same on every page.
+    await act(() => app.navigate({ href: '/tasks/16' }))
+    await settle()
+    const box16 = composer()
+    if (box16 === null) throw new Error('no box to message the worker')
+    type(box16, 'for sixteen')
+    answer = down
+    await refresh()
+    expect(text('.main .task-title')).toBe('task 16')
+    expect(composer()?.value).toBe('for sixteen')
+    expect(text('.side-summary')).toContain('0 tasks')
+    expect(text('.side-foot')).toContain('Refresh failed: server restarting.')
+
+    // A refresh still out as the page moves on, which fails once that page is gone, leaves the next
+    // page's data to keep.
+    let release = () => {}
+    answer = (id) =>
+      id === 16
+        ? new Promise((_, fail) => {
+            release = () => fail(new Error('too late'))
+          })
+        : id === undefined
+          ? overview('')
+          : page(id as number)
+    void app.invalidate()
+    await settle()
+    await act(() => app.navigate({ href: '/tasks/17' }))
+    await settle()
+    expect(text('.main .task-title')).toBe('task 17')
+    const box17 = composer()
+    if (box17 === null) throw new Error('no box to message the worker')
+    type(box17, 'for seventeen')
+    await act(async () => release())
+    await settle()
+    answer = down
+    await refresh()
+    expect(text('.main .task-title')).toBe('task 17')
+    expect(composer()?.value).toBe('for seventeen')
 
     // Another task, which fails as it opens, has nothing to keep: its error shows, and its refresh
     // failing again keeps the error.
