@@ -1,5 +1,5 @@
 import { afterAll, expect, spyOn, test } from 'bun:test'
-import { writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { inboxServer, inboxTest } from '../test/inbox-server'
 import { socketsParent, tempDirs } from '../test/tmp'
@@ -306,6 +306,40 @@ test('a send that fails keeps the notices for the next and leaves the change it 
     expect.stringContaining('task n1 t1 succeeded: Ship it'),
   ])
 })
+
+test('a hangup in the middle of a send, as nod closing the terminal of the hook that sends, ends the process once the notices it marked sent have gone', async () => {
+  const { home, todos, p, task, ledger } = setup()
+  todos.addSession(p.id, A, '/work/one')
+  todos.setSocket(A, '/socks/a')
+  ledger.succeed(task('Ship it'))
+  const dir = tmp.make('nod-inbox-hangup-')
+  const [go, out] = [join(dir, 'go'), join(dir, 'out')]
+  // The send waits for the test, which hangs the process up first.
+  const script = `import { existsSync, writeFileSync } from 'node:fs'
+import { sendNotices } from ${JSON.stringify(join(import.meta.dir, 'inbox.ts'))}
+import { Ledger } from ${JSON.stringify(join(import.meta.dir, 'ledger.ts'))}
+await sendNotices(new Ledger(${JSON.stringify(home)}), async (_socket, line) => {
+  console.log('sending')
+  while (!existsSync(${JSON.stringify(go)})) await Bun.sleep(20)
+  writeFileSync(${JSON.stringify(out)}, line)
+})`
+  const proc = Bun.spawn([process.execPath, '-e', script], { stdout: 'pipe', stderr: 'inherit' })
+  const reader = proc.stdout.getReader()
+  let said = ''
+  while (!said.includes('sending\n')) {
+    const r = await reader.read()
+    if (r.done) break
+    said += Buffer.from(r.value).toString()
+  }
+  proc.kill('SIGHUP')
+  writeFileSync(go, '')
+  await proc.exited
+  expect(existsSync(out)).toBe(true)
+  expect(readFileSync(out, 'utf8')).toContain('task n1 t1 succeeded: Ship it')
+  // It still ends on the signal.
+  expect(proc.signalCode).toBe('SIGHUP')
+  expect(ledger.unsentNotices()).toEqual([])
+}, 10_000)
 
 test("in Claude Code's sandbox a refused connect keeps a socket whose file is there, as Bun reports it as it does one gone; a file that is gone, or a refusal outside the sandbox, forgets it", async () => {
   const { ledger, todos, p, task } = setup()
