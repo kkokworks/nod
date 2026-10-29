@@ -11,14 +11,18 @@ import {
 import {
   appendFileSync,
   chmodSync,
+  closeSync,
+  constants,
   existsSync,
   mkdirSync,
+  openSync,
   readdirSync,
   readFileSync,
   rmSync,
   statSync,
   symlinkSync,
   writeFileSync,
+  writeSync,
 } from 'node:fs'
 import { basename, dirname, join, resolve } from 'node:path'
 import { FakeTerminals } from '../test/fake-terminals'
@@ -1683,6 +1687,49 @@ test('due triggers add tasks, a source only for lines it has not printed before,
   expect(heard()).toContainEqual(['answered', scheduled])
   expect(heard()).toContainEqual(['succeeded', scheduled])
   expect(heard()).toContainEqual(['cancelled', dropped])
+})
+
+// As listen, but the notify that hears `event` waits until `release`, and its hook with it.
+function holdNotify(event: string): {
+  heard: () => Heard[]
+  holding: () => boolean
+  release: () => void
+} {
+  const heard = listen()
+  const fifo = join(home, 'hold')
+  const held = join(home, 'held')
+  if (Bun.spawnSync(['mkfifo', fifo]).exitCode !== 0) throw new Error('mkfifo failed')
+  // Open to read and write, so the release finds a reader whenever `held` is there.
+  writeFileSync(
+    join(home, 'notify'),
+    `#!/bin/sh\nf=${JSON.stringify(join(home, 'events'))}/$$\ncat > "$f.tmp"\nif grep -q '"event":"${event}"' "$f.tmp"; then exec 3<> ${JSON.stringify(fifo)}; : > ${JSON.stringify(held)}; read _ <&3; fi\nmv "$f.tmp" "$f.json"\n`,
+  )
+  return {
+    heard,
+    holding: () => existsSync(held),
+    // Fails at once (ENXIO) if the notify holding is gone.
+    release: () => {
+      const fd = openSync(fifo, constants.O_WRONLY | constants.O_NONBLOCK)
+      writeSync(fd, '\n')
+      closeSync(fd)
+    },
+  }
+}
+
+test("gc leaves the terminal of a task whose Stop hook still tells of its end, and takes it once that's done", async () => {
+  const notify = holdNotify('succeeded')
+  const id = await add('plain')
+  await until(notify.holding)
+  expect(status(id)).toBe('succeeded')
+  expect(await collect(ledger, home, terminals, { ids: [id] })).toEqual({
+    removed: [],
+    clean: [],
+    skipped: [{ id, reason: 'its Stop hook is still running' }],
+  })
+  notify.release()
+  await settled(id)
+  expect(notify.heard().map((e) => [e.event, e.task?.id])).toEqual([['succeeded', id]])
+  expect((await collect(ledger, home, terminals, { ids: [id] })).removed).toEqual([id])
 })
 
 test('a task that needed a retry gets a retrospective, and an approved rule reaches later workers while it is on', async () => {

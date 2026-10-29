@@ -1,8 +1,9 @@
 import { basename, join } from 'node:path'
 import type { Task } from './ledger'
+import { running, type Terminals } from './tmux'
 
-// Where a task lives: its worker's tmux session, its workspace folder, its branch, and the folder its
-// worker may keep Unix sockets in.
+// Where a task lives: its worker's tmux session (and whether its Stop hook still runs there), its
+// workspace folder, its branch, and the folder its worker may keep Unix sockets in.
 
 // A repo task's worktree is named after its repo and branch, so a folder says what it holds.
 // ponytail: two repos with the same folder name and branch collide and `worktree add` fails; add
@@ -18,6 +19,18 @@ export function branchOf(task: Task): string {
 }
 
 export const sessionName = (taskId: number): string => `task-${taskId}`
+
+// The pid of the Stop hook while it checks a turn it has already closed (onStop in worker.ts), and
+// once it knows it, that turn's attempt: `<pid> <attempt>`.
+export const SETTLING_OPTION = 'nod_settling'
+
+// Whether a Stop hook is still checking the worker's last turn, or telling of the task's end and
+// setting going what follows it (notify, other tasks' messages, its retrospective), which closing
+// the terminal would cut off with the hook: only a drop, which ends the task, closes it anyway. A
+// hook that went without clearing its pid (cut off with Claude Code, or timed out) no longer counts.
+export function settling(terminals: Terminals, name: string): boolean {
+  return running(Number.parseInt(terminals.option(name, SETTLING_OPTION), 10))
+}
 
 // The one folder a worker's sandbox lets it make and reach Unix sockets in, so its tests can listen
 // on a socket, which the sandbox refuses anywhere else (EPERM, 2.1.310). tmux makes its socket here
