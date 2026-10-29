@@ -1,4 +1,13 @@
-import { afterAll, beforeEach, expect, it, setSystemTime, spyOn } from 'bun:test'
+import {
+  afterAll,
+  beforeEach,
+  expect,
+  it,
+  setDefaultTimeout,
+  setSystemTime,
+  spyOn,
+  test,
+} from 'bun:test'
 import {
   appendFileSync,
   chmodSync,
@@ -12,13 +21,14 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { basename, dirname, join, resolve } from 'node:path'
+import { FakeTerminals } from '../test/fake-terminals'
 import { projectFolder } from '../test/projects'
 import { git } from '../test/remote'
 import { tempDirs } from '../test/tmp'
 import { testTmux } from '../test/tmux'
-// Most tests here run workers in tmux: `test` skips them where tmux cannot start a server. Those
-// that need none are `it`, bun's own, so they run there too.
-import { tmuxTest as test } from '../test/tmux-server'
+// Workers run in fake terminals here (test/fake-terminals.ts), so these tests run where tmux cannot
+// start a server too. The few of tmux itself are `tmuxTest`, which skips them there.
+import { tmuxTest } from '../test/tmux-server'
 import { setAccountRule, transcriptPath } from './account'
 import { ALLOW } from './allow'
 import { collect } from './gc'
@@ -28,7 +38,7 @@ import { sessionName, socketsDir, workspaceOf } from './place'
 import { AT_ONCE, readAtOnce, spawn } from './proc'
 import { askedAgain, reviewBrief } from './review'
 import { retroBrief } from './rules'
-import { quote, Terminals } from './tmux'
+import { quote, type Terminals, Tmux } from './tmux'
 import { Todos } from './todos'
 import { addTrigger, tick } from './triggers'
 import {
@@ -60,20 +70,27 @@ import {
   workerPrompt,
 } from './worker'
 
+// A test here starts workers, each a few processes (`nod run`, the fake agent, its hooks), which take
+// seconds more where other work runs too, as nod's checks do.
+setDefaultTimeout(30_000)
+
 const tmp = tempDirs()
 const homes: string[] = []
+// The homes whose test ran on tmux (useTmux).
+const tmuxHomes: string[] = []
 testTmux(tmp)
 afterAll(() => {
-  for (const h of homes) Terminals.of(h).killServer()
+  for (const h of homes) FakeTerminals.of(h).killAll()
+  for (const h of tmuxHomes) Tmux.of(h).killServer()
   tmp.removeAll()
 })
 
 // The fake stands in for `claude` through PATH, which nod passes on to worker sessions.
 const bin = tmp.make('nod-fake-bin-')
-const fake = resolve(import.meta.dir, '../test/fake-agent.ts')
+const fakeAgent = resolve(import.meta.dir, '../test/fake-agent.ts')
 writeFileSync(
   join(bin, 'claude'),
-  `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(fake)} "$@"\n`,
+  `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(fakeAgent)} "$@"\n`,
 )
 chmodSync(join(bin, 'claude'), 0o755)
 process.env.PATH = `${bin}:${process.env.PATH}`
@@ -86,6 +103,10 @@ process.env.CLAUDE_CONFIG_DIR = tmp.make('nod-claude-')
 
 let home: string
 let ledger: Ledger
+// The home's terminals, which every call here is given: its fake ones (`fake`), but in a test of
+// tmux itself (useTmux).
+let terminals: Terminals
+let fake: FakeTerminals
 let log: string
 
 beforeEach(() => useHome('nod-worker-'))
@@ -99,6 +120,16 @@ function useHome(prefix: string): void {
   trust(process.env.CLAUDE_CONFIG_DIR ?? null) // nod's own work folder counts as trusted
   log = join(home, 'agent.log') // where the fake logs (fake-agent.ts)
   ledger = new Ledger(home)
+  fake = FakeTerminals.of(home)
+  terminals = fake
+}
+
+// For a test of tmux itself: the home's tmux in place of its fake terminals.
+function useTmux(): Tmux {
+  const tmux = Tmux.of(home)
+  tmuxHomes.push(home)
+  terminals = tmux
+  return tmux
 }
 
 const trust = (config: string | null): void => writeFileSync(trustedFile(home, config), '')
@@ -155,7 +186,7 @@ async function until<T>(get: () => T | null | undefined | false): Promise<T> {
 const status = (id: number): TaskStatus => ledger.get(id).status
 // Its Stop hook is done (onStop): restarts no longer wait on it.
 const settled = (id: number): Promise<true> =>
-  until(() => Terminals.of(home).option(sessionName(id), 'nod_settling') === '')
+  until(() => terminals.option(sessionName(id), 'nod_settling') === '')
 // The task the retrospective of task `of` runs in.
 const retroTask = (of: number): Task | undefined => {
   const retro = ledger.retroFor(of)
@@ -174,7 +205,6 @@ const fail = (id: number): never => {
 // Where a task got to, for a test that gave up waiting on it.
 function whereIs(id: number): string {
   const task = ledger.get(id)
-  const terminals = Terminals.of(home)
   const name = sessionName(id)
   const git =
     task.repo !== null && task.workspace !== null
@@ -215,7 +245,7 @@ async function add(brief: string, check: string | null = null): Promise<number> 
     triggerId: null,
     issue: null,
   })
-  await startTask(ledger, home, id)
+  await startTask(ledger, home, terminals, id)
   return id
 }
 
@@ -232,7 +262,8 @@ test('a failing check goes back into the same turn until it passes', async () =>
   expect(ledger.stats()).toMatchObject({ retries: 1, succeededWithoutDecision: 1 })
 })
 
-test('a brief longer than tmux takes in one command reaches the worker whole', async () => {
+tmuxTest('a brief longer than tmux takes in one command reaches the worker whole', async () => {
+  useTmux()
   const brief = `make it's \`$HOME\` "quoted"\n${'x'.repeat(20_000)}`
   const id = await add(brief)
   await reaches(id, 'succeeded')
@@ -246,7 +277,7 @@ test('a question becomes a decision, and the answer goes into the same live sess
   expect(decision.reason).toBe('question')
   expect(decision.question).toContain('May I proceed?')
 
-  await answer(ledger, home, decision.id, 'yes', 'human')
+  await answer(ledger, home, terminals, decision.id, 'yes', 'human')
   await reaches(id, 'succeeded')
   expect(entries('launch')).toHaveLength(1)
   expect(entries('turn').map((t) => t.message)).toEqual([
@@ -327,7 +358,7 @@ test('a permission prompt becomes a decision, and yes approves it in the session
   expect(decision.reason).toBe('permission')
   expect(status(id)).toBe('needs_decision')
 
-  await answer(ledger, home, decision.id, 'yes', 'human')
+  await answer(ledger, home, terminals, decision.id, 'yes', 'human')
   await reaches(id, 'succeeded')
   expect(ledger.attempts(id).map((a) => [a.kind, a.summary])).toEqual([['start', 'allowed']])
 })
@@ -335,7 +366,7 @@ test('a permission prompt becomes a decision, and yes approves it in the session
 test('denying a permission ends the turn, so the worker hears why in a new turn', async () => {
   const id = await add('need-permission')
   const decision = await until(() => ledger.decisions(id)[0])
-  await answer(ledger, home, decision.id, 'no, skip the fetch', 'human')
+  await answer(ledger, home, terminals, decision.id, 'no, skip the fetch', 'human')
   await reaches(id, 'succeeded')
   expect(entries('turn').map((t) => t.message)).toEqual([
     'need-permission',
@@ -362,7 +393,7 @@ test('a prompt nod is sure of it allows itself, with no decision, and records it
     triggerId: null,
     issue: null,
   })
-  await startTask(ledger, home, clean)
+  await startTask(ledger, home, terminals, clean)
   await reaches(clean, 'succeeded')
   expect(ledger.decisions(clean)).toEqual([])
   expect(ledger.attempts(clean)[0]?.summary).toBe('allowed by a hook')
@@ -383,19 +414,19 @@ test('a prompt nod is sure of it allows itself, with no decision, and records it
 test('dropping a decision cancels the task and closes its session', async () => {
   const id = await add('ask-first')
   const decision = await until(() => ledger.decisions(id)[0])
-  await drop(ledger, home, decision.id)
+  await drop(ledger, home, terminals, decision.id)
   expect(status(id)).toBe('cancelled')
-  expect(Terminals.of(home).alive(sessionName(id))).toBe(false)
+  expect(terminals.alive(sessionName(id))).toBe(false)
 })
 
 test('tell continues the same session, and reopens it from the transcript once it has ended', async () => {
   const id = await add('first')
   await reaches(id, 'succeeded')
-  await tell(ledger, home, id, 'second')
+  await tell(ledger, home, terminals, id, 'second')
   await reaches(id, 'succeeded')
 
-  Terminals.of(home).kill(sessionName(id))
-  await tell(ledger, home, id, 'third')
+  fake.kill(sessionName(id))
+  await tell(ledger, home, terminals, id, 'third')
   await reaches(id, 'succeeded')
 
   const session = ledger.attempts(id)[0]?.sessionId
@@ -428,16 +459,16 @@ const turnsOf = (id: number) => ofSession(id, 'turn').map((t) => t.message)
 test('the tick closes the terminal of a task finished an hour ago, and a message goes on in the same conversation', async () => {
   const id = await finished('first')
   const name = sessionName(id)
-  expect((await tick(ledger, home, new Date(), false)).closed).toEqual([])
-  expect(Terminals.of(home).alive(name)).toBe(true)
+  expect((await tick(ledger, home, terminals, new Date(), false)).closed).toEqual([])
+  expect(terminals.alive(name)).toBe(true)
 
-  expect((await tick(ledger, home, hourOn(id), false)).closed).toEqual([id])
-  expect(Terminals.of(home).alive(name)).toBe(false)
+  expect((await tick(ledger, home, terminals, hourOn(id), false)).closed).toEqual([id])
+  expect(terminals.alive(name)).toBe(false)
   // Only the terminal goes: the folder and the ledger stay as they were.
   expect(existsSync(workspaceOf(home, ledger.get(id)))).toBe(true)
   expect(ledger.get(id)).toMatchObject({ status: 'succeeded', collectedAt: null })
 
-  await tell(ledger, home, id, 'second')
+  await tell(ledger, home, terminals, id, 'second')
   await reaches(id, 'succeeded')
   expect(resumedOf(id)).toEqual([false, true])
   expect(turnsOf(id)).toEqual(['first', 'second'])
@@ -445,12 +476,12 @@ test('the tick closes the terminal of a task finished an hour ago, and a message
 
 test('a decision a task gets once the tick closed its terminal is answered in the same conversation', async () => {
   const id = await finished('first')
-  expect(await closeFinished(ledger, home, hourOn(id))).toEqual([id])
+  expect(await closeFinished(ledger, home, terminals, hourOn(id))).toEqual([id])
   // As landing asks later (land.ts), when a gate fails on the branch.
   await askToLand(ledger, home, id, 'check_failed', 'The gate failed: take the name out.')
   const decision = await until(() => ledger.decisions(id)[0])
 
-  await answer(ledger, home, decision.id, 'take it out', 'human')
+  await answer(ledger, home, terminals, decision.id, 'take it out', 'human')
   await reaches(id, 'succeeded')
   expect(resumedOf(id)).toEqual([false, true])
   expect(turnsOf(id)).toEqual(['first', 'Human decision: take it out'])
@@ -458,13 +489,12 @@ test('a decision a task gets once the tick closed its terminal is answered in th
 
 test('the tick leaves the terminal of a finished task a person is attached to, one whose Stop hook still checks, one with a turn open, or one showing a dialog a decision waits on', async () => {
   const id = await finished('first')
-  const terminals = Terminals.of(home)
   const name = sessionName(id)
-  const attached = spyOn(Terminals.prototype, 'attached').mockImplementation(() => true)
-  const close = () => closeFinished(ledger, home, hourOn(id))
+  const attached = spyOn(terminals, 'attached').mockImplementation(() => true)
+  const close = () => closeFinished(ledger, home, terminals, hourOn(id))
   expect(await close().finally(() => attached.mockRestore())).toEqual([])
   // A person typed in it half an hour after it finished, then left.
-  const used = spyOn(Terminals.prototype, 'lastUsed').mockImplementation(
+  const used = spyOn(terminals, 'lastUsed').mockImplementation(
     () => Date.parse(ledger.get(id).finishedAt ?? '') + 30 * 60_000,
   )
   expect(await close().finally(() => used.mockRestore())).toEqual([])
@@ -494,22 +524,13 @@ test('the tick leaves the terminal of a finished task a person is attached to, o
 // A person attaches to a task finished long ago, types a long turn in and leaves while it runs.
 test('a turn a person types into a finished task is in the ledger from its start, so its terminal stays past the hour after their last key', async () => {
   const id = await finished('first')
-  const terminals = Terminals.of(home)
   const name = sessionName(id)
   const long = new Date(Date.now() - 2 * 60 * 60_000).toISOString()
   ledger.db.query('update tasks set finished_at = $at where id = $id').run({ id, at: long })
-  const [tmux = 'tmux', ...attach] = terminals.attachCommand(name)
-  const person = Bun.spawn([tmux, '-C', ...attach], {
-    stdin: 'pipe',
-    stdout: 'ignore',
-    env: process.env,
-  })
-  await until(() => terminals.attached(name))
+  fake.attach(name)
   terminals.send(name, 'hang until ended')
   await until(() => turnsOf(id).length === 2)
-  person.kill()
-  await person.exited
-  await until(() => !terminals.attached(name))
+  fake.detach(name)
 
   // Its prompt hook opened the turn, as the Stop hook would have at its end; the task is as it was.
   expect(ledger.openAttempt(id)).toMatchObject({
@@ -519,7 +540,7 @@ test('a turn a person types into a finished task is in the ledger from its start
   expect(ledger.get(id).status).toBe('succeeded')
   // tmux keeps when in seconds.
   const hourAfter = new Date(Date.now() + 60 * 60_000 + 1000)
-  expect(await closeFinished(ledger, home, hourAfter)).toEqual([])
+  expect(await closeFinished(ledger, home, terminals, hourAfter)).toEqual([])
   expect(terminals.alive(name)).toBe(true)
   // Nothing of the hook went into the conversation.
   expect(entries('prompt-hook-said')).toEqual([])
@@ -530,7 +551,7 @@ test('a turn a person types into a finished task is in the ledger from its start
   const file = transcriptPath(ledger.get(id).account || null, session)
   const stop = { role: 'user', content: [{ type: 'text', text: '[Request interrupted by user]' }] }
   appendFileSync(file ?? '', `${JSON.stringify({ type: 'user', message: stop })}\n`)
-  expect(await closeFinished(ledger, home, hourAfter)).toEqual([id])
+  expect(await closeFinished(ledger, home, terminals, hourAfter)).toEqual([id])
   expect(ledger.attempts(id).at(-1)).toMatchObject({
     outcome: 'error',
     error: 'the person stopped it (Escape)',
@@ -541,15 +562,8 @@ test('a turn a person types into a finished task is in the ledger from its start
 // (Escape, no Stop), then type another, which goes on in the turn still open.
 test('what a person types into a worker’s terminal is kept once each, as theirs, for the review of its turn, and nod does not send it again', async () => {
   const id = await finished('first')
-  const terminals = Terminals.of(home)
   const name = sessionName(id)
-  const [tmux = 'tmux', ...attach] = terminals.attachCommand(name)
-  const person = Bun.spawn([tmux, '-C', ...attach], {
-    stdin: 'pipe',
-    stdout: 'ignore',
-    env: process.env,
-  })
-  await until(() => terminals.attached(name))
+  fake.attach(name)
   terminals.send(name, 'need-permission')
   await until(() => ledger.decisions(id)[0])
   terminals.keys(name, 'Escape')
@@ -557,8 +571,7 @@ test('what a person types into a worker’s terminal is kept once each, as their
   await until(() => entries('review')[1])
   await reaches(id, 'succeeded')
   await settled(id)
-  person.kill()
-  await person.exited
+  fake.detach(name)
   expect(turnsOf(id)).toEqual(['first', 'need-permission', 'use tabs'])
   expect(ledger.attempts(id).map((a) => [a.kind, a.prompt])).toEqual([
     ['start', 'first'],
@@ -574,16 +587,13 @@ test('a terminal that goes while the tick closes the others is not counted, and 
   const gone = await finished('first')
   const other = await finished('second')
   // gc or drop closes it once the tick has listed the terminals.
-  const attached = Terminals.prototype.attached
-  const closing = spyOn(Terminals.prototype, 'attached').mockImplementation(function (
-    this: Terminals,
-    name: string,
-  ) {
-    if (name === sessionName(gone)) this.kill(name)
-    return attached.call(this, name)
+  const attached = terminals.attached.bind(terminals)
+  const closing = spyOn(terminals, 'attached').mockImplementation((name) => {
+    if (name === sessionName(gone)) fake.kill(name)
+    return attached(name)
   })
 
-  const closed = await closeFinished(ledger, home, hourOn(other)).finally(() =>
+  const closed = await closeFinished(ledger, home, terminals, hourOn(other)).finally(() =>
     closing.mockRestore(),
   )
 
@@ -594,21 +604,18 @@ test('a task told to go on while the tick closes the terminals before it keeps i
   const first = await finished('first')
   const told = await finished('second')
   // `nod tell` comes as the tick closes the terminal before; its turn goes on past the tick.
-  const close = Terminals.prototype.close
-  const closing = spyOn(Terminals.prototype, 'close').mockImplementation(async function (
-    this: Terminals,
-    name: string,
-  ) {
-    if (name === sessionName(first)) await tell(ledger, home, told, 'hang until ended')
-    return close.call(this, name)
+  const close = terminals.close.bind(terminals)
+  const closing = spyOn(terminals, 'close').mockImplementation(async (name) => {
+    if (name === sessionName(first)) await tell(ledger, home, terminals, told, 'hang until ended')
+    return close(name)
   })
 
-  const closed = await closeFinished(ledger, home, hourOn(told)).finally(() =>
+  const closed = await closeFinished(ledger, home, terminals, hourOn(told)).finally(() =>
     closing.mockRestore(),
   )
 
   expect(closed).toEqual([first])
-  expect(Terminals.of(home).alive(sessionName(told))).toBe(true)
+  expect(terminals.alive(sessionName(told))).toBe(true)
   // In the terminal it had: no second launch.
   await until(() => turnsOf(told).length === 2)
   expect(resumedOf(told)).toEqual([false])
@@ -619,19 +626,19 @@ test('gc of a task whose folder is already gone closes its terminal too', async 
   const id = await finished('first')
   rmSync(workspaceOf(home, ledger.get(id)), { recursive: true })
 
-  expect(await collect(ledger, home, { ids: [id] })).toEqual({
+  expect(await collect(ledger, home, terminals, { ids: [id] })).toEqual({
     removed: [],
     clean: [id],
     skipped: [],
   })
-  expect(Terminals.of(home).alive(sessionName(id))).toBe(false)
+  expect(terminals.alive(sessionName(id))).toBe(false)
 })
 
 test('a brief or a message that starts with a dash reaches the worker as a message, not an option', async () => {
   const id = await add('- fix the bug')
   await reaches(id, 'succeeded')
-  Terminals.of(home).kill(sessionName(id))
-  await tell(ledger, home, id, '-v too')
+  fake.kill(sessionName(id))
+  await tell(ledger, home, terminals, id, '-v too')
   await reaches(id, 'succeeded')
   expect(entries('turn').map((t) => t.message)).toEqual(['- fix the bug', '-v too'])
 })
@@ -656,7 +663,7 @@ test('a watch with --back-to passes into that task, brought back after gc, which
     },
     'human',
   )
-  await startTask(ledger, home, id)
+  await startTask(ledger, home, terminals, id)
   await reaches(id, 'succeeded')
   await until(() => todos.get(todo.id).status === 'done')
   const reply = join(home, 'reply.txt')
@@ -671,9 +678,9 @@ test('a watch with --back-to passes into that task, brought back after gc, which
   writeFileSync(join(sessions, `${ledger.lastAttempt(id)?.sessionId}.jsonl`), '{}\n')
   ledger.collected(id, null)
 
-  expect((await tick(ledger, home, new Date(), true)).passed).toEqual([]) // nothing to read yet
+  expect((await tick(ledger, home, terminals, new Date(), true)).passed).toEqual([]) // nothing to read yet
   writeFileSync(reply, 'rebased onto main\n')
-  expect((await tick(ledger, home, new Date(), true)).passed).toEqual([todo.id])
+  expect((await tick(ledger, home, terminals, new Date(), true)).passed).toEqual([todo.id])
   expect(todos.get(todo.id)).toMatchObject({ status: 'waiting', waitingOn: null, watch: null })
   expect(ledger.get(id).collectedAt).toBeNull()
   await reaches(id, 'succeeded')
@@ -688,7 +695,7 @@ test('a watch with --back-to passes into that task, brought back after gc, which
   todos.set(todo.id, { status: 'waiting', watch, backTo: id }, 'human')
   ledger.collected(id, null)
   rmSync(sessions, { recursive: true })
-  expect((await tick(ledger, home, new Date(), true)).passed).toEqual([todo.id])
+  expect((await tick(ledger, home, terminals, new Date(), true)).passed).toEqual([todo.id])
   const given = todos.get(todo.id)
   expect(given.status).toBe('next')
   expect(given.notes).toMatch(/task n\d+ could not carry on: .*transcript is gone/)
@@ -714,7 +721,7 @@ async function didTodo(todos: Todos): Promise<{ todoId: number; taskId: number }
     },
     'human',
   )
-  await startTask(ledger, home, taskId)
+  await startTask(ledger, home, terminals, taskId)
   await reaches(taskId, 'succeeded')
   await until(() => todos.get(todo.id).status === 'done')
   return { todoId: todo.id, taskId }
@@ -725,7 +732,7 @@ test('a notify that cannot run changes nothing else: the task succeeds, and a pa
   const todos = new Todos(ledger)
   const { todoId, taskId } = await didTodo(todos)
   todos.set(todoId, { status: 'waiting', watch: 'true', backTo: taskId }, 'human')
-  expect((await tick(ledger, home, new Date(), true)).passed).toEqual([todoId])
+  expect((await tick(ledger, home, terminals, new Date(), true)).passed).toEqual([todoId])
   await until(() => todos.get(todoId).status === 'done')
   expect(entries('turn').at(-1)?.message).toContain('its watch `true` passed')
 }, 30_000)
@@ -737,22 +744,27 @@ test('a passing watch goes back to the task its todo names then, not when the wa
   const cli = resolve(import.meta.dir, 'cli.ts')
   const watch = `NOD_HOME=${quote(home)} ${quote(process.execPath)} ${quote(cli)} todo set t${todoId} --back-to ''`
   todos.set(todoId, { status: 'waiting', watch, backTo: taskId }, 'human')
-  expect((await tick(ledger, home, new Date(), true)).passed).toEqual([todoId])
+  expect((await tick(ledger, home, terminals, new Date(), true)).passed).toEqual([todoId])
   expect(todos.get(todoId)).toMatchObject({ status: 'next', backTo: null })
   expect(todos.get(todoId).notes).not.toContain('back to task')
   expect(ledger.attempts(taskId)).toHaveLength(1)
 }, 30_000)
 
-test('a message pastes without control characters, which could end the paste and type keys', async () => {
-  const id = await add('first')
-  await reaches(id, 'succeeded')
-  await tell(ledger, home, id, 'see\x1b[201~ this\x07\r\nand\tthat')
-  await reaches(id, 'succeeded')
-  expect(entries('turn').map((t) => t.message)).toEqual(['first', 'see[201~ this\nand\tthat'])
-}, 30_000)
+tmuxTest(
+  'a message pastes without control characters, which could end the paste and type keys',
+  async () => {
+    useTmux()
+    const id = await add('first')
+    await reaches(id, 'succeeded')
+    await tell(ledger, home, terminals, id, 'see\x1b[201~ this\x07\r\nand\tthat')
+    await reaches(id, 'succeeded')
+    expect(entries('turn').map((t) => t.message)).toEqual(['first', 'see[201~ this\nand\tthat'])
+  },
+  30_000,
+)
 
 it('a stop from a session nod did not start changes nothing', async () => {
-  const out = await onStop(ledger, home, {
+  const out = await onStop(ledger, home, terminals, {
     session_id: 'not-ours',
     last_assistant_message: 'NOD: done | x',
     stop_hook_active: false,
@@ -789,10 +801,10 @@ test('a task that comes after another starts once that one succeeds, and hears i
     triggerId: null,
     issue: null,
   })
-  expect(await startReady(ledger, home)).toEqual([])
+  expect(await startReady(ledger, home, terminals)).toEqual([])
   expect(status(next)).toBe('queued')
 
-  await answer(ledger, home, decision.id, 'yes', 'human')
+  await answer(ledger, home, terminals, decision.id, 'yes', 'human')
   await reaches(next, 'succeeded')
   const message = entries('turn').find((t) => t.message?.startsWith('then this'))?.message
   expect(message).toContain(`- n${first} ask-first: did it`)
@@ -810,7 +822,7 @@ test('in a repo, done needs the work committed, and the next task starts from th
     triggerId: null,
     issue: null,
   })
-  await startTask(ledger, home, first)
+  await startTask(ledger, home, terminals, first)
   await reaches(first, 'succeeded')
   expect(ledger.attempts(first).map((a) => [a.kind, a.checkResult])).toEqual([
     ['start', 'failed'], // no ok.txt yet
@@ -836,7 +848,7 @@ test('in a repo, done needs the work committed, and the next task starts from th
     triggerId: null,
     issue: null,
   })
-  expect(await startReady(ledger, home)).toEqual([next])
+  expect(await startReady(ledger, home, terminals)).toEqual([next])
   await reaches(next, 'succeeded')
   // The worktree is named after the repo folder and the branch.
   const worktree = join(home, 'work', basename(repo), 'feat', 'more')
@@ -1068,11 +1080,11 @@ test('a repo task gets its submodules filled from the repo checkout, and gc stil
     triggerId: null,
     issue: null,
   })
-  await startTask(ledger, home, id)
+  await startTask(ledger, home, terminals, id)
   await reaches(id, 'succeeded')
   expect(ledger.attempts(id).map((a) => a.checkResult)).toEqual(['passed'])
 
-  const report = await collect(ledger, home, { before: new Date(Date.now() + 60_000) })
+  const report = await collect(ledger, home, terminals, { before: new Date(Date.now() + 60_000) })
   expect(report.removed).toContain(id)
   expect(existsSync(workspaceOf(home, ledger.get(id)))).toBe(false)
 })
@@ -1108,7 +1120,7 @@ const failure = (start: Promise<unknown>): Promise<string> =>
 it('a repo task whose submodules cannot be filled leaves no worktree or branch behind, and says how to fill them', async () => {
   const { repo, id } = unfilledLib()
 
-  const error = await failure(startTask(ledger, home, id))
+  const error = await failure(startTask(ledger, home, terminals, id))
 
   expect(error).toContain('submodule lib')
   expect(error).toContain(
@@ -1149,14 +1161,14 @@ test('a repo task whose folder is taken leaves no branch of its own behind, and 
   git(repo, 'branch', 'feat/theirs')
   const theirs = addOn('feat/theirs')
 
-  expect(await failure(startTask(ledger, home, taken))).toContain('already exists')
-  expect(await failure(startTask(ledger, home, theirs))).toContain('already exists')
+  expect(await failure(startTask(ledger, home, terminals, taken))).toContain('already exists')
+  expect(await failure(startTask(ledger, home, terminals, theirs))).toContain('already exists')
 
   // Left, the branch would keep the task from starting again once the folder is cleared.
   expect(branches()).toBe('  feat/theirs\n')
   expect(readFileSync(join(folder, 'mine.txt'), 'utf8')).toBe('not the task’s')
   // Starting it again clears nothing either: no start was cut off, so the branch is not one's.
-  expect(await failure(resume(ledger, home, theirs))).toContain('already exists')
+  expect(await failure(resume(ledger, home, terminals, theirs))).toContain('already exists')
   expect(branches()).toBe('  feat/theirs\n')
 })
 
@@ -1174,7 +1186,7 @@ async function blocked(after: number[] = []): Promise<number> {
     issue: null,
   })
   writeFileSync(workspaceOf(home, ledger.get(id)), '')
-  expect(await failure(startTask(ledger, home, id))).toContain(`nod resume n${id}`)
+  expect(await failure(startTask(ledger, home, terminals, id))).toContain(`nod resume n${id}`)
   return id
 }
 
@@ -1186,13 +1198,13 @@ test('a task that failed before it started takes no message, and resume tries it
   // gc collected it, recording a head of a branch by its name, which is not the task's.
   ledger.collected(id, 'abc123')
 
-  expect(await failure(tell(ledger, home, id, 'go on'))).toBe(
+  expect(await failure(tell(ledger, home, terminals, id, 'go on'))).toBe(
     `task n${id} has not started. Fix what stopped it, then \`nod resume n${id}\` starts it again.`,
   )
   // Nothing fixed it, so it fails again, and only one of two resumes at once tries.
   const [one, two] = await Promise.all([
-    failure(resume(ledger, home, id)),
-    failure(resume(ledger, home, id)),
+    failure(resume(ledger, home, terminals, id)),
+    failure(resume(ledger, home, terminals, id)),
   ])
   expect(one).toContain(`nod resume n${id}`)
   expect(two).toBe(`task n${id} has not started. ${restartMark(process.pid, id)}.`)
@@ -1217,11 +1229,11 @@ test('a resume cut off as it starts a task again is taken over by the next one, 
   // As a resume stopped as it starts the task leaves it: running, with no workspace.
   const pid = gone()
   expect(ledger.claimRestart(id, restartMark(pid, id), null)).toBe(true)
-  expect(await failure(tell(ledger, home, id, 'go on'))).toBe(
+  expect(await failure(tell(ledger, home, terminals, id, 'go on'))).toBe(
     `task n${id} has not started. nod resume (pid ${pid}) is starting it again; if that process is gone, nod resume n${id} takes over.`,
   )
 
-  expect(await failure(resume(ledger, home, id))).toContain(`nod resume n${id}`)
+  expect(await failure(resume(ledger, home, terminals, id))).toContain(`nod resume n${id}`)
   expect(outcomes(id)).toEqual([
     ['start', 'error'],
     ['start', 'error'],
@@ -1229,13 +1241,15 @@ test('a resume cut off as it starts a task again is taken over by the next one, 
 
   const mark = restartMark(process.pid, id)
   expect(ledger.claimRestart(id, mark, null)).toBe(true)
-  expect(await failure(resume(ledger, home, id))).toBe(`task n${id} has not started. ${mark}.`)
+  expect(await failure(resume(ledger, home, terminals, id))).toBe(
+    `task n${id} has not started. ${mark}.`,
+  )
   expect(outcomes(id)).toHaveLength(2)
 })
 
 test('a resume that takes over a cut-off start clears the worktree and branch it left, but keeps a branch with commits of its own', async () => {
   const { repo, id } = unfilledLib()
-  await failure(startTask(ledger, home, id))
+  await failure(startTask(ledger, home, terminals, id))
   const folder = workspaceOf(home, ledger.get(id))
   const cutOff = (): void => {
     expect(ledger.claimRestart(id, restartMark(gone(), id), null)).toBe(true)
@@ -1247,13 +1261,13 @@ test('a resume that takes over a cut-off start clears the worktree and branch it
   cutOff()
   git(repo, 'worktree', 'add', '-q', '-b', 'feat/lib', folder)
   // So the start fails on what it failed on before, not on what the cut-off start left.
-  expect(await failure(resume(ledger, home, id))).toStartWith('submodule lib')
+  expect(await failure(resume(ledger, home, terminals, id))).toStartWith('submodule lib')
   expect([existsSync(folder), branch()]).toEqual([false, ''])
 
   // Cut off as git made the worktree, which takes its folder away on a signal, but not the branch.
   cutOff()
   git(repo, 'branch', 'feat/lib')
-  expect(await failure(resume(ledger, home, id))).toStartWith('submodule lib')
+  expect(await failure(resume(ledger, home, terminals, id))).toStartWith('submodule lib')
   expect(branch()).toBe('')
 
   // A branch by that name with a commit nothing else has is not the cut-off start's.
@@ -1261,13 +1275,13 @@ test('a resume that takes over a cut-off start clears the worktree and branch it
   git(repo, 'checkout', '-q', '-b', 'feat/lib')
   git(repo, 'commit', '-q', '--allow-empty', '-m', 'mine')
   git(repo, 'checkout', '-q', '-')
-  expect(await failure(resume(ledger, home, id))).toContain('already exists')
+  expect(await failure(resume(ledger, home, terminals, id))).toContain('already exists')
   expect(branch()).toBe('  feat/lib\n')
 })
 
 test('a resume that takes over a cut-off start keeps a worktree at the task’s path that is not that start’s', async () => {
   const { repo, id } = unfilledLib()
-  await failure(startTask(ledger, home, id))
+  await failure(startTask(ledger, home, terminals, id))
   const folder = workspaceOf(home, ledger.get(id))
   const other = ledger.add({
     brief: 'another task',
@@ -1285,7 +1299,7 @@ test('a resume that takes over a cut-off start keeps a worktree at the task’s 
     expect(ledger.claimRestart(id, restartMark(gone(), id), null)).toBe(true)
     git(repo, 'worktree', 'add', '-q', '-b', 'feat/lib', folder)
     change()
-    expect(await failure(resume(ledger, home, id))).toContain('already exists')
+    expect(await failure(resume(ledger, home, terminals, id))).toContain('already exists')
     expect(existsSync(folder)).toBe(true)
     git(repo, 'worktree', 'remove', '--force', folder)
     git(repo, 'branch', '-D', 'feat/lib')
@@ -1312,7 +1326,7 @@ test('a start resume took over drops the mark of the resume once the task has it
   rmSync(workspaceOf(home, ledger.get(id)))
   expect(ledger.claimRestart(id, restartMark(gone(), id), null)).toBe(true)
 
-  await startTask(ledger, home, id)
+  await startTask(ledger, home, terminals, id)
 
   const task = ledger.get(id)
   expect([task.workspace, task.error]).toEqual([workspaceOf(home, task), null])
@@ -1334,22 +1348,22 @@ test('resume starts a task that failed before it started again only once the tas
   // A message sent the task it comes after back to work.
   ledger.setRunning(before, home)
 
-  expect(await failure(resume(ledger, home, id))).toBe(
+  expect(await failure(resume(ledger, home, terminals, id))).toBe(
     `task n${id} has not started. It comes after n${before}, which must succeed before \`nod resume n${id}\` can start it again.`,
   )
   expect(outcomes(id)).toHaveLength(1)
 
   ledger.succeed(before)
-  expect(await failure(resume(ledger, home, id))).toContain(`nod resume n${id}`)
+  expect(await failure(resume(ledger, home, terminals, id))).toContain(`nod resume n${id}`)
   expect(outcomes(id)).toHaveLength(2)
 })
 
 test('a task that failed before it started starts again with resume, under the same number and branch, and keeps why it failed', async () => {
   const { repo, id } = unfilledLib('test -e lib/.git')
-  await failure(startTask(ledger, home, id))
+  await failure(startTask(ledger, home, terminals, id))
 
   git(repo, '-c', 'protocol.file.allow=always', 'submodule', 'update', '-q', '--init', 'lib')
-  expect(await resume(ledger, home, id)).toBe('started')
+  expect(await resume(ledger, home, terminals, id)).toBe('started')
   await reaches(id, 'succeeded')
 
   const task = ledger.get(id)
@@ -1384,16 +1398,16 @@ test('a task resume started again goes on in the conversation of that start, not
   })
   const folder = workspaceOf(home, ledger.get(id))
   writeFileSync(folder, '')
-  await failure(startTask(ledger, home, id))
+  await failure(startTask(ledger, home, terminals, id))
   rmSync(folder)
 
   // Its first turn never begins, so the turn after the answer starts it with its brief.
   writeFileSync(join(home, 'fake-exit'), '')
-  expect(await resume(ledger, home, id)).toBe('started')
+  expect(await resume(ledger, home, terminals, id)).toBe('started')
   const decision = await until(() => ledger.decisions(id)[0])
-  await until(() => !Terminals.of(home).alive(sessionName(id)))
+  await until(() => !terminals.alive(sessionName(id)))
   rmSync(join(home, 'fake-exit'))
-  await answer(ledger, home, decision.id, 'go on', 'human')
+  await answer(ledger, home, terminals, decision.id, 'go on', 'human')
   await reaches(id, 'succeeded')
 
   expect(entries('turn').map((t) => t.message)).toEqual([
@@ -1425,21 +1439,21 @@ test('a repo Claude Code does not trust yet becomes a decision: yes trusts and s
     })
   const trusted = addIn(newRepo())
   const refused = addIn(newRepo())
-  await startTask(ledger, home, trusted)
-  await startTask(ledger, home, refused)
+  await startTask(ledger, home, terminals, trusted)
+  await startTask(ledger, home, terminals, refused)
   const [yes, no] = [trusted, refused].map((id) => ledger.decisions(id)[0])
   expect([yes?.reason, no?.reason]).toEqual(['trust', 'trust'])
   expect(entries('turn')).toEqual([])
 
   if (!yes || !no) throw new Error('no trust decision')
-  await answer(ledger, home, yes.id, 'yes', 'human')
+  await answer(ledger, home, terminals, yes.id, 'yes', 'human')
   await reaches(trusted, 'succeeded')
   expect(entries('turn').map((t) => t.message?.split('\n')[0])).toEqual(['work here'])
 
-  await answer(ledger, home, no.id, 'not this one', 'human')
+  await answer(ledger, home, terminals, no.id, 'not this one', 'human')
   expect(status(refused)).toBe('cancelled')
-  expect(Terminals.of(home).alive(sessionName(refused))).toBe(false)
-})
+  expect(terminals.alive(sessionName(refused))).toBe(false)
+}, 30_000)
 
 test('a repo the person trusted for an earlier task is trusted again without a decision, as are its worktrees', async () => {
   // Every new session asks, as after the account changed.
@@ -1458,20 +1472,20 @@ test('a repo the person trusted for an earlier task is trusted again without a d
   const [trusted, refused] = [newRepo(), newRepo()]
   const first = addIn(trusted, 'feat/first')
   const no = addIn(refused, 'feat/no')
-  await startTask(ledger, home, first)
-  await startTask(ledger, home, no)
+  await startTask(ledger, home, terminals, first)
+  await startTask(ledger, home, terminals, no)
   const [yes, dropped] = [first, no].map((id) => ledger.decisions(id)[0])
   if (yes === undefined || dropped === undefined) throw new Error('no trust decision')
-  await answer(ledger, home, yes.id, 'yes', 'human')
+  await answer(ledger, home, terminals, yes.id, 'yes', 'human')
   await reaches(first, 'succeeded')
-  await answer(ledger, home, dropped.id, 'no', 'human')
+  await answer(ledger, home, terminals, dropped.id, 'no', 'human')
 
   // The same repo, and a worktree of it outside nod's.
   const worktree = join(tmp.make('nod-worktree-'), 'wt')
   git(trusted, 'worktree', 'add', '-q', '-b', 'side', worktree)
   const again = [addIn(trusted, 'feat/again'), addIn(worktree, 'feat/tree')]
   for (const id of again) {
-    await startTask(ledger, home, id)
+    await startTask(ledger, home, terminals, id)
     await reaches(id, 'succeeded')
     expect(ledger.decisions(id)).toEqual([])
     expect(ledger.allowed(id).map((n) => n.note)).toEqual([
@@ -1482,7 +1496,7 @@ test('a repo the person trusted for an earlier task is trusted again without a d
   // A repo the person said no to, and one they never answered for.
   const asked = [addIn(refused, 'feat/no-again'), addIn(newRepo(), 'feat/new')]
   for (const id of asked) {
-    await startTask(ledger, home, id)
+    await startTask(ledger, home, terminals, id)
     expect(ledger.decisions(id).map((d) => [d.reason, d.answer])).toEqual([['trust', null]])
     expect(ledger.allowed(id)).toEqual([])
   }
@@ -1558,21 +1572,21 @@ test('an answer for a repo worker whose first start waits on trust goes with the
     triggerId: null,
     issue: null,
   })
-  await startTask(ledger, home, id)
+  await startTask(ledger, home, terminals, id)
   expect(ledger.decisions(id).map((d) => d.reason)).toEqual(['trust'])
   // Its terminal goes before anyone answers, as when the machine restarts.
-  Terminals.of(home).killServer()
-  expect(await lostTurns(ledger, home, new Date(Date.now() + 60_000))).toEqual([id])
+  fake.killAll()
+  expect(await lostTurns(ledger, home, terminals, new Date(Date.now() + 60_000))).toEqual([id])
   const cut = ledger.decisions(id).find((d) => d.reason === 'interrupted')
   if (cut === undefined) throw new Error('no interrupted decision')
 
-  await answer(ledger, home, cut.id, 'go on', 'human')
+  await answer(ledger, home, terminals, cut.id, 'go on', 'human')
   const trust = await until(() =>
     ledger.decisions(id).find((d) => d.reason === 'trust' && d.answer === null),
   )
   // Past the moment Claude Code counts as up, when a message waiting for it would be pasted.
   await Bun.sleep(6000)
-  await answer(ledger, home, trust.id, 'yes', 'human')
+  await answer(ledger, home, terminals, trust.id, 'yes', 'human')
   await reaches(id, 'succeeded')
   expect(entries('turn').map((t) => t.message)).toEqual([
     expect.stringMatching(
@@ -1596,7 +1610,7 @@ test("tasks that start at once trust nod's work folder once, together", async ()
     }),
   )
   // As a tick starts the tasks its triggers added.
-  await Promise.all(ids.map((id) => startTask(ledger, home, id)))
+  await Promise.all(ids.map((id) => startTask(ledger, home, terminals, id)))
   for (const id of ids) await reaches(id, 'succeeded')
   // The fake gives a session nod starts without an ID (the trust check's) the ID `missing`.
   expect(entries('launch').filter((l) => l.sessionId === 'missing')).toHaveLength(1)
@@ -1652,8 +1666,8 @@ test('due triggers add tasks, a source only for lines it has not printed before,
   const now = new Date(Date.now() + 120_000)
   const {
     added: [fromSource, scheduled],
-  } = await tick(ledger, home, now, false)
-  expect((await tick(ledger, home, now, false)).added).toEqual([]) // both ran this minute already
+  } = await tick(ledger, home, terminals, now, false)
+  expect((await tick(ledger, home, terminals, now, false)).added).toEqual([]) // both ran this minute already
   if (fromSource === undefined || scheduled === undefined) throw new Error('triggers added no task')
   expect(ledger.get(fromSource).brief).toContain('> new item')
   expect(ledger.get(scheduled).triggerId).not.toBeNull()
@@ -1668,11 +1682,13 @@ test('due triggers add tasks, a source only for lines it has not printed before,
   // Answers and drops are heard too, so a to-do list that mirrors nod can close what is done.
   const asked = ledger.decisions(scheduled)[0]
   if (asked === undefined) throw new Error('no decision')
-  await answer(ledger, home, asked.id, 'yes', 'human')
+  await answer(ledger, home, terminals, asked.id, 'yes', 'human')
   await reaches(scheduled, 'succeeded')
   const dropped = await add('ask-first')
   const second = await until(() => ledger.decisions(dropped)[0])
-  await drop(ledger, home, second.id)
+  // Heard before the drop: closing its terminal ends the Stop hook that tells of it, with the hook.
+  await until(() => heard().some(([event, id]) => event === 'decision' && id === dropped))
+  await drop(ledger, home, terminals, second.id)
   await until(() => heard().length === 6)
   expect(heard()).toContainEqual(['answered', scheduled])
   expect(heard()).toContainEqual(['succeeded', scheduled])
@@ -1690,7 +1706,7 @@ test('a task that needed a retry gets a retrospective, and an approved rule reac
   expect(decision.question).toContain('nod rule ls')
   expect(ledger.retroFor(id)).toMatchObject({ rule: 'did it', outcome: null })
 
-  await answer(ledger, home, decision.id, 'yes', 'human')
+  await answer(ledger, home, terminals, decision.id, 'yes', 'human')
   expect(status(retro.id)).toBe('succeeded')
   expect(ledger.retroFor(id)?.outcome).toBe('added')
   // The rule goes in the ledger, tied to its retrospective, as added by whoever answered.
@@ -1724,12 +1740,12 @@ test('dropping a task that gave up starts a retrospective, and declining its rul
   const id = await add('give-up')
   const decision = await until(() => ledger.decisions(id)[0])
   expect(decision.reason).toBe('failed')
-  await drop(ledger, home, decision.id)
+  await drop(ledger, home, terminals, decision.id)
   const retro = retroTask(id)
   if (retro === undefined) throw new Error('no retrospective')
 
   const rule = await until(() => ledger.decisions(retro.id)[0])
-  await answer(ledger, home, rule.id, 'not this one', 'human')
+  await answer(ledger, home, terminals, rule.id, 'not this one', 'human')
   expect(status(retro.id)).toBe('cancelled')
   expect(ledger.retroFor(id)?.outcome).toBe('declined')
   expect(ledger.rules()).toEqual([])
@@ -1755,7 +1771,7 @@ it('a retrospective that finds no general rule just succeeds', async () => {
     sessionId: 'retro-session',
     prompt: 'look back',
   })
-  await onStop(ledger, home, {
+  await onStop(ledger, home, terminals, {
     session_id: 'retro-session',
     last_assistant_message: 'Nothing general here.\nNOD: done | none',
     stop_hook_active: false,
@@ -1764,7 +1780,9 @@ it('a retrospective that finds no general rule just succeeds', async () => {
   expect(ledger.decisions(retro)).toEqual([])
   expect(ledger.retroFor(of)).toMatchObject({ rule: null, outcome: 'none' })
   // Ended, it is not taken up again, which would write over what became of it.
-  await expect(tell(ledger, home, retro, 'look again')).rejects.toThrow('which ended (none)')
+  await expect(tell(ledger, home, terminals, retro, 'look again')).rejects.toThrow(
+    'which ended (none)',
+  )
 })
 
 it('yes to a rule closes its decision only as the rule goes in', async () => {
@@ -1786,7 +1804,7 @@ it('yes to a rule closes its decision only as the rule goes in', async () => {
     sessionId: 'retro-session',
     prompt: 'look back',
   })
-  await onStop(ledger, home, {
+  await onStop(ledger, home, terminals, {
     session_id: 'retro-session',
     last_assistant_message: 'NOD: done | keep it short',
     stop_hook_active: false,
@@ -1799,13 +1817,15 @@ it('yes to a rule closes its decision only as the rule goes in', async () => {
     ledger.db.run('update attempts set summary = ? where id = ?', [rule, decision.attemptId])
   }
   proposal('keep it\nshort')
-  await expect(answer(ledger, home, decision.id, 'yes', 'human')).rejects.toThrow('one line')
+  await expect(answer(ledger, home, terminals, decision.id, 'yes', 'human')).rejects.toThrow(
+    'one line',
+  )
   expect(ledger.decision(decision.id).answer).toBeNull()
   expect(ledger.rules()).toEqual([])
   expect(status(retro)).toBe('needs_decision')
 
   proposal('keep it short')
-  await answer(ledger, home, decision.id, 'yes', 'human')
+  await answer(ledger, home, terminals, decision.id, 'yes', 'human')
   expect(ledger.decision(decision.id).answer).toBe('yes')
   expect(ledger.rules().map((r) => r.text)).toEqual(['keep it short'])
   expect(status(retro)).toBe('succeeded')
@@ -1887,7 +1907,7 @@ it('a retrospective that sends its fix to the inbox ends as todo, and one that a
       sessionId: session,
       prompt: 'look back',
     })
-    await onStop(ledger, home, {
+    await onStop(ledger, home, terminals, {
       session_id: session,
       last_assistant_message: report,
       stop_hook_active: false,
@@ -2080,11 +2100,11 @@ test("once Claude Code has compacted a worker's conversation, the hook gives bac
 test('Claude Code runs that hook in a worker once it has compacted the conversation, and at no other start', async () => {
   const id = await add('first')
   await reaches(id, 'succeeded')
-  await tell(ledger, home, id, 'compact first, then use tabs')
+  await tell(ledger, home, terminals, id, 'compact first, then use tabs')
   await reaches(id, 'succeeded')
   const words = askedAgain(ledger, ledger.get(id))
-  Terminals.of(home).kill(sessionName(id))
-  await tell(ledger, home, id, 'third')
+  fake.kill(sessionName(id))
+  await tell(ledger, home, terminals, id, 'third')
   await reaches(id, 'succeeded')
   expect(entries('session-start').map((s) => [s.source, s.context])).toEqual([
     ['startup', ''],
@@ -2189,7 +2209,8 @@ console.log(JSON.stringify([savedEnv(), workerEnv('/h', 5, null)]))`,
   expect(worker).toMatchObject(outer)
 })
 
-test("a worker's terminal passes on none of the tmux server's environment", async () => {
+tmuxTest("a worker's terminal passes on none of the tmux server's environment", async () => {
+  useTmux()
   // As a terminal marks its panes; the home's tmux server starts with it.
   process.env.NOD_TEST_PANE_ID = 'outer'
   try {
@@ -2199,7 +2220,7 @@ test("a worker's terminal passes on none of the tmux server's environment", asyn
     delete process.env.NOD_TEST_PANE_ID
   }
   // A child gets process.env as it was set at run time (TMUX_TMPDIR) only when given it.
-  const server = Terminals.of(home).attachCommand('x').slice(0, 3)
+  const server = terminals.attachCommand('x').slice(0, 3)
   const global = Bun.spawnSync([...server, 'show-environment', '-g', 'NOD_TEST_PANE_ID'], {
     env: process.env,
   })
@@ -2222,15 +2243,17 @@ test("a worker's terminal passes on none of the tmux server's environment", asyn
 
 // Ends a worker's Claude Code and not its terminal, as a tool that switches accounts does.
 function endClaude(id: number): void {
-  const terminal = Terminals.of(home).panePid(sessionName(id))
-  Bun.spawnSync(['pkill', '-TERM', '-P', String(terminal)])
+  const claude = Number(terminals.option(sessionName(id), 'nod_claude'))
+  // Not 0, which would signal this test run's whole process group.
+  if (!(claude > 0)) throw new Error(`task ${id} has no Claude Code running`)
+  process.kill(claude, 'SIGTERM')
 }
 
 test('whatever ends its Claude Code, a worker starts again in the same terminal and conversation, without the brief', async () => {
   const id = await add('first')
   await reaches(id, 'succeeded')
   const name = sessionName(id)
-  const pane = Terminals.of(home).pane(name)
+  const pane = terminals.pane(name)
   endClaude(id)
   await until(() => entries('launch')[1])
   const session = ledger.attempts(id)[0]?.sessionId
@@ -2238,9 +2261,9 @@ test('whatever ends its Claude Code, a worker starts again in the same terminal 
     [session, false, 'first'],
     [session, true, null],
   ])
-  expect(Terminals.of(home).pane(name)).toBe(pane)
+  expect(terminals.pane(name)).toBe(pane)
 
-  await tell(ledger, home, id, 'second')
+  await tell(ledger, home, terminals, id, 'second')
   await reaches(id, 'succeeded')
   expect(entries('turn').map((t) => t.message)).toEqual(['first', 'second'])
   expect(entries('launch')).toHaveLength(2)
@@ -2257,7 +2280,7 @@ test('a turn its Claude Code ended becomes a decision once it is up again, and t
   expect(decision.question).toContain('> hang until ended')
   expect(ledger.attempts(id).map((a) => a.outcome)).toEqual(['error'])
 
-  await answer(ledger, home, decision.id, 'check and carry on', 'human')
+  await answer(ledger, home, terminals, decision.id, 'check and carry on', 'human')
   await reaches(id, 'succeeded')
   expect(entries('launch').map((l) => l.resumed)).toEqual([false, true])
   expect(entries('turn').map((t) => t.message)).toEqual([
@@ -2281,10 +2304,10 @@ test('a message that comes before a first turn that never began goes in after th
   const id = await add('first')
   const decision = await until(() => ledger.decisions(id)[0])
   expect(decision.question).toContain('exited 3 times as it started')
-  await until(() => !Terminals.of(home).alive(sessionName(id)))
+  await until(() => !terminals.alive(sessionName(id)))
 
   rmSync(join(home, 'fake-exit'))
-  await answer(ledger, home, decision.id, 'go on', 'human')
+  await answer(ledger, home, terminals, decision.id, 'go on', 'human')
   await reaches(id, 'succeeded')
   expect(entries('turn').map((t) => t.message)).toEqual([
     expect.stringMatching(/^first\n\nYour last turn was cut off.*\nHuman decision: go on$/s),
@@ -2297,7 +2320,7 @@ test('a Claude Code that keeps exiting as it starts is not started again: the pe
   await reaches(id, 'succeeded')
   writeFileSync(join(home, 'fake-exit'), '')
   endClaude(id)
-  await until(() => !Terminals.of(home).alive(sessionName(id)))
+  await until(() => !terminals.alive(sessionName(id)))
   const error = events().find((e) => e.event === 'error')
   expect(error?.error).toContain('exited 3 times as it started')
   expect(error?.error).toContain('Not logged in')
@@ -2305,28 +2328,10 @@ test('a Claude Code that keeps exiting as it starts is not started again: the pe
   expect(status(id)).toBe('succeeded')
 
   rmSync(join(home, 'fake-exit'))
-  await tell(ledger, home, id, 'again')
+  await tell(ledger, home, terminals, id, 'again')
   await reaches(id, 'succeeded')
   expect(entries('turn').map((t) => t.message)).toEqual(['first', 'again'])
 }, 30_000)
-
-test('the sessions come in one call with the values nod keeps on each, unset ones empty and the last one whole', () => {
-  const terminals = Terminals.of(home)
-  terminals.start('kept', home, ['/bin/sleep', '30'], {})
-  terminals.start('bare', home, ['/bin/sleep', '30'], {})
-  terminals.setOption('kept', 'nod_restarting', '1')
-  terminals.setOption('kept', 'nod_restart', 'the account is now /a b')
-
-  expect(terminals.sessionOptions('nod_restarting', 'nod_restart')).toEqual(
-    new Map([
-      ['bare', ['', '']],
-      ['kept', ['1', 'the account is now /a b']],
-    ]),
-  )
-  expect(terminals.sessionOptions('nod_restart').get('kept')).toEqual(['the account is now /a b'])
-  terminals.killServer()
-  expect(terminals.sessionOptions('nod_restart')).toEqual(new Map())
-})
 
 test('with an account rule, a worker starts again as the current account: at once between turns, after a turn in progress, and with the message that finds it on the old one', async () => {
   const current = join(home, 'account')
@@ -2339,20 +2344,20 @@ test('with an account rule, a worker starts again as the current account: at onc
   expect(ledger.get(id).account).toBe(a ?? '')
 
   writeFileSync(current, `${b}\n`)
-  expect(await restartDue(ledger, home)).toEqual([id])
+  expect(await restartDue(ledger, home, terminals)).toEqual([id])
   await until(() => entries('launch')[1])
 
-  await tell(ledger, home, id, 'need-permission')
+  await tell(ledger, home, terminals, id, 'need-permission')
   const permission = await until(() => ledger.decisions(id)[0])
   writeFileSync(current, `${c}\n`)
-  expect(await restartDue(ledger, home)).toEqual([]) // in the middle of a turn
-  await answer(ledger, home, permission.id, 'yes', 'human')
+  expect(await restartDue(ledger, home, terminals)).toEqual([]) // in the middle of a turn
+  await answer(ledger, home, terminals, permission.id, 'yes', 'human')
   await until(() => entries('launch')[2])
   // Up as c: a message from now on finds it on an old account, not starting again.
-  await until(() => Terminals.of(home).option(sessionName(id), 'nod_restarting') === '')
+  await until(() => terminals.option(sessionName(id), 'nod_restarting') === '')
 
   writeFileSync(current, `${d}\n`)
-  await tell(ledger, home, id, 'go on')
+  await tell(ledger, home, terminals, id, 'go on')
   await reaches(id, 'succeeded')
   await until(() => entries('turn')[2])
   const session = ledger.attempts(id)[0]?.sessionId
@@ -2364,7 +2369,7 @@ test('with an account rule, a worker starts again as the current account: at onc
   ])
   expect(entries('turn').map((t) => t.message)).toEqual(['first', 'need-permission', 'go on'])
   expect(ledger.get(id).account).toBe(d ?? '')
-}, 30_000)
+}, 60_000)
 
 test('a turn a usage limit ended does not hold up a restart: the new account continues it', async () => {
   const current = join(home, 'account')
@@ -2372,11 +2377,11 @@ test('a turn a usage limit ended does not hold up a restart: the new account con
   setAccountRule(home, { file: current })
   writeFileSync(current, `${a}\n`)
   const id = await add('stall at the limit')
-  await until(() => Terminals.of(home).option(sessionName(id), 'nod_stalled') === 'rate_limit')
-  expect(await restartDue(ledger, home)).toEqual([]) // the account is the same: Claude Code waits
+  await until(() => terminals.option(sessionName(id), 'nod_stalled') === 'rate_limit')
+  expect(await restartDue(ledger, home, terminals)).toEqual([]) // the account is the same: Claude Code waits
 
   writeFileSync(current, `${b}\n`)
-  expect(await restartDue(ledger, home)).toEqual([id])
+  expect(await restartDue(ledger, home, terminals)).toEqual([id])
   await reaches(id, 'succeeded')
   const session = ledger.attempts(id)[0]?.sessionId
   expect(entries('launch').map((l) => [l.sessionId, l.config])).toEqual([
@@ -2395,10 +2400,10 @@ test('a restart waits while nod checks a turn it has closed, and comes once', as
   const id = await add('review-slow')
   await until(() => entries('review')[0])
   writeFileSync(current, `${b}\n`)
-  expect(await restartDue(ledger, home)).toEqual([]) // its review would end with Claude Code
+  expect(await restartDue(ledger, home, terminals)).toEqual([]) // its review would end with Claude Code
   await reaches(id, 'succeeded')
   await until(() => entries('launch')[1])
-  expect(await restartDue(ledger, home)).toEqual([])
+  expect(await restartDue(ledger, home, terminals)).toEqual([])
   expect(entries('launch').map((l) => l.config)).toEqual([a, b])
 }, 30_000)
 
@@ -2407,8 +2412,8 @@ test('a message sent while a worker starts again on request waits for the new st
   await reaches(id, 'succeeded')
   await settled(id)
 
-  expect(await restart(ledger, home, id, 'asked')).toBe('restarted')
-  await tell(ledger, home, id, 'go on') // the old Claude Code has not ended yet
+  expect(await restart(ledger, home, terminals, id, 'asked')).toBe('restarted')
+  await tell(ledger, home, terminals, id, 'go on') // the old Claude Code has not ended yet
   await reaches(id, 'succeeded')
   await until(() => entries('turn')[1])
   expect(entries('launch').map((l) => l.prompt)).toEqual(['first', 'go on'])
@@ -2425,9 +2430,9 @@ test('a worker starting again as another account is not restarted twice, and a m
   await settled(id)
 
   writeFileSync(current, `${b}\n`)
-  expect(await restartDue(ledger, home)).toEqual([id])
-  expect(await restartDue(ledger, home)).toEqual([]) // already starting again
-  await tell(ledger, home, id, 'go on') // the old Claude Code has not ended yet
+  expect(await restartDue(ledger, home, terminals)).toEqual([id])
+  expect(await restartDue(ledger, home, terminals)).toEqual([]) // already starting again
+  await tell(ledger, home, terminals, id, 'go on') // the old Claude Code has not ended yet
   await reaches(id, 'succeeded')
   await until(() => entries('turn')[1])
   expect(entries('launch').map((l) => [l.config, l.prompt])).toEqual([
@@ -2452,18 +2457,18 @@ test('a repo worker started again as another account says yes to trusting the re
     triggerId: null,
     issue: null,
   })
-  await startTask(ledger, home, id)
+  await startTask(ledger, home, terminals, id)
   await reaches(id, 'succeeded')
   await settled(id)
 
   writeFileSync(join(home, 'fake-untrusted-again'), '')
   writeFileSync(current, `${b}\n`)
-  expect(await restartDue(ledger, home)).toEqual([id])
+  expect(await restartDue(ledger, home, terminals)).toEqual([id])
   await until(() => entries('launch')[1])
-  await until(() => Terminals.of(home).option(sessionName(id), 'nod_restarting') === '')
+  await until(() => terminals.option(sessionName(id), 'nod_restarting') === '')
   expect(ledger.decisions(id)).toEqual([])
   expect(status(id)).toBe('succeeded')
-  await tell(ledger, home, id, 'go on')
+  await tell(ledger, home, terminals, id, 'go on')
   await reaches(id, 'succeeded')
   expect(entries('turn').map((t) => t.message?.split('\n')[0])).toEqual(['first', 'go on'])
 }, 30_000)
@@ -2480,8 +2485,8 @@ test('a conversation kept only in the folder of the old account is not started o
   await settled(id)
 
   writeFileSync(current, `${b}\n`)
-  expect(await restartDue(ledger, home)).toEqual([id])
-  await until(() => !Terminals.of(home).alive(sessionName(id)))
+  expect(await restartDue(ledger, home, terminals)).toEqual([id])
+  await until(() => !terminals.alive(sessionName(id)))
   expect(entries('launch')).toHaveLength(1)
   expect(events().some((e) => e.error?.includes('must share their projects/ folder'))).toBe(true)
 }, 30_000)
@@ -2496,7 +2501,9 @@ test('an answer the account rule cannot be read for leaves its task in error, to
   await settled(id)
 
   rmSync(current)
-  await expect(answer(ledger, home, decision.id, 'yes', 'human')).rejects.toThrow('ENOENT')
+  await expect(answer(ledger, home, terminals, decision.id, 'yes', 'human')).rejects.toThrow(
+    'ENOENT',
+  )
   expect(ledger.decision(decision.id).answer).toBe('yes')
   expect(ledger.get(id)).toMatchObject({
     status: 'error',
@@ -2505,7 +2512,7 @@ test('an answer the account rule cannot be read for leaves its task in error, to
   expect(ledger.attempts(id)).toHaveLength(1)
 
   writeFileSync(current, `${a}\n`)
-  await tell(ledger, home, id, 'yes')
+  await tell(ledger, home, terminals, id, 'yes')
   await reaches(id, 'succeeded')
   expect(entries('turn').map((t) => t.message)).toEqual(['ask-first', 'yes'])
 }, 30_000)
@@ -2514,44 +2521,35 @@ test('a restart waits for a person attached to the worker, who hears why once', 
   const events = listen()
   const id = await add('first')
   await reaches(id, 'succeeded')
+  await settled(id)
   const name = sessionName(id)
-  const terminals = Terminals.of(home)
-  // A control-mode client is attached as a person's terminal is, without needing one.
-  const [tmux = 'tmux', ...attach] = terminals.attachCommand(name)
-  const person = Bun.spawn([tmux, '-C', ...attach], {
-    stdin: 'pipe',
-    stdout: 'ignore',
-    env: process.env,
-  })
-  await until(() => terminals.attached(name))
-  expect(await restart(ledger, home, id, 'nod restart')).toBe('attached')
-  expect(await restartDue(ledger, home)).toEqual([])
+  fake.attach(name)
+  expect(await restart(ledger, home, terminals, id, 'nod restart')).toBe('attached')
+  expect(await restartDue(ledger, home, terminals)).toEqual([])
   expect(events().filter((e) => e.event === 'restart_held')).toEqual([
     expect.objectContaining({ reason: 'nod restart' }),
   ])
 
-  person.kill()
-  await person.exited
-  await until(() => !terminals.attached(name))
-  expect(await restartDue(ledger, home)).toEqual([id])
+  fake.detach(name)
+  expect(await restartDue(ledger, home, terminals)).toEqual([id])
   await until(() => entries('launch')[1])
 }, 30_000)
 
 test('a turn whose terminal went (the machine or tmux restarted) becomes a decision, and the answer reopens its conversation', async () => {
   const id = await add('hang until ended')
   await until(() => entries('turn')[0])
-  Terminals.of(home).killServer()
+  fake.killAll()
   // A turn just started may still be opening its terminal.
-  expect(await lostTurns(ledger, home, new Date())).toEqual([])
+  expect(await lostTurns(ledger, home, terminals, new Date())).toEqual([])
   const later = new Date(Date.now() + 60_000)
-  expect(await lostTurns(ledger, home, later)).toEqual([id])
-  expect(await lostTurns(ledger, home, later)).toEqual([])
+  expect(await lostTurns(ledger, home, terminals, later)).toEqual([id])
+  expect(await lostTurns(ledger, home, terminals, later)).toEqual([])
   const decision = ledger.decisions(id)[0]
   if (decision === undefined) throw new Error('no decision')
   expect(decision.reason).toBe('interrupted')
   expect(decision.question).toContain('Its terminal went in the middle of a turn')
 
-  await answer(ledger, home, decision.id, 'carry on', 'human')
+  await answer(ledger, home, terminals, decision.id, 'carry on', 'human')
   await reaches(id, 'succeeded')
   expect(entries('launch').map((l) => l.resumed)).toEqual([false, true])
   expect(entries('turn').at(-1)?.message).toContain('Human decision: carry on')
@@ -2581,11 +2579,11 @@ test("a delegated todo waits through its task's decision, is done when it succee
     return { todo, task }
   }
   const asked = delegated('Ask first', 'ask-first, then write ok.txt')
-  await startTask(ledger, home, asked.task)
+  await startTask(ledger, home, terminals, asked.task)
   const question = await until(() => ledger.decisions(asked.task)[0])
   expect(todos.get(asked.todo).status).toBe('waiting')
   expect(todos.decisions().map((d) => d.todo?.id)).toEqual([asked.todo])
-  await answer(ledger, home, question.id, 'yes', 'human')
+  await answer(ledger, home, terminals, question.id, 'yes', 'human')
   await until(() => todos.get(asked.todo).status === 'done')
   expect(todos.changes(asked.todo).at(-1)).toMatchObject({
     actor: 'nod',
@@ -2596,9 +2594,9 @@ test("a delegated todo waits through its task's decision, is done when it succee
   // Dropping a task gives its todo back, and the todo of the task that waited on it too.
   const gaveUp = delegated('Give up', 'give-up')
   const after = delegated('Then this', 'after it', [gaveUp.task])
-  await startTask(ledger, home, gaveUp.task)
+  await startTask(ledger, home, terminals, gaveUp.task)
   const failed = await until(() => ledger.decisions(gaveUp.task)[0])
-  await drop(ledger, home, failed.id)
+  await drop(ledger, home, terminals, failed.id)
   expect(status(after.task)).toBe('cancelled')
   expect([todos.get(gaveUp.todo).status, todos.get(after.todo).status]).toEqual(['next', 'next'])
 })
@@ -2744,7 +2742,7 @@ function started(brief: string, session: string, root: string | null = null): nu
 // The Stop hook of a turn in session `session` that ended with `report`, while the background work
 // `running` (agents, as Claude Code describes them) still ran.
 const stopped = (session: string, report: string, running: string[] = []): Promise<string | null> =>
-  onStop(ledger, home, {
+  onStop(ledger, home, terminals, {
     session_id: session,
     last_assistant_message: report,
     stop_hook_active: false,
@@ -2797,15 +2795,15 @@ function upTerminal(id: number): {
   const pasted: string[] = []
   const name = sessionName(id)
   const spies = [
-    spyOn(Terminals.prototype, 'alive').mockImplementation((n) => n === name),
-    spyOn(Terminals.prototype, 'sessions').mockImplementation(() => new Set([name])),
-    spyOn(Terminals.prototype, 'attached').mockImplementation(() => false),
-    spyOn(Terminals.prototype, 'option').mockImplementation((_, key) => options.get(key) ?? ''),
-    spyOn(Terminals.prototype, 'setOption').mockImplementation((_, key, value) => {
+    spyOn(terminals, 'alive').mockImplementation((n) => n === name),
+    spyOn(terminals, 'sessions').mockImplementation(() => new Set([name])),
+    spyOn(terminals, 'attached').mockImplementation(() => false),
+    spyOn(terminals, 'option').mockImplementation((_, key) => options.get(key) ?? ''),
+    spyOn(terminals, 'setOption').mockImplementation((_, key, value) => {
       if (value === null) options.delete(key)
       else options.set(key, value)
     }),
-    spyOn(Terminals.prototype, 'send').mockImplementation((_, text) => {
+    spyOn(terminals, 'send').mockImplementation((_, text) => {
       pasted.push(text)
     }),
   ]
@@ -2834,7 +2832,7 @@ it('a turn whose Stop hook was cut off once it had closed it goes on: the tick h
   const terminal = upTerminal(id)
   try {
     cutHook(id, terminal)
-    await tick(ledger, home, new Date(), false)
+    await tick(ledger, home, terminals, new Date(), false)
     expect(terminal.pasted).toEqual([expect.stringContaining('report again as you did')])
     expect(terminal.options.has('nod_settling')).toBe(false)
     expect(ledger.attempts(id).map((a) => [a.kind, a.outcome, a.checkResult])).toEqual([
@@ -2842,7 +2840,7 @@ it('a turn whose Stop hook was cut off once it had closed it goes on: the tick h
       ['resume', null, null],
     ])
     // A later tick finds that turn running, and asks nothing more of it.
-    await tick(ledger, home, new Date(), false)
+    await tick(ledger, home, terminals, new Date(), false)
     expect(terminal.pasted).toHaveLength(1)
     expect(await stopped('cut-once', 'NOD: done | did it')).toBeNull()
   } finally {
@@ -2860,12 +2858,12 @@ it('the mark of a Stop hook gone goes whatever became of its turn, and a turn it
     // Cut off past its decision (its notify, say): the task waits on that decision.
     const gone = (): string => `${Bun.spawnSync(['true']).pid} ${turn}`
     terminal.options.set('nod_settling', gone())
-    await tick(ledger, home, new Date(), false)
+    await tick(ledger, home, terminals, new Date(), false)
     expect(terminal.options.has('nod_settling')).toBe(false)
     // As an answer sets it running before it goes to the worker (answer).
     ledger.setRunning(id, ledger.get(id).workspace ?? '')
     terminal.options.set('nod_settling', gone())
-    await tick(ledger, home, new Date(), false)
+    await tick(ledger, home, terminals, new Date(), false)
   } finally {
     terminal.restore()
   }
@@ -2881,7 +2879,7 @@ it('a turn nod has its worker report again leaves the retries of its checks as t
     // The review fails: the first retry, whose check is then cut off.
     expect(await stopped('cut-retries', 'NOD: done | did it')).not.toBeNull()
     cutHook(id, terminal)
-    await tick(ledger, home, new Date(), false)
+    await tick(ledger, home, terminals, new Date(), false)
     expect(await stopped('cut-retries', 'NOD: done | did it')).not.toBeNull()
     last = await stopped('cut-retries', 'NOD: done | did it')
   } finally {
@@ -2898,9 +2896,9 @@ it('a check cut off again, in the turn its worker reported again, goes to the pe
   const terminal = upTerminal(id)
   try {
     cutHook(id, terminal)
-    await tick(ledger, home, new Date(), false)
+    await tick(ledger, home, terminals, new Date(), false)
     cutHook(id, terminal)
-    await tick(ledger, home, new Date(), false)
+    await tick(ledger, home, terminals, new Date(), false)
   } finally {
     terminal.restore()
   }
@@ -3102,7 +3100,7 @@ it('a turn a person types in opens at its start, and what it changes of the task
   const id = started('ask first', 'typed-in')
   await stopped('typed-in', 'NOD: question | Which one?')
   // The person types an answer into the terminal instead: its turn opens, the question stays.
-  await onPrompt(ledger, home, { session_id: 'typed-in', prompt: 'the first' })
+  await onPrompt(ledger, home, terminals, { session_id: 'typed-in', prompt: 'the first' })
   expect(status(id)).toBe('needs_decision')
   expect(ledger.attempts(id).map((a) => [a.kind, a.finishedAt === null])).toEqual([
     ['start', false],
@@ -3134,7 +3132,7 @@ it('a typed turn whose transcript shows it ended without a Stop is ended, not ta
     ledger.endAttempt(start, { outcome: 'needs_decision', summary: 'which?', report: 'which?' })
     ledger.ask(id, start, 'question', 'which?')
     ledger.setAccount(id, config)
-    void onPrompt(ledger, home, { session_id: session, prompt: 'the first' })
+    void onPrompt(ledger, home, terminals, { session_id: session, prompt: 'the first' })
     const lines = [said('the first'), ...last].map((l) => JSON.stringify(l))
     writeFileSync(join(config, 'projects', 'work', `${session}.jsonl`), `${lines.join('\n')}\n`)
     return id
@@ -3169,7 +3167,7 @@ it('a typed turn whose transcript shows it ended without a Stop is ended, not ta
     'Claude needs your permission',
   )
 
-  const lost = await lostTurns(ledger, home, new Date(Date.now() + 60_000))
+  const lost = await lostTurns(ledger, home, terminals, new Date(Date.now() + 60_000))
 
   expect(lost).toEqual([shutDown, toolSaid, subagent, asked])
   const last = (id: number) => {
@@ -3196,7 +3194,7 @@ it('a task waiting on background work that a person typed into and stopped is st
     const id = started(`waits, ${session}`, session)
     ledger.setAccount(id, config)
     await stopped(session, 'NOD: question | which?', ['agent'])
-    await onPrompt(ledger, home, { session_id: session, prompt: 'status?' })
+    await onPrompt(ledger, home, terminals, { session_id: session, prompt: 'status?' })
     const file = join(config, 'projects', 'work', `${session}.jsonl`)
     writeFileSync(file, `${JSON.stringify({ type: 'user', message: stop })}\n`)
     return id
@@ -3211,7 +3209,7 @@ it('a task waiting on background work that a person typed into and stopped is st
   expect(asked(open)).toEqual([['question', true]])
   // One a tick already ended as its terminal went.
   const ended = await waiting('typed-ended')
-  expect(await lostTurns(ledger, home, later)).toEqual([])
+  expect(await lostTurns(ledger, home, terminals, later)).toEqual([])
   expect(await overdueWaits(ledger, home, later)).toEqual([ended])
   expect(asked(ended)).toEqual([['question', true]])
 })
@@ -3483,7 +3481,7 @@ test('a review tells the fixer its findings, and the fixer tells it back once fi
       issue: null,
       rootSession: 'root-1',
     })
-    await startTask(ledger, home, id)
+    await startTask(ledger, home, terminals, id)
     return id
   }
   const fix = await rooted('fix it')
@@ -3598,8 +3596,10 @@ it('a dropped retrospective ends before what it closes is heard of, so no messag
   ledger.endAttempt(turn, { outcome: 'needs_decision', summary: 'rule A', report: null })
   ledger.ask(retro, turn, 'question', 'Which task?')
   const rule = ledger.ask(retro, turn, 'rule', 'Add it?')
-  const dropping = drop(ledger, home, rule)
-  await expect(tell(ledger, home, retro, 'look again')).rejects.toThrow('which ended (declined)')
+  const dropping = drop(ledger, home, terminals, rule)
+  await expect(tell(ledger, home, terminals, retro, 'look again')).rejects.toThrow(
+    'which ended (declined)',
+  )
   await dropping
   expect(ledger.attempts(retro)).toHaveLength(1)
   expect(status(retro)).toBe('cancelled')
@@ -3633,12 +3633,12 @@ it('an answer whose retrospective is dropped before it goes in leaves the task a
   // The person drops the rule once the answer has closed its question, as the answer looks for the
   // worker's terminal to send it (deliver).
   let dropping: Promise<unknown> | undefined
-  const alive = spyOn(Terminals.prototype, 'alive').mockImplementation(() => {
-    dropping ??= drop(ledger, home, rule)
+  const alive = spyOn(terminals, 'alive').mockImplementation(() => {
+    dropping ??= drop(ledger, home, terminals, rule)
     return false
   })
   try {
-    await expect(answer(ledger, home, question, 'the first', 'human')).rejects.toThrow(
+    await expect(answer(ledger, home, terminals, question, 'the first', 'human')).rejects.toThrow(
       'which ended (declined)',
     )
     await dropping
@@ -3660,14 +3660,14 @@ it('whatever ends a retrospective, its task ends as the outcome has it, and a tu
       'added',
       async (s, r) => {
         await stopped(s, 'NOD: done | rule A')
-        await answer(ledger, home, open(r, 'rule'), 'yes', 'human')
+        await answer(ledger, home, terminals, open(r, 'rule'), 'yes', 'human')
       },
     ],
     [
       'declined',
       async (s, r) => {
         await stopped(s, 'NOD: done | rule A')
-        await answer(ledger, home, open(r, 'rule'), 'no', 'human')
+        await answer(ledger, home, terminals, open(r, 'rule'), 'no', 'human')
       },
     ],
     ['none', (s) => stopped(s, 'NOD: done | none')],
@@ -3676,7 +3676,7 @@ it('whatever ends a retrospective, its task ends as the outcome has it, and a tu
       'dropped',
       async (s, r) => {
         await stopped(s, 'NOD: question | Which task?')
-        await drop(ledger, home, open(r, 'question'))
+        await drop(ledger, home, terminals, open(r, 'question'))
       },
     ],
   ]
@@ -3728,8 +3728,8 @@ it('an answer to a decision already answered on a task gc collected brings nothi
   const sessions = projectFolder(process.env.CLAUDE_CONFIG_DIR ?? '', cwd)
   mkdirSync(sessions, { recursive: true })
   writeFileSync(join(sessions, 'answered-collected.jsonl'), '{}\n')
-  await collect(ledger, home, { ids: [id] })
-  await expect(answer(ledger, home, decision.id, 'the second', 'human')).rejects.toThrow(
+  await collect(ledger, home, terminals, { ids: [id] })
+  await expect(answer(ledger, home, terminals, decision.id, 'the second', 'human')).rejects.toThrow(
     'already answered',
   )
   expect(existsSync(cwd)).toBe(false)
@@ -3764,8 +3764,10 @@ it('a retrospective that proposes again replaces its open rule decision', async 
   const [first, second] = ledger.decisions(retro)
   if (first === undefined || second === undefined) throw new Error('no rule decisions')
   expect(first.answer).toBe('(a newer proposal replaced it)')
-  await expect(answer(ledger, home, first.id, 'yes', 'human')).rejects.toThrow('already answered')
-  await answer(ledger, home, second.id, 'yes', 'human')
+  await expect(answer(ledger, home, terminals, first.id, 'yes', 'human')).rejects.toThrow(
+    'already answered',
+  )
+  await answer(ledger, home, terminals, second.id, 'yes', 'human')
   expect(ledger.rules().map((r) => r.text)).toEqual(['rule B'])
   expect(ledger.retroFor(of)).toMatchObject({ rule: 'rule B', outcome: 'added' })
 })
@@ -3795,7 +3797,7 @@ it('a yes to a rule decision adds the rule that decision proposed, and one left 
   if (decision === undefined || retroId === null) throw new Error('no rule decision')
   // A newer turn proposes another as this decision is answered.
   ledger.proposeRule(retroId, 'rule B')
-  await answer(ledger, home, decision.id, 'yes', 'human')
+  await answer(ledger, home, terminals, decision.id, 'yes', 'human')
   expect(ledger.rules().map((r) => r.text)).toEqual(['rule A'])
   expect(ledger.retroFor(of)).toMatchObject({ rule: 'rule A', outcome: 'added' })
 
@@ -3804,8 +3806,8 @@ it('a yes to a rule decision adds the rule that decision proposed, and one left 
   const late = ledger.ask(retro, decision.attemptId, 'rule', 'Add it?')
   const later = ledger.ask(retro, decision.attemptId, 'rule', 'Add it?')
   const before = status(retro)
-  await answer(ledger, home, late, 'yes', 'human')
-  await drop(ledger, home, later)
+  await answer(ledger, home, terminals, late, 'yes', 'human')
+  await drop(ledger, home, terminals, later)
   expect([ledger.decision(late).answer, ledger.decision(later).answer]).toEqual([
     'yes',
     '(dropped)',
@@ -3823,10 +3825,10 @@ it('a decision left open on a task that ended only closes, answered or dropped',
   // The task succeeded with the question left open, as an older nod left such questions.
   ledger.succeed(id)
   // What each returns tells the person their words went nowhere (`nod` prints it).
-  expect(await answer(ledger, home, asked.id, 'never mind', 'human')).toBe(false)
+  expect(await answer(ledger, home, terminals, asked.id, 'never mind', 'human')).toBe(false)
   const again = ledger.ask(id, asked.attemptId, 'question', 'Still there?')
   ledger.succeed(id)
-  expect(await drop(ledger, home, again)).toBe('closed')
+  expect(await drop(ledger, home, terminals, again)).toBe('closed')
   expect([ledger.decision(asked.id).answer, ledger.decision(again).answer]).toEqual([
     'never mind',
     '(dropped)',
@@ -3840,7 +3842,7 @@ it('a decision left open on a task that ended only closes, answered or dropped',
   const first = ledger.ask(id, asked.attemptId, 'question', 'Which one?')
   const left = ledger.ask(id, asked.attemptId, 'question', 'Where?')
   ledger.drop(first)
-  await answer(ledger, home, left, 'here', 'human')
+  await answer(ledger, home, terminals, left, 'here', 'human')
   expect(ledger.decision(left).answer).toBe('here')
   expect(status(id)).toBe('cancelled')
   expect(ledger.attempts(id)).toHaveLength(1)
@@ -3914,7 +3916,7 @@ it('a turn that ends after its retrospective did changes nothing of what became 
     sessionId: 'dropped-session',
     prompt: 'propose another',
   })
-  await drop(ledger, home, first.id)
+  await drop(ledger, home, terminals, first.id)
   await stopped('dropped-session', 'NOD: done | rule B')
   expect(status(dropped.retro)).toBe('cancelled')
   expect(ledger.retroFor(dropped.of)).toMatchObject({ rule: 'rule A', outcome: 'declined' })
@@ -3925,7 +3927,7 @@ it('a turn that ends after its retrospective did changes nothing of what became 
   await stopped('added-session', 'NOD: done | rule A')
   const rule = ledger.decisions(added.retro)[0]
   if (rule === undefined) throw new Error('no rule decision')
-  await answer(ledger, home, rule.id, 'yes', 'human')
+  await answer(ledger, home, terminals, rule.id, 'yes', 'human')
   await stopped('added-session', 'NOD: done | none')
   await stopped('added-session', 'NOD: done | rule C')
   expect(status(added.retro)).toBe('succeeded')
@@ -3968,13 +3970,15 @@ it('a rule decision takes no yes while its retrospective proposes again, and a y
   if (first === undefined) throw new Error('no rule decision')
   // Told to propose another (deliver opens its turn): the first proposal waits for what it says.
   turn('followup', 'propose another')
-  await expect(answer(ledger, home, first.id, 'yes', 'human')).rejects.toThrow('proposing again')
+  await expect(answer(ledger, home, terminals, first.id, 'yes', 'human')).rejects.toThrow(
+    'proposing again',
+  )
   expect(ledger.rules()).toEqual([])
   expect(ledger.retroFor(of)?.outcome).toBeNull()
   // It asks something instead; a yes to the first proposal ends the retrospective, and the
   // question with it.
   await stopped('busy-session', 'NOD: question | Which task?')
-  await answer(ledger, home, first.id, 'yes', 'human')
+  await answer(ledger, home, terminals, first.id, 'yes', 'human')
   expect(ledger.rules().map((r) => r.text)).toEqual(['rule A'])
   expect(ledger.decisions(retro).map((d) => [d.reason, d.answer])).toEqual([
     ['rule', 'yes'],
@@ -3988,7 +3992,7 @@ test("a message that finds a turn gone with its terminal closes that turn's deci
   if (attempt === null) throw new Error('no turn')
   ledger.ask(id, attempt.id, 'permission', 'Claude needs your permission')
   // The machine restarted with the dialog up, and a message comes before a tick finds the turn.
-  await tell(ledger, home, id, 'do Y instead')
+  await tell(ledger, home, terminals, id, 'do Y instead')
   expect(ledger.decisions(id).map((d) => [d.reason, d.answer])).toEqual([
     ['permission', '(the turn was cut off)'],
   ])
@@ -4005,7 +4009,10 @@ it('two ticks that find the same lost turn at once raise one decision for it', a
   // A permission dialog was up when the machine restarted.
   ledger.ask(id, attempt.id, 'permission', 'Claude needs your permission')
   const later = new Date(Date.now() + 60_000)
-  const [a, b] = await Promise.all([lostTurns(ledger, home, later), lostTurns(ledger, home, later)])
+  const [a, b] = await Promise.all([
+    lostTurns(ledger, home, terminals, later),
+    lostTurns(ledger, home, terminals, later),
+  ])
   expect([...a, ...b]).toEqual([id])
   expect(ledger.decisions(id).map((d) => [d.reason, d.answer])).toEqual([
     ['permission', '(the turn was cut off)'],
@@ -4025,10 +4032,10 @@ test('an answer to a decision left open on a task gc collected brings its folder
   const sessions = projectFolder(process.env.CLAUDE_CONFIG_DIR ?? '', cwd)
   mkdirSync(sessions, { recursive: true })
   writeFileSync(join(sessions, 'collected-session.jsonl'), '{}\n')
-  expect((await collect(ledger, home, { ids: [id] })).removed).toEqual([id])
+  expect((await collect(ledger, home, terminals, { ids: [id] })).removed).toEqual([id])
   expect(existsSync(cwd)).toBe(false)
 
-  await answer(ledger, home, decision.id, 'the second', 'human')
+  await answer(ledger, home, terminals, decision.id, 'the second', 'human')
   expect(existsSync(cwd)).toBe(true)
   expect(ledger.get(id).collectedAt).toBeNull()
 })
@@ -4060,12 +4067,12 @@ it('the review hears what the human told the worker in the middle of a turn, in 
 // What Claude Code's prompt hook passes for each message it takes in, a person's or one nod pasted,
 // in the session `session`.
 const prompted = (session: string, prompt: string): void =>
-  void onPrompt(ledger, home, { session_id: session, prompt })
+  void onPrompt(ledger, home, terminals, { session_id: session, prompt })
 // As while a person is attached to a worker (nod attach), with the API error its last turn stopped
 // on as `stalled`, '' for none.
 const attachedWhile = (run: () => void, stalled = ''): void => {
-  const attached = spyOn(Terminals.prototype, 'attached').mockImplementation(() => true)
-  const option = spyOn(Terminals.prototype, 'option').mockImplementation((_, key) =>
+  const attached = spyOn(terminals, 'attached').mockImplementation(() => true)
+  const option = spyOn(terminals, 'option').mockImplementation((_, key) =>
     key === 'nod_stalled' ? stalled : '',
   )
   try {
@@ -4282,7 +4289,7 @@ it('what a person typed that a hook of theirs held back leaves the ledger once t
   expect(reviewBrief(ledger, ledger.get(retyped), 'NOD: done | ok', null)).not.toContain('secret')
   // The tick ends a turn held back (here, as its terminal is gone), and takes the words held back
   // out of a turn nod sent, which stays open; the others are as they were.
-  expect(await lostTurns(ledger, home, new Date())).toEqual([])
+  expect(await lostTurns(ledger, home, terminals, new Date())).toEqual([])
   expect(ledger.attempts(ended).at(-1)).toMatchObject({
     prompt: '(typed into the terminal)',
     error: 'a hook held the message back',
@@ -4301,8 +4308,8 @@ test('a message sent while a worker starts again after its Claude Code ended by 
   await reaches(id, 'succeeded')
   await settled(id)
   endClaude(id) // a crash, a person's /exit, a tool that switches accounts outside nod
-  await until(() => Terminals.of(home).option(sessionName(id), 'nod_restarting') !== '')
-  await tell(ledger, home, id, 'second')
+  await until(() => terminals.option(sessionName(id), 'nod_restarting') !== '')
+  await tell(ledger, home, terminals, id, 'second')
   await reaches(id, 'succeeded')
   await until(() => entries('turn')[1])
   expect(entries('launch').map((l) => [l.resumed, l.prompt])).toEqual([
@@ -4335,17 +4342,17 @@ test('closing a worker whose Claude Code waits on a trust check to start again d
   endClaude(id)
   // The fake gives a session nod starts without an ID (the trust check's) the ID `missing`.
   await until(() => entries('launch').some((l) => l.sessionId === 'missing'))
-  await Terminals.of(home).close(sessionName(id))
-  expect(Terminals.of(home).alive(sessionName(id))).toBe(false)
+  await terminals.close(sessionName(id))
+  expect(terminals.alive(sessionName(id))).toBe(false)
 }, 30_000)
 
 test('a message for a worker showing a permission dialog waits for that decision, since its Enter would answer the dialog', async () => {
   const id = await add('need-permission')
   const decision = await until(() => ledger.decisions(id)[0])
-  await expect(tell(ledger, home, id, 'also this')).rejects.toThrow(
+  await expect(tell(ledger, home, terminals, id, 'also this')).rejects.toThrow(
     `answer permission decision d${decision.id} first`,
   )
-  await answer(ledger, home, decision.id, 'yes', 'human')
+  await answer(ledger, home, terminals, decision.id, 'yes', 'human')
   await reaches(id, 'succeeded')
   expect(entries('turn').map((t) => t.message)).toEqual(['need-permission'])
   expect(ledger.attempts(id).map((a) => [a.kind, a.summary])).toEqual([['start', 'allowed']])
@@ -4358,7 +4365,7 @@ const endTurn = (id: number): void =>
 test('a message told to a worker in the middle of a turn goes into that turn, and the review hears it', async () => {
   const id = await add('slow: write it')
   await until(() => entries('turn')[0])
-  await tell(ledger, home, id, 'use tabs')
+  await tell(ledger, home, terminals, id, 'use tabs')
   endTurn(id)
   await reaches(id, 'succeeded')
   await settled(id)
@@ -4372,7 +4379,7 @@ test('a message told to a worker in the middle of a turn goes into that turn, an
 test('a message told as the worker writes its last answer goes on as the next turn, from Claude Code’s queue, and only that turn is checked', async () => {
   const id = await add('late: write it')
   await until(() => entries('turn')[0])
-  await tell(ledger, home, id, 'use tabs')
+  await tell(ledger, home, terminals, id, 'use tabs')
   endTurn(id)
   await until(() => entries('turn')[1])
   await reaches(id, 'succeeded')
@@ -4389,7 +4396,7 @@ test('a message told as the worker writes its last answer goes on as the next tu
 test('a message Claude Code never had by the end of the turn it was told in is sent again, as the next turn', async () => {
   const id = await add('deaf: write it')
   await until(() => entries('turn')[0])
-  await tell(ledger, home, id, 'use tabs')
+  await tell(ledger, home, terminals, id, 'use tabs')
   endTurn(id)
   await until(() => entries('turn')[1])
   await reaches(id, 'succeeded')
@@ -4409,11 +4416,10 @@ test('a message that comes once the Stop hook has started on a turn goes on in a
   const id = await add('need-permission')
   await until(() => ledger.decisions(id)[0])
   // A person attached to the worker answers the dialog there.
-  const terminals = Terminals.of(home)
   const name = sessionName(id)
   terminals.keys(name, 'Enter')
   await until(() => terminals.option(name, 'nod_settling') !== '')
-  await tell(ledger, home, id, 'also this')
+  await tell(ledger, home, terminals, id, 'also this')
   await until(() => ledger.attempts(id).length === 2 && status(id) === 'succeeded')
   expect(ledger.attempts(id).map((a) => [a.kind, a.prompt])).toEqual([
     ['start', 'need-permission'],
@@ -4425,8 +4431,8 @@ test('a message sent while a worker cut off in a turn starts again goes on in th
   const id = await add('hang until ended')
   await until(() => entries('turn')[0])
   endClaude(id)
-  await until(() => Terminals.of(home).option(sessionName(id), 'nod_restarting') !== '')
-  await tell(ledger, home, id, 'hang on')
+  await until(() => terminals.option(sessionName(id), 'nod_restarting') !== '')
+  await tell(ledger, home, terminals, id, 'hang on')
   await until(() => entries('turn')[1])
   await Bun.sleep(6000) // past the moment the new Claude Code counts as up
   expect(entries('turn').map((t) => t.message)).toEqual(['hang until ended', 'hang on'])
@@ -4441,8 +4447,8 @@ test('a message for a worker whose Claude Code has just ended waits for the next
   // As in the moment after Claude Code ends, before keepWorker sets nod_restarting: the Claude
   // Code it recorded is gone.
   const gone = Bun.spawnSync(['true']).pid
-  Terminals.of(home).setOption(sessionName(id), 'nod_claude', String(gone))
-  await tell(ledger, home, id, 'second')
+  terminals.setOption(sessionName(id), 'nod_claude', String(gone))
+  await tell(ledger, home, terminals, id, 'second')
   await Bun.sleep(2000)
   expect(entries('turn').map((t) => t.message)).toEqual(['first'])
   expect(readFileSync(join(home, 'work', `.prompt-${id}`), 'utf8')).toBe('second')
@@ -4460,13 +4466,13 @@ test('a message for a worker waiting on its trust decision waits for that decisi
     triggerId: null,
     issue: null,
   })
-  await startTask(ledger, home, id)
+  await startTask(ledger, home, terminals, id)
   const trust = ledger.decisions(id)[0]
   if (trust?.reason !== 'trust') throw new Error('no trust decision')
-  await expect(tell(ledger, home, id, 'also this')).rejects.toThrow(
+  await expect(tell(ledger, home, terminals, id, 'also this')).rejects.toThrow(
     `answer trust decision d${trust.id} first`,
   )
-  await answer(ledger, home, trust.id, 'yes', 'human')
+  await answer(ledger, home, terminals, trust.id, 'yes', 'human')
   await reaches(id, 'succeeded')
   expect(entries('turn').map((t) => t.message)).toEqual([
     expect.stringMatching(/^work here\n\nYour branch starts at commit [0-9a-f]{40}\.$/),
@@ -4485,15 +4491,15 @@ test('a message for a worker whose trust dialog is up waits for that decision, e
     triggerId: null,
     issue: null,
   })
-  await startTask(ledger, home, id)
+  await startTask(ledger, home, terminals, id)
   const trust = ledger.decisions(id)[0]
   if (trust?.reason !== 'trust') throw new Error('no trust decision')
   // As when a first start gave up on the dialog and a later one shows it again: its turn closed.
   ledger.failAttempt(trust.attemptId, 'Claude Code did not start')
-  await expect(tell(ledger, home, id, 'also this')).rejects.toThrow(
+  await expect(tell(ledger, home, terminals, id, 'also this')).rejects.toThrow(
     `answer trust decision d${trust.id} first`,
   )
-  expect(Terminals.of(home).screen(sessionName(id))).toContain('Yes, I trust this folder')
+  expect(terminals.screen(sessionName(id))).toContain('Yes, I trust this folder')
 }, 30_000)
 
 test('a Claude Code this process may not signal counts as running, so a message goes in', async () => {
@@ -4501,8 +4507,8 @@ test('a Claude Code this process may not signal counts as running, so a message 
   await reaches(id, 'succeeded')
   await settled(id)
   // pid 1 runs as root: signalling it fails with EPERM, as for any process outside a sandbox.
-  Terminals.of(home).setOption(sessionName(id), 'nod_claude', '1')
-  await tell(ledger, home, id, 'second')
+  terminals.setOption(sessionName(id), 'nod_claude', '1')
+  await tell(ledger, home, terminals, id, 'second')
   await reaches(id, 'succeeded')
   await until(() => entries('turn')[1])
   expect(entries('turn').map((t) => t.message)).toEqual(['first', 'second'])

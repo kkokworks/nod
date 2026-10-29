@@ -6,7 +6,7 @@ import { doneTasks, type PrLookup, type PullRequest, sweep } from './done'
 import { collect } from './gc'
 import { Ledger, type NewTask } from './ledger'
 import { workspaceOf } from './place'
-import { Terminals } from './tmux'
+import { Tmux } from './tmux'
 import { Todos } from './todos'
 
 const tmp = tempDirs()
@@ -164,7 +164,7 @@ test('done signals: dropped, taken over, merged into the default branch, every p
     return prs[url] ?? null
   }
 
-  const { done, unchecked } = await doneTasks(ledger, home, lookup, NOW)
+  const { done, unchecked } = await doneTasks(ledger, Tmux.of(home), lookup, NOW)
 
   expect(done).toEqual([
     { id: dropped, reason: 'dropped' },
@@ -194,12 +194,12 @@ test('done signals: dropped, taken over, merged into the default branch, every p
   expect(ids).not.toContain(recent)
   expect(unchecked).toEqual([{ id: broken, error: 'tea exited 1' }])
 
-  const swept = await sweep(ledger, home, lookup, NOW)
+  const swept = await sweep(ledger, home, Tmux.of(home), lookup, NOW)
   expect(swept.report.removed).toEqual(ids)
   expect(ledger.get(approved).collectedAt).not.toBeNull()
   expect(ledger.get(unpushed).collectedAt).toBeNull()
   // Collected tasks are not looked at again.
-  expect((await doneTasks(ledger, home, lookup, NOW)).done).toEqual([])
+  expect((await doneTasks(ledger, Tmux.of(home), lookup, NOW)).done).toEqual([])
 }, 30_000)
 
 test("the finished tasks' signals are read at once, a slow git service waited on once for all of them, and told in the tasks' order", async () => {
@@ -239,7 +239,7 @@ test("the finished tasks' signals are read at once, a slow git service waited on
     return { state: 'merged', approvedAt: null }
   }
 
-  expect(await doneTasks(ledger, home, lookup, NOW)).toEqual({
+  expect(await doneTasks(ledger, Tmux.of(home), lookup, NOW)).toEqual({
     done: [
       { id: first, reason: `merged: ${PR}1` },
       { id: second, reason: `merged: ${PR}2` },
@@ -296,8 +296,8 @@ test("a task that never started leaves the branch it was named for alone: it is 
   const taken = ledger.add(spec('taken', 'feat/theirs'))
   ledger.error(taken, 'git worktree add failed: a branch named feat/theirs already exists')
 
-  const swept = await sweep(ledger, home, async () => null, NOW)
-  const named = await collect(ledger, home, { ids: [taken] })
+  const swept = await sweep(ledger, home, Tmux.of(home), async () => null, NOW)
+  const named = await collect(ledger, home, Tmux.of(home), { ids: [taken] })
 
   expect(swept.done).toEqual([
     { id: queued, reason: 'dropped' },
@@ -332,9 +332,9 @@ test('sweep looks again for a person attached just before it closes the session'
   ledger.db.query('update tasks set finished_at = $at where id = $id').run({ id, at: OLD })
   // The person attaches once sweep has read the signals.
   let looks = 0
-  const attached = spyOn(Terminals.prototype, 'attached').mockImplementation(() => looks++ > 0)
+  const attached = spyOn(Tmux.prototype, 'attached').mockImplementation(() => looks++ > 0)
 
-  const swept = await sweep(ledger, home, async () => null, NOW).finally(() =>
+  const swept = await sweep(ledger, home, Tmux.of(home), async () => null, NOW).finally(() =>
     attached.mockRestore(),
   )
 
@@ -380,7 +380,7 @@ test('sweep collects a task only as its signal read it: one that ran again and f
     return { state: 'open', approvedAt: null }
   }
 
-  const swept = await sweep(ledger, home, lookup, NOW)
+  const swept = await sweep(ledger, home, Tmux.of(home), lookup, NOW)
 
   expect(swept.done).toEqual([{ id: old, reason: 'finished 7+ days ago' }])
   expect(swept.report).toEqual({
@@ -452,7 +452,7 @@ test("an errored repo task goes once a task added after the error does its todo,
     .query('update tasks set created_at = $at where id = $id')
     .run({ id: unseen + 1, at: earlier })
 
-  const swept = await sweep(ledger, home, async () => null, NOW)
+  const swept = await sweep(ledger, home, Tmux.of(home), async () => null, NOW)
 
   const todoOf = (id: number) => ledger.get(id).todoId
   expect(swept.done).toEqual([

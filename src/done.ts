@@ -2,7 +2,7 @@ import { collect, type GcReport, hasRef, landed } from './gc'
 import { FINISHED, type Ledger, type Task } from './ledger'
 import { sessionName } from './place'
 import { message, readAtOnce } from './proc'
-import { Terminals } from './tmux'
+import type { Terminals } from './tmux'
 import { Todos } from './todos'
 
 // When a finished task is done with, so gc can collect it without the human naming it. gc keeps
@@ -36,12 +36,11 @@ export type Unchecked = { id: number; error: string }
 // they say stays in the tasks' order.
 export async function doneTasks(
   ledger: Ledger,
-  home: string,
+  terminals: Terminals,
   prs: PrLookup,
   now: Date,
   tasks: Task[] = ledger.list(),
 ): Promise<{ done: Done[]; unchecked: Unchecked[] }> {
-  const terminals = Terminals.of(home)
   const read = await readAtOnce(tasks, async (task): Promise<Done | Unchecked | null> => {
     if (task.collectedAt !== null) return null
     if (!FINISHED.has(task.status)) return null
@@ -66,13 +65,14 @@ export async function doneTasks(
 export async function sweep(
   ledger: Ledger,
   home: string,
+  terminals: Terminals,
   prs: PrLookup,
   now: Date,
 ): Promise<{ report: GcReport; done: Done[]; unchecked: Unchecked[] }> {
   const tasks = ledger.list()
-  const { done, unchecked } = await doneTasks(ledger, home, prs, now, tasks)
+  const { done, unchecked } = await doneTasks(ledger, terminals, prs, now, tasks)
   const seen = tasks.filter((t) => done.some((d) => d.id === t.id))
-  const report = await collect(ledger, home, { seen })
+  const report = await collect(ledger, home, terminals, { seen })
   return { report, done, unchecked }
 }
 

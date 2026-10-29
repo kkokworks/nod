@@ -4,7 +4,7 @@ import { createServer } from 'node:http'
 import { connect } from 'node:net'
 import { join } from 'node:path'
 import { sessionName } from '../../src/place'
-import { homeId, Terminals } from '../../src/tmux'
+import { homeId, Tmux } from '../../src/tmux'
 import { socketsParent, tempDirs } from '../../test/tmp'
 import { testTmux } from '../../test/tmux'
 import { tmuxTest } from '../../test/tmux-server'
@@ -13,7 +13,7 @@ import { NO_SESSION, serveTerminals } from './terminal.server'
 const tmp = tempDirs()
 testTmux(tmp)
 const home = tmp.make('nod-ui-term-')
-const terminals = Terminals.of(home)
+const terminals = Tmux.of(home)
 // On a Unix socket: a worker's sandbox opens no TCP port.
 const listening = join(tmp.make('nod-ui-', socketsParent()), 's')
 const server = createServer()
@@ -153,7 +153,7 @@ test("only the UI's own page attaches to a worker's terminal: another site, a na
 
 // What the server runs to attach, caught before it runs: the sandbox opens no pseudo-terminal.
 test("the server attaches as nod attach does, telling tmux the page's terminal takes RGB colour, outside any tmux and in UTF-8", async () => {
-  const alive = spyOn(Terminals.prototype, 'alive').mockReturnValue(true)
+  const alive = spyOn(terminals, 'alive').mockReturnValue(true)
   let ran: { argv: string[]; env: Record<string, string | undefined> } | undefined
   const spawn = spyOn(Bun, 'spawn').mockImplementation(((
     argv: string[],

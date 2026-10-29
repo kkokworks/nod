@@ -33,7 +33,7 @@ import {
 import { branchOf, sessionName } from './place'
 import { message, readAtOnce, spawn } from './proc'
 import { pullRequests } from './prs'
-import { Terminals } from './tmux'
+import { type Terminals, Tmux } from './tmux'
 import {
   actorFromEnv,
   capture,
@@ -289,6 +289,8 @@ restart waits for a person attached to the worker. <home> is $NOD_HOME, or ~/.no
 
 const [command, ...rest] = Bun.argv.slice(2)
 const home = nodHome()
+// The workers' terminals, made here once: every command and hook below is given them.
+const terminals: Terminals = Tmux.of(home)
 // Before the ledger opens here, as one that cannot open must not fail it either.
 if (command === 'hook' && rest[0] === 'prompt') await promptHook()
 if (command === 'hook' && rest[0] === 'inbox') await inboxHook()
@@ -307,7 +309,6 @@ const unheard = await onCommand(
   warned,
 ).catch((error) => `nod: could not record this session's inbox: ${message(error)}`)
 if (unheard !== null) console.error(unheard)
-const terminals = Terminals.of(home)
 const taskRef = (ref: string | undefined): number => new Todos(ledger).taskRef(ref ?? '')
 
 switch (command) {
@@ -342,14 +343,14 @@ switch (command) {
     }
     const id = taskRef(rest[0])
     warnUnheard([id])
-    await tell(ledger, home, id, words(rest.slice(1)))
+    await tell(ledger, home, terminals, id, words(rest.slice(1)))
     console.log('sent')
     break
   }
   case 'resume': {
     const id = taskRef(rest[0])
     warnUnheard([id])
-    console.log(await resume(ledger, home, id))
+    console.log(await resume(ledger, home, terminals, id))
     break
   }
   case 'attach':
@@ -430,7 +431,7 @@ switch (command) {
       closed: 'closed; its task had ended',
       'landing stopped': 'stopped landing it; the task stays succeeded',
     }
-    console.log(said[await drop(ledger, home, parseRef(rest[0] ?? '', 'd', true))])
+    console.log(said[await drop(ledger, home, terminals, parseRef(rest[0] ?? '', 'd', true))])
     break
   }
   case 'gc':
@@ -459,6 +460,7 @@ switch (command) {
     const { added, passed, collected, lost, waited, cut, restarted, closed, landed } = await tick(
       ledger,
       home,
+      terminals,
       new Date(),
       true,
     )
@@ -485,7 +487,7 @@ switch (command) {
     await hook(rest[0])
     break
   case 'run':
-    await keepWorker(ledger, home, taskRef(rest[0]), rest.slice(1))
+    await keepWorker(ledger, home, terminals, taskRef(rest[0]), rest.slice(1))
     process.exit(0)
     break
   case 'in':
@@ -520,7 +522,7 @@ switch (command) {
     // finished, and no to landing again.
     const stops = reason === 'land' && !/^y(es)?$/i.test(said)
     if (answered === null && !finished(ledger, taskId) && !stops) warnUnheard([taskId])
-    const took = await answer(ledger, home, id, said, actorFromEnv())
+    const took = await answer(ledger, home, terminals, id, said, actorFromEnv())
     if (reason === 'land') {
       console.log(/^y(es)?$/i.test(said) ? 'landing it again' : 'stopped landing it')
       // Yes tries again now, not at the next fifth minute.
@@ -534,7 +536,7 @@ switch (command) {
 // Every nod command checks the workers' account; after the command, so a message it sends goes
 // first (deliver starts that worker again with it). The hooks check their own worker.
 if (command !== 'hook' && command !== 'restart') {
-  await restartDue(ledger, home).catch((error) =>
+  await restartDue(ledger, home, terminals).catch((error) =>
     console.error(`nod: could not restart workers: ${message(error)}`),
   )
 }
@@ -586,8 +588,8 @@ async function add(args: string[]): Promise<void> {
       : todos.delegate(todo.id, task, actor, projectId)
   warnUnheard([id])
   // A task that comes after others starts here only if they have all succeeded already.
-  if (after.length === 0) await startTask(ledger, home, id)
-  else await startReady(ledger, home)
+  if (after.length === 0) await startTask(ledger, home, terminals, id)
+  else await startReady(ledger, home, terminals)
   console.log(id)
 }
 
@@ -727,7 +729,7 @@ async function landCommand(ids: number[]): Promise<void> {
     }
     if (ledger.landing(id)?.stopped) ledger.setLanding(id, { stopped: null, note: null })
   }
-  const moved = await land(ledger, home, ids.length > 0 ? { only: ids } : {})
+  const moved = await land(ledger, home, terminals, ids.length > 0 ? { only: ids } : {})
   for (const m of moved) console.log(`n${m.id} ${m.did}`)
   if (moved.length === 0) console.log('nothing to land')
 }
@@ -772,7 +774,7 @@ async function restartCommand(refs: string[]): Promise<void> {
   if (ids.length === 0) console.log('no worker to restart')
   const going: number[] = []
   for (const id of ids) {
-    const how = await restart(ledger, home, id, 'nod restart')
+    const how = await restart(ledger, home, terminals, id, 'nod restart')
     console.log(`n${id} ${said[how]}`)
     if (how !== 'no terminal') going.push(id)
   }
@@ -828,12 +830,12 @@ function branchName(repo: string | null, name: string | undefined): string | nul
 async function hook(event: string | undefined): Promise<void> {
   const input: unknown = JSON.parse(await Bun.stdin.text())
   if (event === 'stop') {
-    const out = await onStop(ledger, home, StopEvent.parse(input))
+    const out = await onStop(ledger, home, terminals, StopEvent.parse(input))
     if (out !== null) console.log(out)
   } else if (event === 'notification') {
-    await onNotification(ledger, home, NotificationEvent.parse(input))
+    await onNotification(ledger, home, terminals, NotificationEvent.parse(input))
   } else if (event === 'stop-failure') {
-    await onStopFailure(ledger, home, StopFailureEvent.parse(input))
+    await onStopFailure(ledger, home, terminals, StopFailureEvent.parse(input))
   } else if (event === 'compact') {
     const out = onCompact(ledger, SessionStartEvent.parse(input))
     if (out !== null) console.log(out)
@@ -849,7 +851,7 @@ async function promptHook(): Promise<never> {
   console.log = console.error
   try {
     const event = PromptEvent.parse(JSON.parse(await Bun.stdin.text()))
-    await onPrompt(new Ledger(home), home, event)
+    await onPrompt(new Ledger(home), home, terminals, event)
   } catch (error) {
     console.error(`nod: could not record the turn: ${message(error)}`)
   }
@@ -1022,13 +1024,19 @@ async function gc(args: string[]): Promise<void> {
     throw new Error('name tasks or give --older-than, not both')
   }
   if (positionals.length === 0 && olderThan === undefined) {
-    const { report, done, unchecked } = await sweep(ledger, home, pullRequests(home), new Date())
+    const { report, done, unchecked } = await sweep(
+      ledger,
+      home,
+      terminals,
+      pullRequests(home),
+      new Date(),
+    )
     printGc(report)
     for (const d of done) if (report.removed.includes(d.id)) console.log(`  n${d.id}: ${d.reason}`)
     for (const u of unchecked) console.log(`unchecked n${u.id}: ${u.error}`)
     return
   }
-  printGc(await collect(ledger, home, gcPick(positionals, olderThan)))
+  printGc(await collect(ledger, home, terminals, gcPick(positionals, olderThan)))
 }
 
 function printGc(report: GcReport): void {

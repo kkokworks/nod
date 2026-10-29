@@ -10,7 +10,7 @@ import { notify, notifyError } from './notify'
 import { message, runGroup } from './proc'
 import { pullRequests } from './prs'
 import { quote } from './review'
-import { homeId } from './tmux'
+import { homeId, type Terminals, Tmux } from './tmux'
 import { type Todo, Todos, withLine } from './todos'
 import { oneLine } from './view'
 import {
@@ -91,6 +91,7 @@ export async function addTrigger(
 export async function tick(
   ledger: Ledger,
   home: string,
+  terminals: Terminals,
   now: Date,
   watches: boolean,
 ): Promise<{
@@ -120,29 +121,29 @@ export async function tick(
   }
   // startTask records a failure on the task; nobody is watching a tick, so notify as well.
   await Promise.all(
-    added.map((id) => startTask(ledger, home, id).catch(notifyError(ledger, home, id))),
+    added.map((id) => startTask(ledger, home, terminals, id).catch(notifyError(ledger, home, id))),
   )
-  const lost = await lostTurns(ledger, home, now)
+  const lost = await lostTurns(ledger, home, terminals, now)
   const waited = await overdueWaits(ledger, home, now)
-  const cut = await cutChecks(ledger, home)
+  const cut = await cutChecks(ledger, home, terminals)
   // An account rule that cannot be read must not stop the watches.
-  const restarted = await restartDue(ledger, home).catch((error) => {
+  const restarted = await restartDue(ledger, home, terminals).catch((error) => {
     console.error(`nod: could not restart workers: ${message(error)}`)
     return []
   })
-  const closed = await closeFinished(ledger, home, now)
-  const passed = watches ? await checkWatches(ledger, home) : []
+  const closed = await closeFinished(ledger, home, terminals, now)
+  const passed = watches ? await checkWatches(ledger, home, terminals) : []
   // Before the sweep, so a task whose pull request it just merged is collected on the same pass.
   // One repo that cannot land must not stop the sweep.
   const landed = watches
-    ? await land(ledger, home).catch((error) => {
+    ? await land(ledger, home, terminals).catch((error) => {
         console.error(`nod: could not land: ${message(error)}`)
         return []
       })
     : []
   // Clean: one whose workspace was gone already, collected all the same.
   const collected = watches
-    ? await sweep(ledger, home, pullRequests(home), now).then(({ report }) => [
+    ? await sweep(ledger, home, terminals, pullRequests(home), now).then(({ report }) => [
         ...report.removed,
         ...report.clean,
       ])
@@ -191,7 +192,7 @@ export async function tryWatch(
 // so the person sees a watch is alive and why it has not passed. One that can no longer run (the
 // schedule was turned on again from a shell whose PATH lacks its command) ends, so its todo does
 // not wait on nothing.
-async function checkWatches(ledger: Ledger, home: string): Promise<number[]> {
+async function checkWatches(ledger: Ledger, home: string, terminals: Terminals): Promise<number[]> {
   const todos = new Todos(ledger)
   const passed: number[] = []
   for (const t of todos.watched()) {
@@ -208,7 +209,7 @@ async function checkWatches(ledger: Ledger, home: string): Promise<number[]> {
       // The task is told first: a todo handed back to it waits on nothing until it is.
       if (back !== null) {
         try {
-          await tell(ledger, home, back, carryOn(t, output))
+          await tell(ledger, home, terminals, back, carryOn(t, output))
         } catch (error) {
           // The task could not carry on (its transcript gone after gc, its session failing to
           // start), so the person takes the todo, as when no task is named.
@@ -342,6 +343,7 @@ export async function tickHome(home: string): Promise<void> {
   const { added, passed, collected, lost, cut, restarted, closed } = await tick(
     ledger,
     home,
+    Tmux.of(home),
     now,
     watches,
   )

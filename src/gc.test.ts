@@ -6,6 +6,7 @@ import { tempDirs } from '../test/tmp'
 import { collect, landed } from './gc'
 import { Ledger } from './ledger'
 import { branchOf, workspaceOf } from './place'
+import { Tmux } from './tmux'
 import { restore } from './worker'
 
 const tmp = tempDirs()
@@ -65,7 +66,9 @@ test('gc removes old finished workspaces, keeps their session transcripts, and k
   const recentSessions = projectFolder(claude, workspaceOf(home, ledger.get(recent)))
   const oldPlainSessions = projectFolder(claude, workspaceOf(home, ledger.get(oldPlain)))
 
-  const report = await collect(ledger, home, { before: new Date(Date.now() - 7 * 86_400_000) })
+  const report = await collect(ledger, home, Tmux.of(home), {
+    before: new Date(Date.now() - 7 * 86_400_000),
+  })
 
   expect(report).toEqual({
     removed: [oldPlain, oldRepo],
@@ -85,7 +88,7 @@ test('gc removes old finished workspaces, keeps their session transcripts, and k
   expect(ledger.get(oldRepo).collectedAt).not.toBeNull()
   expect(ledger.get(dirty).collectedAt).toBeNull()
   // Collected tasks are not picked again by age; the dirty one still is.
-  expect(await collect(ledger, home, { before: new Date() })).toEqual({
+  expect(await collect(ledger, home, Tmux.of(home), { before: new Date() })).toEqual({
     removed: [recent],
     clean: [],
     skipped: [{ id: dirty, reason: 'uncommitted changes in worktree' }],
@@ -127,7 +130,7 @@ test('gc collects the tasks the human names, however recent, and leaves unfinish
   ledger.succeed(gone)
   rmSync(workspaceOf(home, ledger.get(gone)), { recursive: true })
 
-  const report = await collect(ledger, home, { ids: [locked, named, running, gone] })
+  const report = await collect(ledger, home, Tmux.of(home), { ids: [locked, named, running, gone] })
   chmodSync(lockedDir, 0o755)
 
   expect(report).toEqual({
@@ -141,7 +144,7 @@ test('gc collects the tasks the human names, however recent, and leaves unfinish
   expect(ledger.get(locked).collectedAt).toBeNull()
   expect(ledger.get(gone).collectedAt).not.toBeNull()
   expect(ledger.get(running).collectedAt).toBeNull()
-  expect(await collect(ledger, home, { ids: [named] })).toEqual({
+  expect(await collect(ledger, home, Tmux.of(home), { ids: [named] })).toEqual({
     removed: [],
     clean: [named],
     skipped: [],
@@ -193,7 +196,7 @@ test('gc deletes a branch once a remote branch holds it or the default branch ha
   git(repo, 'update-ref', 'refs/remotes/origin/main', 'HEAD')
   git(repo, 'symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main')
 
-  const report = await collect(ledger, home, { ids: [pushed, squashed, unmerged] })
+  const report = await collect(ledger, home, Tmux.of(home), { ids: [pushed, squashed, unmerged] })
 
   expect(report.removed).toEqual([pushed, squashed, unmerged])
   expect(git(repo, 'branch', '--list', 'feat/*').split('\n').filter(Boolean)).toEqual([
@@ -245,7 +248,7 @@ test('resume brings a collected task back: the worktree returns at the same path
   // Pushed, so gc deletes the branch; then the remote branch goes too, as after a merge.
   git(repo, 'update-ref', 'refs/remotes/origin/feat/x', 'feat/x')
   const head = git(repo, 'rev-parse', 'feat/x').trim()
-  await collect(ledger, home, { ids: [id] })
+  await collect(ledger, home, Tmux.of(home), { ids: [id] })
   expect(ledger.get(id).head).toBe(head)
   expect(git(repo, 'branch', '--list', 'feat/x')).toBe('')
   // A second gc that finds the branch gone keeps the commit the first one recorded.
@@ -266,7 +269,7 @@ test('resume brings a collected task back: the worktree returns at the same path
   git(byHandCwd, 'add', '.')
   git(byHandCwd, 'commit', '-q', '-m', 'y')
   rmSync(byHandCwd, { recursive: true })
-  await collect(ledger, home, { ids: [byHand] })
+  await collect(ledger, home, Tmux.of(home), { ids: [byHand] })
   await restore(ledger, home, byHand)
   expect(readFileSync(join(byHandCwd, 'y.txt'), 'utf8')).toBe('y')
 
@@ -274,7 +277,7 @@ test('resume brings a collected task back: the worktree returns at the same path
   const plain = task('plain', null)
   const plainCwd = workspaceOf(home, ledger.get(plain))
   const plainSessions = projectFolder(claude, plainCwd)
-  await collect(ledger, home, { ids: [plain] })
+  await collect(ledger, home, Tmux.of(home), { ids: [plain] })
   rmSync(plainSessions, { recursive: true })
   await expect(restore(ledger, home, plain)).rejects.toThrow('transcript is gone')
   expect(existsSync(plainCwd)).toBe(false)
@@ -435,7 +438,9 @@ test('gc keeps a worktree holding the only copy of commits: in a submodule, or o
   commit(detached.cwd, 'detached work')
   const kept = [inSub, onSide, stashed, tagged, removedSub, ignored, detached]
 
-  const report = await collect(ledger, home, { ids: [plain.id, ...kept.map((t) => t.id)] })
+  const report = await collect(ledger, home, Tmux.of(home), {
+    ids: [plain.id, ...kept.map((t) => t.id)],
+  })
 
   const inLib = 'submodule lib has commits no remote has'
   expect(report).toEqual({
@@ -500,7 +505,7 @@ test('gc removes nothing of a task told to go on while it checks the worktree', 
   try {
     // Once the session is closed, as gc looks for uncommitted changes.
     tellAt = 'status'
-    expect(await collect(ledger, home, { ids: [id] })).toEqual({
+    expect(await collect(ledger, home, Tmux.of(home), { ids: [id] })).toEqual({
       removed: [],
       clean: [],
       skipped: [{ id, reason: 'told to go on while gc ran' }],
@@ -513,7 +518,7 @@ test('gc removes nothing of a task told to go on while it checks the worktree', 
     // While the worktree goes: the folder is gone, but the task stays listed and keeps its branch.
     ledger.succeed(id)
     tellAt = 'remove'
-    expect(await collect(ledger, home, { ids: [id] })).toEqual({
+    expect(await collect(ledger, home, Tmux.of(home), { ids: [id] })).toEqual({
       removed: [],
       clean: [],
       skipped: [{ id, reason: 'told to go on while gc ran' }],
@@ -559,7 +564,9 @@ test('a task gc cannot finish after its worktree went stays listed, and a later 
     return spawn.apply(Bun, args)
   }) as typeof spawn)
 
-  const failed = await collect(ledger, home, { ids: [id] }).finally(() => spy.mockRestore())
+  const failed = await collect(ledger, home, Tmux.of(home), { ids: [id] }).finally(() =>
+    spy.mockRestore(),
+  )
 
   expect(failed).toEqual({
     removed: [],
@@ -568,7 +575,9 @@ test('a task gc cannot finish after its worktree went stays listed, and a later 
   })
   expect(existsSync(cwd)).toBe(false)
   expect(ledger.get(id).collectedAt).toBeNull()
-  expect(await collect(ledger, home, { before: new Date(Date.now() + 60_000) })).toEqual({
+  expect(
+    await collect(ledger, home, Tmux.of(home), { before: new Date(Date.now() + 60_000) }),
+  ).toEqual({
     removed: [],
     clean: [id],
     skipped: [],
@@ -606,7 +615,7 @@ test('gc reads each task again as it gets to it: one told to go on meanwhile is 
     ledger.setRunning(id, workspaceOf(home, ledger.get(id)))
   }
 
-  const collecting = collect(ledger, home, { ids: [closing, told, other] })
+  const collecting = collect(ledger, home, Tmux.of(home), { ids: [closing, told, other] })
   // gc is closing the first task's session.
   tell(closing)
   tell(told)
@@ -647,7 +656,7 @@ test('gc --older-than leaves a task a queued one waits for, as sweep does', asyn
   ledger.db.query('update tasks set finished_at = $at where id = $id').run({ id: base, at: OLD })
   ledger.add({ ...spec, brief: 'after the base', after: [base] })
 
-  expect(await collect(ledger, home, { before: new Date() })).toEqual({
+  expect(await collect(ledger, home, Tmux.of(home), { before: new Date() })).toEqual({
     removed: [],
     clean: [],
     skipped: [],

@@ -12,7 +12,7 @@ import {
   type Trigger,
 } from '../../src/ledger'
 import { sessionName } from '../../src/place'
-import { Terminals } from '../../src/tmux'
+import { Tmux } from '../../src/tmux'
 import { type Found, firstLineOf, type Project, type Todo, Todos } from '../../src/todos'
 import { reopenCommand, taskNote, taskStatus } from '../../src/view'
 import { answer, tell } from '../../src/worker'
@@ -22,7 +22,7 @@ export const home = nodHome()
 // One connection for the server's life, shared with the todo pages (todos.server.ts); WAL lets nod
 // write while this reads.
 export const ledger = new Ledger(home)
-const terminals = Terminals.of(home)
+const terminals = Tmux.of(home)
 // Changes made here record this actor. The server may run inside a Claude session, where the
 // environment would make them claude's.
 export const ACTOR = 'human:ui'
@@ -204,12 +204,12 @@ export async function send(m: Message): Promise<void> {
   const open = ledger.decisions(task.id).find((d) => d.answer === null)
   if (m.decisionId === null) {
     if (open !== undefined) throw new Error(`answer decision d${open.id} first`)
-    await tell(ledger, home, task.id, m.text)
+    await tell(ledger, home, terminals, task.id, m.text)
     return
   }
   if (open?.id !== m.decisionId)
     throw new Error(`decision d${m.decisionId} is not open on n${task.id}`)
-  await answer(ledger, home, m.decisionId, m.text, ACTOR)
+  await answer(ledger, home, terminals, m.decisionId, m.text, ACTOR)
 }
 
 // Decisions first, then tasks that went wrong, then those at work.

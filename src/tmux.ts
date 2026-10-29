@@ -8,16 +8,38 @@ const EXIT_TIMEOUT_MS = 15_000
 // Names what nod keeps per home outside it: the tmux socket and the OS scheduler job.
 export const homeId = (home: string): string => Bun.hash(home).toString(36)
 
+// What nod does with its workers' terminals. tmux keeps them (Tmux); tests stand in for it
+// without tmux (test/fake-terminals.ts). Only nod's entry points make one (cli.ts, tickHome in
+// triggers.ts, the UI server); what they call is given it.
+export interface Terminals {
+  start(name: string, cwd: string, argv: string[], env: Record<string, string>): void
+  alive(name: string): boolean
+  sessions(): Set<string>
+  sessionOptions(...keys: string[]): Map<string, string[]>
+  option(name: string, key: string): string
+  setOption(name: string, key: string, value: string | null): void
+  stopped(name: string): boolean
+  attached(name: string): boolean
+  lastUsed(name: string): number
+  send(name: string, text: string): void
+  keys(name: string, ...keys: string[]): void
+  screen(name: string): string
+  close(name: string): Promise<boolean>
+  attachCommand(name: string, features?: string): string[]
+  panePid(name: string): number
+  pane(name: string): string | null
+}
+
 // Workers run in tmux so they outlive nod's own processes and a person can attach to watch or step
 // in. Each nod home gets its own tmux server (socket), and each task its own tmux session.
-export class Terminals {
+export class Tmux implements Terminals {
   private constructor(
     private readonly socket: string,
     private readonly dir: string,
   ) {}
 
-  static of(home: string): Terminals {
-    return new Terminals(`nod-${homeId(home)}`, join(home, 'work'))
+  static of(home: string): Tmux {
+    return new Tmux(`nod-${homeId(home)}`, join(home, 'work'))
   }
 
   // `argv` runs with `env` and nothing else of the environment but the TERM, TMUX and TMUX_PANE

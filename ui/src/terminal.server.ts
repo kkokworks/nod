@@ -9,7 +9,7 @@ import type { Duplex } from 'node:stream'
 import { type RawData, type WebSocket, WebSocketServer } from 'ws'
 import { nodHome } from '../../src/ledger'
 import { sessionName } from '../../src/place'
-import { Terminals } from '../../src/tmux'
+import { type Terminals, Tmux } from '../../src/tmux'
 
 const PATH = /^\/terminal\/(\d+)$/
 // The most cells a side asks for: more than a screen shows, and no pty is asked for a silly size.
@@ -20,7 +20,10 @@ export const NO_SESSION = 4404
 // colours a program gives as RGB, which tmux would otherwise bring to the nearest of 256.
 export const FEATURES = 'RGB'
 
-export function serveTerminals(http: Server, terminals = Terminals.of(nodHome())): void {
+// The UI server's entry (vite.config.ts): the terminals of nod's home, in tmux.
+export const serveHome = (http: Server): void => serveTerminals(http, Tmux.of(nodHome()))
+
+export function serveTerminals(http: Server, terminals: Terminals): void {
   const wss = new WebSocketServer({ noServer: true })
   http.on('upgrade', (req: IncomingMessage, socket: Duplex, head: Buffer) => {
     const url = new URL(req.url ?? '/', 'http://localhost')
