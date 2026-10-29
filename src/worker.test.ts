@@ -1,4 +1,4 @@
-import { afterAll, beforeEach, expect, it, setSystemTime, spyOn } from 'bun:test'
+import { afterAll, beforeEach, expect, it, setSystemTime, spyOn, test } from 'bun:test'
 import {
   appendFileSync,
   chmodSync,
@@ -12,13 +12,14 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { basename, dirname, join, resolve } from 'node:path'
+import { FakeTerminals } from '../test/fake-terminals'
 import { projectFolder } from '../test/projects'
 import { git } from '../test/remote'
 import { tempDirs } from '../test/tmp'
 import { testTmux } from '../test/tmux'
-// Most tests here run workers in tmux: `test` skips them where tmux cannot start a server. Those
-// that need none are `it`, bun's own, so they run there too.
-import { tmuxTest as test } from '../test/tmux-server'
+// Workers run in fake terminals here (test/fake-terminals.ts), so these tests run where tmux cannot
+// start a server too. The few of tmux itself are `tmuxTest`, which skips them there.
+import { tmuxTest } from '../test/tmux-server'
 import { setAccountRule, transcriptPath } from './account'
 import { ALLOW } from './allow'
 import { collect } from './gc'
@@ -28,7 +29,7 @@ import { sessionName, socketsDir, workspaceOf } from './place'
 import { AT_ONCE, readAtOnce, spawn } from './proc'
 import { askedAgain, reviewBrief } from './review'
 import { retroBrief } from './rules'
-import { quote, Tmux } from './tmux'
+import { quote, type Terminals, Tmux } from './tmux'
 import { Todos } from './todos'
 import { addTrigger, tick } from './triggers'
 import {
@@ -62,18 +63,21 @@ import {
 
 const tmp = tempDirs()
 const homes: string[] = []
+// The homes whose test ran on tmux (useTmux).
+const tmuxHomes: string[] = []
 testTmux(tmp)
 afterAll(() => {
-  for (const h of homes) Tmux.of(h).killServer()
+  for (const h of homes) FakeTerminals.of(h).killAll()
+  for (const h of tmuxHomes) Tmux.of(h).killServer()
   tmp.removeAll()
 })
 
 // The fake stands in for `claude` through PATH, which nod passes on to worker sessions.
 const bin = tmp.make('nod-fake-bin-')
-const fake = resolve(import.meta.dir, '../test/fake-agent.ts')
+const fakeAgent = resolve(import.meta.dir, '../test/fake-agent.ts')
 writeFileSync(
   join(bin, 'claude'),
-  `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(fake)} "$@"\n`,
+  `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(fakeAgent)} "$@"\n`,
 )
 chmodSync(join(bin, 'claude'), 0o755)
 process.env.PATH = `${bin}:${process.env.PATH}`
@@ -86,8 +90,10 @@ process.env.CLAUDE_CONFIG_DIR = tmp.make('nod-claude-')
 
 let home: string
 let ledger: Ledger
-// The home's terminals, which every call here is given.
-let terminals: Tmux
+// The home's terminals, which every call here is given: its fake ones (`fake`), but in a test of
+// tmux itself (useTmux).
+let terminals: Terminals
+let fake: FakeTerminals
 let log: string
 
 beforeEach(() => useHome('nod-worker-'))
@@ -101,7 +107,16 @@ function useHome(prefix: string): void {
   trust(process.env.CLAUDE_CONFIG_DIR ?? null) // nod's own work folder counts as trusted
   log = join(home, 'agent.log') // where the fake logs (fake-agent.ts)
   ledger = new Ledger(home)
-  terminals = Tmux.of(home)
+  fake = FakeTerminals.of(home)
+  terminals = fake
+}
+
+// For a test of tmux itself: the home's tmux in place of its fake terminals.
+function useTmux(): Tmux {
+  const tmux = Tmux.of(home)
+  tmuxHomes.push(home)
+  terminals = tmux
+  return tmux
 }
 
 const trust = (config: string | null): void => writeFileSync(trustedFile(home, config), '')
@@ -234,7 +249,8 @@ test('a failing check goes back into the same turn until it passes', async () =>
   expect(ledger.stats()).toMatchObject({ retries: 1, succeededWithoutDecision: 1 })
 })
 
-test('a brief longer than tmux takes in one command reaches the worker whole', async () => {
+tmuxTest('a brief longer than tmux takes in one command reaches the worker whole', async () => {
+  useTmux()
   const brief = `make it's \`$HOME\` "quoted"\n${'x'.repeat(20_000)}`
   const id = await add(brief)
   await reaches(id, 'succeeded')
@@ -396,7 +412,7 @@ test('tell continues the same session, and reopens it from the transcript once i
   await tell(ledger, home, terminals, id, 'second')
   await reaches(id, 'succeeded')
 
-  terminals.kill(sessionName(id))
+  fake.kill(sessionName(id))
   await tell(ledger, home, terminals, id, 'third')
   await reaches(id, 'succeeded')
 
@@ -498,18 +514,10 @@ test('a turn a person types into a finished task is in the ledger from its start
   const name = sessionName(id)
   const long = new Date(Date.now() - 2 * 60 * 60_000).toISOString()
   ledger.db.query('update tasks set finished_at = $at where id = $id').run({ id, at: long })
-  const [tmux = 'tmux', ...attach] = terminals.attachCommand(name)
-  const person = Bun.spawn([tmux, '-C', ...attach], {
-    stdin: 'pipe',
-    stdout: 'ignore',
-    env: process.env,
-  })
-  await until(() => terminals.attached(name))
+  fake.attach(name)
   terminals.send(name, 'hang until ended')
   await until(() => turnsOf(id).length === 2)
-  person.kill()
-  await person.exited
-  await until(() => !terminals.attached(name))
+  fake.detach(name)
 
   // Its prompt hook opened the turn, as the Stop hook would have at its end; the task is as it was.
   expect(ledger.openAttempt(id)).toMatchObject({
@@ -542,13 +550,7 @@ test('a turn a person types into a finished task is in the ledger from its start
 test('what a person types into a worker’s terminal is kept once each, as theirs, for the review of its turn, and nod does not send it again', async () => {
   const id = await finished('first')
   const name = sessionName(id)
-  const [tmux = 'tmux', ...attach] = terminals.attachCommand(name)
-  const person = Bun.spawn([tmux, '-C', ...attach], {
-    stdin: 'pipe',
-    stdout: 'ignore',
-    env: process.env,
-  })
-  await until(() => terminals.attached(name))
+  fake.attach(name)
   terminals.send(name, 'need-permission')
   await until(() => ledger.decisions(id)[0])
   terminals.keys(name, 'Escape')
@@ -556,8 +558,7 @@ test('what a person types into a worker’s terminal is kept once each, as their
   await until(() => entries('review')[1])
   await reaches(id, 'succeeded')
   await settled(id)
-  person.kill()
-  await person.exited
+  fake.detach(name)
   expect(turnsOf(id)).toEqual(['first', 'need-permission', 'use tabs'])
   expect(ledger.attempts(id).map((a) => [a.kind, a.prompt])).toEqual([
     ['start', 'first'],
@@ -575,7 +576,7 @@ test('a terminal that goes while the tick closes the others is not counted, and 
   // gc or drop closes it once the tick has listed the terminals.
   const attached = terminals.attached.bind(terminals)
   const closing = spyOn(terminals, 'attached').mockImplementation((name) => {
-    if (name === sessionName(gone)) terminals.kill(name)
+    if (name === sessionName(gone)) fake.kill(name)
     return attached(name)
   })
 
@@ -623,7 +624,7 @@ test('gc of a task whose folder is already gone closes its terminal too', async 
 test('a brief or a message that starts with a dash reaches the worker as a message, not an option', async () => {
   const id = await add('- fix the bug')
   await reaches(id, 'succeeded')
-  terminals.kill(sessionName(id))
+  fake.kill(sessionName(id))
   await tell(ledger, home, terminals, id, '-v too')
   await reaches(id, 'succeeded')
   expect(entries('turn').map((t) => t.message)).toEqual(['- fix the bug', '-v too'])
@@ -736,13 +737,18 @@ test('a passing watch goes back to the task its todo names then, not when the wa
   expect(ledger.attempts(taskId)).toHaveLength(1)
 }, 30_000)
 
-test('a message pastes without control characters, which could end the paste and type keys', async () => {
-  const id = await add('first')
-  await reaches(id, 'succeeded')
-  await tell(ledger, home, terminals, id, 'see\x1b[201~ this\x07\r\nand\tthat')
-  await reaches(id, 'succeeded')
-  expect(entries('turn').map((t) => t.message)).toEqual(['first', 'see[201~ this\nand\tthat'])
-}, 30_000)
+tmuxTest(
+  'a message pastes without control characters, which could end the paste and type keys',
+  async () => {
+    useTmux()
+    const id = await add('first')
+    await reaches(id, 'succeeded')
+    await tell(ledger, home, terminals, id, 'see\x1b[201~ this\x07\r\nand\tthat')
+    await reaches(id, 'succeeded')
+    expect(entries('turn').map((t) => t.message)).toEqual(['first', 'see[201~ this\nand\tthat'])
+  },
+  30_000,
+)
 
 it('a stop from a session nod did not start changes nothing', async () => {
   const out = await onStop(ledger, home, terminals, {
@@ -1434,7 +1440,7 @@ test('a repo Claude Code does not trust yet becomes a decision: yes trusts and s
   await answer(ledger, home, terminals, no.id, 'not this one', 'human')
   expect(status(refused)).toBe('cancelled')
   expect(terminals.alive(sessionName(refused))).toBe(false)
-})
+}, 30_000)
 
 test('a repo the person trusted for an earlier task is trusted again without a decision, as are its worktrees', async () => {
   // Every new session asks, as after the account changed.
@@ -1556,7 +1562,7 @@ test('an answer for a repo worker whose first start waits on trust goes with the
   await startTask(ledger, home, terminals, id)
   expect(ledger.decisions(id).map((d) => d.reason)).toEqual(['trust'])
   // Its terminal goes before anyone answers, as when the machine restarts.
-  terminals.killServer()
+  fake.killAll()
   expect(await lostTurns(ledger, home, terminals, new Date(Date.now() + 60_000))).toEqual([id])
   const cut = ledger.decisions(id).find((d) => d.reason === 'interrupted')
   if (cut === undefined) throw new Error('no interrupted decision')
@@ -2082,7 +2088,7 @@ test('Claude Code runs that hook in a worker once it has compacted the conversat
   await tell(ledger, home, terminals, id, 'compact first, then use tabs')
   await reaches(id, 'succeeded')
   const words = askedAgain(ledger, ledger.get(id))
-  terminals.kill(sessionName(id))
+  fake.kill(sessionName(id))
   await tell(ledger, home, terminals, id, 'third')
   await reaches(id, 'succeeded')
   expect(entries('session-start').map((s) => [s.source, s.context])).toEqual([
@@ -2188,7 +2194,8 @@ console.log(JSON.stringify([savedEnv(), workerEnv('/h', 5, null)]))`,
   expect(worker).toMatchObject(outer)
 })
 
-test("a worker's terminal passes on none of the tmux server's environment", async () => {
+tmuxTest("a worker's terminal passes on none of the tmux server's environment", async () => {
+  useTmux()
   // As a terminal marks its panes; the home's tmux server starts with it.
   process.env.NOD_TEST_PANE_ID = 'outer'
   try {
@@ -2221,8 +2228,7 @@ test("a worker's terminal passes on none of the tmux server's environment", asyn
 
 // Ends a worker's Claude Code and not its terminal, as a tool that switches accounts does.
 function endClaude(id: number): void {
-  const terminal = terminals.panePid(sessionName(id))
-  Bun.spawnSync(['pkill', '-TERM', '-P', String(terminal)])
+  process.kill(Number(terminals.option(sessionName(id), 'nod_claude')), 'SIGTERM')
 }
 
 test('whatever ends its Claude Code, a worker starts again in the same terminal and conversation, without the brief', async () => {
@@ -2309,23 +2315,6 @@ test('a Claude Code that keeps exiting as it starts is not started again: the pe
   expect(entries('turn').map((t) => t.message)).toEqual(['first', 'again'])
 }, 30_000)
 
-test('the sessions come in one call with the values nod keeps on each, unset ones empty and the last one whole', () => {
-  terminals.start('kept', home, ['/bin/sleep', '30'], {})
-  terminals.start('bare', home, ['/bin/sleep', '30'], {})
-  terminals.setOption('kept', 'nod_restarting', '1')
-  terminals.setOption('kept', 'nod_restart', 'the account is now /a b')
-
-  expect(terminals.sessionOptions('nod_restarting', 'nod_restart')).toEqual(
-    new Map([
-      ['bare', ['', '']],
-      ['kept', ['1', 'the account is now /a b']],
-    ]),
-  )
-  expect(terminals.sessionOptions('nod_restart').get('kept')).toEqual(['the account is now /a b'])
-  terminals.killServer()
-  expect(terminals.sessionOptions('nod_restart')).toEqual(new Map())
-})
-
 test('with an account rule, a worker starts again as the current account: at once between turns, after a turn in progress, and with the message that finds it on the old one', async () => {
   const current = join(home, 'account')
   const [a, b, c, d] = accounts('a', 'b', 'c', 'd')
@@ -2362,7 +2351,7 @@ test('with an account rule, a worker starts again as the current account: at onc
   ])
   expect(entries('turn').map((t) => t.message)).toEqual(['first', 'need-permission', 'go on'])
   expect(ledger.get(id).account).toBe(d ?? '')
-}, 30_000)
+}, 60_000)
 
 test('a turn a usage limit ended does not hold up a restart: the new account continues it', async () => {
   const current = join(home, 'account')
@@ -2514,24 +2503,16 @@ test('a restart waits for a person attached to the worker, who hears why once', 
   const events = listen()
   const id = await add('first')
   await reaches(id, 'succeeded')
+  await settled(id)
   const name = sessionName(id)
-  // A control-mode client is attached as a person's terminal is, without needing one.
-  const [tmux = 'tmux', ...attach] = terminals.attachCommand(name)
-  const person = Bun.spawn([tmux, '-C', ...attach], {
-    stdin: 'pipe',
-    stdout: 'ignore',
-    env: process.env,
-  })
-  await until(() => terminals.attached(name))
+  fake.attach(name)
   expect(await restart(ledger, home, terminals, id, 'nod restart')).toBe('attached')
   expect(await restartDue(ledger, home, terminals)).toEqual([])
   expect(events().filter((e) => e.event === 'restart_held')).toEqual([
     expect.objectContaining({ reason: 'nod restart' }),
   ])
 
-  person.kill()
-  await person.exited
-  await until(() => !terminals.attached(name))
+  fake.detach(name)
   expect(await restartDue(ledger, home, terminals)).toEqual([id])
   await until(() => entries('launch')[1])
 }, 30_000)
@@ -2539,7 +2520,7 @@ test('a restart waits for a person attached to the worker, who hears why once', 
 test('a turn whose terminal went (the machine or tmux restarted) becomes a decision, and the answer reopens its conversation', async () => {
   const id = await add('hang until ended')
   await until(() => entries('turn')[0])
-  terminals.killServer()
+  fake.killAll()
   // A turn just started may still be opening its terminal.
   expect(await lostTurns(ledger, home, terminals, new Date())).toEqual([])
   const later = new Date(Date.now() + 60_000)

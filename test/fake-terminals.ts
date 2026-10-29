@@ -31,9 +31,19 @@ const ESC = '\x1b'
 const ROWS = 50
 // As Tmux.close.
 const EXIT_TIMEOUT_MS = 15_000
+// How long keys wait for a session just started to open its keyboard.
+const KEYBOARD_WAIT_MS = 2000
 const PRELOAD = resolve(import.meta.dir, 'fake-terminals-preload.ts')
 // The test run whose sessions these are: a session ends once it is gone (fake-terminals-preload.ts).
 export const OWNER = 'NOD_FAKE_TERMINALS_OWNER'
+
+// Writes `file` whole: processes of their own read what a session keeps at any time, and one that
+// read it half written would take the session for gone (an empty pid) or the option for unset.
+function put(file: string, value: string): void {
+  const part = `${file}.${process.pid}`
+  writeFileSync(part, value)
+  renameSync(part, file)
+}
 
 export class FakeTerminals implements Terminals {
   private constructor(private readonly dir: string) {}
@@ -55,8 +65,11 @@ export class FakeTerminals implements Terminals {
     const made = Bun.spawnSync(['mkfifo', keyboard], { stderr: 'pipe' })
     if (made.exitCode !== 0) throw new Error(`mkfifo failed: ${made.stderr.toString().trim()}`)
     const pane = `%${crypto.randomUUID()}`
-    writeFileSync(join(at, 'created'), String(Date.now()))
-    writeFileSync(join(at, 'pane'), pane)
+    // Blank until its process writes, which may start after this returns, as a new tmux pane is.
+    const screen = join(at, 'screen')
+    writeFileSync(screen, '')
+    put(join(at, 'created'), String(Date.now()))
+    put(join(at, 'pane'), pane)
     const all = {
       ...env,
       TERM: 'tmux-256color',
@@ -68,19 +81,23 @@ export class FakeTerminals implements Terminals {
     // In the background with job control (`set -m`), so in a process group of its own, and the sh
     // that started it gone, so it outlives whatever started it as a tmux session does. Its keyboard
     // is opened to read and write, so it never reads an end.
-    const script = 'set -m; in=$1; out=$2; shift 2; "$@" <>"$in" >"$out" 2>&1 & echo $!'
+    const script = 'set -m; in=$1; out=$2; shift 2; "$@" <>"$in" >>"$out" 2>&1 & echo $!'
     const vars = Object.entries(all).map(([key, value]) => `${key}=${value}`)
-    const screen = join(at, 'screen')
-    const started = Bun.spawnSync(
-      ['/bin/sh', '-c', script, 'sh', keyboard, screen, '/usr/bin/env', '-i', ...vars, ...argv],
-      { cwd, env: { PATH: process.env.PATH ?? '' }, stderr: 'pipe' },
-    )
-    const pid = Number(started.stdout.toString().trim())
-    if (started.exitCode !== 0 || !(pid > 0)) {
+    // A session that did not start is not there, nor does it count as starting (alive).
+    try {
+      const started = Bun.spawnSync(
+        ['/bin/sh', '-c', script, 'sh', keyboard, screen, '/usr/bin/env', '-i', ...vars, ...argv],
+        { cwd, env: { PATH: process.env.PATH ?? '' }, stderr: 'pipe' },
+      )
+      const pid = Number(started.stdout.toString().trim())
+      if (started.exitCode !== 0 || !(pid > 0)) {
+        throw new Error(`could not start ${name}: ${started.stderr.toString().trim()}`)
+      }
+      put(join(at, 'pid'), String(pid))
+    } catch (error) {
       rmSync(at, { recursive: true, force: true })
-      throw new Error(`could not start ${name}: ${started.stderr.toString().trim()}`)
+      throw error
     }
-    writeFileSync(join(at, 'pid'), String(pid))
   }
 
   alive(name: string): boolean {
@@ -103,16 +120,10 @@ export class FakeTerminals implements Terminals {
     return existsSync(file) ? readFileSync(file, 'utf8') : ''
   }
 
-  // Written whole, as processes of their own read them at any time.
   setOption(name: string, key: string, value: string | null): void {
     const file = join(this.live(name), 'options', key)
-    if (value === null) {
-      rmSync(file, { force: true })
-      return
-    }
-    const part = `${file}.${process.pid}`
-    writeFileSync(part, value)
-    renameSync(part, file)
+    if (value === null) rmSync(file, { force: true })
+    else put(file, value)
   }
 
   stopped(name: string): boolean {
@@ -198,7 +209,7 @@ export class FakeTerminals implements Terminals {
   // As a person does with nod attach, and as they leave.
   attach(name: string): void {
     writeFileSync(join(this.live(name), 'attached'), '')
-    writeFileSync(join(this.at(name), 'last-attached'), String(Date.now()))
+    put(join(this.at(name), 'last-attached'), String(Date.now()))
   }
 
   detach(name: string): void {
@@ -224,9 +235,7 @@ export class FakeTerminals implements Terminals {
   }
 
   private type(name: string, keys: string): void {
-    // Open only while something reads it: a session whose process is gone takes no keys, as tmux
-    // refuses them.
-    const fd = openSync(join(this.live(name), 'in'), constants.O_WRONLY | constants.O_NONBLOCK)
+    const fd = this.keyboard(name)
     try {
       let left = Buffer.from(keys)
       while (left.length > 0) {
@@ -239,6 +248,22 @@ export class FakeTerminals implements Terminals {
       }
     } finally {
       closeSync(fd)
+    }
+  }
+
+  // Opens only while something reads it (ENXIO otherwise): a session whose process is gone takes no
+  // keys, as tmux refuses them. One just started may not have opened it yet, where tmux would keep
+  // the keys for it.
+  private keyboard(name: string): number {
+    const deadline = Date.now() + KEYBOARD_WAIT_MS
+    while (true) {
+      try {
+        return openSync(join(this.live(name), 'in'), constants.O_WRONLY | constants.O_NONBLOCK)
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code
+        if (code !== 'ENXIO' || Date.now() > deadline) throw error
+        Bun.sleepSync(5)
+      }
     }
   }
 
