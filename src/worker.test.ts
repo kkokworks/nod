@@ -1078,6 +1078,8 @@ test('a repo task gets its submodules filled from the repo checkout, and gc stil
   await reaches(id, 'succeeded')
   expect(ledger.attempts(id).map((a) => a.checkResult)).toEqual(['passed'])
 
+  // gc leaves it while its Stop hook still tells of its end.
+  await settled(id)
   const report = await collect(ledger, home, terminals, { before: new Date(Date.now() + 60_000) })
   expect(report.removed).toContain(id)
   expect(existsSync(workspaceOf(home, ledger.get(id)))).toBe(false)
