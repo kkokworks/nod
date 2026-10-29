@@ -62,7 +62,7 @@ export function Search() {
       <input
         type="search"
         value={ref}
-        placeholder="t12, #34, r5, p3, 7…"
+        placeholder="t12, n34, r5, p3, d7, 7…"
         aria-label="Find by number"
         onChange={(e) => setRef(e.target.value)}
       />

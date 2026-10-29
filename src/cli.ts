@@ -139,10 +139,10 @@ const USAGE = `usage:
   nod peek <task>                  print what the worker's terminal shows right now
   nod watch [--issue <key,...>] [--mine]
                                    print decisions as they open and, each time a task ends
-                                   (succeeded, error, cancelled), a line task #<n> [<todo>]
+                                   (succeeded, error, cancelled), a line task n<n> [<todo>]
                                    [<issue>] <status>: <the worker's last report, or the
                                    error's first line, else the brief>, until no worker is
-                                   running, and a line #<n> 허락: <command> for each command
+                                   running, and a line n<n> 허락: <command> for each command
                                    nod allows a worker itself (nod hook permission).
                                    Only what opens or ends after it starts; a task
                                    that runs again and ends again is printed again. --issue:
@@ -169,7 +169,8 @@ const USAGE = `usage:
                                    session, by the project and how to reopen it, with the session
                                    that added it when that was another; else the session that
                                    added it (claude --resume <session>)
-  nod search <ref>                 find by number: t<n>, #<n>, r<n>, p<n>, or <n> for every kind
+  nod search <ref>                 find by number: t<n>, n<n>, r<n>, p<n>, d<n>, or <n> for every
+                                   kind
   nod stats
   nod gc [<task...> | --older-than <days>]
                                    close sessions and delete workspaces and worktrees of the named
@@ -252,8 +253,8 @@ const USAGE = `usage:
                                    prompt becomes a decision as it shows
   nod run <task> <claude...>       what runs in a worker's terminal: keeps its Claude Code running
 
-A <task> is a task's number, t<n> for the latest task doing todo t<n>, or r<n> for the task
-retrospective r<n> runs in.
+A <task> is n<n>, t<n> for the latest task doing todo t<n>, or r<n> for the task retrospective r<n>
+runs in. A <decision> is d<n>, and a <trigger> c<n>. Each also takes its bare number <n>.
 ${TODO_USAGE}
 
 A project's session (the latest nod open opened) hears from nod itself, with no watch running: a
@@ -361,9 +362,9 @@ switch (command) {
   case 'link': {
     const id = taskRef(rest[0])
     const urls = rest.slice(1)
-    if (!Number.isInteger(id) || urls.length === 0) throw new Error(USAGE)
+    if (urls.length === 0) throw new Error(USAGE)
     ledger.link(id, urls)
-    console.log(`linked #${id}: ${ledger.links(id).join(' ')}`)
+    console.log(`linked n${id}: ${ledger.links(id).join(' ')}`)
     break
   }
   case 'ls': {
@@ -410,7 +411,7 @@ switch (command) {
       closed: 'closed; its task had ended',
       'landing stopped': 'stopped landing it; the task stays succeeded',
     }
-    console.log(said[await drop(ledger, home, Number(rest[0]))])
+    console.log(said[await drop(ledger, home, parseRef(rest[0] ?? '', 'd', true))])
     break
   }
   case 'gc':
@@ -442,15 +443,15 @@ switch (command) {
       new Date(),
       true,
     )
-    if (added.length > 0) console.log(`added task(s) ${added.join(', ')}`)
+    if (added.length > 0) console.log(`added task(s) ${taskList(added)}`)
     if (passed.length > 0) console.log(`watch passed: ${passed.map((id) => `t${id}`).join(', ')}`)
-    if (collected.length > 0) console.log(`collected task(s) ${collected.join(', ')}`)
-    if (lost.length > 0) console.log(`turn(s) lost with their terminal: ${lost.join(', ')}`)
-    if (waited.length > 0) console.log(`waited too long on background work: ${waited.join(', ')}`)
-    if (cut.length > 0) console.log(`went on from a check cut off: ${cut.join(', ')}`)
-    if (restarted.length > 0) console.log(`restarted task(s) ${restarted.join(', ')}`)
-    if (closed.length > 0) console.log(`closed the terminal(s) of task(s) ${closed.join(', ')}`)
-    for (const m of landed) console.log(`landing #${m.id}: ${m.did}`)
+    if (collected.length > 0) console.log(`collected task(s) ${taskList(collected)}`)
+    if (lost.length > 0) console.log(`turn(s) lost with their terminal: ${taskList(lost)}`)
+    if (waited.length > 0) console.log(`waited too long on background work: ${taskList(waited)}`)
+    if (cut.length > 0) console.log(`went on from a check cut off: ${taskList(cut)}`)
+    if (restarted.length > 0) console.log(`restarted task(s) ${taskList(restarted)}`)
+    if (closed.length > 0) console.log(`closed the terminal(s) of task(s) ${taskList(closed)}`)
+    for (const m of landed) console.log(`landing n${m.id}: ${m.did}`)
     const did = [added, passed, collected, lost, waited, cut, restarted, closed, landed]
     if (did.every((x) => x.length === 0)) console.log('nothing due')
     break
@@ -481,7 +482,7 @@ switch (command) {
     await todayCommand(new Todos(ledger), home, rest)
     break
   default: {
-    const id = Number(command)
+    const id = Number(/^d\d+$/.test(command) ? command.slice(1) : command)
     if (!Number.isInteger(id)) {
       console.error(USAGE)
       process.exit(1)
@@ -502,7 +503,7 @@ switch (command) {
       // Yes tries again now, not at the next fifth minute.
       if (/^y(es)?$/i.test(said)) await landCommand([taskId])
     } else {
-      console.log(took ? `answered; sent to task #${taskId}` : `closed; task #${taskId} had ended`)
+      console.log(took ? `answered; sent to task n${taskId}` : `closed; task n${taskId} had ended`)
     }
   }
 }
@@ -543,7 +544,6 @@ async function add(args: string[]): Promise<void> {
       ? [todo.title, todo.notes].filter((x) => x !== null).join('\n\n')
       : words(positionals)
   const after = (values.after ?? '').split(',').filter(Boolean).map(taskRef)
-  if (!after.every(Number.isInteger)) throw new Error(`--after takes task numbers: ${values.after}`)
   const repo = repoPath(values.repo)
   const task = {
     brief,
@@ -599,7 +599,7 @@ async function trigger([sub, ...args]: string[]): Promise<void> {
   } else if (sub === 'ls') {
     for (const t of ledger.triggers()) printTrigger(t)
   } else if (sub === 'rm') {
-    ledger.removeTrigger(Number(args[0]))
+    ledger.removeTrigger(parseRef(args[0] ?? '', 'c', true))
     console.log('removed')
   } else {
     throw new Error(USAGE)
@@ -698,13 +698,13 @@ async function landCommand(ids: number[]): Promise<void> {
     const { repo } = ledger.get(id)
     if (repo === null || (ledger.repo(repo)?.land ?? 'off') === 'off') {
       throw new Error(
-        `task #${id}'s repo does not let nod land it: nod repo ${repo ?? '<path>'} pr`,
+        `task n${id}'s repo does not let nod land it: nod repo ${repo ?? '<path>'} pr`,
       )
     }
     if (ledger.landing(id)?.stopped) ledger.setLanding(id, { stopped: null, note: null })
   }
   const moved = await land(ledger, home, ids.length > 0 ? { only: ids } : {})
-  for (const m of moved) console.log(`#${m.id} ${m.did}`)
+  for (const m of moved) console.log(`n${m.id} ${m.did}`)
   if (moved.length === 0) console.log('nothing to land')
 }
 
@@ -747,7 +747,7 @@ async function restartCommand(refs: string[]): Promise<void> {
           .map((t) => t.id)
   if (ids.length === 0) console.log('no worker to restart')
   for (const id of ids) {
-    console.log(`#${id} ${said[await restart(ledger, home, id, 'nod restart')]}`)
+    console.log(`n${id} ${said[await restart(ledger, home, id, 'nod restart')]}`)
   }
 }
 
@@ -768,7 +768,7 @@ function printTrigger(t: Trigger): void {
   const next = nextRun(t.cron, new Date(t.lastRunAt ?? t.createdAt))
   const when = next === null ? 'never' : next.toLocaleString('sv-SE')
   console.log(
-    `#${String(t.id).padEnd(4)} ${t.cron.padEnd(16)} next ${when}  ${oneLine(t.brief, 60)}`,
+    `c${String(t.id).padEnd(4)} ${t.cron.padEnd(16)} next ${when}  ${oneLine(t.brief, 60)}`,
   )
   if (t.source) console.log(`  source: ${t.source}`)
   if (t.lastError) console.log(`  last run failed: ${oneLine(t.lastError, 200)}`)
@@ -934,9 +934,9 @@ function noTerminal(taskId: number): Error {
     task.workspace !== null &&
     (task.retroId === null || ledger.retro(task.retroId).outcome === null)
   const why = goesOn
-    ? `task #${taskId} finished and its terminal is closed; nod tell ${taskId} <message> goes on in the same conversation, and`
-    : `task #${taskId} has no live session;`
-  return new Error(`${why} nod show ${taskId} has its history`)
+    ? `task n${taskId} finished and its terminal is closed; nod tell n${taskId} <message> goes on in the same conversation, and`
+    : `task n${taskId} has no live session;`
+  return new Error(`${why} nod show n${taskId} has its history`)
 }
 
 // Lets a Claude session relay each decision as soon as it opens.
@@ -984,17 +984,17 @@ async function gc(args: string[]): Promise<void> {
   if (positionals.length === 0 && olderThan === undefined) {
     const { report, done, unchecked } = await sweep(ledger, home, pullRequests(home), new Date())
     printGc(report)
-    for (const d of done) if (report.removed.includes(d.id)) console.log(`  #${d.id}: ${d.reason}`)
-    for (const u of unchecked) console.log(`unchecked #${u.id}: ${u.error}`)
+    for (const d of done) if (report.removed.includes(d.id)) console.log(`  n${d.id}: ${d.reason}`)
+    for (const u of unchecked) console.log(`unchecked n${u.id}: ${u.error}`)
     return
   }
   printGc(await collect(ledger, home, gcPick(positionals, olderThan)))
 }
 
 function printGc(report: GcReport): void {
-  console.log(`removed ${report.removed.length} task(s): ${report.removed.join(', ') || '-'}`)
-  if (report.clean.length > 0) console.log(`already clean: ${report.clean.join(', ')}`)
-  for (const s of report.skipped) console.log(`skipped #${s.id}: ${s.reason}`)
+  console.log(`removed ${report.removed.length} task(s): ${taskList(report.removed) || '-'}`)
+  if (report.clean.length > 0) console.log(`already clean: ${taskList(report.clean)}`)
+  for (const s of report.skipped) console.log(`skipped n${s.id}: ${s.reason}`)
 }
 
 function gcPick(tasks: string[], olderThan: string | undefined): GcPick {
@@ -1028,10 +1028,10 @@ async function show(id: number): Promise<void> {
   if (task.workspace) console.log(`  workspace: ${task.workspace}`)
   if (task.account !== null) console.log(`  account: ${task.account || "Claude Code's default"}`)
   if (task.checkCmd) console.log(`  check: ${task.checkCmd}`)
-  if (task.triggerId !== null) console.log(`  added by trigger #${task.triggerId}`)
+  if (task.triggerId !== null) console.log(`  added by trigger c${task.triggerId}`)
   if (task.retroId !== null) {
     const r = ledger.retro(task.retroId)
-    console.log(`  retrospective: r${r.id} of #${r.ofTaskId}${r.outcome ? `, ${r.outcome}` : ''}`)
+    console.log(`  retrospective: r${r.id} of n${r.ofTaskId}${r.outcome ? `, ${r.outcome}` : ''}`)
     // The rule it added, as it stands now.
     for (const added of ledger.rulesNow().filter((x) => x.retroId === r.id)) {
       const edited = added.edited ? ', edited' : ''
@@ -1054,9 +1054,9 @@ async function show(id: number): Promise<void> {
   if (task.collectedAt !== null) console.log(`  collected: ${task.collectedAt}`)
   const after = ledger.after(id)
   if (after.length > 0) {
-    console.log(`  after: ${after.map((a) => `#${a.id} (${a.status})`).join(', ')}`)
+    console.log(`  after: ${after.map((a) => `n${a.id} (${a.status})`).join(', ')}`)
   }
-  if (live.has(sessionName(id))) console.log(`  terminal: nod attach ${id}`)
+  if (live.has(sessionName(id))) console.log(`  terminal: nod attach n${id}`)
   for (const a of ledger.attempts(id)) printAttempt(a)
   for (const d of ledger.decisions(id)) {
     const answered = d.answeredAt
@@ -1064,7 +1064,7 @@ async function show(id: number): Promise<void> {
       : d.answer === null
         ? 'open'
         : `closed: ${d.answer}`
-    console.log(`  decision #${d.id} ${d.reason} — ${answered}`)
+    console.log(`  decision d${d.id} ${d.reason} — ${answered}`)
   }
   for (const n of ledger.allowed(id)) console.log(`  allowed by nod ${n.createdAt}: ${n.note}`)
   const report = ledger.attempts(id).findLast((a) => a.report)?.report
@@ -1108,7 +1108,7 @@ async function search(args: string[]): Promise<void> {
 function opens(f: Found): string {
   if (f.kind === 'todo') return `nod todo ${f.ref}`
   if (f.kind === 'project') return `nod project ${f.ref}`
-  return `nod show ${f.kind === 'retro' ? f.ref : f.taskId}`
+  return `nod show ${f.kind === 'retro' ? f.ref : `n${f.taskId}`}`
 }
 
 function printDecisions(decisions: Decision[]): void {
@@ -1117,12 +1117,12 @@ function printDecisions(decisions: Decision[]): void {
     return
   }
   for (const d of decisions) printDecision(d)
-  console.log('answer: nod <decision> <answer>   end the task: nod drop <decision>')
+  console.log('answer: nod d<n> <answer>   end the task: nod drop d<n>')
 }
 
 function printDecision(d: Decision): void {
   const task = ledger.get(d.taskId)
-  console.log(`#${d.id}  ${d.reason}  (${taskLabel(task)}: ${oneLine(task.brief, 60)})`)
+  console.log(`d${d.id}  ${d.reason}  (${taskLabel(task)}: ${oneLine(task.brief, 60)})`)
   console.log(`${indent(d.question)}\n`)
 }
 
@@ -1156,7 +1156,7 @@ async function printTask(
   const turns = ledger.attempts(t.id).length
   const status = taskStatus(t, live)
   console.log(
-    `#${String(t.id).padEnd(4)} ${owner(t).padEnd(5)} ${status.padEnd(14)} ${String(turns).padStart(2)} turns  ${oneLine(taskNote(ledger, t), 80)}`,
+    `n${String(t.id).padEnd(4)} ${owner(t).padEnd(5)} ${status.padEnd(14)} ${String(turns).padStart(2)} turns  ${oneLine(taskNote(ledger, t), 80)}`,
   )
   for (const url of ledger.links(t.id)) console.log(`      link ${url}`)
   for (const ref of await pushed) console.log(`      pushed ${ref}`)
@@ -1180,7 +1180,7 @@ async function unlinkedPushes(t: Task): Promise<string[]> {
 function printAttempt(a: Attempt): void {
   const secs = a.finishedAt ? `${secsBetween(a.startedAt, a.finishedAt)}s` : 'running'
   const check = a.checkResult ? ` check ${a.checkResult}` : ''
-  const from = a.fromTask === null ? '' : ` from #${a.fromTask}`
+  const from = a.fromTask === null ? '' : ` from n${a.fromTask}`
   console.log(
     `  ${a.kind.padEnd(8)} ${(a.outcome ?? '-').padEnd(14)} ${secs}${check}${from}  session ${a.sessionId}`,
   )
@@ -1193,6 +1193,11 @@ function words(args: string[]): string {
   const text = args.join(' ').trim()
   if (!text) throw new Error(USAGE)
   return text
+}
+
+// Tasks as nod names them: `n3, n5`.
+function taskList(ids: number[]): string {
+  return ids.map((id) => `n${id}`).join(', ')
 }
 
 function secsBetween(from: string, to: string): number {

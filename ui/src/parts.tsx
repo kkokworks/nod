@@ -69,8 +69,8 @@ export function TaskId({
   const name = retroId !== null ? `r${retroId}` : todoId !== null ? `t${todoId}` : null
   return (
     <span className="side-id">
-      {name ?? `#${id}`}
-      {name !== null && <small className="task-no">#{id}</small>}
+      {name ?? `n${id}`}
+      {name !== null && <small className="task-no">n{id}</small>}
     </span>
   )
 }
@@ -111,7 +111,7 @@ export function DecisionCard({ d, head }: { d: Decision; head?: ReactNode }) {
       {head}
       <div className="decision-head">
         <span className="decision-reason">{d.reason.replace('_', ' ')}</span>
-        <span className="muted">decision #{d.id}</span>
+        <span className="muted">decision d{d.id}</span>
         {d.answeredAt !== null && (
           <span className="muted">· answered after {duration(d.createdAt, d.answeredAt)}</span>
         )}
@@ -119,7 +119,7 @@ export function DecisionCard({ d, head }: { d: Decision; head?: ReactNode }) {
       <Markdown text={d.question} />
       {d.answer === null ? (
         <div className="hint">
-          <code>nod {d.id} &lt;answer&gt;</code> or <code>nod drop {d.id}</code>
+          <code>nod d{d.id} &lt;answer&gt;</code> or <code>nod drop d{d.id}</code>
         </div>
       ) : (
         <div className="answer">{d.answer}</div>

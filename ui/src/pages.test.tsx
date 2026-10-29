@@ -303,7 +303,7 @@ test('a live session shows Yes and No under its terminal for landing and rules o
     // Just opened where the person may be about to click: not yet an answer.
     await click('Yes')
     expect(posted.splice(0)).toEqual([])
-    expect(banners().join()).toContain(`#${id}`)
+    expect(banners().join()).toContain(`d${id}`)
     setSystemTime(new Date(Date.now() + 1500))
     onPost = () => {
       open[24] = undefined
@@ -326,7 +326,7 @@ test('a live session shows Yes and No under its terminal for landing and rules o
   answer = () => ({ ...live(24), decisions: [asked(33, 'question'), asked(34, 'land')] })
   await reload()
   expect(buttons()).toEqual(['Yes', 'No — stop landing'])
-  expect(document.querySelector('.composer-label')?.textContent).toContain('#34')
+  expect(document.querySelector('.composer-label')?.textContent).toContain('decision d34')
 })
 
 test("a worker's terminal looks as in a terminal app: its font, weights, cursor and dark theme to the box's edges, drawn with WebGL at Unicode 11 widths, its colours as the worker sets them", async () => {
@@ -478,7 +478,7 @@ test('a message does not answer a decision that opened while it was written', as
   await reload()
   await submit('.composer textarea')
   expect(posted).toEqual([])
-  expect(banners().join()).toContain('#7')
+  expect(banners().join()).toContain('Decision d7')
   expect(field<HTMLTextAreaElement>('.composer textarea').value).toBe('carry on')
   // Sent again, having seen it, it answers the decision.
   await submit('.composer textarea')
@@ -490,7 +490,7 @@ test('a message does not answer a decision that opened while it was written', as
   await reload()
   await submit('.composer textarea')
   expect(posted).toEqual([])
-  expect(banners().join()).toContain('#7')
+  expect(banners().join()).toContain('Decision d7')
 })
 
 test('answering with a button keeps what was being written', async () => {
@@ -519,7 +519,7 @@ test('a button does not answer a decision that just took the place of another', 
   await click('Yes')
   await click('Yes')
   expect(posted.splice(0)).toEqual([{ taskId: 6, decisionId: 10, text: 'yes' }])
-  expect(banners().join()).toContain('#11')
+  expect(banners().join()).toContain('Decision d11')
   // A moment on, the person has seen it.
   setSystemTime(new Date(Date.now() + 1500))
   await click('Yes')
@@ -572,7 +572,7 @@ test('a finished task whose terminal is closed says a message goes on, where one
   expect(note()).toContain('a message goes on in the same conversation')
   expect(note()).not.toContain('nod resume')
   await go('/tasks/9')
-  expect(note()).toContain('nod resume 9 reopens it')
+  expect(note()).toContain('nod resume n9 reopens it')
   await go('/tasks/10')
   expect(note()).toContain('No live session')
   expect(note()).not.toContain('a message goes on')
@@ -686,9 +686,9 @@ test('a key pressed as the refresh takes its row away does not act on the next r
 // What the search finds for each ref, as `Todos.find` would; a number is a task page, and no data
 // the Projects page, where p3 is done.
 const found: Record<string, unknown[]> = {
-  r2: [{ kind: 'retro', id: 2, ref: 'r2', title: 'of #4: task 4', status: 'queued', taskId: 5 }],
+  r2: [{ kind: 'retro', id: 2, ref: 'r2', title: 'of n4: task 4', status: 'queued', taskId: 5 }],
   '3': [
-    { kind: 'task', id: 3, ref: '#3', title: 'task 3', status: 'running', taskId: 3 },
+    { kind: 'task', id: 3, ref: 'n3', title: 'task 3', status: 'running', taskId: 3 },
     { kind: 'project', id: 3, ref: 'p3', title: 'Health', status: 'done' },
   ],
   '9': [],

@@ -137,19 +137,19 @@ async function landTask(
 ): Promise<string> {
   const { ledger, home, repo } = pass
   const branch = task.branch
-  if (branch === null || task.repo === null) throw new Error(`task ${task.id} has no branch`)
+  if (branch === null || task.repo === null) throw new Error(`task n${task.id} has no branch`)
   const ask = (question: string): Promise<string> => askFor(pass, task, question)
   // On the branch of the task it comes after, it holds that task's commits: those land first.
   const before = baseOf(ledger, task)
   if (before !== null && !hasLanded(ledger, before)) {
-    return noteFor(pass, task, `lands after #${before.id}`)
+    return noteFor(pass, task, `lands after n${before.id}`)
   }
   if (branch === tip.branch) {
     return ask(`Its branch ${branch} is the default branch, which nod never pushes to.`)
   }
   if (task.collectedAt !== null) await restore(ledger, home, task.id)
   const ws = task.workspace
-  if (ws === null) throw new Error(`task ${task.id} has no workspace`)
+  if (ws === null) throw new Error(`task n${task.id} has no workspace`)
   let l = ledger.landing(task.id) ?? ledger.setLanding(task.id, {})
   // Before its start is read from HEAD: mid-rebase, HEAD is not where the branch is.
   if (rebasing(ws)) return noteFor(pass, task, 'a rebase is in progress in its worktree')

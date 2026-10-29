@@ -40,7 +40,7 @@ const tasks: LsTask[] = [
     note: '로그인 화면의 문구를 다듬고 시험을 고칩니다 🚀',
     issue: 'PROJ-2',
   }),
-  task({ id: 11, retroId: 4, status: 'queued', note: 'waits for #9: 다음 일 👩‍💻' }),
+  task({ id: 11, retroId: 4, status: 'queued', note: 'waits for n9: 다음 일 👩‍💻' }),
   task({ id: 6, todoId: 15, turns: 3, finishedAt: minsAgo(60 * 26), note: '보고서 초안 쓰기' }),
   task({
     id: 8,
@@ -52,7 +52,7 @@ const tasks: LsTask[] = [
 ]
 
 const rowOf = (table: string, id: number): string =>
-  table.split('\n').find((l) => l.startsWith(`│ #${id} `)) ?? ''
+  table.split('\n').find((l) => l.startsWith(`│ n${id} `)) ?? ''
 const cellsOf = (line: string): string[] =>
   line
     .split('│')
@@ -64,7 +64,7 @@ test('ls draws every line of the table exactly as wide as the terminal', () => {
     const lines = lsTable(tasks, width, false, now).split('\n')
     expect(lines.map((l) => [width, Bun.stringWidth(l)])).toEqual(lines.map(() => [width, width]))
     // A row per task, whatever the width.
-    expect(lines.filter((l) => /^│ #\d/.test(l))).toHaveLength(tasks.length)
+    expect(lines.filter((l) => /^│ n\d/.test(l))).toHaveLength(tasks.length)
   }
   // Colors take no room.
   for (const line of lsTable(tasks, 80, true, now).split('\n')) {
@@ -76,9 +76,9 @@ test('ls drops the turns column, then the todo column, as the terminal narrows',
   const head = (width: number): string[] =>
     cellsOf(lsTable(tasks, width, false, now).split('\n')[1] ?? '')
 
-  expect(head(110)).toEqual(['#', '할 일', '상태', '차례', '지남', '요약', '이슈 · 결과'])
-  expect(head(80)).toEqual(['#', '할 일', '상태', '지남', '요약', '이슈 · 결과'])
-  expect(head(60)).toEqual(['#', '상태', '지남', '요약', '이슈 · 결과'])
+  expect(head(110)).toEqual(['작업', '할 일', '상태', '차례', '지남', '요약', '이슈 · 결과'])
+  expect(head(80)).toEqual(['작업', '할 일', '상태', '지남', '요약', '이슈 · 결과'])
+  expect(head(60)).toEqual(['작업', '상태', '지남', '요약', '이슈 · 결과'])
 })
 
 test('ls groups what needs you, running, queued, unsent, then ended, the latest first in each', () => {
@@ -143,7 +143,7 @@ test('ls shortens pull request links and counts the age from the end, else the l
   const table = lsTable(tasks, 110, false, now)
   const row = (id: number): string[] => cellsOf(rowOf(table, id))
 
-  expect(row(3)).toEqual(['#3', 't12', '✕ 오류', '4', '50분', expect.any(String), 'PROJ-1 shop#27'])
+  expect(row(3)).toEqual(['n3', 't12', '✕ 오류', '4', '50분', expect.any(String), 'PROJ-1 shop#27'])
   expect(row(9).slice(2, 5)).toEqual(['▶ 진행', '1', '1분'])
   expect(row(11).slice(1, 5)).toEqual(['r4', '○ 기다림', '1', '10시간'])
   expect(row(6)[4]).toBe('1일')
@@ -182,7 +182,7 @@ test('ls colors only the status, dims the age and results, and has no color in a
   expect(rowOf(colored, 11)).toContain('\x1b[2m○ 기다림')
   expect(rowOf(colored, 3)).toContain('\x1b[2m50분')
   expect(rowOf(colored, 3)).toContain('\x1b[2mPROJ-1 shop#27')
-  expect(rowOf(colored, 3)).toContain('│ #3  │ t12   │')
+  expect(rowOf(colored, 3)).toContain('│ n3   │ t12   │')
   // The header and group rows have none.
   expect(colored.split('\n').filter((l) => l.includes('\x1b'))).toHaveLength(tasks.length)
 
@@ -213,7 +213,7 @@ test('ls --plain gives a tab-separated line a task, with whole values', () => {
     'queued',
     '1',
     minsAgo(600),
-    'waits for #9: 다음 일 👩‍💻',
+    'waits for n9: 다음 일 👩‍💻',
     '',
   ])
   expect(lsLine(task({ id: 7, status: 'running', sessionEnded: true })).split('\t')[2]).toBe(

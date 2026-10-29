@@ -168,7 +168,7 @@ test('done signals: dropped, taken over, merged into the default branch, every p
 
   expect(done).toEqual([
     { id: dropped, reason: 'dropped' },
-    { id: replaced, reason: `#${takeover} took over t${todo.id}` },
+    { id: replaced, reason: `n${takeover} took over t${todo.id}` },
     { id: approved, reason: `approved: ${PR}1#issuecomment-9` },
     { id: merged, reason: `merged: ${PR}3` },
     { id: inherited, reason: 'dropped' },
@@ -456,7 +456,7 @@ test("an errored repo task goes once a task added after the error does its todo,
 
   const todoOf = (id: number) => ledger.get(id).todoId
   expect(swept.done).toEqual([
-    { id: failedStart, reason: `#${failedStart + 1} took over t${todoOf(failedStart)}` },
+    { id: failedStart, reason: `n${failedStart + 1} took over t${todoOf(failedStart)}` },
   ])
   expect(swept.report).toEqual({ removed: [], clean: [failedStart], skipped: [] })
   for (const id of [unpushed, waitedOn, plain, unseen]) {

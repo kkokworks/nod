@@ -92,7 +92,7 @@ async function signal(
   }
   const sameTodo = (t: Task): boolean =>
     t.id > task.id && t.todoId !== null && t.todoId === task.todoId
-  const tookOver = (t: Task): string => `#${t.id} took over t${task.todoId}`
+  const tookOver = (t: Task): string => `n${t.id} took over t${task.todoId}`
   // An errored task also goes once a newer one does its todo, added after the error: the person
   // saw what stopped it, fixed it and added the todo again. Its error stays on its row.
   if (task.status === 'error') {

@@ -213,7 +213,7 @@ async function checkWatches(ledger: Ledger, home: string): Promise<number[]> {
         } catch (error) {
           // The task could not carry on (its transcript gone after gc, its session failing to
           // start), so the person takes the todo, as when no task is named.
-          const line = `${localTime(new Date())} task #${back} could not carry on: ${oneLine(message(error), 200)}`
+          const line = `${localTime(new Date())} task n${back} could not carry on: ${oneLine(message(error), 200)}`
           const notes = withLine(todos.get(t.id).notes, line)
           todos.set(t.id, { status: 'next', notes }, SELF)
           await notifyError(ledger, home, back)(error)
@@ -347,12 +347,13 @@ export async function tickHome(home: string): Promise<void> {
     watches,
   )
   const at = new Date().toISOString()
-  if (added.length > 0) console.log(`${at} added task(s) ${added.join(', ')}`)
+  const tasks = (ids: number[]): string => ids.map((id) => `n${id}`).join(', ')
+  if (added.length > 0) console.log(`${at} added task(s) ${tasks(added)}`)
   if (passed.length > 0)
     console.log(`${at} watch passed: ${passed.map((id) => `t${id}`).join(', ')}`)
-  if (collected.length > 0) console.log(`${at} collected task(s) ${collected.join(', ')}`)
-  if (lost.length > 0) console.log(`${at} turn(s) lost with their terminal: ${lost.join(', ')}`)
-  if (cut.length > 0) console.log(`${at} went on from a check cut off: ${cut.join(', ')}`)
-  if (restarted.length > 0) console.log(`${at} restarted task(s) ${restarted.join(', ')}`)
-  if (closed.length > 0) console.log(`${at} closed the terminal(s) of task(s) ${closed.join(', ')}`)
+  if (collected.length > 0) console.log(`${at} collected task(s) ${tasks(collected)}`)
+  if (lost.length > 0) console.log(`${at} turn(s) lost with their terminal: ${tasks(lost)}`)
+  if (cut.length > 0) console.log(`${at} went on from a check cut off: ${tasks(cut)}`)
+  if (restarted.length > 0) console.log(`${at} restarted task(s) ${tasks(restarted)}`)
+  if (closed.length > 0) console.log(`${at} closed the terminal(s) of task(s) ${tasks(closed)}`)
 }

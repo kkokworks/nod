@@ -74,7 +74,7 @@ function TaskPage() {
         <div className="task-meta">
           <Status status={status} />
           <span className="muted">
-            #{task.id} · {localTime(task.createdAt)}
+            n{task.id} · {localTime(task.createdAt)}
             {task.finishedAt !== null && ` · took ${duration(task.createdAt, task.finishedAt)}`}
           </span>
         </div>
@@ -100,7 +100,7 @@ function TaskPage() {
               check <code>{task.checkCmd}</code>
             </span>
           )}
-          {task.triggerId !== null && <span className="tag">trigger #{task.triggerId}</span>}
+          {task.triggerId !== null && <span className="tag">trigger c{task.triggerId}</span>}
           {root !== null ? (
             <span
               className="tag"
@@ -123,7 +123,7 @@ function TaskPage() {
             <span className="tag">
               r{retro.id} of{' '}
               <Link to="/tasks/$id" params={{ id: String(retro.ofTaskId) }}>
-                #{retro.ofTaskId}
+                n{retro.ofTaskId}
               </Link>
               {retro.outcome !== null && `, ${retro.outcome}`}
             </span>
@@ -138,7 +138,7 @@ function TaskPage() {
             <span key={a.id} className="tag">
               after{' '}
               <Link to="/tasks/$id" params={{ id: String(a.id) }}>
-                #{a.id}
+                n{a.id}
               </Link>{' '}
               {a.status}
             </span>
@@ -220,7 +220,7 @@ function TaskPage() {
                 ) : (
                   <>
                     {' · '}
-                    <code>nod resume {task.id}</code> reopens it
+                    <code>nod resume n{task.id}</code> reopens it
                   </>
                 ))}
             </div>
@@ -310,8 +310,8 @@ function Composer({
       setAim(now)
       setError(
         now === null
-          ? `Decision #${aim} closed while you wrote. Send again to message the worker.`
-          : `Decision #${now} opened while you wrote. Send again to answer it.`,
+          ? `Decision d${aim} closed while you wrote. Send again to message the worker.`
+          : `Decision d${now} opened while you wrote. Send again to answer it.`,
       )
       return
     }
@@ -319,7 +319,7 @@ function Composer({
   }
   const press = (reply: string, d: Decision) => {
     if (Date.now() - changed.current.at < CHANGED_MS) {
-      setError(`Decision #${d.id} just opened. Read it, then answer.`)
+      setError(`Decision d${d.id} just opened. Read it, then answer.`)
       return
     }
     void submit(reply, d.id)
@@ -339,7 +339,7 @@ function Composer({
     >
       {open !== undefined && (
         <div className="composer-label">
-          Answering decision #{open.id} · {open.reason.replace('_', ' ')}
+          Answering decision d{open.id} · {open.reason.replace('_', ' ')}
         </div>
       )}
       {open !== undefined && YES_OR_NO.has(open.reason) ? (

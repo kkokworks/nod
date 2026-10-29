@@ -617,7 +617,7 @@ export const MIGRATIONS = [
       join tasks t on t.id = d.task_id
     where t.status = 'queued')
   update tasks set status = 'cancelled',
-    error = 'task #' || (select min(after) from w where w.id = tasks.id) || ' it waits for was cancelled',
+    error = 'task n' || (select min(after) from w where w.id = tasks.id) || ' it waits for was cancelled',
     finished_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
   where id in (select id from w);
   update decisions set answer = '(the retrospective had ended)'
@@ -795,7 +795,7 @@ export class Ledger {
       const after = t.after.map((id) => this.get(id))
       const sameRepo = after.filter((a) => t.repo !== null && a.repo === t.repo)
       if (sameRepo.length > 1) {
-        const ids = sameRepo.map((a) => `#${a.id}`).join(', ')
+        const ids = sameRepo.map((a) => `n${a.id}`).join(', ')
         throw new Error(
           `${ids} all work in ${t.repo}; a task can come after only one task in its repo, so chain them`,
         )
@@ -876,7 +876,7 @@ export class Ledger {
 
   get(id: number): Task {
     const task = this.first(q.selectFrom('tasks').select(TASK).where('id', '=', id))
-    if (!task) throw new Error(`task ${id} not found`)
+    if (!task) throw new Error(`task n${id} not found`)
     return task
   }
 
@@ -1026,7 +1026,7 @@ export class Ledger {
 
   trigger(id: number): Trigger {
     const t = this.first(q.selectFrom('triggers').select(TRIGGER).where('id', '=', id))
-    if (!t) throw new Error(`trigger ${id} not found`)
+    if (!t) throw new Error(`trigger c${id} not found`)
     return t
   }
 
@@ -1039,7 +1039,7 @@ export class Ledger {
         .where('removedAt', 'is', null)
         .returning('id'),
     )
-    if (!removed) throw new Error(`trigger ${id} not found`)
+    if (!removed) throw new Error(`trigger c${id} not found`)
   }
 
   // Records a run at `at` unless another tick has recorded one since `last`, so a run happens once
@@ -1185,7 +1185,7 @@ export class Ledger {
         .where('todoId', 'is', null)
         .returning('id'),
     )
-    if (!linked) throw new Error(`task ${taskId} does not exist or already does a todo`)
+    if (!linked) throw new Error(`task n${taskId} does not exist or already does a todo`)
   }
 
   // The tasks doing a todo, oldest first.
@@ -1374,7 +1374,7 @@ export class Ledger {
         .onConflict((oc) => oc.column('taskId').doUpdateSet({ ...edit, updatedAt })),
     )
     const landing = this.landing(taskId)
-    if (landing === null) throw new Error(`task ${taskId} has no landing`)
+    if (landing === null) throw new Error(`task n${taskId} has no landing`)
     return landing
   }
 
@@ -1642,7 +1642,7 @@ export class Ledger {
   ): void {
     this.db.transaction(() => {
       const decision = this.decision(decisionId)
-      if (decision.answer !== null) throw new Error(`decision ${decisionId} is already answered`)
+      if (decision.answer !== null) throw new Error(`decision d${decisionId} is already answered`)
       this.run(q.updateTable('decisions').set({ answer, answeredAt }).where('id', '=', decisionId))
       if (next !== null) this.setStatus(decision.taskId, next, null)
     })()
@@ -1650,7 +1650,7 @@ export class Ledger {
 
   decision(id: number): Decision {
     const d = this.first(q.selectFrom('decisions').selectAll().where('id', '=', id))
-    if (!d) throw new Error(`decision ${id} not found`)
+    if (!d) throw new Error(`decision d${id} not found`)
     return d
   }
 
@@ -1835,7 +1835,7 @@ export class Ledger {
       // still be resumed and succeed.
       if (status !== 'cancelled') return
       for (const w of this.waiting(id)) {
-        this.setStatus(w, 'cancelled', `task #${id} it waits for was cancelled`)
+        this.setStatus(w, 'cancelled', `task n${id} it waits for was cancelled`)
       }
     })()
   }

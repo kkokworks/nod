@@ -330,7 +330,7 @@ test('a todo delegated with nod add waits on its task, whose decision is listed 
   })
   expect(await ok('add', '--todo', 't1', '--after', String(first))).toEqual(['2'])
   expect(await ok('todo', 'waiting')).toEqual([
-    't1    waiting   Write the release notes  · p1 Release · waiting on task #2 (queued) · since <time>',
+    't1    waiting   Write the release notes  · p1 Release · waiting on task n2 (queued) · since <time>',
   ])
   const shown = await ok('show', '2')
   expect(shown).toContain('  brief: Write the release notes')
@@ -345,14 +345,14 @@ test('a todo delegated with nod add waits on its task, whose decision is listed 
   })
   ledger.ask(2, attempt, 'question', 'Which version?')
   expect(await ok('todo')).toEqual([
-    '#1    decide    Write the release notes  · question · task #2 · p1 Release · since <time>',
-    't1    waiting   Write the release notes  · p1 Release · waiting on task #2 (needs_decision) · since <time>',
+    'd1    decide    Write the release notes  · question · task n2 · p1 Release · since <time>',
+    't1    waiting   Write the release notes  · p1 Release · waiting on task n2 (needs_decision) · since <time>',
   ])
   expect(await ok('todo', 'next', '--context', 'phone')).toHaveLength(1)
   expect(await ok('todo', 'inbox')).toEqual([''])
   expect(await ok('project')).toEqual(['p1    active   Release  1 next  1 waiting'])
   expect((await ok('todo', 't1')).filter((l) => l.startsWith('  task'))).toEqual([
-    '  task #2 needs_decision',
+    '  task n2 needs_decision',
   ])
 })
 
@@ -360,7 +360,7 @@ test('nod search shows the one match as its own command does, and lists several 
   const { ok, fails, home } = runner()
   await ok('in', 'Write the report')
   await ok('project', 'add', 'Health')
-  // Task #1 does t1; it is only queued, so no worker runs.
+  // Task n1 does t1; it is only queued, so no worker runs.
   const ledger = new Ledger(home)
   const todos = new Todos(ledger)
   const taskId = todos.delegate(
@@ -388,13 +388,17 @@ test('nod search shows the one match as its own command does, and lists several 
 
   expect(await ok('search', '1')).toEqual([
     't1    todo     waiting        Write the report  · nod todo t1',
-    '#1    task     needs_decision Draft the report  · nod show 1',
+    'n1    task     needs_decision Draft the report  · nod show n1',
     'p1    project  active         Health  · nod project p1',
-    '1     decision open           Which chart?  · nod show 1',
+    'd1    decision open           Which chart?  · nod show n1',
   ])
   expect(await ok('search', 't1')).toEqual(await ok('todo', 't1'))
+  expect(await ok('search', 'n1')).toEqual(await ok('show', 'n1'))
+  // `#<n>`, as nod wrote a task before `n`, and the bare number, as before.
   expect(await ok('search', '#1')).toEqual(await ok('show', '1'))
+  expect(await ok('show', 'n1')).toEqual(await ok('show', '1'))
   expect(await ok('search', 'p1')).toEqual(await ok('project', 'p1'))
+  expect(await ok('search', 'd1')).toEqual(await ok())
 
   // Decision 2 alone has the number 2: shown as `nod` lists it, or with its answer once it has one.
   ledger.answer(1, 'a bar')
@@ -402,7 +406,7 @@ test('nod search shows the one match as its own command does, and lists several 
   expect(await ok('search', '2')).toEqual(await ok())
   ledger.answer(2, 'blue')
   expect(await ok('search', '2')).toEqual([
-    '#2  question  (task #1 t1: Draft the report with the numbers)',
+    'd2  question  (task n1 t1: Draft the report with the numbers)',
     '  And the colour?',
     '',
     'answered: blue',
@@ -411,7 +415,7 @@ test('nod search shows the one match as its own command does, and lists several 
   ledger.addRetro(ledger.get(taskId), 'look back')
   expect(await ok('search', 'r1')).toEqual(await ok('show', 'r1'))
   expect(await ok('search', '1')).toContain(
-    'r1    retro    queued         of #1: Draft the report  · nod show r1',
+    'r1    retro    queued         of n1: Draft the report  · nod show r1',
   )
 
   for (const none of ['9', 't2', 'x1']) {

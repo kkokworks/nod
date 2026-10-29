@@ -138,8 +138,16 @@ export type Found = { id: number; ref: string; title: string; status: string } &
   | { kind: 'project' }
   | { kind: 'task' | 'retro' | 'decision'; taskId: number }
 )
-// What a search ref's prefix finds; a bare number finds every kind.
-const FINDS = { t: 'todo', '#': 'task', r: 'retro', p: 'project' } as const
+// What a search ref's prefix finds; a bare number finds every kind. `#` is how nod wrote a task
+// before `n`, kept for the refs already written down.
+const FINDS = {
+  t: 'todo',
+  n: 'task',
+  '#': 'task',
+  r: 'retro',
+  p: 'project',
+  d: 'decision',
+} as const
 // What a watch said when it last ran: its exit code and the end of its output.
 export type WatchCheck = { watch: string; at: string; code: number; output: string }
 // A Claude session `nod open` opened for a project, and the folder it was opened in, where Claude
@@ -173,13 +181,21 @@ type Tables = {
 const q = queryBuilder<Tables>()
 const ChangeJson = z.record(z.string(), z.tuple([z.unknown(), z.unknown()]))
 
-const REF_NAMES = { t: 'todo', p: 'project', r: 'retrospective' } as const
+const REF_NAMES = {
+  t: 'todo',
+  p: 'project',
+  r: 'retrospective',
+  n: 'task',
+  d: 'decision',
+  c: 'trigger',
+} as const
 
-// `t12` for a todo, `p3` for a project, `r2` for a retrospective. A bare number is refused: `nod 12`
-// answers a decision and `nod drop 12` ends a task, so a number meant for a todo must not read as
-// either.
-export function parseRef(ref: string, prefix: keyof typeof REF_NAMES): number {
-  const m = new RegExp(`^${prefix}(\\d+)$`).exec(ref)
+// `t12` for a todo, `p3` for a project, `r2` for a retrospective, `n5` for a task, `d7` for a
+// decision, `c2` for a trigger. A bare number is refused unless `bare`: tasks, decisions and
+// triggers took one before nod wrote their letters, and still do; `nod 12` answers a decision and
+// `nod drop 12` ends a task, so a number meant for a todo must not read as either.
+export function parseRef(ref: string, prefix: keyof typeof REF_NAMES, bare = false): number {
+  const m = new RegExp(`^${prefix}${bare ? '?' : ''}(\\d+)$`).exec(ref)
   if (m?.[1] === undefined) {
     throw new Error(`not a ${REF_NAMES[prefix]}: ${ref} (write ${prefix}<n>)`)
   }
@@ -432,16 +448,23 @@ export class Todos {
     })()
   }
 
-  // A task by its number, by the todo it does (`t12`): that todo's latest task, so the person can
-  // name their work by the todo alone, or by the retrospective it runs (`r3`), as ls shows it.
+  // A task by its number (`n5`, or `5`), by the todo it does (`t12`): that todo's latest task, so
+  // the person can name their work by the todo alone, or by the retrospective it runs (`r3`), as ls
+  // shows it.
   taskRef(ref: string): number {
+    if (/^n?\d+$/.test(ref)) return parseRef(ref, 'n', true)
     if (ref.startsWith('r')) {
       const id = parseRef(ref, 'r')
       const task = this.ledger.list().find((t) => t.retroId === id)
       if (task === undefined) throw new Error(`r${id} not found`)
       return task.id
     }
-    if (!ref.startsWith('t')) return Number(ref)
+    if (!ref.startsWith('t')) {
+      // A number as Number reads it, as before (` 12`); `d5` or `c5` names no task.
+      const n = Number(ref)
+      if (ref.trim() !== '' && Number.isInteger(n)) return n
+      throw new Error(`not a task: ${ref} (write n<n>, t<n> or r<n>)`)
+    }
     const id = parseRef(ref, 't')
     const last = this.ledger.tasksOf(id).at(-1)
     if (last === undefined)
@@ -449,12 +472,12 @@ export class Todos {
     return last.id
   }
 
-  // What `t<n>`, `#<n>`, `r<n>` or `p<n>` names, or, for a bare `<n>`, all that n numbers: the todo,
-  // task, retrospective, project and decision, in that order. Anything else names nothing. A
-  // decision's ref is its bare number, as `nod <decision> <answer>` takes it. `status` names a
-  // task's state; callers that see the terminals pass taskStatus (view.ts).
+  // What `t<n>`, `n<n>` (or `#<n>`), `r<n>`, `p<n>` or `d<n>` names, or, for a bare `<n>`, all that
+  // n numbers: the todo, task, retrospective, project and decision, in that order. Anything else
+  // names nothing. `status` names a task's state; callers that see the terminals pass taskStatus
+  // (view.ts).
   find(ref: string, status: (t: Task) => string = (t) => t.status): Found[] {
-    const m = /^([t#rp]?)(\d+)$/.exec(ref.trim())
+    const m = /^([tn#rpd]?)(\d+)$/.exec(ref.trim())
     if (m === null) return []
     const prefix = m[1] as keyof typeof FINDS | ''
     const n = Number(m[2])
@@ -466,7 +489,7 @@ export class Todos {
       task && {
         kind: 'task',
         id: n,
-        ref: `#${n}`,
+        ref: `n${n}`,
         title: firstLineOf(task.brief),
         status: status(task),
         taskId: n,
@@ -475,7 +498,7 @@ export class Todos {
         kind: 'retro',
         id: n,
         ref: `r${n}`,
-        title: `of #${retro.retro.ofTaskId}: ${firstLineOf(this.ledger.get(retro.retro.ofTaskId).brief)}`,
+        title: `of n${retro.retro.ofTaskId}: ${firstLineOf(this.ledger.get(retro.retro.ofTaskId).brief)}`,
         status: retro.retro.outcome ?? status(retro.task),
         taskId: retro.task.id,
       },
@@ -489,7 +512,7 @@ export class Todos {
       decision && {
         kind: 'decision',
         id: n,
-        ref: String(n),
+        ref: `d${n}`,
         title: firstLineOf(decision.question),
         status:
           decision.answer === null ? 'open' : decision.answeredAt === null ? 'closed' : 'answered',
@@ -569,7 +592,7 @@ export class Todos {
       const t = this.get(id)
       if (t.status !== 'waiting' || t.watch !== watch) return null
       const back = passed ? t.backTo : null
-      const to = back === null ? '' : `, back to task #${back}`
+      const to = back === null ? '' : `, back to task n${back}`
       const line = `${localTime(new Date())} watch ${outcome}${to}: ${watch}`
       const notes = withLine(t.notes, line)
       const edit: TodoEdit = back === null ? { status: 'next' } : { waitingOn: null, watch: null }
@@ -583,7 +606,7 @@ export class Todos {
     if (t.waitingOn !== null) return t.waitingOn
     const tasks = this.tasks(t.id).filter(({ task }) => UNFINISHED.includes(task.status))
     if (tasks.length === 0) return null
-    return tasks.map(({ task }) => `task #${task.id} (${task.status})`).join(', ')
+    return tasks.map(({ task }) => `task n${task.id} (${task.status})`).join(', ')
   }
 
   // The tasks doing the todo, oldest first.
@@ -905,11 +928,11 @@ export class Todos {
       const task = this.ledger.tasksOf(before.id).at(-1)
       if (task?.id !== edit.backTo) {
         throw new Error(
-          `task #${edit.backTo} is not the latest task of t${before.id}; give --back-to t${before.id}`,
+          `task n${edit.backTo} is not the latest task of t${before.id}; give --back-to t${before.id}`,
         )
       }
       if (task.workspace === null) {
-        throw new Error(`task #${task.id} never started, so it cannot carry on`)
+        throw new Error(`task n${task.id} never started, so it cannot carry on`)
       }
     }
     const projectId = edit.projectId === undefined ? before.projectId : edit.projectId

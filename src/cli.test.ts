@@ -147,14 +147,14 @@ test("watch tells each end of a task it watches once, again after the task runs 
     wait,
   )
   expect(printed).toEqual([
-    `task #${ok} MINE succeeded: wrote the docs`,
-    `task #${bad} MINE error: the worktree could not be made`,
-    `task #${dropped} MINE cancelled: ask first`,
-    `task #${dropsLanding} MINE succeeded: added the feature`,
-    `task #${ok} MINE succeeded: fixed the review`,
-    `task #${lands} MINE succeeded: wrote the pull request text`,
-    `task #${dropsLanding} MINE succeeded: added the feature`,
-    `task #${last} MINE succeeded: all done`,
+    `task n${ok} MINE succeeded: wrote the docs`,
+    `task n${bad} MINE error: the worktree could not be made`,
+    `task n${dropped} MINE cancelled: ask first`,
+    `task n${dropsLanding} MINE succeeded: added the feature`,
+    `task n${ok} MINE succeeded: fixed the review`,
+    `task n${lands} MINE succeeded: wrote the pull request text`,
+    `task n${dropsLanding} MINE succeeded: added the feature`,
+    `task n${last} MINE succeeded: all done`,
   ])
   // The look that found the last worker stopped told its end, then five idle looks.
   expect(looks).toBe(8)
@@ -963,9 +963,79 @@ test('tick by hand says which finished tasks it collected', () => {
   const ids = [old(true), old(false)]
   const tick = Bun.spawnSync(['bun', cli, 'tick'], { env: { ...process.env, NOD_HOME: home } })
 
-  expect(tick.stdout.toString()).toBe(`collected task(s) ${ids.join(', ')}\n`)
+  expect(tick.stdout.toString()).toBe(`collected task(s) ${ids.map((id) => `n${id}`).join(', ')}\n`)
   expect(ledger.list().map((t) => t.collectedAt !== null)).toEqual([true, true])
 })
+
+test('a task is n<n>, a decision d<n> and a trigger c<n>, and each still takes its bare number', () => {
+  const home = tmp.make('nod-letters-')
+  const ledger = new Ledger(home)
+  const env = { ...process.env, NOD_HOME: home }
+  const nod = (...args: string[]): string => {
+    const r = Bun.spawnSync(['bun', cli, ...args], { env })
+    if (r.exitCode !== 0) throw new Error(r.stderr.toString())
+    return r.stdout.toString()
+  }
+  // A task that succeeded with decisions left open on it, which an answer or a drop only closes.
+  const id = ledger.add({
+    brief: 'write the notes',
+    repo: null,
+    branch: null,
+    checkCmd: null,
+    model: null,
+    after: [],
+    triggerId: null,
+    issue: null,
+  })
+  ledger.setRunning(id, home)
+  const turn = ledger.startAttempt({
+    taskId: id,
+    kind: 'start',
+    decisionId: null,
+    sessionId: 's',
+    prompt: 'write the notes',
+  })
+  const asked = ['Which tone?', 'How long?', 'For whom?', 'Which day?'].map((q) =>
+    ledger.ask(id, turn, 'question', q),
+  )
+  ledger.succeed(id)
+  const [lettered, dropped, bare, open] = asked as [number, number, number, number]
+
+  const listed = nod()
+  expect(listed).toContain(`d${lettered}  question  (task n${id}: write the notes)`)
+  expect(listed).toContain('answer: nod d<n> <answer>   end the task: nod drop d<n>')
+  expect(nod(`d${lettered}`, 'warm')).toBe(`closed; task n${id} had ended\n`)
+  expect(nod('drop', `d${dropped}`)).toBe('closed; its task had ended\n')
+  expect(nod(String(bare), 'short')).toBe(`closed; task n${id} had ended\n`)
+  // Another letter names no decision: a task's number never answers the decision it also numbers.
+  for (const wrong of [
+    [`n${open}`, 'yes'],
+    ['drop', `n${open}`],
+    ['drop', `c${open}`],
+  ]) {
+    expect(Bun.spawnSync(['bun', cli, ...wrong], { env }).exitCode).not.toBe(0)
+  }
+  const answers = asked.map((d) => ledger.decision(d).answer)
+  expect(answers).toEqual(['warm', '(dropped)', 'short', null])
+
+  // A task by n<n> or its bare number, and `#<n>` in search, as nod wrote it before.
+  const shown = nod('show', `n${id}`)
+  expect(shown).toStartWith(`n${id}   `)
+  expect(shown).toContain(`decision d${lettered} question — closed: warm`)
+  expect(nod('show', String(id))).toBe(shown)
+  expect(nod('search', `n${id}`)).toBe(shown)
+  expect(nod('search', `#${id}`)).toBe(shown)
+
+  const added = (brief: string): number =>
+    Number(nod('trigger', 'add', '0 9 * * *', brief).split('\n')[0])
+  const first = added('morning digest')
+  const second = added('evening digest')
+  expect(nod('trigger', 'ls')).toContain(`c${first}    0 9 * * *`)
+  expect(nod('trigger', 'rm', `c${first}`)).toBe('removed\n')
+  expect(nod('trigger', 'rm', String(second))).toBe('removed\n')
+  expect(ledger.triggers()).toEqual([])
+  // About 20 nod commands, each a bun process: about a second alone, longer on a loaded machine.
+}, 20_000)
 
 test('hook stop waits on the background work Claude Code says still runs, and tick asks once that has taken an hour', () => {
   const home = tmp.make('nod-wait-')
@@ -1016,7 +1086,7 @@ test('hook stop waits on the background work Claude Code says still runs, and ti
     .query('update attempts set finished_at = $at where task_id = $id')
     .run({ at: new Date(Date.now() - 61 * 60_000).toISOString(), id })
   const tick = Bun.spawnSync(['bun', cli, 'tick'], { env })
-  expect(tick.stdout.toString()).toBe(`waited too long on background work: ${id}\n`)
+  expect(tick.stdout.toString()).toBe(`waited too long on background work: n${id}\n`)
   expect(ledger.openDecisions().map((d) => [d.taskId, d.reason])).toEqual([[id, 'question']])
 })
 
@@ -1234,7 +1304,7 @@ test('repo sets how far nod lands a repo, records who changed what, and refuses 
   })
   const off = await nod({}, 'land', String(task))
   expect(off.code).not.toBe(0)
-  expect(off.err).toContain(`task #${task}'s repo does not let nod land it: nod repo ${repo} pr`)
+  expect(off.err).toContain(`task n${task}'s repo does not let nod land it: nod repo ${repo} pr`)
   expect(await ok('land')).toEqual(['nothing to land'])
 }, 20_000)
 
@@ -1287,12 +1357,12 @@ test('attach and peek of a finished task whose terminal is closed say a message 
     const closed = nod(command, String(finished))
     expect(closed.exitCode).not.toBe(0)
     expect(closed.stderr.toString()).toContain(
-      `task #${finished} finished and its terminal is closed; nod tell ${finished} <message> goes on in the same conversation`,
+      `task n${finished} finished and its terminal is closed; nod tell n${finished} <message> goes on in the same conversation`,
     )
     for (const id of [queued, neverStarted, retro]) {
       const none = nod(command, String(id))
       expect(none.exitCode).not.toBe(0)
-      expect(none.stderr.toString()).toContain(`task #${id} has no live session`)
+      expect(none.stderr.toString()).toContain(`task n${id} has no live session`)
       expect(none.stderr.toString()).not.toContain('nod tell')
     }
   }

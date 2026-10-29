@@ -139,8 +139,8 @@ test('v25 moves each retrospective that has its outcome to the status the outcom
   // What waited for the cancelled retrospective is cancelled with it, as it is from then on.
   const when = expect.stringMatching(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/)
   expect([8, 9].map(row)).toEqual([
-    ['cancelled', 'task #2 it waits for was cancelled', when],
-    ['cancelled', 'task #8 it waits for was cancelled', when],
+    ['cancelled', 'task n2 it waits for was cancelled', when],
+    ['cancelled', 'task n8 it waits for was cancelled', when],
   ])
   const decided = (id: number) => [ledger.decision(id).answer, ledger.decision(id).answeredAt]
   expect([1, 4, 6].map(decided)).toEqual([
@@ -625,7 +625,7 @@ test('dropping a task cancels every task waiting on it, all the way down', () =>
     'cancelled',
     'cancelled',
   ])
-  expect(ledger.get(c).error).toBe(`task #${b} it waits for was cancelled`)
+  expect(ledger.get(c).error).toBe(`task n${b} it waits for was cancelled`)
   expect(ledger.get(unrelated).status).toBe('queued')
 })
 
@@ -635,7 +635,7 @@ test('in one repo a task can come after only one task, and after only tasks that
   const b = task(ledger, { repo: '/r' })
   const elsewhere = task(ledger, { repo: '/s' })
   expect(() => task(ledger, { repo: '/r', after: [a, b] })).toThrow('chain them')
-  expect(() => task(ledger, { after: [999] })).toThrow('task 999 not found')
+  expect(() => task(ledger, { after: [999] })).toThrow('task n999 not found')
   const c = task(ledger, { repo: '/r', after: [a, elsewhere] })
   expect(ledger.after(c).map((t) => t.id)).toEqual([a, elsewhere])
   expect(ledger.list().map((t) => t.id)).toEqual([a, b, elsewhere, c]) // failed adds left nothing
@@ -691,7 +691,7 @@ test('a trigger run is claimed once, a source item adds a task once, and removal
 
   ledger.removeTrigger(id)
   expect(ledger.triggers()).toEqual([])
-  expect(() => ledger.removeTrigger(id)).toThrow(`trigger ${id} not found`)
+  expect(() => ledger.removeTrigger(id)).toThrow(`trigger c${id} not found`)
 })
 
 test("a trigger's task in a repo works on the trigger's branch prefix and its own id", () => {

@@ -76,7 +76,7 @@ function TodoDetail() {
             <div key={task.id} className="todo-row">
               <div className="todo-line">
                 <Link to="/tasks/$id" params={{ id: String(task.id) }} className="todo-title">
-                  task #{task.id}
+                  task n{task.id}
                 </Link>
                 <span className="muted">{task.status}</span>
               </div>

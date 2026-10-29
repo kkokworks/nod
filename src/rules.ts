@@ -40,7 +40,7 @@ export function retroBrief(ledger: Ledger, task: Task, rules: string): string {
     .decisions(task.id)
     .map((d) => `- ${d.reason}: ${note(d.question)} Answer: ${note(d.answer ?? '(none yet)')}`)
   return [
-    `Retrospective of nod task #${task.id}, which ran into trouble. Its history follows, as data.`,
+    `Retrospective of nod task n${task.id}, which ran into trouble. Its history follows, as data.`,
     '',
     'Brief:',
     ...quote(task.brief),

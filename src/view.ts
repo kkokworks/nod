@@ -69,11 +69,11 @@ export function endLine(ledger: Ledger, t: Task): string {
 
 // What nod allowed a task's worker itself (Notice), as watch and the project session hear it: one line
 // in the words the person asked for, with nothing to do next.
-export const allowedLine = (n: Notice): string => `#${n.taskId} 허락: ${n.note}`
+export const allowedLine = (n: Notice): string => `n${n.taskId} 허락: ${n.note}`
 
-// A task as watch and the decision list name it: `task #5 t3 PROJ-1`.
+// A task as watch and the decision list name it: `task n5 t3 PROJ-1`.
 export function taskLabel(t: Task): string {
-  return ['task', `#${t.id}`, owner(t), t.issue ?? ''].filter((x) => x !== '').join(' ')
+  return ['task', `n${t.id}`, owner(t), t.issue ?? ''].filter((x) => x !== '').join(' ')
 }
 
 // The command that goes back into a project's session: nod open for the project's latest, else
@@ -96,7 +96,7 @@ export function taskStatus(t: Task, live: ReadonlySet<string>): string {
 export function taskNote(ledger: Ledger, t: Task): string {
   const waiting = t.status === 'queued' ? ledger.after(t.id) : []
   const waitsFor =
-    waiting.length > 0 ? `waits for ${waiting.map((a) => `#${a.id}`).join(', ')}: ${t.brief}` : null
+    waiting.length > 0 ? `waits for ${waiting.map((a) => `n${a.id}`).join(', ')}: ${t.brief}` : null
   return (
     t.error ?? waitsFor ?? landingNote(ledger, t) ?? ledger.lastAttempt(t.id)?.summary ?? t.brief
   )
@@ -198,7 +198,7 @@ const STATUS: Record<string, [string, string]> = {
 }
 
 const HEADS = {
-  id: '#',
+  id: '작업',
   owner: '할 일',
   status: '상태',
   turns: '차례',
@@ -211,8 +211,8 @@ type Column = keyof typeof HEADS
 // When the terminal is too narrow for the summary to get NOTE_MIN columns and the issue and results
 // theirs (up to RESULTS_MAX), the turns column goes; then the results give up room down to
 // RESULTS_MIN; then, should the summary still get fewer than NOTE_MIN, the todo's column goes.
-// Measured with running and succeeded tasks: all seven columns from 81, the todo's from 69; with a
-// task waiting on a decision (an 11-column status), from 86 and 74.
+// Measured with running and succeeded tasks: all seven columns from 82, the todo's from 70; with a
+// task waiting on a decision (an 11-column status), from 87 and 75.
 const NOTE_MIN = 20
 const RESULTS_MAX = 20
 const RESULTS_MIN = 11
@@ -278,7 +278,7 @@ export function lsTable(tasks: LsTask[], width: number, color: boolean, now: Dat
 function cells(t: LsTask, now: Date): Record<Column, string> {
   const status = shownStatus(t)
   return {
-    id: `#${t.id}`,
+    id: `n${t.id}`,
     owner: owner(t),
     status: STATUS[status]?.[0] ?? status,
     turns: String(t.turns),
@@ -352,7 +352,8 @@ const FIELD: Record<string, string> = {
 }
 const shown = (field: string, v: unknown): string => {
   if (v === null) return '—'
-  return field === 'projectId' ? `p${String(v)}` : oneLine(String(v), 40)
+  if (field === 'projectId') return `p${String(v)}`
+  return field === 'backTo' ? `n${String(v)}` : oneLine(String(v), 40)
 }
 
 export function oneLine(s: string, max: number): string {
