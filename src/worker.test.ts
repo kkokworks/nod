@@ -1,4 +1,13 @@
-import { afterAll, beforeEach, expect, it, setSystemTime, spyOn, test } from 'bun:test'
+import {
+  afterAll,
+  beforeEach,
+  expect,
+  it,
+  setDefaultTimeout,
+  setSystemTime,
+  spyOn,
+  test,
+} from 'bun:test'
 import {
   appendFileSync,
   chmodSync,
@@ -60,6 +69,10 @@ import {
   workerEnv,
   workerPrompt,
 } from './worker'
+
+// A test here starts workers, each a few processes (`nod run`, the fake agent, its hooks), which take
+// seconds more where other work runs too, as nod's checks do.
+setDefaultTimeout(30_000)
 
 const tmp = tempDirs()
 const homes: string[] = []
@@ -2228,7 +2241,10 @@ tmuxTest("a worker's terminal passes on none of the tmux server's environment", 
 
 // Ends a worker's Claude Code and not its terminal, as a tool that switches accounts does.
 function endClaude(id: number): void {
-  process.kill(Number(terminals.option(sessionName(id), 'nod_claude')), 'SIGTERM')
+  const claude = Number(terminals.option(sessionName(id), 'nod_claude'))
+  // Not 0, which would signal this test run's whole process group.
+  if (!(claude > 0)) throw new Error(`task ${id} has no Claude Code running`)
+  process.kill(claude, 'SIGTERM')
 }
 
 test('whatever ends its Claude Code, a worker starts again in the same terminal and conversation, without the brief', async () => {

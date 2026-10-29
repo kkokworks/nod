@@ -31,11 +31,21 @@ const ESC = '\x1b'
 const ROWS = 50
 // As Tmux.close.
 const EXIT_TIMEOUT_MS = 15_000
-// How long keys wait for a session just started to open its keyboard.
-const KEYBOARD_WAIT_MS = 2000
+// ponytail: BUN_OPTIONS takes no quotes (Bun 1.3.14 ignores a quoted path), so a repo whose path has
+// a space fails every session with `Module not found`; quote it once Bun reads quotes.
 const PRELOAD = resolve(import.meta.dir, 'fake-terminals-preload.ts')
 // The test run whose sessions these are: a session ends once it is gone (fake-terminals-preload.ts).
 export const OWNER = 'NOD_FAKE_TERMINALS_OWNER'
+
+// What `file` holds; null once it is gone, also when another process removes it as this reads it.
+function read(file: string): string | null {
+  try {
+    return readFileSync(file, 'utf8')
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
+    throw error
+  }
+}
 
 // Writes `file` whole: processes of their own read what a session keeps at any time, and one that
 // read it half written would take the session for gone (an empty pid) or the option for unset.
@@ -65,9 +75,6 @@ export class FakeTerminals implements Terminals {
     const made = Bun.spawnSync(['mkfifo', keyboard], { stderr: 'pipe' })
     if (made.exitCode !== 0) throw new Error(`mkfifo failed: ${made.stderr.toString().trim()}`)
     const pane = `%${crypto.randomUUID()}`
-    // Blank until its process writes, which may start after this returns, as a new tmux pane is.
-    const screen = join(at, 'screen')
-    writeFileSync(screen, '')
     put(join(at, 'created'), String(Date.now()))
     put(join(at, 'pane'), pane)
     const all = {
@@ -78,25 +85,27 @@ export class FakeTerminals implements Terminals {
       BUN_OPTIONS: `--preload ${PRELOAD}`,
       [OWNER]: process.env[OWNER] || String(process.pid),
     }
-    // In the background with job control (`set -m`), so in a process group of its own, and the sh
-    // that started it gone, so it outlives whatever started it as a tmux session does. Its keyboard
-    // is opened to read and write, so it never reads an end.
-    const script = 'set -m; in=$1; out=$2; shift 2; "$@" <>"$in" >>"$out" 2>&1 & echo $!'
-    const vars = Object.entries(all).map(([key, value]) => `${key}=${value}`)
+    // Its keyboard is open to read and write from the start, so keys typed before it reads wait for
+    // it, and it never reads an end. Detached, as proc.ts runs a command: a session and process group
+    // of its own, so it outlives whatever started it and closes as a whole, as a tmux pane does.
+    const keys = openSync(keyboard, constants.O_RDWR)
+    const screen = openSync(join(at, 'screen'), 'a')
     // A session that did not start is not there, nor does it count as starting (alive).
     try {
-      const started = Bun.spawnSync(
-        ['/bin/sh', '-c', script, 'sh', keyboard, screen, '/usr/bin/env', '-i', ...vars, ...argv],
-        { cwd, env: { PATH: process.env.PATH ?? '' }, stderr: 'pipe' },
-      )
-      const pid = Number(started.stdout.toString().trim())
-      if (started.exitCode !== 0 || !(pid > 0)) {
-        throw new Error(`could not start ${name}: ${started.stderr.toString().trim()}`)
-      }
-      put(join(at, 'pid'), String(pid))
+      const proc = Bun.spawn(argv, {
+        cwd,
+        env: all,
+        stdio: [keys, screen, screen],
+        detached: true,
+      })
+      proc.unref()
+      put(join(at, 'pid'), String(proc.pid))
     } catch (error) {
       rmSync(at, { recursive: true, force: true })
       throw error
+    } finally {
+      closeSync(keys)
+      closeSync(screen)
     }
   }
 
@@ -116,8 +125,7 @@ export class FakeTerminals implements Terminals {
   }
 
   option(name: string, key: string): string {
-    const file = join(this.live(name), 'options', key)
-    return existsSync(file) ? readFileSync(file, 'utf8') : ''
+    return read(join(this.live(name), 'options', key)) ?? ''
   }
 
   setOption(name: string, key: string, value: string | null): void {
@@ -137,10 +145,7 @@ export class FakeTerminals implements Terminals {
   // As tmux has it, in seconds: when the session began, or a person last attached to it.
   lastUsed(name: string): number {
     if (!this.alive(name)) return 0
-    const times = ['created', 'last-attached'].map((f) => {
-      const file = join(this.at(name), f)
-      return existsSync(file) ? Number(readFileSync(file, 'utf8')) : 0
-    })
+    const times = ['created', 'last-attached'].map((f) => Number(read(join(this.at(name), f))))
     return Math.floor(Math.max(...times) / 1000) * 1000
   }
 
@@ -203,7 +208,7 @@ export class FakeTerminals implements Terminals {
   }
 
   pane(name: string): string | null {
-    return this.alive(name) ? readFileSync(join(this.at(name), 'pane'), 'utf8') : null
+    return this.alive(name) ? read(join(this.at(name), 'pane')) : null
   }
 
   // As a person does with nod attach, and as they leave.
@@ -219,23 +224,28 @@ export class FakeTerminals implements Terminals {
   // As tmux kill-server: ends every session at once, as a test run does once it is over.
   killAll(): void {
     if (!existsSync(this.dir)) return
+    // Only the live ones: the pid of one that ended may be another process's by now.
     for (const name of readdirSync(this.dir)) {
-      if (!name.startsWith('.')) this.hangUp(name, 'SIGKILL')
+      if (!name.startsWith('.') && this.alive(name)) this.hangUp(name, 'SIGKILL')
     }
     rmSync(this.dir, { recursive: true, force: true })
   }
 
   private hangUp(name: string, signal: NodeJS.Signals): void {
     const pid = this.pid(name)
+    if (pid === null) return
     try {
-      if (pid !== null) process.kill(-pid, signal)
-    } catch {
-      // Gone already.
+      process.kill(-pid, signal)
+    } catch (error) {
+      // Gone already, unless it is there with no group of its own: then it would outlive its session.
+      if ((error as NodeJS.ErrnoException).code === 'ESRCH' && running(pid)) throw error
     }
   }
 
   private type(name: string, keys: string): void {
-    const fd = this.keyboard(name)
+    // Opens only while something reads it (ENXIO otherwise): a session whose process is gone takes no
+    // keys, as tmux refuses them.
+    const fd = openSync(join(this.live(name), 'in'), constants.O_WRONLY | constants.O_NONBLOCK)
     try {
       let left = Buffer.from(keys)
       while (left.length > 0) {
@@ -251,25 +261,9 @@ export class FakeTerminals implements Terminals {
     }
   }
 
-  // Opens only while something reads it (ENXIO otherwise): a session whose process is gone takes no
-  // keys, as tmux refuses them. One just started may not have opened it yet, where tmux would keep
-  // the keys for it.
-  private keyboard(name: string): number {
-    const deadline = Date.now() + KEYBOARD_WAIT_MS
-    while (true) {
-      try {
-        return openSync(join(this.live(name), 'in'), constants.O_WRONLY | constants.O_NONBLOCK)
-      } catch (error) {
-        const code = (error as NodeJS.ErrnoException).code
-        if (code !== 'ENXIO' || Date.now() > deadline) throw error
-        Bun.sleepSync(5)
-      }
-    }
-  }
-
   private pid(name: string): number | null {
-    const file = join(this.at(name), 'pid')
-    return existsSync(file) ? Number(readFileSync(file, 'utf8')) : null
+    const pid = read(join(this.at(name), 'pid'))
+    return pid === null ? null : Number(pid)
   }
 
   // The session's folder, which must be live, as tmux refuses a session it does not have.

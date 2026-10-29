@@ -33,7 +33,7 @@ import {
 import { branchOf, sessionName } from './place'
 import { message, readAtOnce, spawn } from './proc'
 import { pullRequests } from './prs'
-import { Tmux } from './tmux'
+import { type Terminals, Tmux } from './tmux'
 import {
   actorFromEnv,
   capture,
@@ -290,7 +290,7 @@ restart waits for a person attached to the worker. <home> is $NOD_HOME, or ~/.no
 const [command, ...rest] = Bun.argv.slice(2)
 const home = nodHome()
 // The workers' terminals, made here once: every command and hook below is given them.
-const terminals = Tmux.of(home)
+const terminals: Terminals = Tmux.of(home)
 // Before the ledger opens here, as one that cannot open must not fail it either.
 if (command === 'hook' && rest[0] === 'prompt') await promptHook()
 if (command === 'hook' && rest[0] === 'inbox') await inboxHook()

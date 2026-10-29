@@ -8,13 +8,17 @@ import { Tmux } from './tmux'
 // (worker.test.ts, on test/fake-terminals.ts).
 const tmp = tempDirs()
 testTmux(tmp)
-afterAll(tmp.removeAll)
+const home = tmp.make('nod-tmux-home-')
+const tmux = Tmux.of(home)
+// Also when a test fails before it ends its server.
+afterAll(() => {
+  tmux.killServer()
+  tmp.removeAll()
+})
 
 tmuxTest(
   'the sessions come in one call with the values nod keeps on each, unset ones empty and the last one whole',
   () => {
-    const home = tmp.make('nod-tmux-home-')
-    const tmux = Tmux.of(home)
     tmux.start('kept', home, ['/bin/sleep', '30'], {})
     tmux.start('bare', home, ['/bin/sleep', '30'], {})
     tmux.setOption('kept', 'nod_restarting', '1')
