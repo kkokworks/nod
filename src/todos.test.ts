@@ -195,7 +195,7 @@ test('--back-to names the task that did the todo; a passing watch hands the todo
     '--back-to is for when a watch passes',
   )
   expect(() => todos.set(t.id, { status: 'waiting', watch, backTo: unrelated }, 'human')).toThrow(
-    `task #${unrelated} is not the latest task of t${t.id}`,
+    `task n${unrelated} is not the latest task of t${t.id}`,
   )
   todos.set(t.id, { status: 'waiting', waitingOn: 'Kim', watch, backTo: did }, 'human')
   // It goes with the watch: clearing the watch, or leaving waiting, forgets it.
@@ -221,7 +221,7 @@ test('--back-to names the task that did the todo; a passing watch hands the todo
     null,
     null,
   ])
-  expect(back.notes).toMatch(/ watch passed, back to task #\d+: test -f answered$/)
+  expect(back.notes).toMatch(/ watch passed, back to task n\d+: test -f answered$/)
   // It waits on the task now: not moved by its earlier end, moved by the next one.
   todos.followTasks('nod')
   expect(todos.get(t.id).status).toBe('waiting')
@@ -251,7 +251,7 @@ test('--back-to takes only the latest task, the one whose end moves the todo', (
   const watch = 'test -f answered'
   // followTasks goes by the latest task, so an earlier one carrying on would never move the todo.
   expect(() => todos.set(t.id, { status: 'waiting', watch, backTo: earlier }, 'human')).toThrow(
-    `task #${earlier} is not the latest task of t${t.id}`,
+    `task n${earlier} is not the latest task of t${t.id}`,
   )
   todos.set(t.id, { status: 'waiting', watch, backTo: latest }, 'human')
   todos.endWatch(t.id, watch, 'passed', 'nod', true)
@@ -509,6 +509,17 @@ test('refs need their prefix: a bare number could be a decision or a task', () =
   expect(() => parseRef('p12', 't')).toThrow('not a todo: p12')
 })
 
+test('a decision is d<n> and a trigger c<n>, or their bare number as before; nothing else', () => {
+  expect(parseRef('d12', 'd', true)).toBe(12)
+  expect(parseRef('12', 'd', true)).toBe(12)
+  expect(parseRef('c3', 'c', true)).toBe(3)
+  expect(parseRef('3', 'c', true)).toBe(3)
+  expect(() => parseRef('#12', 'd', true)).toThrow('not a decision: #12 (write d<n>)')
+  expect(() => parseRef('n12', 'd', true)).toThrow('not a decision: n12 (write d<n>)')
+  expect(() => parseRef('', 'c', true)).toThrow('not a trigger:  (write c<n>)')
+  expect(() => parseRef('d12', 'c', true)).toThrow('not a trigger: d12 (write c<n>)')
+})
+
 test('a delegated todo waits on its tasks, and follows the last once none can go on', () => {
   const { ledger, todos } = books()
   const t = captured(todos, 'Write the release notes')
@@ -572,6 +583,8 @@ test('a task can be named by its todo: the latest task doing it', () => {
   const second = todos.delegate(t.id, { ...task, after: [first] }, 'human')
   expect(todos.taskRef(`t${t.id}`)).toBe(second)
   expect(todos.taskRef(String(first))).toBe(first)
+  expect(todos.taskRef(`n${first}`)).toBe(first)
+  expect(todos.taskRef(`n${second}`)).toBe(second)
   const idle = captured(todos, 'Read the spec')
   expect(() => todos.taskRef(`t${idle.id}`)).toThrow(`t${idle.id} has no task`)
   expect(ledger.get(second).todoId).toBe(t.id)
@@ -598,25 +611,28 @@ test('a number finds every kind it numbers, a prefix only its own kind, nothing 
 
   const all: Found[] = [
     { kind: 'todo', id: 1, ref: 't1', title: 'Write the report', status: 'waiting' },
-    { kind: 'task', id: 1, ref: '#1', title: 'Draft the report', status: 'needs_decision', taskId },
+    { kind: 'task', id: 1, ref: 'n1', title: 'Draft the report', status: 'needs_decision', taskId },
     {
       kind: 'retro',
       id: 1,
       ref: 'r1',
-      title: 'of #1: Draft the report',
+      title: 'of n1: Draft the report',
       status: 'queued',
       taskId: retroTask,
     },
     { kind: 'project', id: 1, ref: 'p1', title: 'Health', status: 'active' },
-    { kind: 'decision', id: 1, ref: '1', title: 'Which chart?', status: 'open', taskId },
+    { kind: 'decision', id: 1, ref: 'd1', title: 'Which chart?', status: 'open', taskId },
   ]
   expect(todos.find('1')).toEqual(all)
   expect(todos.find(' 1 ')).toEqual(all)
   for (const [ref, kind] of [
     ['t1', 'todo'],
+    ['n1', 'task'],
+    // `#<n>`, as nod wrote a task before `n`.
     ['#1', 'task'],
     ['r1', 'retro'],
     ['p1', 'project'],
+    ['d1', 'decision'],
   ]) {
     expect(todos.find(ref ?? '')).toEqual(all.filter((f) => f.kind === kind))
   }
@@ -632,8 +648,9 @@ test('a number finds every kind it numbers, a prefix only its own kind, nothing 
     'open',
   ])
   // The retrospective's task numbers nothing else.
-  expect(todos.find(String(retroTask)).map((f) => f.ref)).toEqual([`#${retroTask}`])
-  for (const none of ['9', 't9', '#9', 'r9', 'p9', 'x1', 't', '', 'Write the report']) {
+  expect(todos.find(String(retroTask)).map((f) => f.ref)).toEqual([`n${retroTask}`])
+  const nothing = ['9', 't9', 'n9', '#9', 'r9', 'p9', 'd9', 'x1', 't', 'n', '', 'Write the report']
+  for (const none of nothing) {
     expect(todos.find(none)).toEqual([])
   }
 

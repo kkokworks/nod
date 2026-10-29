@@ -239,7 +239,7 @@ test('what nod allows goes into the ledger with its turn, and to the project ses
   expect(sent).toEqual([
     {
       socket: '/socks/root-1',
-      content: `nod, project p${project.id} Release: a notice\n\n#${id} 허락: rm -rf node_modules`,
+      content: `nod, project p${project.id} Release: a notice\n\nn${id} 허락: rm -rf node_modules`,
     },
   ])
   // It opened no decision and left the task running.
@@ -268,7 +268,7 @@ test('a root session that watches hears the line too, for the tasks it watches, 
     )
     return printed
   }
-  expect(await heard((t) => t.id === id)).toEqual([`#${id} 허락: rm -rf build1`])
+  expect(await heard((t) => t.id === id)).toEqual([`n${id} 허락: rm -rf build1`])
   ledger.setRunning(id, ledger.get(id).workspace ?? '')
   expect(await heard((t) => t.id !== id)).toEqual([])
 })
@@ -328,7 +328,7 @@ test('a prompt nod does not allow holds back nod tell from its turn as it shows,
     })
   const refused = () =>
     expect(tell(ledger, home, id, 'also tag it')).rejects.toThrow(
-      /^answer permission decision #\d+ first: Enter would answer its dialog$/,
+      /^answer permission decision d\d+ first: Enter would answer its dialog$/,
     )
   // The worker's terminal is up (tmux stands in), its turn going.
   const alive = spyOn(Terminals.prototype, 'alive').mockReturnValue(true)

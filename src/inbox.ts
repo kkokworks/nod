@@ -174,9 +174,9 @@ function noticesText(ledger: Ledger, project: Project, notices: Notice[]): strin
 
 // What the session does with each end, as it does with `nod watch`'s line.
 const NEXT = {
-  succeeded: (id: number) => `nod show ${id}, then send its result out`,
-  error: (id: number) => `nod show ${id} says why; settle with the person what to do`,
-  cancelled: (id: number) => `tell the person (nod show ${id})`,
+  succeeded: (id: number) => `nod show n${id}, then send its result out`,
+  error: (id: number) => `nod show n${id} says why; settle with the person what to do`,
+  cancelled: (id: number) => `tell the person (nod show n${id})`,
 }
 
 // A notice as `nod watch` prints it, with the turn it came on (its attempt, counted from 1, or the
@@ -188,9 +188,9 @@ function noticeText(ledger: Ledger, n: Notice): string {
   if (n.event === 'decision') {
     const d = ledger.decision(n.decisionId ?? 0)
     return [
-      `decision #${d.id} ${d.reason} (${taskLabel(task)}: ${oneLine(task.brief, 60)})`,
+      `decision d${d.id} ${d.reason} (${taskLabel(task)}: ${oneLine(task.brief, 60)})`,
       indent(d.question),
-      `next: tell the person; nod ${d.id} <their answer> answers it, nod drop ${d.id} drops it`,
+      `next: tell the person; nod d${d.id} <their answer> answers it, nod drop d${d.id} drops it`,
     ].join('\n')
   }
   const turn = ledger.attempts(task.id).findIndex((a) => a.id === n.attemptId) + 1

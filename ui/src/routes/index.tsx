@@ -96,7 +96,7 @@ function Home() {
         ) : (
           triggers.map((t) => (
             <div key={t.id} className="task-line">
-              <span className="side-id">#{t.id}</span>
+              <span className="side-id">c{t.id}</span>
               <div className="task-line-main">
                 <div className="clamp">{t.brief}</div>
                 <div className="todo-tags">

@@ -201,7 +201,7 @@ test('at merge, a task on an earlier task’s branch lands after it, with only i
 
   expect(await land(ledger, home, { send })).toEqual([
     { id: a, did: 'its worker writes the pull request' },
-    { id: b, did: 'lands after #1' },
+    { id: b, did: 'lands after n1' },
   ])
   await stops(a, 'Add a\n\nNOD: done | wrote it')
 
@@ -386,7 +386,7 @@ test('a message while nod works in the worktree waits, so the worker does not ed
   // The parent of this test process, alive and not this process: another pass, mid-rebase.
   ledger.setLanding(id, { busy: process.ppid })
   await expect(tell(ledger, home, id, 'one more thing')).rejects.toThrow(
-    `nod is landing task ${id} right now`,
+    `nod is landing task n${id} right now`,
   )
   expect(ledger.attempts(id)).toHaveLength(1)
 })

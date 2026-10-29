@@ -70,7 +70,7 @@ NOD: in {"title": "<what to do>", "notes": "<optional>", "link": "<optional URL>
 With a source and key, an item goes in only once. To send a message to the worker of another nod
 task added from the same session as yours or in the same project, a finished one too, add a line
 above that last line:
-NOD: tell #<task> <message, on one line>
+NOD: tell n<task> <message, on one line>
 nod acts on these lines once it accepts your done. A message nod marks as from another task's
 worker is a peer's: weigh it, but the human's instructions come first.`
 // A repo worker also has its change reviewed before it reports done, by a subagent that knows what
@@ -92,7 +92,7 @@ const RESUME_PROMPT =
 // The prompt of a start that failed before its worker started (startTask): nothing went to a worker.
 const NOT_SENT = '(not sent: the task failed before its worker started)'
 const restartHint = (taskId: number): string =>
-  `Fix what stopped it, then \`nod resume ${taskId}\` starts it again.`
+  `Fix what stopped it, then \`nod resume n${taskId}\` starts it again.`
 // What a worker hears with the answer to an `interrupted` decision.
 const CUT_OFF_PROMPT =
   'Your last turn was cut off before it finished. Check what it already did before you do any of it again.'
@@ -344,7 +344,7 @@ export const workspaceOf = (home: string, task: Task): string =>
     : join(home, 'work', basename(task.repo), branchOf(task))
 
 export function branchOf(task: Task): string {
-  if (task.branch === null) throw new Error(`task ${task.id} has no branch`)
+  if (task.branch === null) throw new Error(`task n${task.id} has no branch`)
   return task.branch
 }
 
@@ -432,11 +432,11 @@ export function firstMessage(ledger: Ledger, task: Task, start: string | null): 
   if (after.length === 0) return `${task.brief}${since}${check}`
   const reports = after.map(
     (a) =>
-      `- #${a.id} ${oneLine(a.brief, 200)}: ${ledger.lastAttempt(a.id)?.summary || '(no summary)'}`,
+      `- n${a.id} ${oneLine(a.brief, 200)}: ${ledger.lastAttempt(a.id)?.summary || '(no summary)'}`,
   )
   const base = baseOf(ledger, task)
   const branch =
-    base === null ? '' : `\nThis worktree starts from task #${base.id}'s branch, with its commits.`
+    base === null ? '' : `\nThis worktree starts from task n${base.id}'s branch, with its commits.`
   return `${task.brief}\n\nThis task comes after these, which reported:\n${reports.join('\n')}${branch}${since}${check}`
 }
 
@@ -456,7 +456,7 @@ export async function answer(
 ): Promise<boolean> {
   const decision = ledger.decision(decisionId)
   // Before anything acts on it, as bringing a collected task back (restore below).
-  if (decision.answer !== null) throw new Error(`decision ${decisionId} is already answered`)
+  if (decision.answer !== null) throw new Error(`decision d${decisionId} is already answered`)
   // A to-do list that mirrors open decisions can close this one.
   const told = (): Promise<void> => announce(home, ledger.get(decision.taskId), [decision], text)
   // One left open on a task that ended only closes: no turn starts, and the task stays as it is.
@@ -490,9 +490,9 @@ export async function answer(
   if (decision.reason === 'rule') {
     const task = ledger.get(decision.taskId)
     const { retroId } = task
-    if (retroId === null) throw new Error(`decision ${decisionId} is on no retrospective`)
+    if (retroId === null) throw new Error(`decision d${decisionId} is on no retrospective`)
     const rule = ledger.attempt(decision.attemptId).summary
-    if (!rule) throw new Error(`decision ${decisionId} has no rule to add`)
+    if (!rule) throw new Error(`decision d${decisionId} has no rule to add`)
     const without = '(the task succeeded without it)'
     const closed = ledger.db
       .transaction(() => {
@@ -519,7 +519,7 @@ export async function answer(
     ledger.get(decision.taskId).collectedAt !== null
   ) {
     throw new Error(
-      `task ${decision.taskId} was collected, and its ${decision.reason} dialog went with its terminal; nod tell goes on`,
+      `task n${decision.taskId} was collected, and its ${decision.reason} dialog went with its terminal; nod tell goes on`,
     )
   }
   await restore(ledger, home, decision.taskId)
@@ -669,7 +669,7 @@ export async function resume(
   taskId: number,
 ): Promise<'reopened' | 'started'> {
   if (Terminals.of(home).alive(sessionName(taskId))) {
-    throw new Error(`task ${taskId}'s session is still open; send it a message with \`nod tell\``)
+    throw new Error(`task n${taskId}'s session is still open; send it a message with \`nod tell\``)
   }
   const task = ledger.get(taskId)
   const by = Number(MARKED.exec(task.error ?? '')?.[1])
@@ -689,7 +689,7 @@ export async function resume(
 // ponytail: a pid another process took since counts as the resume still running, so the task waits
 // until that process ends; record the start time with the pid if that bites.
 export const restartMark = (pid: number, taskId: number): string =>
-  `nod resume (pid ${pid}) is starting it again; if that process is gone, nod resume ${taskId} takes over`
+  `nod resume (pid ${pid}) is starting it again; if that process is gone, nod resume n${taskId} takes over`
 const MARKED = /^nod resume \(pid (\d+)\) is starting it again;/
 
 // What a start cut off as it made the task's folder left in its repo: the branch, and the worktree
@@ -735,17 +735,17 @@ async function clearCutOff(ledger: Ledger, home: string, task: Task): Promise<vo
 // Why a task with no conversation cannot take a message: it never started. One that failed before
 // it did starts again with `nod resume`, once the tasks it comes after have succeeded.
 function notStarted(ledger: Ledger, task: Task): Error {
-  const said = `task ${task.id} has not started.`
+  const said = `task n${task.id} has not started.`
   // Not failed: waiting, or being started (restartMark says by whom).
   if (task.status !== 'error')
     return new Error(task.error === null ? said : `${said} ${task.error}.`)
   const waits = ledger
     .after(task.id)
     .filter((a) => a.status !== 'succeeded')
-    .map((a) => `#${a.id}`)
+    .map((a) => `n${a.id}`)
   if (waits.length === 0) return new Error(`${said} ${restartHint(task.id)}`)
   return new Error(
-    `${said} It comes after ${waits.join(', ')}, which must succeed before \`nod resume ${task.id}\` can start it again.`,
+    `${said} It comes after ${waits.join(', ')}, which must succeed before \`nod resume n${task.id}\` can start it again.`,
   )
 }
 
@@ -786,7 +786,7 @@ export async function askToLand(
   question: string,
 ): Promise<void> {
   const last = ledger.lastAttempt(taskId)
-  if (last === null) throw new Error(`task ${taskId} has not started`)
+  if (last === null) throw new Error(`task n${taskId} has not started`)
   await decide(ledger, home, taskId, last.id, reason, question)
 }
 
@@ -834,7 +834,7 @@ export async function onStop(
   // A restart that waited for this turn to end. One that cannot run must not change what the hook
   // answers; Claude Code keeps a hook's stderr in its debug log.
   await restartDue(ledger, home, taskId).catch((error) =>
-    console.error(`nod: could not restart task ${taskId}: ${message(error)}`),
+    console.error(`nod: could not restart task n${taskId}: ${message(error)}`),
   )
   return out
 }
@@ -861,7 +861,7 @@ export async function onStopFailure(
     })
   }
   await restartDue(ledger, home, taskId).catch((error) =>
-    console.error(`nod: could not restart task ${taskId}: ${message(error)}`),
+    console.error(`nod: could not restart task n${taskId}: ${message(error)}`),
   )
 }
 
@@ -1210,7 +1210,7 @@ async function settle(
         task.id,
         attemptId,
         'rule',
-        `Task #${retro.ofTaskId} ran into trouble, and its retrospective r${retro.id} proposes this rule for every future worker:\n${summary}\nAnswer yes to add it to the rules every worker gets (nod rule ls); anything else drops it.`,
+        `Task n${retro.ofTaskId} ran into trouble, and its retrospective r${retro.id} proposes this rule for every future worker:\n${summary}\nAnswer yes to add it to the rules every worker gets (nod rule ls); anything else drops it.`,
         () => {
           captureFor(ledger, task, captures)
           ledger.proposeRule(retro.id, summary)
@@ -1350,15 +1350,15 @@ function captureFor(ledger: Ledger, task: Task, captures: Capture[]): void {
   }
 }
 
-// The `NOD: tell #<task> <message>` lines of a report, or what is wrong with one, to send back to
-// the worker.
+// The `NOD: tell n<task> <message>` lines of a report, or what is wrong with one, to send back to
+// the worker. `#<task>` is how workers wrote it before `n`, and one started then still may.
 export function parseTells(text: string): { tells: Tell[] } | { error: string } {
   const tells: Tell[] = []
   for (const line of nodLines(text, 'tell')) {
-    const [, to, said] = /^NOD:\s*tell\s+#(\d+)\s+(\S.*)$/i.exec(line) ?? []
+    const [, to, said] = /^NOD:\s*tell\s+[n#](\d+)\s+(\S.*)$/i.exec(line) ?? []
     if (to === undefined || said === undefined) {
       return {
-        error: `A \`NOD: tell\` line nod cannot read: ${line}\nWrite it as NOD: tell #<task> <message>, on one line, or leave it out.`,
+        error: `A \`NOD: tell\` line nod cannot read: ${line}\nWrite it as NOD: tell n<task> <message>, on one line, or leave it out.`,
       }
     }
     tells.push({ to: Number(to), text: said.trim() })
@@ -1373,13 +1373,13 @@ export function parseTells(text: string): { tells: Tell[] } | { error: string } 
 // issue, in no project) steer any. A task that ended or never started has no worker to hear it.
 function cannotTell(ledger: Ledger, from: Task, to: number): string | null {
   const task = ledger.list().find((t) => t.id === to)
-  if (task === undefined) return `There is no task #${to}.`
-  if (to === from.id) return `#${to} is this task.`
+  if (task === undefined) return `There is no task n${to}.`
+  if (to === from.id) return `n${to} is this task.`
   if (!new Todos(ledger).sameWork(from, task)) {
-    return `#${to} was not added from the session that added this task, nor is it in this task's project, and nod passes messages only between those.`
+    return `n${to} was not added from the session that added this task, nor is it in this task's project, and nod passes messages only between those.`
   }
-  if (task.status === 'cancelled' || ended(ledger, to)) return `#${to} has ended.`
-  if (task.workspace === null || ledger.lastAttempt(to) === null) return `#${to} has not started.`
+  if (task.status === 'cancelled' || ended(ledger, to)) return `n${to} has ended.`
+  if (task.workspace === null || ledger.lastAttempt(to) === null) return `n${to} has not started.`
   return null
 }
 
@@ -1389,7 +1389,7 @@ function unsendable(ledger: Ledger, from: Task, tells: Tell[]): string | null {
   for (const { to, text } of tells) {
     const why = cannotTell(ledger, from, to)
     if (why !== null) {
-      return `A \`NOD: tell\` line nod cannot send: NOD: tell #${to} ${text}\n${why} Leave it out, or ask the human.`
+      return `A \`NOD: tell\` line nod cannot send: NOD: tell n${to} ${text}\n${why} Leave it out, or ask the human.`
     }
   }
   return null
@@ -1408,14 +1408,14 @@ function overTold(ledger: Ledger, from: Task, tells: Tell[]): string | null {
   }
   const over = [...after].find(([, n]) => n > MAX_TELLS)?.[0]
   if (over === undefined) return null
-  const asked = tells.map(({ to, text }) => `> to #${to}: ${text}`).join('\n')
-  return `Task #${from.id}'s worker reported done and asks nod to pass on:\n${asked}\n#${from.id} and #${over} have sent each other ${before.get(over)} messages already, and nod passes on at most ${MAX_TELLS} between two tasks, so it sent none of these and has not taken the done. Answer with how #${from.id} should go on, such as to finish without them; to let them talk on, pass them on yourself first (nod tell <task> '<message>').`
+  const asked = tells.map(({ to, text }) => `> to n${to}: ${text}`).join('\n')
+  return `Task n${from.id}'s worker reported done and asks nod to pass on:\n${asked}\nn${from.id} and n${over} have sent each other ${before.get(over)} messages already, and nod passes on at most ${MAX_TELLS} between two tasks, so it sent none of these and has not taken the done. Answer with how n${from.id} should go on, such as to finish without them; to let them talk on, pass them on yourself first (nod tell <task> '<message>').`
 }
 
 // How a message from another task's worker reaches a worker: marked as a peer's, so it never passes
 // for the human's, with how to answer it.
 const peerMessage = (from: number, text: string): string =>
-  `Message from the worker of nod task #${from}, a peer, not the human: weigh it, but the human's instructions come first. To answer it, report a line NOD: tell #${from} <answer>.\n${text}`
+  `Message from the worker of nod task n${from}, a peer, not the human: weigh it, but the human's instructions come first. To answer it, report a line NOD: tell n${from} <answer>.\n${text}`
 
 // Sends what a worker told other tasks once nod has taken its done, as `nod tell` does: into the
 // worker's live session, or one brought back, a finished task's too. One that cannot go in (a
@@ -1434,7 +1434,7 @@ async function sendTells(ledger: Ledger, home: string, from: Task, tells: Tell[]
       await notify(home, {
         event: 'error',
         task: taskRef(ledger.get(to)),
-        error: `nod could not pass on what task #${from.id}'s worker told it (${message(error)}): ${text}`,
+        error: `nod could not pass on what task n${from.id}'s worker told it (${message(error)}): ${text}`,
       })
     }
   }
@@ -1545,7 +1545,7 @@ function transcriptLines(
     const file = transcriptOf(ledger, home, taskId, sessionId)
     return file === null ? null : readFileSync(file, 'utf8').split('\n')
   } catch (error) {
-    console.error(`nod: could not read the transcript of task ${taskId}: ${message(error)}`)
+    console.error(`nod: could not read the transcript of task n${taskId}: ${message(error)}`)
     return null
   }
 }
@@ -1566,7 +1566,7 @@ function transcriptTail(ledger: Ledger, home: string, open: Attempt): string[] {
       closeSync(fd)
     }
   } catch (error) {
-    console.error(`nod: could not read the transcript of task ${open.taskId}: ${message(error)}`)
+    console.error(`nod: could not read the transcript of task n${open.taskId}: ${message(error)}`)
     return []
   }
 }
@@ -1825,7 +1825,7 @@ function refuseEnded(ledger: Ledger, task: Task): void {
   if (task.retroId === null) return
   const { outcome } = ledger.retro(task.retroId)
   if (outcome !== null) {
-    throw new Error(`task ${task.id} is retrospective r${task.retroId}, which ended (${outcome})`)
+    throw new Error(`task n${task.id} is retrospective r${task.retroId}, which ended (${outcome})`)
   }
 }
 
@@ -1891,7 +1891,7 @@ async function deliver(
   // the dialog has "No, exit" selected first: the message's Enter would end Claude Code.
   const trusting = ledger.decisions(taskId).find((d) => d.answer === null && d.reason === 'trust')
   if (live && !restarting && trusting !== undefined) {
-    throw new Error(`answer trust decision #${trusting.id} first: Enter would answer its dialog`)
+    throw new Error(`answer trust decision d${trusting.id} first: Enter would answer its dialog`)
   }
   // Whether the worker is mid-turn is settled in one transaction, as the Stop hook acts on a check
   // in one (settle): a retry it starts takes the message, and a turn started here it leaves to run.
@@ -1905,12 +1905,12 @@ async function deliver(
       const busy = ledger.landing(taskId)?.busy ?? null
       if (kind !== 'land' && busy !== null && busy !== process.pid && running(busy)) {
         throw new Error(
-          `nod is landing task ${taskId} right now (rebasing or checking its branch); try again in a minute`,
+          `nod is landing task n${taskId} right now (rebasing or checking its branch); try again in a minute`,
         )
       }
       // A worker's message never brings back a task the person dropped (sendTells).
       if (from !== null && ledger.get(taskId).status === 'cancelled') {
-        throw new Error(`task ${taskId} was dropped`)
+        throw new Error(`task n${taskId} was dropped`)
       }
       const open = ledger.openAttempt(taskId)
       // `checked` is NaN while the hook has yet to read which turn it checks: the one that ended.
@@ -1945,7 +1945,7 @@ async function deliver(
     const dialog = asking(ledger, taskId, turn.attemptId)
     if (dialog !== undefined && !restarting) {
       throw new Error(
-        `answer permission decision #${dialog.id} first: Enter would answer its dialog`,
+        `answer permission decision d${dialog.id} first: Enter would answer its dialog`,
       )
     }
     if (restarting) leavePrompt(home, taskId, text)
@@ -2241,7 +2241,7 @@ async function nextRun(ledger: Ledger, home: string, taskId: number): Promise<St
   // (startTask), and `nod resume` started the task again.
   const [first, last] = [attempts.findLast((a) => a.kind === 'start'), attempts.at(-1)]
   if (first === undefined || last === undefined || task.workspace === null) {
-    throw new Error(`task ${taskId} has not started`)
+    throw new Error(`task n${taskId} has not started`)
   }
   const marker = task.repo === null ? null : startedMarker(home, taskId)
   if (marker !== null) rmSync(marker, { force: true })
@@ -2303,7 +2303,7 @@ export async function cutChecks(ledger: Ledger, home: string): Promise<number[]>
     try {
       if (await goOnCut(ledger, home, t.id)) went.push(t.id)
     } catch (error) {
-      console.error(`nod: could not go on with task ${t.id}: ${message(error)}`)
+      console.error(`nod: could not go on with task n${t.id}: ${message(error)}`)
     }
   }
   return went
@@ -2457,7 +2457,7 @@ export async function closeFinished(ledger: Ledger, home: string, now: Date): Pr
       // Not one gc or drop closed meanwhile.
       if (await terminals.close(name)) closed.push(id)
     } catch (error) {
-      console.error(`nod: could not close task ${id}'s terminal: ${message(error)}`)
+      console.error(`nod: could not close task n${id}'s terminal: ${message(error)}`)
     }
   }
   return closed
@@ -2751,7 +2751,7 @@ async function awaitStart(
     if (screen.includes(TRUST_DIALOG)) {
       const by = task.repo === null ? null : trustedBy(ledger, task.repo)
       if (by !== null) {
-        const note = `trust ${task.repo}, as the person did in decision #${by.id} (task #${by.taskId})`
+        const note = `trust ${task.repo}, as the person did in decision d${by.id} (task n${by.taskId})`
         ledger.addNotice({ taskId: task.id, attemptId, event: 'allowed', note })
         return acceptTrust(terminals, name, started)
       }
@@ -2866,7 +2866,7 @@ export async function restore(ledger: Ledger, home: string, taskId: number): Pro
   if (last === null || task.workspace === null) throw notStarted(ledger, task)
   if (!hasTranscript(configDir(home), last.sessionId)) {
     throw new Error(
-      `task ${taskId}'s session transcript is gone (gc deleted transcripts before nod kept them): ${last.sessionId}.jsonl`,
+      `task n${taskId}'s session transcript is gone (gc deleted transcripts before nod kept them): ${last.sessionId}.jsonl`,
     )
   }
   if (!existsSync(task.workspace)) {
@@ -2970,7 +2970,7 @@ async function verify(
   checkCmd: string | null = task.checkCmd,
 ): Promise<Check | null> {
   if (task.retroId !== null) return null
-  if (task.workspace === null) throw new Error(`task ${task.id} has no workspace`)
+  if (task.workspace === null) throw new Error(`task n${task.id} has no workspace`)
   // ponytail: the check runs unsandboxed because a human wrote it; sandbox it once the planner
   // starts generating checks.
   const check = checkCmd === null ? null : await runCheck(checkCmd, task.workspace)
@@ -3049,7 +3049,7 @@ async function review(
       changes !== null &&
       ((await headOf(cwd)) !== changes.head || (await uncommittedChanges(cwd)))
     ) {
-      throw new Error(`the reviewer of task ${task.id} changed its worktree`)
+      throw new Error(`the reviewer of task n${task.id} changed its worktree`)
     }
     const verdict = parseReport(stdout)
     if (verdict === null || verdict.status === 'question') {
@@ -3150,7 +3150,7 @@ async function verifyLanding(
   prompt: string,
 ): Promise<Check | null> {
   const ws = task.workspace
-  if (ws === null) throw new Error(`task ${task.id} has no workspace`)
+  if (ws === null) throw new Error(`task n${task.id} has no workspace`)
   if (task.repo === null) return verify(ledger, task, report)
   // Only while there is none: a later done of the same landing (a second conflict, a fixed check)
   // reports on that work, not on the pull request. A gate that fails clears it (land.ts).

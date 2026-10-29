@@ -696,7 +696,7 @@ test('a watch with --back-to passes into that task, brought back after gc, which
   expect((await tick(ledger, home, new Date(), true)).passed).toEqual([todo.id])
   const given = todos.get(todo.id)
   expect(given.status).toBe('next')
-  expect(given.notes).toMatch(/task #\d+ could not carry on: .*transcript is gone/)
+  expect(given.notes).toMatch(/task n\d+ could not carry on: .*transcript is gone/)
 })
 
 // A todo handed to a task that has succeeded, so the person's todo is done.
@@ -800,7 +800,7 @@ test('a task that comes after another starts once that one succeeds, and hears i
   await answer(ledger, home, decision.id, 'yes', 'human')
   await reaches(next, 'succeeded')
   const message = entries('turn').find((t) => t.message?.startsWith('then this'))?.message
-  expect(message).toContain(`- #${first} ask-first: did it`)
+  expect(message).toContain(`- n${first} ask-first: did it`)
 })
 
 test('in a repo, done needs the work committed, and the next task starts from that branch', async () => {
@@ -848,7 +848,7 @@ test('in a repo, done needs the work committed, and the next task starts from th
   expect(ledger.get(next).workspace).toBe(worktree)
   expect(existsSync(join(worktree, 'ok.txt'))).toBe(true)
   const message = entries('turn').find((t) => t.message?.startsWith('build on it'))?.message
-  expect(message).toContain(`starts from task #${first}'s branch`)
+  expect(message).toContain(`starts from task n${first}'s branch`)
   // A review gets the files changed in its brief, and reads the diff itself.
   const review = (brief: string): string | undefined =>
     entries('review').find((r) => r.message?.includes(`> ${brief}`))?.message
@@ -909,7 +909,7 @@ function publish(repo: string): void {
 }
 
 const reviewEntry = (id: number): LogEntry | undefined =>
-  entries('review').find((r) => r.message?.includes(`nod task #${id}.`))
+  entries('review').find((r) => r.message?.includes(`nod task n${id}.`))
 const reviewOf = (id: number): string => reviewEntry(id)?.message ?? ''
 
 // The files task `id`'s reviewer read in the diff nod saved for it, which is what the command its
@@ -1050,7 +1050,7 @@ it('a repo worker is told to have a subagent review its branch from where it sta
   // Every worker may wait on background work, and tell another task's worker something.
   const every = workerPrompt(ledger, null).replaceAll('\n', ' ')
   expect(every).toContain('nod then waits for that work instead of asking the human')
-  expect(every).toContain('NOD: tell #<task> <message, on one line>')
+  expect(every).toContain('NOD: tell n<task> <message, on one line>')
   expect(every).toContain("worker is a peer's: weigh it, but the human's instructions come first")
   expect(firstMessage(ledger, alone, null)).toBe('fix it')
 })
@@ -1119,7 +1119,7 @@ it('a repo task whose submodules cannot be filled leaves no worktree or branch b
   expect(error).toContain(
     `check that out first: git -C ${quote(repo)} submodule update --init 'lib'`,
   )
-  expect(error).toEndWith(`\nFix what stopped it, then \`nod resume ${id}\` starts it again.`)
+  expect(error).toEndWith(`\nFix what stopped it, then \`nod resume n${id}\` starts it again.`)
   expect(ledger.get(id).status).toBe('error')
   expect(ledger.get(id).error).toBe(error)
   expect(ledger.get(id).workspace).toBeNull()
@@ -1179,7 +1179,7 @@ async function blocked(after: number[] = []): Promise<number> {
     issue: null,
   })
   writeFileSync(workspaceOf(home, ledger.get(id)), '')
-  expect(await failure(startTask(ledger, home, id))).toContain(`nod resume ${id}`)
+  expect(await failure(startTask(ledger, home, id))).toContain(`nod resume n${id}`)
   return id
 }
 
@@ -1192,15 +1192,15 @@ test('a task that failed before it started takes no message, and resume tries it
   ledger.collected(id, 'abc123')
 
   expect(await failure(tell(ledger, home, id, 'go on'))).toBe(
-    `task ${id} has not started. Fix what stopped it, then \`nod resume ${id}\` starts it again.`,
+    `task n${id} has not started. Fix what stopped it, then \`nod resume n${id}\` starts it again.`,
   )
   // Nothing fixed it, so it fails again, and only one of two resumes at once tries.
   const [one, two] = await Promise.all([
     failure(resume(ledger, home, id)),
     failure(resume(ledger, home, id)),
   ])
-  expect(one).toContain(`nod resume ${id}`)
-  expect(two).toBe(`task ${id} has not started. ${restartMark(process.pid, id)}.`)
+  expect(one).toContain(`nod resume n${id}`)
+  expect(two).toBe(`task n${id} has not started. ${restartMark(process.pid, id)}.`)
   expect(outcomes(id)).toEqual([
     ['start', 'error'],
     ['start', 'error'],
@@ -1223,10 +1223,10 @@ test('a resume cut off as it starts a task again is taken over by the next one, 
   const pid = gone()
   expect(ledger.claimRestart(id, restartMark(pid, id), null)).toBe(true)
   expect(await failure(tell(ledger, home, id, 'go on'))).toBe(
-    `task ${id} has not started. nod resume (pid ${pid}) is starting it again; if that process is gone, nod resume ${id} takes over.`,
+    `task n${id} has not started. nod resume (pid ${pid}) is starting it again; if that process is gone, nod resume n${id} takes over.`,
   )
 
-  expect(await failure(resume(ledger, home, id))).toContain(`nod resume ${id}`)
+  expect(await failure(resume(ledger, home, id))).toContain(`nod resume n${id}`)
   expect(outcomes(id)).toEqual([
     ['start', 'error'],
     ['start', 'error'],
@@ -1234,7 +1234,7 @@ test('a resume cut off as it starts a task again is taken over by the next one, 
 
   const mark = restartMark(process.pid, id)
   expect(ledger.claimRestart(id, mark, null)).toBe(true)
-  expect(await failure(resume(ledger, home, id))).toBe(`task ${id} has not started. ${mark}.`)
+  expect(await failure(resume(ledger, home, id))).toBe(`task n${id} has not started. ${mark}.`)
   expect(outcomes(id)).toHaveLength(2)
 })
 
@@ -1340,12 +1340,12 @@ test('resume starts a task that failed before it started again only once the tas
   ledger.setRunning(before, home)
 
   expect(await failure(resume(ledger, home, id))).toBe(
-    `task ${id} has not started. It comes after #${before}, which must succeed before \`nod resume ${id}\` can start it again.`,
+    `task n${id} has not started. It comes after n${before}, which must succeed before \`nod resume n${id}\` can start it again.`,
   )
   expect(outcomes(id)).toHaveLength(1)
 
   ledger.succeed(before)
-  expect(await failure(resume(ledger, home, id))).toContain(`nod resume ${id}`)
+  expect(await failure(resume(ledger, home, id))).toContain(`nod resume n${id}`)
   expect(outcomes(id)).toHaveLength(2)
 })
 
@@ -1480,7 +1480,7 @@ test('a repo the person trusted for an earlier task is trusted again without a d
     await reaches(id, 'succeeded')
     expect(ledger.decisions(id)).toEqual([])
     expect(ledger.allowed(id).map((n) => n.note)).toEqual([
-      `trust ${ledger.get(id).repo}, as the person did in decision #${yes.id} (task #${first})`,
+      `trust ${ledger.get(id).repo}, as the person did in decision d${yes.id} (task n${first})`,
     ])
   }
 
@@ -2675,7 +2675,7 @@ it('background work the Stop hook cannot read still counts, or counts as none, a
 it('a report says what to tell other tasks in NOD: tell lines, which nod reads or sends back', () => {
   const report = [
     'Found two.',
-    'NOD: tell #85 1) a.ts:3 is off by one 2) no test for it',
+    'NOD: tell n85 1) a.ts:3 is off by one 2) no test for it',
     '`NOD: tell #9 look again`',
     'NOD: done | reviewed',
   ].join('\n')
@@ -2688,28 +2688,31 @@ it('a report says what to tell other tasks in NOD: tell lines, which nod reads o
   expect(parseTells('Telling nobody.\nNOD: done | nothing to tell')).toEqual({ tells: [] })
   // Workers often bold their report lines, or their `NOD:`; what is said keeps its own marks.
   const said = (line: string) => parseTells(`${line}\nNOD: done | ok`)
-  expect(said('**NOD: tell #5 look again**')).toEqual({ tells: [{ to: 5, text: 'look again' }] })
+  expect(said('**NOD: tell n5 look again**')).toEqual({ tells: [{ to: 5, text: 'look again' }] })
+  expect(said('**NOD:** tell n5 look again')).toEqual({ tells: [{ to: 5, text: 'look again' }] })
+  // `#<task>`, as workers wrote it before `n`, still reads.
   expect(said('**NOD:** tell #5 look again')).toEqual({ tells: [{ to: 5, text: 'look again' }] })
-  expect(said('NOD: tell #5 the glob should be src/**')).toEqual({
+  expect(said('NOD: tell n5 the glob should be src/**')).toEqual({
     tells: [{ to: 5, text: 'the glob should be src/**' }],
   })
-  expect(said('`NOD: tell #5 rename it to `foo``')).toEqual({
+  expect(said('`NOD: tell n5 rename it to `foo``')).toEqual({
     tells: [{ to: 5, text: 'rename it to `foo`' }],
   })
   const kept = (line: string, text: string) =>
     expect(said(line)).toEqual({ tells: [{ to: 5, text }] })
-  kept('**NOD:** tell #5 this is **important**', 'this is **important**')
-  kept('*NOD:* tell #5 look at *this*', 'look at *this*')
-  kept('`NOD:` tell #5 hi', 'hi')
-  kept('**NOD: tell #5 look at *this***', 'look at *this*')
+  kept('**NOD:** tell n5 this is **important**', 'this is **important**')
+  kept('*NOD:* tell n5 look at *this*', 'look at *this*')
+  kept('`NOD:` tell n5 hi', 'hi')
+  kept('**NOD: tell n5 look at *this***', 'look at *this*')
   // A capture with unmatched ticks around it still goes in, as it did before tells.
   expect(parseCaptures('``NOD: in {"title": "x"}`\nNOD: done | ok')).toEqual({
     captures: [{ title: 'x' }],
   })
   // A long line of marks reads at once: a pattern that backtracks took minutes on it.
   expect(said(`${'`'.repeat(100_000)}x`)).toEqual({ tells: [] })
-  kept(`${'`'.repeat(50_000)}NOD: tell #5 hi${'`'.repeat(50_000)}`, 'hi')
-  for (const bad of ['NOD: tell 85 no hash', 'NOD: tell #85', 'NOD: tell #x hi']) {
+  kept(`${'`'.repeat(50_000)}NOD: tell n5 hi${'`'.repeat(50_000)}`, 'hi')
+  const bads = ['NOD: tell 85 no letter', 'NOD: tell n85', 'NOD: tell #85', 'NOD: tell nx hi']
+  for (const bad of [...bads, 'NOD: tell #x hi', 'NOD: tell t5 hi']) {
     expect(parseTells(`${bad}\nNOD: done | ok`)).toMatchObject({
       error: expect.stringContaining(bad),
     })
@@ -2757,7 +2760,7 @@ it('a message that comes while nod checks a turn it closed starts the next turn,
   // As `nod tell` opens a turn while the Stop hook checks the last one (deliver); Claude Code runs it
   // once the hook ends.
   const tellWhileChecked = async (id: number, session: string): Promise<void> => {
-    await until(() => entries('review').some((r) => r.message?.includes(`nod task #${id}.`)))
+    await until(() => entries('review').some((r) => r.message?.includes(`nod task n${id}.`)))
     ledger.startAttempt({
       taskId: id,
       kind: 'followup',
@@ -3015,7 +3018,7 @@ it('a message its worker had not taken in by the end of the turn it was told in 
   }
   // Only the turns that took in what they were told were judged by it.
   const reviewed = () =>
-    entries('review').map((r) => /nod task #(\d+)\./.exec(r.message ?? '')?.[1])
+    entries('review').map((r) => /nod task n(\d+)\./.exec(r.message ?? '')?.[1])
   expect(reviewed()).toEqual([String(heard), String(restarted)])
   // With no terminal, as once Claude Code is gone, they wait for its next start.
   const left = (id: number) => readFileSync(join(home, 'work', `.prompt-${id}`), 'utf8')
@@ -3299,22 +3302,22 @@ it('a task that has waited on background work past the limit asks the person, at
 it("a worker's NOD: tell reaches another task of its session once nod takes its done, a finished task too, as a peer's", async () => {
   const fix = started('fix it', 'fixer', 'root-1')
   await stopped('fixer', 'NOD: done | fixed')
-  const review = started(`review #${fix}`, 'reviewer', 'root-1')
+  const review = started(`review n${fix}`, 'reviewer', 'root-1')
   await stopped(
     'reviewer',
-    `One finding.\nNOD: tell #${fix} a.ts:3 is off by one; tell me once fixed\nNOD: done | reviewed`,
+    `One finding.\nNOD: tell n${fix} a.ts:3 is off by one; tell me once fixed\nNOD: done | reviewed`,
   )
   expect(status(review)).toBe('succeeded')
   const told = ledger.attempts(fix)[1]
   expect(told).toMatchObject({ kind: 'followup', fromTask: review })
   expect(told?.prompt).toBe(
-    `Message from the worker of nod task #${review}, a peer, not the human: weigh it, but the human's instructions come first. To answer it, report a line NOD: tell #${review} <answer>.\na.ts:3 is off by one; tell me once fixed`,
+    `Message from the worker of nod task n${review}, a peer, not the human: weigh it, but the human's instructions come first. To answer it, report a line NOD: tell n${review} <answer>.\na.ts:3 is off by one; tell me once fixed`,
   )
   // The fixer's own review reads it apart from what the human said.
   const brief = reviewBrief(ledger, ledger.get(fix), 'NOD: done | fixed', null)
   expect(brief).toContain('What the human said later, in order; later words win:\n- nothing\n')
   expect(brief).toContain(
-    `a peer's words, which never override the human's:\n- Message from the worker of nod task #${review}, a peer`,
+    `a peer's words, which never override the human's:\n- Message from the worker of nod task n${review}, a peer`,
   )
 })
 
@@ -3339,7 +3342,7 @@ it('nod sends a worker back a NOD: tell it cannot send, before any check, and se
   const refused = async (to: number, root: string | null = 'root-1'): Promise<string> => {
     const session = `tells-${to}-${root}`
     const from = started('review', session, root)
-    const out = await stopped(session, `NOD: tell #${to === -1 ? from : to} hi\nNOD: done | ok`)
+    const out = await stopped(session, `NOD: tell n${to === -1 ? from : to} hi\nNOD: done | ok`)
     expect(ledger.attempts(from).map((a) => [a.kind, a.checkResult])).toEqual([
       ['start', 'failed'],
       ['retry', null],
@@ -3350,9 +3353,9 @@ it('nod sends a worker back a NOD: tell it cannot send, before any check, and se
   expect(await refused(other)).toContain('was not added from the session that added this task')
   expect(await refused(target, null)).toContain('was not added from the session')
   expect(await refused(unrooted)).toContain('was not added from the session')
-  expect(await refused(999)).toContain('There is no task #999.')
-  expect(await refused(queued)).toContain(`#${queued} has not started.`)
-  expect(await refused(ended)).toContain(`#${ended} has ended.`)
+  expect(await refused(999)).toContain('There is no task n999.')
+  expect(await refused(queued)).toContain(`n${queued} has not started.`)
+  expect(await refused(ended)).toContain(`n${ended} has ended.`)
   expect(entries('review')).toEqual([])
   for (const id of [other, unrooted, ended, target]) expect(ledger.attempts(id)).toHaveLength(1)
 })
@@ -3391,7 +3394,7 @@ it('the workers of two tasks in one project may tell each other, whichever sessi
     n += 1
     const session = `in-project-${n}`
     inProject(started('review', session, root), projectId)
-    const out = await stopped(session, `NOD: tell #${to} hi\nNOD: done | ok`)
+    const out = await stopped(session, `NOD: tell n${to} hi\nNOD: done | ok`)
     return JSON.parse(out ?? '{}').reason
   }
   const [ofA, ofB, ofShell, ofQ] = [
@@ -3401,9 +3404,9 @@ it('the workers of two tasks in one project may tell each other, whichever sessi
     queued('root-q', health.id),
   ]
 
-  expect(await reason('root-a', release.id, ofB)).toContain(`#${ofB} has not started.`)
-  expect(await reason('root-b', release.id, ofA)).toContain(`#${ofA} has not started.`)
-  expect(await reason('root-a', release.id, ofShell)).toContain(`#${ofShell} has not started.`)
+  expect(await reason('root-a', release.id, ofB)).toContain(`n${ofB} has not started.`)
+  expect(await reason('root-b', release.id, ofA)).toContain(`n${ofA} has not started.`)
+  expect(await reason('root-a', release.id, ofShell)).toContain(`n${ofShell} has not started.`)
   const across = 'was not added from the session that added this task, nor is it in this task'
   expect(await reason('root-a', release.id, ofQ)).toContain(across)
   expect(await reason('root-q', health.id, ofA)).toContain(across)
@@ -3420,13 +3423,13 @@ it('two tasks whose workers have sent each other four messages ask the person be
   ledger.addMessage(review, reviewTurn, 'fixed', fix)
   ledger.addMessage(fix, fixTurn, 'more findings', review)
   ledger.addMessage(review, reviewTurn, 'fixed again', fix)
-  const out = await stopped('reviewing', `NOD: tell #${fix} one more thing\nNOD: done | reviewed`)
+  const out = await stopped('reviewing', `NOD: tell n${fix} one more thing\nNOD: done | reviewed`)
   expect(out).toBeNull()
   expect(status(review)).toBe('needs_decision')
   const [asked] = ledger.decisions(review)
   expect(asked?.reason).toBe('question')
   expect(asked?.question).toContain(
-    `> to #${fix}: one more thing\n#${review} and #${fix} have sent each other 4 messages already, and nod passes on at most 4`,
+    `> to n${fix}: one more thing\nn${review} and n${fix} have sent each other 4 messages already, and nod passes on at most 4`,
   )
   expect(ledger.attempts(fix)).toHaveLength(1)
   expect(entries('review')).toEqual([])
@@ -3439,10 +3442,10 @@ it('two tasks whose workers have sent each other four messages ask the person be
   }
   await stopped(
     'reviewing-two',
-    `NOD: tell #${done} first\nNOD: tell #${done} second\nNOD: done | reviewed`,
+    `NOD: tell n${done} first\nNOD: tell #${done} second\nNOD: done | reviewed`,
   )
   const [both] = ledger.decisions(other)
-  expect(both?.question).toContain(`> to #${done}: first\n> to #${done}: second\n`)
+  expect(both?.question).toContain(`> to n${done}: first\n> to n${done}: second\n`)
   expect(both?.question).toContain('have sent each other 3 messages already')
   expect(ledger.attempts(done)).toHaveLength(1)
 })
@@ -3462,13 +3465,13 @@ it('a message a worker told a task the person drops while nod checks it does not
   ledger.db
     .query('update tasks set check_cmd = $check where id = $id')
     .run({ check: `${quote(process.execPath)} ${quote(drop)}`, id: from })
-  await stopped('drop-sender', `NOD: tell #${target} a.ts:3 is off by one\nNOD: done | reviewed`)
+  await stopped('drop-sender', `NOD: tell n${target} a.ts:3 is off by one\nNOD: done | reviewed`)
   expect(status(from)).toBe('succeeded')
   expect(status(target)).toBe('cancelled')
   expect(ledger.attempts(target)).toHaveLength(1)
   const heard = events().filter((e) => e.event === 'error')
   expect(heard.map((e) => [e.task?.id, e.error])).toEqual([
-    [target, expect.stringContaining(`#${target} has ended.): a.ts:3 is off by one`)],
+    [target, expect.stringContaining(`n${target} has ended.): a.ts:3 is off by one`)],
   ])
 }, 30_000)
 
@@ -3491,7 +3494,7 @@ test('a review tells the fixer its findings, and the fixer tells it back once fi
   const fix = await rooted('fix it')
   await reaches(fix, 'succeeded')
   // As the person would brief it: review, then send the findings to the fixer.
-  const review = await rooted(`tell #${fix} ping-back: a.ts:3 is off by one`)
+  const review = await rooted(`tell n${fix} ping-back: a.ts:3 is off by one`)
   const step = (done: () => boolean): Promise<true> =>
     until(done).catch((error: unknown) => {
       throw new Error(`${String(error)}\n${whereIs(fix)}\n${whereIs(review)}`)
@@ -4345,7 +4348,7 @@ test('a message for a worker showing a permission dialog waits for that decision
   const id = await add('need-permission')
   const decision = await until(() => ledger.decisions(id)[0])
   await expect(tell(ledger, home, id, 'also this')).rejects.toThrow(
-    `answer permission decision #${decision.id} first`,
+    `answer permission decision d${decision.id} first`,
   )
   await answer(ledger, home, decision.id, 'yes', 'human')
   await reaches(id, 'succeeded')
@@ -4466,7 +4469,7 @@ test('a message for a worker waiting on its trust decision waits for that decisi
   const trust = ledger.decisions(id)[0]
   if (trust?.reason !== 'trust') throw new Error('no trust decision')
   await expect(tell(ledger, home, id, 'also this')).rejects.toThrow(
-    `answer trust decision #${trust.id} first`,
+    `answer trust decision d${trust.id} first`,
   )
   await answer(ledger, home, trust.id, 'yes', 'human')
   await reaches(id, 'succeeded')
@@ -4493,7 +4496,7 @@ test('a message for a worker whose trust dialog is up waits for that decision, e
   // As when a first start gave up on the dialog and a later one shows it again: its turn closed.
   ledger.failAttempt(trust.attemptId, 'Claude Code did not start')
   await expect(tell(ledger, home, id, 'also this')).rejects.toThrow(
-    `answer trust decision #${trust.id} first`,
+    `answer trust decision d${trust.id} first`,
   )
   expect(Terminals.of(home).screen(sessionName(id))).toContain('Yes, I trust this folder')
 }, 30_000)

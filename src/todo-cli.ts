@@ -380,7 +380,7 @@ async function setTodo(todos: Todos, home: string, args: string[]): Promise<void
   const watch = cleared(values.watch)
   const backToRef = cleared(values['back-to'])
   const backTo = typeof backToRef === 'string' ? todos.taskRef(backToRef) : backToRef
-  if (Number.isNaN(backTo)) throw new Error(`--back-to takes a task number or t<n>: ${backToRef}`)
+  if (Number.isNaN(backTo)) throw new Error(`--back-to takes n<n> or t<n>: ${backToRef}`)
   const edit = {
     status,
     title: values.title,
@@ -436,13 +436,13 @@ function showTodo(todos: Todos, id: number): void {
   if (where.length > 0) console.log(`  ${where.join(' · ')}`)
   console.log(`  from ${t.source}${t.sourceKey === null ? '' : ` ${t.sourceKey}`}`)
   if (t.watch !== null) console.log(`  watch ${t.watch}\n    ${checkText(todos.lastCheck(t))}`)
-  if (t.backTo !== null) console.log(`  back to task #${t.backTo} once the watch passes`)
+  if (t.backTo !== null) console.log(`  back to task n${t.backTo} once the watch passes`)
   for (const l of todos.links(id)) {
     console.log(`  link ${l.url}${l.title === null ? '' : ` (${l.title})`}`)
   }
   for (const { task, summary, links } of todos.tasks(id)) {
     const said = summary === null ? '' : `: ${oneLine(summary, 80)}`
-    console.log(`  task #${task.id} ${task.status}${said}`)
+    console.log(`  task n${task.id} ${task.status}${said}`)
     for (const url of links) console.log(`    link ${url}`)
   }
   if (t.notes !== null) console.log(`  notes\n${indent(t.notes, 4)}`)
@@ -602,18 +602,18 @@ function line(todos: Todos, t: Todo): string {
   return `t${String(t.id).padEnd(4)} ${t.status.padEnd(9)} ${oneLine(t.title, 80)}${after}`
 }
 
-// `#12 decide`, the decision `nod 12 <answer>` answers. It has no context: it can be answered
+// `d12 decide`, the decision `nod d12 <answer>` answers. It has no context: it can be answered
 // anywhere.
 function decisionLine(todos: Todos, { decision, task, todo }: TodoDecision): string {
   const project = todo === null || todo.projectId === null ? null : todos.project(todo.projectId)
   const rest = [
     decision.reason,
-    `task #${task.id}`,
+    `task n${task.id}`,
     project === null ? null : `p${project.id} ${project.title}`,
     `since ${localTime(new Date(decision.createdAt))}`,
   ].filter((x) => x !== null)
   const title = oneLine(todo?.title ?? task.brief, 80)
-  return `#${String(decision.id).padEnd(4)} ${'decide'.padEnd(9)} ${title}  · ${rest.join(' · ')}`
+  return `d${String(decision.id).padEnd(4)} ${'decide'.padEnd(9)} ${title}  · ${rest.join(' · ')}`
 }
 
 function tags(todos: Todos, t: Todo): string[] {

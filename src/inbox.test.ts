@@ -86,11 +86,11 @@ test("each end of a project's task and each decision opened on one go once, in o
         role: 'user',
         content: [
           'nod, project p1 Release: 4 notices, oldest first',
-          'task #1 t1 succeeded, attempt 1: Added the export button\nnext: nod show 1, then send its result out',
-          'task #2 t2 error, attempt 1: the worktree is gone\nnext: nod show 2 says why; settle with the person what to do',
+          'task n1 t1 succeeded, attempt 1: Added the export button\nnext: nod show n1, then send its result out',
+          'task n2 t2 error, attempt 1: the worktree is gone\nnext: nod show n2 says why; settle with the person what to do',
           // Its decision was answered (dropped) before anything went, so only its end goes.
-          'task #3 t3 cancelled, attempt 1: Drop me\nnext: tell the person (nod show 3)',
-          'decision #2 question (task #4 t4: Pick a branch)\n  Which branch?\n  main or next\nnext: tell the person; nod 2 <their answer> answers it, nod drop 2 drops it',
+          'task n3 t3 cancelled, attempt 1: Drop me\nnext: tell the person (nod show n3)',
+          'decision d2 question (task n4 t4: Pick a branch)\n  Which branch?\n  main or next\nnext: tell the person; nod d2 <their answer> answers it, nod drop d2 drops it',
         ].join('\n\n'),
       },
     },
@@ -103,7 +103,7 @@ test("each end of a project's task and each decision opened on one go once, in o
   await sendNotices(ledger, send)
   expect(sent.map((s) => s.message.content)).toEqual([
     expect.any(String),
-    'nod, project p1 Release: a notice\n\ntask #2 t2 succeeded, attempt 2: Fixed the build\nnext: nod show 2, then send its result out',
+    'nod, project p1 Release: a notice\n\ntask n2 t2 succeeded, attempt 2: Fixed the build\nnext: nod show n2, then send its result out',
   ])
   expect(ledger.unsentNotices()).toEqual([])
 })
@@ -120,8 +120,8 @@ test("a project's session hears only its own project's work; work in no project 
   ledger.succeed(task('Loose work', null))
   await sendNotices(ledger, send)
   expect(sent.map((s) => [s.socket, s.session_id, s.message.content])).toEqual([
-    ['/socks/a', A, expect.stringContaining('task #1 t1 succeeded: Release work')],
-    ['/socks/c', C, expect.stringContaining('task #2 t2 succeeded: Health work')],
+    ['/socks/a', A, expect.stringContaining('task n1 t1 succeeded: Release work')],
+    ['/socks/c', C, expect.stringContaining('task n2 t2 succeeded: Health work')],
   ])
   expect(sent.map((s) => s.message.content).join()).not.toContain('Loose work')
   expect(ledger.unsentNotices()).toEqual([])
@@ -146,8 +146,8 @@ test('notices wait while the project has no session taking messages, and go in o
   await start(A, '/socks/a')
   expect(sent.map((s) => [s.socket, s.session_id])).toEqual([['/socks/a', A]])
   expect(sent[0]?.message.content).toStartWith('nod, project p1 Release: 2 notices, oldest first')
-  expect(sent[0]?.message.content).toContain('task #1 t1 succeeded: First')
-  expect(sent[0]?.message.content).toContain('decision #1 permission (task #2 t2: Second)')
+  expect(sent[0]?.message.content).toContain('task n1 t1 succeeded: First')
+  expect(sent[0]?.message.content).toContain('decision d1 permission (task n2 t2: Second)')
 
   // The same session opened in another terminal since: the end of the first leaves the second's.
   await start(A, '/socks/b')
@@ -164,7 +164,7 @@ test('notices wait while the project has no session taking messages, and go in o
     ['/socks/a', A],
     ['/socks/a2', A],
   ])
-  expect(sent[1]?.message.content).toContain('task #3 t3 error: boom')
+  expect(sent[1]?.message.content).toContain('task n3 t3 error: boom')
 })
 
 test("a nod command in a project session its hooks never told nod of says where it takes messages, and what waited goes; another session's changes nothing", async () => {
@@ -302,7 +302,7 @@ test('a send that fails keeps the notices for the next and leaves the change it 
   todos.setSocket(A, '/socks/a3')
   await sendNotices(ledger, send)
   expect(sent.map((s) => s.message.content)).toEqual([
-    expect.stringContaining('task #1 t1 succeeded: Ship it'),
+    expect.stringContaining('task n1 t1 succeeded: Ship it'),
   ])
 })
 
@@ -340,7 +340,7 @@ test('of two sends at once, each notice goes in one', async () => {
     await send(socket, line)
   })
   expect(sent).toHaveLength(1)
-  expect(sent[0]?.message.content).toContain('task #1 t1 succeeded: Once')
+  expect(sent[0]?.message.content).toContain('task n1 t1 succeeded: Once')
 
   // Two processes that both read a notice as unsent before either marks it: one marks it.
   ledger.succeed(task('Twice'))
@@ -432,7 +432,7 @@ inboxTest(
           message: {
             role: 'user',
             content:
-              'nod, project p1 Release: a notice\n\ntask #1 t1 succeeded, attempt 1: Shipped\nnext: nod show 1, then send its result out',
+              'nod, project p1 Release: a notice\n\ntask n1 t1 succeeded, attempt 1: Shipped\nnext: nod show n1, then send its result out',
           },
         },
       ])
@@ -445,7 +445,7 @@ inboxTest(
       expect(server.lines).toHaveLength(2)
       expect(server.lines[1]).toMatchObject({
         session_id: A,
-        message: { content: expect.stringContaining('task #2 t2 error: it broke') },
+        message: { content: expect.stringContaining('task n2 t2 error: it broke') },
       })
     } finally {
       await server.close()
@@ -511,7 +511,7 @@ inboxTest(
           message: {
             role: 'user',
             content:
-              'nod, project p1 Release: a notice\n\ntask #1 t1 succeeded, attempt 1: Shipped\nnext: nod show 1, then send its result out',
+              'nod, project p1 Release: a notice\n\ntask n1 t1 succeeded, attempt 1: Shipped\nnext: nod show n1, then send its result out',
           },
         },
       ])
