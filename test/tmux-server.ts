@@ -9,10 +9,10 @@ import { socketsParent } from './tmp'
 // tmux's `Operation not permitted`, which a sandbox gives it two ways (tmux 3.6a, measured):
 // - No pseudo-terminal, in a worker nod starts now whose own folder is of use (Claude Code
 //   2.1.312). Its sandbox lets it keep sockets in that folder (NOD_SOCKETS), where the probe makes
-//   its, but opens no
-//   pseudo-terminal (`openpty: Operation not permitted`). new-session makes the socket, prints
-//   `create window failed: fork failed: Operation not permitted`, exits 1, and the server ends at
-//   once. worker.test.ts runs its workers in fake terminals for this (test/fake-terminals.ts).
+//   its, but opens no pseudo-terminal (`openpty: Operation not permitted`). new-session makes the
+//   socket, prints `create window failed: fork failed: Operation not permitted`, exits 1, and the
+//   server ends at once. worker.test.ts runs its workers in fake terminals for this
+//   (test/fake-terminals.ts).
 // - No socket, where that folder is missing or of no use (a worker started before it, nod's
 //   reviewer, too long a path: test/tmp.ts) and in other sandboxes (2.1.310). new-session prints
 //   `error creating <socket> (Operation not permitted)`, exits 0, and no server answers.

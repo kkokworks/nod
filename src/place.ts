@@ -21,7 +21,7 @@ export const sessionName = (taskId: number): string => `task-${taskId}`
 
 // The one folder a worker's sandbox lets it make and reach Unix sockets in, so its tests can listen
 // on a socket, which the sandbox refuses anywhere else (EPERM, 2.1.310). tmux makes its socket here
-// too but still cannot start a server: the sandbox opens no pseudo-terminal (2.1.312,
+// too, but its server ends at once: the sandbox opens no pseudo-terminal for its window (2.1.312,
 // test/tmux-server.ts).
 // Its tests find it in NOD_SOCKETS (workerEnv). Each worker's own, in nod's home, where no other
 // worker can write. Not the sandbox's TMPDIR, `/tmp/claude-<uid>` for every Claude Code session of
