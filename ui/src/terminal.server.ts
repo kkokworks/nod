@@ -8,8 +8,8 @@ import type { Duplex } from 'node:stream'
 // Bun's own: Bun serves any import of ws with it.
 import { type RawData, type WebSocket, WebSocketServer } from 'ws'
 import { nodHome } from '../../src/ledger'
+import { sessionName } from '../../src/place'
 import { Terminals } from '../../src/tmux'
-import { sessionName } from '../../src/worker'
 
 const PATH = /^\/terminal\/(\d+)$/
 // The most cells a side asks for: more than a screen shows, and no pty is asked for a silly size.

@@ -23,7 +23,7 @@ export function tempDirs(): {
 
 // Where a test makes the dirs it keeps Unix sockets in (a tmux server's, a socket it listens on):
 // inside a nod worker's sandbox, the one folder it lets the worker keep them in, which nod names in
-// NOD_SOCKETS (socketsDir in worker.ts); anywhere else the temp dir. Not that folder outside the
+// NOD_SOCKETS (socketsDir in place.ts); anywhere else the temp dir. Not that folder outside the
 // sandbox, where nod's check runs these tests: the worker writes the folder, and a link it left
 // there would lead the check, ending the tmux servers of runs that are over (test/tmux.ts), to
 // nod's own. Nor in a sandbox that does not let this process make dirs there (nod's reviewer gets

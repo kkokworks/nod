@@ -11,9 +11,10 @@ import {
 import { join, resolve } from 'node:path'
 import { tempDirs } from '../test/tmp'
 import { Ledger } from './ledger'
+import { workspaceOf } from './place'
 import { Todos } from './todos'
 import { endLine, watch } from './view'
-import { openSettings, workspaceOf } from './worker'
+import { openSettings } from './worker'
 
 const tmp = tempDirs()
 afterAll(tmp.removeAll)

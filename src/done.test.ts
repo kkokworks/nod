@@ -5,9 +5,9 @@ import { tempDirs } from '../test/tmp'
 import { doneTasks, type PrLookup, type PullRequest, sweep } from './done'
 import { collect } from './gc'
 import { Ledger, type NewTask } from './ledger'
+import { workspaceOf } from './place'
 import { Terminals } from './tmux'
 import { Todos } from './todos'
-import { workspaceOf } from './worker'
 
 const tmp = tempDirs()
 afterAll(tmp.removeAll)

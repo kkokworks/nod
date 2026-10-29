@@ -30,6 +30,8 @@ import {
   type Task,
   type Trigger,
 } from './ledger'
+import { branchOf, sessionName } from './place'
+import { message, readAtOnce, spawn } from './proc'
 import { pullRequests } from './prs'
 import { Terminals } from './tmux'
 import {
@@ -73,11 +75,9 @@ import {
 import {
   AUTOCOMPACT_PCT,
   answer,
-  branchOf,
   drop,
   finished,
   keepWorker,
-  message,
   NotificationEvent,
   onCompact,
   onNotification,
@@ -88,15 +88,12 @@ import {
   onToolRan,
   PromptEvent,
   type Restart,
-  readAtOnce,
   restart,
   restartDue,
   resume,
   SessionStartEvent,
   StopEvent,
   StopFailureEvent,
-  sessionName,
-  spawn,
   startReady,
   startTask,
   ToolEvent,

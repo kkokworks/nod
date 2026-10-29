@@ -1,4 +1,5 @@
-import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { z } from 'zod'
 
@@ -61,4 +62,17 @@ export function accountChanged(home: string, account: string | null): boolean {
 export function describeRule(rule: AccountRule): string {
   if (rule === null) return 'env: CLAUDE_CONFIG_DIR of the shell that starts each worker'
   return 'file' in rule ? `file ${rule.file}` : `command ${rule.command}`
+}
+
+// Where Claude Code keeps the transcript of session `sessionId` in the config dir `config`; null for
+// nowhere. It keeps one folder per working directory in projects/, named by a rule of its own
+// (2.1.309: each character but a letter or digit turned into `-`, and a hash past 200 characters),
+// so nod looks for the session's ID, which is in no other folder, in all of them.
+export function transcriptPath(config: string | null, sessionId: string): string | null {
+  const projects = join(config ?? join(homedir(), '.claude'), 'projects')
+  if (!existsSync(projects)) return null
+  const folder = readdirSync(projects).find((f) =>
+    existsSync(join(projects, f, `${sessionId}.jsonl`)),
+  )
+  return folder === undefined ? null : join(projects, folder, `${sessionId}.jsonl`)
 }

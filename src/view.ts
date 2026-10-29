@@ -6,9 +6,9 @@ import {
   type Task,
   type TaskStatus,
 } from './ledger'
+import { sessionName } from './place'
 import { quote } from './tmux'
 import type { Change, SessionPlace } from './todos'
-import { sessionName } from './worker'
 
 // Also covers a decision that opens just as the last worker stops.
 const WATCH_GRACE_SECS = 5

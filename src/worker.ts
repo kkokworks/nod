@@ -6,17 +6,16 @@ import {
   mkdirSync,
   mkdtempSync,
   openSync,
-  readdirSync,
   readFileSync,
   readSync,
   realpathSync,
   rmSync,
   writeFileSync,
 } from 'node:fs'
-import { homedir, tmpdir } from 'node:os'
-import { basename, join, resolve } from 'node:path'
+import { tmpdir } from 'node:os'
+import { join, resolve } from 'node:path'
 import { z } from 'zod'
-import { accountChanged, accountRule, configDir } from './account'
+import { accountChanged, accountRule, configDir, transcriptPath } from './account'
 import type { PermissionEvent } from './allow'
 import { hasRef, onlyCopy } from './gc'
 import {
@@ -28,7 +27,9 @@ import {
   type Ledger,
   type Task,
 } from './ledger'
-import { notify, runGroup, taskRef } from './notify'
+import { notify, notifyError, taskRef } from './notify'
+import { branchOf, sessionName, socketsDir, workspaceOf } from './place'
+import { message, OUTPUT_LIMIT, spawn } from './proc'
 import { askedAgain, type Changes, reviewBrief } from './review'
 import { activeRules, hadTrouble, isNoRule, retroBrief } from './rules'
 import { pasted, quote, running, Terminals } from './tmux'
@@ -198,21 +199,6 @@ const SANDBOX = {
   network: { allowedDomains: ['registry.npmjs.org'] },
 }
 
-// The one folder a worker's sandbox lets it make and reach Unix sockets in, so its tests can start
-// a tmux server or listen on a socket, which the sandbox refuses anywhere else (EPERM, 2.1.310).
-// Its tests find it in NOD_SOCKETS (workerEnv). Each worker's own, in nod's home, where no other
-// worker can write. Not the sandbox's TMPDIR, `/tmp/claude-<uid>` for every Claude Code session of
-// the user, where any worker could remove or replace another's sockets, nor a folder in the
-// worktree, whose path (the branch's) can leave too little of a socket path's 104 bytes (macOS):
-// tmux takes 43 past its TMUX_TMPDIR in the tests. Made before Claude Code starts, so its tests can
-// make theirs in it.
-// ponytail: gc leaves the folder, as it leaves `.started-<task>`: what is in it is the worker's, and
-// nod going through it outside the sandbox could follow a link the worker left to nod's own tmux
-// server. A tmux server a cut-off test run left in it stays until the worker's next run ends it
-// (test/tmux.ts), or until a reboot.
-export const socketsDir = (home: string, taskId: number): string =>
-  join(home, 'sockets', String(taskId))
-
 // What a worker asks as its turn ends, which an answer goes on from in its conversation. Once it
 // goes on without one, nothing waits on them. Permission, trust and rule decisions are about other
 // things, and close where those end; every decision closes once the task does.
@@ -242,7 +228,6 @@ const ALLOWED_HERE = '(allowed in the terminal)'
 
 // ponytail: fixed retry budget; make it per-task if real checks need more.
 const CHECK_RETRIES = 2
-export const OUTPUT_LIMIT = 4000
 const QUESTION_LIMIT = 2000
 // More than this in one report is more than a person can clarify, or a worker gone wrong.
 const MAX_CAPTURES = 50
@@ -334,21 +319,6 @@ export const ToolEvent = z.object({
 })
 
 type Report = { status: 'done' | 'question' | 'failed'; text: string }
-
-// A repo task's worktree is named after its repo and branch, so a folder says what it holds.
-// ponytail: two repos with the same folder name and branch collide and `worktree add` fails; add
-// the parent folder to the path if that happens.
-export const workspaceOf = (home: string, task: Task): string =>
-  task.repo === null
-    ? join(home, 'work', String(task.id))
-    : join(home, 'work', basename(task.repo), branchOf(task))
-
-export function branchOf(task: Task): string {
-  if (task.branch === null) throw new Error(`task n${task.id} has no branch`)
-  return task.branch
-}
-
-export const sessionName = (taskId: number): string => `task-${taskId}`
 
 export async function startTask(ledger: Ledger, home: string, taskId: number): Promise<void> {
   const task = ledger.get(taskId)
@@ -2906,19 +2876,6 @@ function hasTranscript(config: string | null, sessionId: string): boolean {
   return transcriptPath(config, sessionId) !== null
 }
 
-// Where Claude Code keeps the transcript of session `sessionId` in the config dir `config`; null for
-// nowhere. It keeps one folder per working directory in projects/, named by a rule of its own
-// (2.1.309: each character but a letter or digit turned into `-`, and a hash past 200 characters),
-// so nod looks for the session's ID, which is in no other folder, in all of them.
-export function transcriptPath(config: string | null, sessionId: string): string | null {
-  const projects = join(config ?? join(homedir(), '.claude'), 'projects')
-  if (!existsSync(projects)) return null
-  const folder = readdirSync(projects).find((f) =>
-    existsSync(join(projects, f, `${sessionId}.jsonl`)),
-  )
-  return folder === undefined ? null : join(projects, folder, `${sessionId}.jsonl`)
-}
-
 // A new worktree has empty submodules, and the worker's sandbox cannot fetch them, so each one is
 // cloned from the repo's own checkout of it, which has the commit the branch points at.
 // ponytail: one level only; add --recursive with local URLs when a nested submodule shows up.
@@ -3267,55 +3224,3 @@ async function uncommittedChanges(worktree: string): Promise<string> {
   if (code !== 0) throw new Error(`git status failed: ${output.trim()}`)
   return stdout.trim().slice(-OUTPUT_LIMIT)
 }
-
-// `output` is stdout followed by stderr; their interleaving is lost. A command still running after
-// `timeoutMs` is killed with what it started (runGroup) and exits nonzero.
-export async function spawn(
-  cmd: string[],
-  cwd?: string,
-  opts: { stdin?: string; timeoutMs?: number; env?: Record<string, string> } = {},
-): Promise<{ code: number; stdout: string; output: string }> {
-  const { code, stdout, stderr } = await runGroup(cmd, {
-    cwd,
-    env: opts.env === undefined ? process.env : { ...process.env, ...opts.env },
-    stdin: opts.stdin,
-    timeoutMs: opts.timeoutMs,
-  })
-  return { code, stdout, output: stdout + stderr }
-}
-
-// How many tasks ls and doneTasks read at once, each running a command at a time: all of a long
-// ledger at once runs out of processes (a crash with EAGAIN under `ulimit -u`, measured), and takes
-// them from everything else the user runs.
-export const AT_ONCE = 8
-
-// `read` of each item, `AT_ONCE` at a time, in the items' order. Once one fails no more start,
-// and it rejects as reading them in turn would: with the failure of the first item that failed.
-export async function readAtOnce<T, R>(items: T[], read: (item: T) => Promise<R>): Promise<R[]> {
-  const out: R[] = []
-  const failed: { i: number; error: unknown }[] = []
-  let next = 0
-  const reader = async (): Promise<void> => {
-    for (let i = next++; i < items.length && failed.length === 0; i = next++) {
-      try {
-        out[i] = await read(items[i] as T)
-      } catch (error) {
-        failed.push({ i, error })
-      }
-    }
-  }
-  await Promise.all(Array.from({ length: Math.min(AT_ONCE, items.length) }, reader))
-  const first = failed.toSorted((a, b) => a.i - b.i)[0]
-  if (first !== undefined) throw first.error
-  return out
-}
-
-export function message(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
-}
-
-// For a .catch on work nobody watches: the person hears the task's error (notify).
-export const notifyError =
-  (ledger: Ledger, home: string, taskId: number) =>
-  (error: unknown): Promise<void> =>
-    notify(home, { event: 'error', task: taskRef(ledger.get(taskId)), error: message(error) })

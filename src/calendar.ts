@@ -2,7 +2,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'no
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { z } from 'zod'
-import { spawn } from './worker'
+import { spawn } from './proc'
 
 // nod reads the person's calendar and never writes it: invites, attendees and rooms stay with the
 // calendar service. On macOS, CalendarEvents.app (calendar/build.sh) reads Calendar through
