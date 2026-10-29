@@ -1,4 +1,5 @@
 import { afterAll, expect, test } from 'bun:test'
+import { createServer as createHttpServer } from 'node:http'
 import { createServer, isRunnableDevEnvironment, resolveConfig } from 'vite'
 import { tempDirs } from '../../test/tmp'
 
@@ -15,6 +16,19 @@ test('neither the dev server nor the built one lets another origin read the page
   const built = await resolveConfig(config, 'serve', 'production', 'production', true)
   expect(dev.server.cors).toBe(false)
   expect(built.preview.cors).toBe(false)
+})
+
+// A task page's live terminal comes through the HTTP server of either (terminal.server.ts).
+test("both the dev server and the built one take a worker's terminal", async () => {
+  const config = { root, configFile: `${root}/vite.config.ts`, logLevel: 'silent' } as const
+  const { plugins } = await resolveConfig(config, 'serve')
+  const terminal = plugins.find((p) => p.name === 'nod-terminal')
+  for (const hook of [terminal?.configureServer, terminal?.configurePreviewServer]) {
+    const http = createHttpServer()
+    if (typeof hook !== 'function') throw new Error('the terminal is not on this server')
+    await hook.call({} as never, { httpServer: http } as never)
+    expect(http.listenerCount('upgrade')).toBe(1)
+  }
 })
 
 // As the server renders the page the window first shows, through the dev server's handler with no

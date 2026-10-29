@@ -236,6 +236,9 @@ const CUT = '(the turn was cut off)'
 const STOPPED_DIALOG = '(the person stopped its turn)'
 // What a permission decision gets once its turn ended otherwise: its dialog went with the turn.
 const TURN_ENDED = '(its turn ended)'
+// What a permission decision gets once the tool it asked for ran (onToolRan): the person allowed it
+// in the worker's terminal, nod not having answered it.
+const ALLOWED_HERE = '(allowed in the terminal)'
 
 // ponytail: fixed retry budget; make it per-task if real checks need more.
 const CHECK_RETRIES = 2
@@ -320,6 +323,15 @@ export const PromptEvent = z.object({ session_id: z.string(), prompt: z.string()
 // `source`: why the session starts: startup, resume, clear or compact. A compacted conversation
 // keeps its session ID (2.1.310).
 export const SessionStartEvent = z.object({ session_id: z.string(), source: z.string() })
+
+// Sent after a tool ran (PostToolUse) or ran and failed (PostToolUseFailure), with the input it
+// ran with; a subagent's has its agent_id (2.1.312's binary).
+export const ToolEvent = z.object({
+  session_id: z.string(),
+  tool_name: z.string(),
+  tool_input: z.record(z.string(), z.unknown()),
+  agent_id: z.string().optional(),
+})
 
 type Report = { status: 'done' | 'question' | 'failed'; text: string }
 
@@ -866,13 +878,19 @@ export async function onStopFailure(
 // Claude Code went on to by itself.
 // A command (/exit) or bash mode does not come here: it does not go through prompt.submit, as the
 // 2.1.310 binary says of a prompt with no submit outcome. So a message that starts with `/` (a path)
-// is a turn like any other.
+// is a turn like any other. A permission dialog the person stopped with Escape closes here, as
+// before nod's message (deliver): the message goes on past it at once, and the decision would
+// otherwise hold the task and refuse nod's messages through the turn it goes on to.
 // ponytail: not measured in an interactive session; a command that did come here would open a
 // turn its Stop never closes, read as cut off once Claude Code starts again. Nor whether Claude Code
 // runs this hook for a message it gives the worker in the middle of a turn, or how it passes one
 // nod pasted: words of nod's it changed read as the person's, and are kept twice. A message Claude
 // Code gives by itself while a person is attached, in a shape OWN_MESSAGE misses, reads as theirs.
-export function onPrompt(ledger: Ledger, home: string, event: z.infer<typeof PromptEvent>): void {
+export async function onPrompt(
+  ledger: Ledger,
+  home: string,
+  event: z.infer<typeof PromptEvent>,
+): Promise<void> {
   const taskId = ledger.taskOfSession(event.session_id)
   if (taskId === null) return
   const terminals = Terminals.of(home)
@@ -891,6 +909,10 @@ export function onPrompt(ledger: Ledger, home: string, event: z.infer<typeof Pro
     }
     ledger.addMessage(taskId, open.id, said)
   })
+  // After their words are in: closing the dialog's decision may fail (the ledger busy), and those
+  // words are what the review and a question's answer go by. The turn stays the one it was.
+  const stopped = typed ? stoppedDialogs(ledger, home, taskId) : []
+  await announce(home, ledger.get(taskId), stopped, STOPPED_DIALOG)
 }
 
 // A message Claude Code gives the worker by itself, while a person may be attached: a background
@@ -963,17 +985,57 @@ export async function onPermissionAsk(
   const taskId = ledger.taskOfSession(event.session_id)
   if (taskId === null) return
   const turn = currentTurn(ledger, taskId, event.session_id)
-  const { command } = event.tool_input
-  const asked = typeof command === 'string' ? command : JSON.stringify(event.tool_input)
   await decide(
     ledger,
     home,
     taskId,
     turn.id,
     'permission',
-    `Claude needs your permission to use ${event.tool_name}. Answer yes to allow; anything else denies.\n${asked.slice(0, QUESTION_LIMIT)}`,
+    permissionQuestion(event.tool_name, event.tool_input),
   )
-  await announce(home, ledger.get(taskId), turn.closed, WENT_ON)
+  await announce(home, ledger.get(taskId), turn.closed, turn.why)
+}
+
+// What a permission decision asks, from the tool and the input it would run with; the decision of
+// the dialog a tool's run answered is found by it again (onToolRan).
+function permissionQuestion(tool: string, input: Record<string, unknown>): string {
+  const { command } = input
+  const asked = typeof command === 'string' ? command : JSON.stringify(input)
+  return `Claude needs your permission to use ${tool}. Answer yes to allow; anything else denies.\n${asked.slice(0, QUESTION_LIMIT)}`
+}
+
+// Called by the PostToolUse and PostToolUseFailure hooks: a tool ran, so the dialog that asked for
+// it was answered yes, in the worker's terminal if nod did not answer it. Its decision closes, or
+// nod's answer after would type Enter or Escape into a worker that went on (answer), and the task
+// would wait on it to its turn's end. Only the first open one of the turn that asked for this tool
+// with this input: the dialogs tools that ran at once queued may still show. Every tool run of
+// every worker comes here, so with no permission decision open it ends at the first looks. Not a
+// subagent's: its dialog's decision is worded from the screen (onNotification), and could match a
+// main thread's by chance. Nor one whose turn has the same dialog nod answered: this run may be
+// that one's, and the next such dialog still show, which a message's Enter would answer.
+// ponytail: matched by the question as onPermissionAsk words it; an input Claude Code changed
+// between the two hooks (a hook's updatedInput), or the same command asked twice in a turn with
+// one answered through nod, leaves the decision to close at its turn's end, as before.
+export async function onToolRan(
+  ledger: Ledger,
+  home: string,
+  event: z.infer<typeof ToolEvent>,
+): Promise<void> {
+  if (event.agent_id !== undefined) return
+  const taskId = ledger.taskOfSession(event.session_id)
+  if (taskId === null) return
+  const open = ledger.openAttempt(taskId)
+  if (open === null) return
+  const asked = permissionQuestion(event.tool_name, event.tool_input)
+  const same = ledger
+    .decisions(taskId)
+    .filter((d) => d.reason === 'permission' && d.attemptId === open.id && d.question === asked)
+  const ran = same.find((d) => d.answer === null)
+  if (ran === undefined || same.some((d) => d.answeredAt !== null)) return
+  const closed = closeDecisions(ledger, taskId, (d) => d.id === ran.id, ALLOWED_HERE)
+  // A dialog another tool queued still holds the task.
+  if (ledger.decisions(taskId).every((d) => d.answer !== null)) goesOn(ledger, taskId, closed)
+  await announce(home, ledger.get(taskId), closed, ALLOWED_HERE)
 }
 
 // Called by the Notification hook: a permission prompt still shown after some 6 s. The other
@@ -1388,25 +1450,34 @@ async function currentAttempt(
   sessionId: string,
 ): Promise<number> {
   const turn = currentTurn(ledger, taskId, sessionId)
-  await announce(home, ledger.get(taskId), turn.closed, WENT_ON)
+  await announce(home, ledger.get(taskId), turn.closed, turn.why)
   return turn.id
 }
 
-// currentAttempt's turn, in the ledger only, with what it closed, for the caller to announce.
+// currentAttempt's turn, in the ledger only, with what it closed and with what, for the caller to
+// announce.
 function currentTurn(
   ledger: Ledger,
   taskId: number,
   sessionId: string,
-): { id: number; closed: Decision[] } {
+): { id: number; closed: Decision[]; why: string } {
   const turn = openTurn(ledger, taskId, sessionId)
   // A turn nod sent closed these as it started (deliver). One the prompt hook opened leaves them
   // to here, the turn's end as before it was opened at its start, so a turn the person stops
-  // (Escape, no Stop) leaves the question open and the task waiting on it.
-  if (!typedHere(turn.prompt)) return { id: turn.id, closed: [] }
+  // (Escape, no Stop) leaves the question open and the task waiting on it. What the person typed in
+  // it so far answers them, all of it, in order: the worker took it in after what it asked, and a
+  // turn they stopped takes what they type next. One with no words of theirs (Claude Code went on
+  // by itself, or a hook of theirs held them back) went on without an answer.
+  if (!typedHere(turn.prompt)) return { id: turn.id, closed: [], why: WENT_ON }
+  const said = ledger.messages(taskId).filter((m) => m.attemptId === turn.id)
+  const words = [turn.prompt, ...said.map((m) => m.text)]
+    .filter((t) => typedHere(t) && t !== TYPED)
+    .map((t) => t.slice(TYPED.length + 1))
+  const why = words.length === 0 ? WENT_ON : words.join('\n')
   const asked = (d: Decision) => ASKED.includes(d.reason) && d.attemptId !== turn.id
-  const closed = closeDecisions(ledger, taskId, asked, WENT_ON)
+  const closed = closeDecisions(ledger, taskId, asked, why)
   goesOn(ledger, taskId, closed)
-  return { id: turn.id, closed }
+  return { id: turn.id, closed, why }
 }
 
 // The task's open turn, or one opened as a turn nod did not send, with `prompt`. In one transaction
@@ -1503,9 +1574,12 @@ function transcriptTail(ledger: Ledger, home: string, open: Attempt): string[] {
 // Closes the permission decisions of the open turn once its transcript shows the person stopped it
 // with Escape: the dialog went with the turn (no Stop, 2.1.290). Since the dialog's decision opens
 // as it shows (onPermissionAsk), one they answered so within seconds is a decision too. Only before
-// a message, which goes on past it at once (deliver): elsewhere the decision stays as before, so a
-// typed turn it closes does not leave its task running with no turn. A transcript that cannot be
-// read leaves it open (transcriptTail).
+// a message, nod's (deliver) or one they type (onPrompt), which goes on past it at once: elsewhere
+// the decision stays as before, so a typed turn it closes does not leave its task running with no
+// turn. A transcript that cannot be read leaves it open (transcriptTail).
+// ponytail: the prompt hook runs before Claude Code writes the message to the transcript, as a
+// message a hook holds back leaves none (2.1.310), so its end still shows the stop; not measured
+// with a dialog stopped.
 // ponytail: reads the transcript's end as endTurnWithoutStop does; a format that changes leaves
 // the decision open, as before.
 function stoppedDialogs(ledger: Ledger, home: string, taskId: number): Decision[] {
@@ -2542,6 +2616,9 @@ function workerSettings(started: string | null, sockets: string): string {
           hooks: [{ type: 'command', command: hook('permission'), timeout: PERMISSION_HOOK_SECS }],
         },
       ],
+      // A tool that ran, as it did or failing: its dialog, if it had one, was answered (onToolRan).
+      PostToolUse: [{ hooks: [{ type: 'command', command: hook('tool') }] }],
+      PostToolUseFailure: [{ hooks: [{ type: 'command', command: hook('tool') }] }],
       StopFailure: [{ hooks: [{ type: 'command', command: hook('stop-failure') }] }],
       UserPromptSubmit: [{ hooks: [{ type: 'command', command: hook('prompt') }] }],
       SessionStart: [

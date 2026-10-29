@@ -7,7 +7,9 @@ import {
   useRouter,
 } from '@tanstack/react-router'
 import { createServerFn } from '@tanstack/react-start'
+import xtermCss from '@xterm/xterm/css/xterm.css?url'
 import { type ReactNode, type Ref, useEffect, useRef } from 'react'
+import { BUILD } from '../build'
 import { bindKeys, ignoreOnPage, KEYS } from '../keys'
 import { type Overview, overview } from '../nod.server'
 import { Failed, TaskId, TaskItem } from '../parts'
@@ -17,6 +19,8 @@ import { focusRow, STATUS_ICONS, UndoBar } from '../todo-parts'
 
 // Workers change the ledger while the page is open, so it reloads its data this often.
 const REFRESH_MS = 5000
+// The server's build a page last loaded itself again for.
+const RELOADED = 'nod-reloaded-for-build'
 
 const getOverview = createServerFn({ method: 'GET' }).handler(() => overview())
 
@@ -29,6 +33,8 @@ export const Route = createRootRoute({
     ],
     links: [
       { rel: 'stylesheet', href: css },
+      // For the worker's terminal on a task page (terminal.tsx).
+      { rel: 'stylesheet', href: xtermCss },
       // The SVG follows the system's light or dark; the PNG is for browsers without SVG icons.
       { rel: 'icon', href: '/favicon.svg', type: 'image/svg+xml' },
       { rel: 'icon', href: '/favicon.png', type: 'image/png', sizes: '64x64' },
@@ -59,8 +65,30 @@ function Shell({ children }: { children: ReactNode }) {
   )
 }
 
+// Whether a field of the page holds something (a message being written, a todo's form, a search).
+// xterm.js's own field holds nothing of the person's.
+const typing = (): boolean =>
+  [...document.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>('input, textarea')].some(
+    (f) => f.value !== '' && f.closest('.xterm') === null && !UNTYPED.has(f.type),
+  )
+const UNTYPED = new Set(['checkbox', 'radio', 'hidden', 'button', 'submit', 'reset'])
+
 function Root() {
   const data = Route.useLoaderData()
+  // A page from before the server was built again (`ui.sh install`) goes on running the old code,
+  // which the app's window keeps until it loads a page anew, so the page loads itself again: at a
+  // refresh with nothing typed in it that loading would lose, and once for each build of the
+  // server's, as a page and a server that do not agree must not reload for good.
+  useEffect(() => {
+    if ('failed' in data || data.build === BUILD || typing()) return
+    try {
+      if (sessionStorage.getItem(RELOADED) === data.build) return
+      sessionStorage.setItem(RELOADED, data.build)
+    } catch {
+      return
+    }
+    location.reload()
+  }, [data])
   return 'failed' in data ? (
     <Layout data={null}>
       <Failed error={data.failed} />

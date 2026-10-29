@@ -869,6 +869,29 @@ details summary {
   max-height: calc(100dvh - 9rem);
 }
 
+/* The worker's terminal (terminal.tsx) keeps one size, which the screen as it was covers until the
+   live one comes, down to the foot of the column. */
+.term-box {
+  position: relative;
+}
+
+.term {
+  height: max(14rem, calc(100dvh - 7rem));
+}
+
+/* Padding on .xterm, where the fit addon takes it off the size. */
+.term .xterm {
+  height: 100%;
+  padding: 0.5rem 0.6rem;
+}
+
+.term-box > .screen {
+  position: absolute;
+  inset: 0;
+  max-height: none;
+  background: var(--term-bg);
+}
+
 .idle-note {
   display: flex;
   flex-wrap: wrap;

@@ -6,6 +6,7 @@ import { int } from '../input'
 import type { Message } from '../nod.server'
 import { detail, send } from '../nod.server'
 import { DecisionCard, duration, localTime, Markdown, Status, statusClass, Url } from '../parts'
+import { Screen } from '../terminal'
 
 const getDetail = createServerFn({ method: 'GET' })
   .validator((id: number) => int(id, 'task id'))
@@ -55,6 +56,7 @@ function TaskPage() {
   // A session that is gone has nothing to show, so the page keeps its width for the turns and the
   // result; the box to message the worker stays while the task can be resumed.
   const aside = screen !== null || canSend
+  const open = decisions.find((d) => d.answer === null)
   return (
     <div className={aside ? 'task-layout' : 'task-layout solo'}>
       <div className="page">
@@ -223,31 +225,22 @@ function TaskPage() {
                 ))}
             </div>
           ) : (
-            <div className="window">
-              <div className="window-bar">
-                <span className="lights">
-                  <i />
-                  <i />
-                  <i />
-                </span>
-                <span className="window-title">task-{task.id}</span>
-                <span className="live">live</span>
-              </div>
-              <pre className="screen">{screen}</pre>
-            </div>
+            <Screen key={`screen-${task.id}`} id={task.id} screen={screen} />
           )}
-          {/* Keyed, as moving to another task keeps this page: what was written does not go along. */}
+          {/* With no live session, this box is the way to the worker; with one, to the decisions
+              its terminal shows no dialog for, whatever else is open. Keyed, as moving to another
+              task keeps this page: what was written does not go along. */}
           {canSend && (
             <Composer
               key={task.id}
               taskId={task.id}
-              open={decisions.find((d) => d.answer === null)}
+              open={
+                screen === null
+                  ? open
+                  : decisions.find((d) => d.answer === null && NO_DIALOG.has(d.reason))
+              }
+              live={screen !== null}
             />
-          )}
-          {screen !== null && (
-            <p className="muted small">
-              or in a terminal: <code>nod attach {task.id}</code>
-            </p>
           )}
         </aside>
       )}
@@ -260,8 +253,22 @@ function TaskPage() {
 const YES_OR_NO = new Set(['permission', 'trust', 'rule', 'land'])
 // How long the buttons wait after the open decision changed under them.
 const CHANGED_MS = 1000
+// The decisions a live worker's terminal shows no dialog for: answered here even then.
+const NO_DIALOG = new Set(['land', 'rule'])
+// What No does where it does not end the task (answer): a permission is denied, and landing stops
+// while the work stands.
+const NO_SAYS: Record<string, string> = { permission: 'No', land: 'No — stop landing' }
 
-function Composer({ taskId, open }: { taskId: number; open: Decision | undefined }) {
+// `live`: the session is alive, and typed into on its screen.
+function Composer({
+  taskId,
+  open,
+  live,
+}: {
+  taskId: number
+  open: Decision | undefined
+  live: boolean
+}) {
   const router = useRouter()
   const [text, setText] = useState('')
   // The decision the text was begun for, or null for a message. The page reloads under the person
@@ -318,6 +325,10 @@ function Composer({ taskId, open }: { taskId: number; open: Decision | undefined
     void submit(reply, d.id)
   }
 
+  // A live session is typed into on its screen, decisions too, but for those it has no dialog for:
+  // their buttons show under it. Hidden, not gone, so a decision that opens is still timed
+  // (`changed`): a box made as it opens would take the first click at once.
+  if (live && (open === undefined || !NO_DIALOG.has(open.reason))) return null
   return (
     <form
       className="composer"
@@ -342,7 +353,7 @@ function Composer({ taskId, open }: { taskId: number; open: Decision | undefined
             disabled={busy}
             onClick={() => press('no', open)}
           >
-            {open.reason === 'permission' ? 'No' : 'No — end the task'}
+            {NO_SAYS[open.reason] ?? 'No — end the task'}
           </button>
         </div>
       ) : (

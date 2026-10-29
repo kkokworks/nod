@@ -142,8 +142,11 @@ export class Terminals {
     this.run(['kill-server'])
   }
 
-  attachCommand(name: string): string[] {
-    return ['tmux', '-L', this.socket, 'attach', '-t', `=${name}`]
+  // `features`: what the attaching terminal can do that tmux would not take from its TERM (-T),
+  // such as RGB colour, which tmux otherwise brings down to 256 colours for xterm-256color.
+  attachCommand(name: string, features?: string): string[] {
+    const told = features === undefined ? [] : ['-T', features]
+    return ['tmux', '-L', this.socket, ...told, 'attach', '-t', `=${name}`]
   }
 
   // The process the session started with (`argv` of start).

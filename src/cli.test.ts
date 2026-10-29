@@ -209,7 +209,9 @@ test('watch and the decision list with --issue keep to those issues, so roots sp
   const list = Bun.spawnSync(['bun', cli, '--issue', 'B-1'], { env }).stdout.toString()
   expect(list).toContain('theirs')
   expect(list).not.toContain('mine')
-}, 15_000)
+  // About 7 s alone, the watch's idle looks; some 40 s once under the load of a full run beside
+  // other work (measured 2026-10-29).
+}, 60_000)
 
 test('each root session sees in show the tasks it added, and with --mine lists and watches only those', async () => {
   const home = tmp.make('nod-root-')

@@ -1,11 +1,57 @@
-import { afterAll, afterEach, beforeEach, expect, mock, setSystemTime, test } from 'bun:test'
+import {
+  afterAll,
+  afterEach,
+  beforeEach,
+  expect,
+  jest,
+  mock,
+  setSystemTime,
+  spyOn,
+  test,
+} from 'bun:test'
 import { GlobalRegistrator } from '@happy-dom/global-registrator'
 import type { AnyRoute } from '@tanstack/react-router'
+import type { ITerminalAddon, Terminal as XTerm } from '@xterm/xterm'
 import { tempDirs } from '../../test/tmp'
 
 // The real pages and rows, in a DOM, under a router; the server functions are answered here.
 GlobalRegistrator.register()
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
+
+// The sockets a worker's live screen opens (terminal.tsx), connected to nothing: the server's side
+// has tests of its own (terminal.server.test.ts).
+class Socket {
+  static readonly OPEN = 1
+  static made: Socket[] = []
+  // How many of the next sockets fail to open, as `new WebSocket` throws.
+  static refuse = 0
+  readyState = 0
+  binaryType = 'blob'
+  sent: unknown[] = []
+  onmessage: ((e: { data: ArrayBuffer }) => void) | null = null
+  onclose: (() => void) | null = null
+  constructor(readonly url: string) {
+    if (Socket.refuse > 0) {
+      Socket.refuse--
+      throw new Error('refused')
+    }
+    Socket.made.push(this)
+  }
+  send(data: string) {
+    this.sent.push(JSON.parse(data))
+  }
+  close() {
+    this.readyState = 3
+  }
+}
+Object.assign(globalThis, { WebSocket: Socket })
+// Loaded once here, so the screen's own import of them is done by the time a page settles.
+const [{ Terminal }, , { Unicode11Addon }, { WebglAddon }] = await Promise.all([
+  import('@xterm/xterm'),
+  import('@xterm/addon-fit'),
+  import('@xterm/addon-unicode11'),
+  import('@xterm/addon-webgl'),
+])
 
 // What a GET answers, what a POST does to it, and the POSTs sent. Bun keeps a module mock for the
 // rest of the run, which can't be undone, so no other test file may import the server functions.
@@ -44,6 +90,7 @@ const { TodoRow } = await import('./todo-parts')
 const { Search } = await import('./search')
 const projects = await import('./routes/projects')
 const { Failed, NotFound } = await import('./parts')
+const { RETRY_MS, TERMINAL } = await import('./terminal')
 const shell = await import('./routes/__root')
 if (before === undefined) delete process.env.NOD_HOME
 else process.env.NOD_HOME = before
@@ -209,40 +256,239 @@ const detail = (id: number) => ({
   report: null,
   place: { todo: null, project: null },
   retro: null,
-  screen: 'working',
+  screen: null as string | null,
   root: null,
+})
+// The same with its session alive.
+const live = (id: number) => ({ ...detail(id), screen: 'working' })
+
+test('a live session is only its terminal, a decision open on it too; a task with none keeps the box to message it', async () => {
+  answer = (id) => live(id as number)
+  await go('/tasks/23')
+  const terminalOnly = () => {
+    expect(document.querySelector('.term')).not.toBeNull()
+    expect(document.querySelector('.composer')).toBeNull()
+    expect(document.querySelector('.computer')?.textContent).not.toContain('nod attach')
+  }
+  terminalOnly()
+  // A decision is answered on the screen, where the worker asks it.
+  for (const reason of ['question', 'permission', 'trust']) {
+    open[23] = { id: 30, reason }
+    await reload()
+    terminalOnly()
+  }
+  open[23] = undefined
+  // With the session gone, the box is the way to the worker.
+  answer = (id) => detail(id as number)
+  await reload()
+  expect(document.querySelector('.term')).toBeNull()
+  expect(field<HTMLTextAreaElement>('.composer textarea').placeholder).toBe('Message the worker…')
+})
+
+test('a live session shows Yes and No under its terminal for landing and rules only, which its terminal has no dialog for, and they wait a moment after one opens', async () => {
+  answer = (id) => live(id as number)
+  await go('/tasks/24')
+  expect(document.querySelector('.composer')).toBeNull()
+  const buttons = () => [...document.querySelectorAll('.composer button')].map((b) => b.textContent)
+  // No on landing only stops it: the work stands.
+  for (const [id, reason, no] of [
+    [31, 'land', 'No — stop landing'],
+    [32, 'rule', 'No — end the task'],
+  ] as const) {
+    open[24] = { id, reason }
+    await reload()
+    expect(document.querySelector('.term')).not.toBeNull()
+    expect(buttons()).toEqual(['Yes', no])
+    expect(document.querySelector('.composer textarea')).toBeNull()
+    // Just opened where the person may be about to click: not yet an answer.
+    await click('Yes')
+    expect(posted.splice(0)).toEqual([])
+    expect(banners().join()).toContain(`#${id}`)
+    setSystemTime(new Date(Date.now() + 1500))
+    onPost = () => {
+      open[24] = undefined
+    }
+    await click('Yes')
+    expect(posted.splice(0)).toEqual([{ taskId: 24, decisionId: id, text: 'yes' }])
+    // Answered, the terminal is all there is again.
+    expect(document.querySelector('.composer')).toBeNull()
+  }
+  // Landing asks while a question before it is still open: its buttons show all the same.
+  const asked = (id: number, reason: string) => ({
+    id,
+    reason,
+    taskId: 24,
+    attemptId: 1,
+    question: 'ok?',
+    answer: null,
+    createdAt: AT,
+  })
+  answer = () => ({ ...live(24), decisions: [asked(33, 'question'), asked(34, 'land')] })
+  await reload()
+  expect(buttons()).toEqual(['Yes', 'No — stop landing'])
+  expect(document.querySelector('.composer-label')?.textContent).toContain('#34')
+})
+
+test("a worker's terminal looks as in a terminal app: its font, weights, cursor and dark theme to the box's edges, drawn with WebGL at Unicode 11 widths, its colours as the worker sets them", async () => {
+  expect(TERMINAL).toMatchObject({
+    fontSize: 14,
+    fontWeight: '300',
+    fontWeightBold: '500',
+    cursorStyle: 'block',
+    cursorBlink: true,
+  })
+  // xterm.js's own, 1: no colour of the worker's is lightened.
+  expect(TERMINAL).not.toHaveProperty('minimumContrastRatio')
+  expect(TERMINAL.fontFamily).toStartWith('"SF Mono", "Menlo", "Monaco"')
+  expect(TERMINAL.theme).toMatchObject({ background: '#282c34', foreground: '#ffffff' })
+  // What the screen loads into its terminal. WebGL fails to start here, as where a browser has
+  // none, and the terminal goes on with the renderer it has.
+  const loadAddon = Terminal.prototype.loadAddon
+  const loaded: { term: XTerm; addon: ITerminalAddon }[] = []
+  const loading = spyOn(Terminal.prototype, 'loadAddon').mockImplementation(function (
+    this: XTerm,
+    addon: ITerminalAddon,
+  ) {
+    loaded.push({ term: this, addon })
+    loadAddon.call(this, addon)
+  })
+  try {
+    answer = (id) => live(id as number)
+    await go('/tasks/25')
+  } finally {
+    loading.mockRestore()
+  }
+  expect(document.querySelector<HTMLElement>('.term')?.style.background).toMatch(
+    /#282c34|rgb\(40, 44, 52\)/,
+  )
+  expect(loaded.some(({ addon }) => addon instanceof Unicode11Addon)).toBe(true)
+  expect(loaded.some(({ addon }) => addon instanceof WebglAddon)).toBe(true)
+  expect(loaded.map(({ term }) => term.unicode.activeVersion)).toContain('11')
+})
+
+test('a live screen whose attach failed leaves no terminal of it behind once it attaches again', async () => {
+  answer = (id) => live(id as number)
+  Socket.made.length = 0
+  Socket.refuse = 1
+  await go('/tasks/27')
+  expect(Socket.made).toHaveLength(0)
+  // Out of sight and back, which attaches again at once, as the retry does after a while.
+  const sight = (state: string) =>
+    act(() => {
+      Object.defineProperty(document, 'visibilityState', { value: state, configurable: true })
+      document.dispatchEvent(new Event('visibilitychange'))
+    })
+  try {
+    sight('hidden')
+    await settle()
+    sight('visible')
+    await settle()
+  } finally {
+    Reflect.deleteProperty(document, 'visibilityState')
+  }
+  expect(Socket.made).toHaveLength(1)
+  expect(document.querySelectorAll('.term .xterm')).toHaveLength(1)
+})
+
+test("a live worker's screen attaches to its session, takes keys, and lets go when the page moves on or the session ends", async () => {
+  answer = (id) => live(id as number)
+  Socket.made.length = 0
+  await go('/tasks/20')
+  const [socket] = Socket.made
+  expect(socket?.url).toMatch(/^ws:\/\/[^/]*\/terminal\/20\?cols=\d+&rows=\d+$/)
+  if (socket === undefined) return
+  // The screen as it was shows until the first bytes come.
+  const shown = () => !field('.term-box .screen').hidden
+  expect(shown()).toBe(true)
+  socket.readyState = Socket.OPEN
+  act(() => socket.onmessage?.({ data: new TextEncoder().encode('live').buffer }))
+  expect(shown()).toBe(false)
+  // As a key typed into xterm.js's field comes.
+  act(() => {
+    field('.xterm-helper-textarea').dispatchEvent(
+      new InputEvent('input', { data: 'y', inputType: 'insertText', bubbles: true }),
+    )
+  })
+  expect(socket.sent).toContainEqual(['in', 'y'])
+  // The page's reload keeps it attached.
+  await reload()
+  expect(Socket.made).toEqual([socket])
+
+  await go('/tasks/21')
+  expect(socket.readyState).toBe(3)
+  const next = Socket.made[1]
+  expect(next?.url).toContain('/terminal/21?')
+  answer = (id) => detail(id as number)
+  await reload()
+  expect(next?.readyState).toBe(3)
+  expect(document.querySelector('.term')).toBeNull()
+})
+
+test("a live worker's screen lets go while the page is out of sight, and attaches again when it shows or a while after its connection closed", async () => {
+  answer = (id) => live(id as number)
+  Socket.made.length = 0
+  await go('/tasks/22')
+  // As a hidden app window or a tab behind others is.
+  const sight = (state: 'hidden' | 'visible') =>
+    act(() => {
+      Object.defineProperty(document, 'visibilityState', { value: state, configurable: true })
+      document.dispatchEvent(new Event('visibilitychange'))
+    })
+  try {
+    sight('hidden')
+    await settle()
+    expect(Socket.made.map((s) => s.readyState)).toEqual([3])
+    sight('visible')
+    await settle()
+    expect(Socket.made.map((s) => s.readyState)).toEqual([3, 0])
+  } finally {
+    Reflect.deleteProperty(document, 'visibilityState')
+  }
+  // The UI server went away: it attaches again once the page would have reloaded.
+  jest.useFakeTimers()
+  try {
+    act(() => Socket.made[1]?.onclose?.())
+    act(() => jest.advanceTimersByTime(RETRY_MS - 1))
+    expect(Socket.made).toHaveLength(2)
+    act(() => jest.advanceTimersByTime(1))
+  } finally {
+    jest.useRealTimers()
+  }
+  await settle()
+  expect(Socket.made).toHaveLength(3)
+  expect(Socket.made[2]?.url).toContain('/terminal/22?')
 })
 
 test('what is written to one task does not go to another', async () => {
   answer = (id) => detail(id as number)
   await go('/tasks/3')
-  type(field('textarea'), 'for three')
+  type(field('.composer textarea'), 'for three')
   await go('/tasks/4')
-  expect(field<HTMLTextAreaElement>('textarea').value).toBe('')
-  type(field('textarea'), 'for four')
-  await submit('textarea')
+  expect(field<HTMLTextAreaElement>('.composer textarea').value).toBe('')
+  type(field('.composer textarea'), 'for four')
+  await submit('.composer textarea')
   expect(posted.splice(0)).toEqual([{ taskId: 4, decisionId: null, text: 'for four' }])
 })
 
 test('a message does not answer a decision that opened while it was written', async () => {
   answer = (id) => detail(id as number)
   await go('/tasks/4')
-  type(field('textarea'), 'carry on')
+  type(field('.composer textarea'), 'carry on')
   open[4] = { id: 7, reason: 'question' }
   await reload()
-  await submit('textarea')
+  await submit('.composer textarea')
   expect(posted).toEqual([])
   expect(banners().join()).toContain('#7')
-  expect(field<HTMLTextAreaElement>('textarea').value).toBe('carry on')
+  expect(field<HTMLTextAreaElement>('.composer textarea').value).toBe('carry on')
   // Sent again, having seen it, it answers the decision.
-  await submit('textarea')
+  await submit('.composer textarea')
   expect(posted.splice(0)).toEqual([{ taskId: 4, decisionId: 7, text: 'carry on' }])
 
   // And an answer to a decision that closed meanwhile does not become a message.
-  type(field('textarea'), 'use the first')
+  type(field('.composer textarea'), 'use the first')
   open[4] = undefined
   await reload()
-  await submit('textarea')
+  await submit('.composer textarea')
   expect(posted).toEqual([])
   expect(banners().join()).toContain('#7')
 })
@@ -250,8 +496,8 @@ test('a message does not answer a decision that opened while it was written', as
 test('answering with a button keeps what was being written', async () => {
   answer = (id) => detail(id as number)
   await go('/tasks/5')
-  type(field('textarea'), 'half a thought')
-  open[5] = { id: 8, reason: 'permission' }
+  type(field('.composer textarea'), 'half a thought')
+  open[5] = { id: 8, reason: 'land' }
   onPost = () => {
     open[5] = undefined
   }
@@ -259,32 +505,16 @@ test('answering with a button keeps what was being written', async () => {
   setSystemTime(new Date(Date.now() + 1500))
   await click('Yes')
   expect(posted.splice(0)).toEqual([{ taskId: 5, decisionId: 8, text: 'yes' }])
-  expect(field<HTMLTextAreaElement>('textarea').value).toBe('half a thought')
-})
-
-test('⌘↵ pressed again before the message is through sends it once', async () => {
-  answer = (id) => detail(id as number)
-  await go('/tasks/7')
-  type(field('textarea'), 'hi')
-  const send = () =>
-    act(() => {
-      field('textarea').dispatchEvent(
-        new KeyboardEvent('keydown', { key: 'Enter', metaKey: true, bubbles: true }),
-      )
-    })
-  send()
-  send()
-  await settle()
-  expect(posted.splice(0)).toEqual([{ taskId: 7, decisionId: null, text: 'hi' }])
+  expect(field<HTMLTextAreaElement>('.composer textarea').value).toBe('half a thought')
 })
 
 test('a button does not answer a decision that just took the place of another', async () => {
   answer = (id) => detail(id as number)
-  open[6] = { id: 10, reason: 'permission' }
+  open[6] = { id: 10, reason: 'land' }
   await go('/tasks/6')
-  // The answer is taken, and the worker asks the next just as the person clicks again.
+  // The answer is taken, and the next asks just as the person clicks again.
   onPost = () => {
-    open[6] = { id: 11, reason: 'permission' }
+    open[6] = { id: 11, reason: 'land' }
   }
   await click('Yes')
   await click('Yes')
@@ -294,6 +524,22 @@ test('a button does not answer a decision that just took the place of another', 
   setSystemTime(new Date(Date.now() + 1500))
   await click('Yes')
   expect(posted.splice(0)).toEqual([{ taskId: 6, decisionId: 11, text: 'yes' }])
+})
+
+test('⌘↵ pressed again before the message is through sends it once', async () => {
+  answer = (id) => detail(id as number)
+  await go('/tasks/7')
+  type(field('.composer textarea'), 'hi')
+  const send = () =>
+    act(() => {
+      field('.composer textarea').dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Enter', metaKey: true, bubbles: true }),
+      )
+    })
+  send()
+  send()
+  await settle()
+  expect(posted.splice(0)).toEqual([{ taskId: 7, decisionId: null, text: 'hi' }])
 })
 
 test("a task's root shows as its project session, with the command that reopens it, else as the session's ID", async () => {
@@ -572,9 +818,9 @@ test('a task or todo that is not there, an unknown page and a page that fails sh
   expect(document.querySelector('.layout .task-title')?.textContent).toBe('task 3')
 })
 
-test("the sidebar's data failing to load leaves the layout without its lists, and a refresh that reads brings them", async () => {
-  // The real root, in a router of its own, without the document shell around it.
-  const app = R.createRouter({
+// The real root, in a router of its own, without the document shell around it.
+const realRoot = () =>
+  R.createRouter({
     routeTree: R.createRootRoute({
       loader: shell.Route.options.loader,
       component: shell.Route.options.component,
@@ -582,6 +828,59 @@ test("the sidebar's data failing to load leaves the layout without its lists, an
     history: R.createMemoryHistory({ initialEntries: ['/'] }),
     defaultNotFoundComponent: () => <p className="here">page</p>,
   })
+// What the sidebar gets with nothing in the ledger, from a server of `build`; '' is this page's.
+const overview = (build: string) => ({
+  decisions: [],
+  groups: [],
+  collected: { items: [], total: 0 },
+  inbox: 0,
+  build,
+})
+
+test("a page from another build than the server's loads itself again, once for that build, when nothing typed in it would be lost", async () => {
+  // The other pages' router shows a page with no fields meanwhile.
+  rows = []
+  await go('/rows')
+  const reloads = spyOn(location, 'reload').mockImplementation(() => {})
+  const box = document.body.appendChild(document.createElement('div'))
+  let own = createRoot(box)
+  const load = async (app: ReturnType<typeof realRoot>) => {
+    await act(async () => own.render(<R.RouterProvider router={app as never} />))
+    await settle()
+  }
+  sessionStorage.clear()
+  try {
+    answer = () => overview('')
+    const app = realRoot()
+    await load(app)
+    expect(reloads).not.toHaveBeenCalled()
+    // The server was built again (ui.sh install) while a search was being typed: not yet.
+    answer = () => overview('newer')
+    const search = box.querySelector<HTMLInputElement>('.side-search input')
+    if (search === null) throw new Error('no search box')
+    type(search, 'r2')
+    await act(() => app.invalidate())
+    await settle()
+    expect(reloads).not.toHaveBeenCalled()
+    type(search, '')
+    await act(() => app.invalidate())
+    await settle()
+    expect(reloads).toHaveBeenCalledTimes(1)
+    // Loaded anew and still told of another build: not again, or it would reload for good.
+    act(() => own.unmount())
+    own = createRoot(box)
+    await load(realRoot())
+    expect(reloads).toHaveBeenCalledTimes(1)
+  } finally {
+    reloads.mockRestore()
+    sessionStorage.clear()
+    act(() => own.unmount())
+    box.remove()
+  }
+})
+
+test("the sidebar's data failing to load leaves the layout without its lists, and a refresh that reads brings them", async () => {
+  const app = realRoot()
   const box = document.body.appendChild(document.createElement('div'))
   const own = createRoot(box)
   // The layout's 5 second refresh.
@@ -606,7 +905,7 @@ test("the sidebar's data failing to load leaves the layout without its lists, an
     await refresh()
     expect(box.querySelector<HTMLInputElement>('.side-search input')?.value).toBe('r2')
 
-    answer = () => ({ decisions: [], groups: [], collected: { items: [], total: 0 }, inbox: 2 })
+    answer = () => ({ ...overview(''), inbox: 2 })
     await refresh()
     expect(box.querySelector('.side-summary')?.textContent).toContain('0 tasks')
     expect(box.querySelector('.main .here')).not.toBeNull()
