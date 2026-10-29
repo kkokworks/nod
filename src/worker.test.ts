@@ -26,8 +26,9 @@ import { projectFolder } from '../test/projects'
 import { git } from '../test/remote'
 import { tempDirs } from '../test/tmp'
 import { testTmux } from '../test/tmux'
-// Workers run in fake terminals here (test/fake-terminals.ts), so these tests run where tmux cannot
-// start a server too. The few of tmux itself are `tmuxTest`, which skips them there.
+// Workers run in fake terminals here (test/fake-terminals.ts), so these tests run in a worker's
+// sandbox too, which opens no pseudo-terminal for tmux. The few of tmux itself are `tmuxTest`,
+// which skips them there.
 import { tmuxTest } from '../test/tmux-server'
 import { setAccountRule, transcriptPath } from './account'
 import { ALLOW } from './allow'

@@ -38,17 +38,25 @@ export function inboxServer(path: string): Promise<InboxServer> {
 }
 
 // Why to skip the tests that need a socket server, or null to run them, as tmuxSkip does: a Claude
-// Code worker's sandbox refuses to listen on a Unix socket (EPERM, measured on 2.1.310), and its
-// commands have SANDBOX_RUNTIME=1. Anything else that keeps the server from listening fails the
-// run: nod's check runs these tests outside the sandbox and must not pass without them. As with
-// tmuxSkip, a worker nod starts now listens in its own folder (NOD_SOCKETS), so they run there too.
+// Code sandbox refuses to listen on a Unix socket (EPERM, measured on 2.1.310), and its commands
+// have SANDBOX_RUNTIME=1. A worker nod starts now may listen in its own folder (NOD_SOCKETS), where
+// the probe and the tests make theirs (socketsParent), so they run there (measured on 2.1.312).
+// They skip where that folder is missing or of no use (a worker started before it, nod's reviewer,
+// too long a path: test/tmp.ts) and in other sandboxes. Anything else that keeps the server from
+// listening fails the run: nod's check runs these tests outside the sandbox, when it runs
+// `bun test`, and must not pass without them.
 export function inboxSkip(
   error: { code?: unknown } | null,
   env: Record<string, string | undefined>,
 ): string | null {
   if (error === null) return null
   if (env.SANDBOX_RUNTIME === '1' && error.code === 'EPERM') {
-    return "this sandbox cannot listen on a Unix socket: skipping the tests that need one, which nod's check runs outside it"
+    return (
+      'skipping the tests that need a Unix socket server: this sandbox lets this run listen on none ' +
+      "(EPERM). A nod worker's sandbox allows one only in its own folder (NOD_SOCKETS), which this run " +
+      "lacks or cannot use (test/tmp.ts). They run outside the sandbox only when nod's check runs " +
+      "`bun test`: the task's acceptance check, if it does, or the check nod runs as it lands the branch"
+    )
   }
   throw new Error(`cannot listen on a Unix socket: ${String(error)}`)
 }
