@@ -236,6 +236,9 @@ const CUT = '(the turn was cut off)'
 const STOPPED_DIALOG = '(the person stopped its turn)'
 // What a permission decision gets once its turn ended otherwise: its dialog went with the turn.
 const TURN_ENDED = '(its turn ended)'
+// What a permission decision gets once the tool it asked for ran (onToolRan): the person allowed it
+// in the worker's terminal, nod not having answered it.
+const ALLOWED_HERE = '(allowed in the terminal)'
 
 // ponytail: fixed retry budget; make it per-task if real checks need more.
 const CHECK_RETRIES = 2
@@ -320,6 +323,15 @@ export const PromptEvent = z.object({ session_id: z.string(), prompt: z.string()
 // `source`: why the session starts: startup, resume, clear or compact. A compacted conversation
 // keeps its session ID (2.1.310).
 export const SessionStartEvent = z.object({ session_id: z.string(), source: z.string() })
+
+// Sent after a tool ran (PostToolUse) or ran and failed (PostToolUseFailure), with the input it
+// ran with; a subagent's has its agent_id (2.1.312's binary).
+export const ToolEvent = z.object({
+  session_id: z.string(),
+  tool_name: z.string(),
+  tool_input: z.record(z.string(), z.unknown()),
+  agent_id: z.string().optional(),
+})
 
 type Report = { status: 'done' | 'question' | 'failed'; text: string }
 
@@ -973,17 +985,60 @@ export async function onPermissionAsk(
   const taskId = ledger.taskOfSession(event.session_id)
   if (taskId === null) return
   const turn = currentTurn(ledger, taskId, event.session_id)
-  const { command } = event.tool_input
-  const asked = typeof command === 'string' ? command : JSON.stringify(event.tool_input)
   await decide(
     ledger,
     home,
     taskId,
     turn.id,
     'permission',
-    `Claude needs your permission to use ${event.tool_name}. Answer yes to allow; anything else denies.\n${asked.slice(0, QUESTION_LIMIT)}`,
+    permissionQuestion(event.tool_name, event.tool_input),
   )
   await announce(home, ledger.get(taskId), turn.closed, turn.why)
+}
+
+// What a permission decision asks, from the tool and the input it would run with; the decision of
+// the dialog a tool's run answered is found by it again (onToolRan).
+function permissionQuestion(tool: string, input: Record<string, unknown>): string {
+  const { command } = input
+  const asked = typeof command === 'string' ? command : JSON.stringify(input)
+  return `Claude needs your permission to use ${tool}. Answer yes to allow; anything else denies.\n${asked.slice(0, QUESTION_LIMIT)}`
+}
+
+// Called by the PostToolUse and PostToolUseFailure hooks: a tool ran, so the dialog that asked for
+// it was answered yes, in the worker's terminal if nod did not answer it. Its decision closes, or
+// nod's answer after would type Enter or Escape into a worker that went on (answer), and the task
+// would wait on it to its turn's end. Only the first open one of the turn that asked for this tool
+// with this input: the dialogs tools that ran at once queued may still show. Every tool run of
+// every worker comes here, so with no permission decision open it ends at the first looks. Not a
+// subagent's: its dialog's decision is worded from the screen (onNotification), and could match a
+// main thread's by chance.
+// ponytail: matched by the question as onPermissionAsk words it; an input Claude Code changed
+// between the two hooks (a hook's updatedInput) leaves the decision to close at its turn's end.
+export async function onToolRan(
+  ledger: Ledger,
+  home: string,
+  event: z.infer<typeof ToolEvent>,
+): Promise<void> {
+  if (event.agent_id !== undefined) return
+  const taskId = ledger.taskOfSession(event.session_id)
+  if (taskId === null) return
+  const open = ledger.openAttempt(taskId)
+  if (open === null) return
+  const asked = permissionQuestion(event.tool_name, event.tool_input)
+  const ran = ledger
+    .decisions(taskId)
+    .find(
+      (d) =>
+        d.answer === null &&
+        d.reason === 'permission' &&
+        d.attemptId === open.id &&
+        d.question === asked,
+    )
+  if (ran === undefined) return
+  const closed = closeDecisions(ledger, taskId, (d) => d.id === ran.id, ALLOWED_HERE)
+  // A dialog another tool queued still holds the task.
+  if (ledger.decisions(taskId).every((d) => d.answer !== null)) goesOn(ledger, taskId, closed)
+  await announce(home, ledger.get(taskId), closed, ALLOWED_HERE)
 }
 
 // Called by the Notification hook: a permission prompt still shown after some 6 s. The other
@@ -2564,6 +2619,9 @@ function workerSettings(started: string | null, sockets: string): string {
           hooks: [{ type: 'command', command: hook('permission'), timeout: PERMISSION_HOOK_SECS }],
         },
       ],
+      // A tool that ran, as it did or failing: its dialog, if it had one, was answered (onToolRan).
+      PostToolUse: [{ hooks: [{ type: 'command', command: hook('tool') }] }],
+      PostToolUseFailure: [{ hooks: [{ type: 'command', command: hook('tool') }] }],
       StopFailure: [{ hooks: [{ type: 'command', command: hook('stop-failure') }] }],
       UserPromptSubmit: [{ hooks: [{ type: 'command', command: hook('prompt') }] }],
       SessionStart: [

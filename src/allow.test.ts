@@ -273,9 +273,9 @@ test('a root session that watches hears the line too, for the tasks it watches, 
   expect(await heard((t) => t.id !== id)).toEqual([])
 })
 
-// Runs `nod hook permission` on `home` as Claude Code does, with `stdin`; returns what it printed.
-function hook(home: string, stdin: string): string {
-  const run = Bun.spawnSync(['bun', cli, 'hook', 'permission'], {
+// Runs `nod hook <name>` on `home` as Claude Code does, with `stdin`; returns what it printed.
+function hook(home: string, stdin: string, name = 'permission'): string {
+  const run = Bun.spawnSync(['bun', cli, 'hook', name], {
     env: { ...process.env, NOD_HOME: home },
     stdin: Buffer.from(stdin),
   })
@@ -476,6 +476,47 @@ test('what a person types into a turn they stopped is kept even when closing its
   ])
   // The decision is left as it was, to close as before.
   expect(ledger.decisions(id).map((d) => d.answer)).toEqual([null])
+}, 15_000)
+
+test("a tool that ran closes its dialog's decision, as allowed in the terminal, and only its own; nod's answer to it after types nothing into the worker", async () => {
+  const { home, ledger, id, event } = running()
+  // Two pushes at once, each its dialog.
+  expect(hook(home, JSON.stringify(event('git push origin feat/x')))).toBe('')
+  expect(hook(home, JSON.stringify(event('git push origin --tags')))).toBe('')
+  const [first = 0, second = 0] = ledger.decisions(id).map((d) => d.id)
+  const open = () => ledger.decisions(id).map((d) => [d.id, d.answer])
+  // The person picks Yes on the first in the terminal: it runs. The other's dialog still shows.
+  expect(hook(home, JSON.stringify(event('git push origin feat/x')), 'tool')).toBe('')
+  expect(open()).toEqual([
+    [first, '(allowed in the terminal)'],
+    [second, null],
+  ])
+  expect(ledger.get(id).status).toBe('needs_decision')
+  // Then on the second, which runs and fails (PostToolUseFailure, the same hook).
+  const failed = { ...event('git push origin --tags'), error: 'exit 1', is_interrupt: false }
+  expect(hook(home, JSON.stringify(failed), 'tool')).toBe('')
+  expect(open()).toEqual([
+    [first, '(allowed in the terminal)'],
+    [second, '(allowed in the terminal)'],
+  ])
+  expect(ledger.get(id).status).toBe('running')
+  // The root, a moment late, answers what it was shown: nothing reaches the worker, at work.
+  const alive = spyOn(Terminals.prototype, 'alive').mockReturnValue(true)
+  const keys = spyOn(Terminals.prototype, 'keys').mockImplementation(() => {})
+  try {
+    for (const [decision, reply] of [
+      [first, 'no'],
+      [second, 'yes'],
+    ] as const) {
+      await expect(answer(ledger, home, decision, reply, 'human')).rejects.toThrow(
+        /already answered/,
+      )
+    }
+    expect(keys).not.toHaveBeenCalled()
+  } finally {
+    alive.mockRestore()
+    keys.mockRestore()
+  }
 }, 15_000)
 
 test("no to one of the prompts tools that ran at once queued closes the others' decisions too: Escape ends the turn and every dialog of it", async () => {

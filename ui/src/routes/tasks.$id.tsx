@@ -227,10 +227,11 @@ function TaskPage() {
           ) : (
             <Screen key={`screen-${task.id}`} id={task.id} screen={screen} />
           )}
-          {/* A live session is typed into on its screen, decisions too; with none, this box is the
-              way to the worker. Keyed, as moving to another task keeps this page: what was
-              written does not go along. */}
-          {canSend && screen === null && <Composer key={task.id} taskId={task.id} open={open} />}
+          {/* With no live session, this box is the way to the worker. Keyed, as moving to another
+              task keeps this page: what was written does not go along. */}
+          {canSend && (
+            <Composer key={task.id} taskId={task.id} open={open} live={screen !== null} />
+          )}
         </aside>
       )}
     </div>
@@ -242,8 +243,19 @@ function TaskPage() {
 const YES_OR_NO = new Set(['permission', 'trust', 'rule', 'land'])
 // How long the buttons wait after the open decision changed under them.
 const CHANGED_MS = 1000
+// The decisions a live worker's terminal shows no dialog for: answered here even then.
+const NO_DIALOG = new Set(['land', 'rule'])
 
-function Composer({ taskId, open }: { taskId: number; open: Decision | undefined }) {
+// `live`: the session is alive, and typed into on its screen.
+function Composer({
+  taskId,
+  open,
+  live,
+}: {
+  taskId: number
+  open: Decision | undefined
+  live: boolean
+}) {
   const router = useRouter()
   const [text, setText] = useState('')
   // The decision the text was begun for, or null for a message. The page reloads under the person
@@ -300,6 +312,10 @@ function Composer({ taskId, open }: { taskId: number; open: Decision | undefined
     void submit(reply, d.id)
   }
 
+  // A live session is typed into on its screen, decisions too, but for those it has no dialog for:
+  // their buttons show under it. Hidden, not gone, so a decision that opens is still timed
+  // (`changed`): a box made as it opens would take the first click at once.
+  if (live && (open === undefined || !NO_DIALOG.has(open.reason))) return null
   return (
     <form
       className="composer"

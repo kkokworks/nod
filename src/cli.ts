@@ -76,6 +76,7 @@ import {
   onPrompt,
   onStop,
   onStopFailure,
+  onToolRan,
   PromptEvent,
   type Restart,
   readAtOnce,
@@ -89,6 +90,7 @@ import {
   spawn,
   startReady,
   startTask,
+  ToolEvent,
   tell,
 } from './worker'
 
@@ -281,6 +283,7 @@ const home = nodHome()
 if (command === 'hook' && rest[0] === 'prompt') await promptHook()
 if (command === 'hook' && rest[0] === 'inbox') await inboxHook()
 if (command === 'hook' && rest[0] === 'permission') await permissionHook()
+if (command === 'hook' && rest[0] === 'tool') await toolHook()
 const ledger = new Ledger(home)
 // A project session its hooks never told nod of says where it takes messages (onCommand); what
 // goes wrong only goes to stderr, as the command still runs.
@@ -856,6 +859,19 @@ async function permissionHook(): Promise<never> {
     }
   } catch (error) {
     console.error(`nod: could not judge or record the permission prompt: ${message(error)}`)
+  }
+  process.exit(0)
+}
+
+// A worker's PostToolUse and PostToolUseFailure hook (onToolRan), the same way: it runs after every
+// tool, and the worker goes on whatever becomes of it.
+async function toolHook(): Promise<never> {
+  console.log = console.error
+  try {
+    const event = ToolEvent.parse(JSON.parse(await Bun.stdin.text()))
+    await onToolRan(new Ledger(home), home, event)
+  } catch (error) {
+    console.error(`nod: could not close the decision of the tool's dialog: ${message(error)}`)
   }
   process.exit(0)
 }

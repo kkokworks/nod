@@ -272,7 +272,7 @@ test('a live session is only its terminal, a decision open on it too; a task wit
   }
   terminalOnly()
   // A decision is answered on the screen, where the worker asks it.
-  for (const reason of ['question', 'permission']) {
+  for (const reason of ['question', 'permission', 'trust']) {
     open[23] = { id: 30, reason }
     await reload()
     terminalOnly()
@@ -283,6 +283,35 @@ test('a live session is only its terminal, a decision open on it too; a task wit
   await reload()
   expect(document.querySelector('.term')).toBeNull()
   expect(field<HTMLTextAreaElement>('.composer textarea').placeholder).toBe('Message the worker…')
+})
+
+test('a live session shows Yes and No under its terminal for landing and rules only, which its terminal has no dialog for, and they wait a moment after one opens', async () => {
+  answer = (id) => live(id as number)
+  await go('/tasks/24')
+  expect(document.querySelector('.composer')).toBeNull()
+  const buttons = () => [...document.querySelectorAll('.composer button')].map((b) => b.textContent)
+  for (const [id, reason] of [
+    [31, 'land'],
+    [32, 'rule'],
+  ] as const) {
+    open[24] = { id, reason }
+    await reload()
+    expect(document.querySelector('.term')).not.toBeNull()
+    expect(buttons()).toEqual(['Yes', 'No — end the task'])
+    expect(document.querySelector('.composer textarea')).toBeNull()
+    // Just opened where the person may be about to click: not yet an answer.
+    await click('Yes')
+    expect(posted.splice(0)).toEqual([])
+    expect(banners().join()).toContain(`#${id}`)
+    setSystemTime(new Date(Date.now() + 1500))
+    onPost = () => {
+      open[24] = undefined
+    }
+    await click('Yes')
+    expect(posted.splice(0)).toEqual([{ taskId: 24, decisionId: id, text: 'yes' }])
+    // Answered, the terminal is all there is again.
+    expect(document.querySelector('.composer')).toBeNull()
+  }
 })
 
 test("a worker's terminal looks as in a terminal app: its font, weights, cursor and dark theme to the box's edges, drawn with WebGL at Unicode 11 widths, its colours as the worker sets them", async () => {
