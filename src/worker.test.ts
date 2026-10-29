@@ -1686,6 +1686,8 @@ test('due triggers add tasks, a source only for lines it has not printed before,
   await reaches(scheduled, 'succeeded')
   const dropped = await add('ask-first')
   const second = await until(() => ledger.decisions(dropped)[0])
+  // Heard before the drop: closing its terminal ends the Stop hook that tells of it, with the hook.
+  await until(() => heard().some(([event, id]) => event === 'decision' && id === dropped))
   await drop(ledger, home, terminals, second.id)
   await until(() => heard().length === 6)
   expect(heard()).toContainEqual(['answered', scheduled])
