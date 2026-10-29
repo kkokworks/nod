@@ -1,4 +1,4 @@
-import { existsSync } from 'node:fs'
+import { existsSync, lstatSync } from 'node:fs'
 import { z } from 'zod'
 import { Ledger, type Notice, type Task } from './ledger'
 import { message } from './proc'
@@ -171,11 +171,15 @@ export async function tellSessions(home: string): Promise<void> {
 // Sends each project's unsent notices, oldest first, to its latest session, all in one message. One
 // of a task in no project, and a decision answered since, goes to none. A project with no session
 // running keeps them. A send that fails keeps them too, and a socket that is gone (the session
-// ended without its SessionEnd hook) is forgotten until the session says it again.
+// ended without its SessionEnd hook, `ended`) is forgotten until the session says it again.
 // ponytail: notices are marked sent before the send, so a process killed between the two loses
 // them; and a session that starts again while another process sends to its old socket hears them
 // only at the next send (a tick, an event). A lease on the mark would close both.
-export async function sendNotices(ledger: Ledger, send = sendLine): Promise<void> {
+export async function sendNotices(
+  ledger: Ledger,
+  send = sendLine,
+  env: Record<string, string | undefined> = process.env,
+): Promise<void> {
   const todos = new Todos(ledger)
   const waiting = new Map<number, Notice[]>()
   for (const n of ledger.unsentNotices()) {
@@ -206,12 +210,27 @@ export async function sendNotices(ledger: Ledger, send = sendLine): Promise<void
     } catch (error) {
       ledger.unclaimNotices(claimed.ids, claimed.at)
       const { code } = Object(error) as { code?: unknown }
-      if (code === 'ENOENT' || code === 'ECONNREFUSED') {
-        todos.setSocket(session.sessionId, null, socket)
-      } else {
+      if (code !== 'ENOENT' && code !== 'ECONNREFUSED') {
         console.error(`nod: could not tell p${projectId}'s session: ${message(error)}`)
+      } else if (ended(socket, env)) {
+        todos.setSocket(session.sessionId, null, socket)
       }
     }
+  }
+}
+
+// Whether a connect to `socket` that found nobody there shows the session ended. Outside a sandbox
+// it does: a live session listens, and Claude Code removes its socket as it ends. Bun reports a
+// connect Claude Code's sandbox refuses as ENOENT too, the file still there (1.3.14; the kernel
+// says EPERM, docs/design.md), so there only the file being gone shows it, and what waits goes with
+// the next send from outside the sandbox (a tick, a hook). A file the sandbox hides shows nothing.
+function ended(socket: string, env: Record<string, string | undefined>): boolean {
+  if (env.SANDBOX_RUNTIME !== '1') return true
+  try {
+    lstatSync(socket)
+    return false
+  } catch (error) {
+    return (error as { code?: unknown }).code === 'ENOENT'
   }
 }
 

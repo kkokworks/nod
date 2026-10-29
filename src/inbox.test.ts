@@ -307,6 +307,43 @@ test('a send that fails keeps the notices for the next and leaves the change it 
   ])
 })
 
+test("in Claude Code's sandbox a refused connect keeps a socket whose file is there, as Bun reports it as it does one gone; a file that is gone, or a refusal outside the sandbox, forgets it", async () => {
+  const { ledger, todos, p, task } = setup()
+  const dir = tmp.make('nod-inbox-refused-')
+  // A live session's socket file: one the sandbox lets nod see but not connect to.
+  const live = join(dir, 'live.sock')
+  writeFileSync(live, '')
+  todos.addSession(p.id, A, '/work/one')
+  todos.setSocket(A, live)
+  ledger.succeed(task('Ship it'))
+  // What Bun 1.3.14 throws for a connect the sandbox refuses, and for a socket gone (measured).
+  const refused = async (): Promise<void> => {
+    throw Object.assign(new Error('Failed to connect'), { code: 'ENOENT', errno: -2 })
+  }
+  const sandbox = { SANDBOX_RUNTIME: '1' }
+
+  const errors = spyOn(console, 'error').mockImplementation(() => {})
+  try {
+    await sendNotices(ledger, refused, sandbox)
+    expect(errors).not.toHaveBeenCalled()
+  } finally {
+    errors.mockRestore()
+  }
+  expect(todos.latestSession(p.id)?.socket).toBe(live)
+  expect(ledger.unsentNotices()).toHaveLength(1)
+
+  // The session ended: Claude Code removed its socket file.
+  todos.setSocket(A, join(dir, 'ended.sock'))
+  await sendNotices(ledger, refused, sandbox)
+  expect(todos.latestSession(p.id)?.socket).toBeNull()
+
+  // Outside a sandbox nothing refuses a connect: a file nobody listens on is a session that ended.
+  todos.setSocket(A, live)
+  await sendNotices(ledger, refused, {})
+  expect(todos.latestSession(p.id)?.socket).toBeNull()
+  expect(ledger.unsentNotices()).toHaveLength(1)
+})
+
 test('notify sends what waits for the project sessions; with no socket file there, the notice waits, the end stands and nothing is said', async () => {
   const { home, ledger, todos, p, task } = setup()
   todos.addSession(p.id, A, '/work/one')
