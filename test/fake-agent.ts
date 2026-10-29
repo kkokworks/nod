@@ -102,14 +102,16 @@ if (args.includes('-p')) {
   process.exit(0)
 }
 
-// Raw mode, so Escape arrives on its own and Enter ends a message.
+// Raw mode, so Escape arrives on its own and Enter ends a message. A fake terminal
+// (test/fake-terminals.ts) has no pseudo-terminal to put in it, and sends the keys as raw mode
+// passes them.
 const inputs: string[] = []
 let typed = ''
 let wake: () => void = () => {}
 // While a turn is `deaf`, what is typed goes nowhere, as into a dialog that takes the keys.
 let deaf = false
 let lost = 0
-process.stdin.setRawMode(true)
+if (process.stdin.isTTY) process.stdin.setRawMode(true)
 process.stdin.on('data', (chunk: Buffer) => {
   // An arrow key arrives as an escape sequence; read it as one key, not Escape and text.
   for (const ch of chunk.toString().replaceAll(DOWN, '\0')) {
