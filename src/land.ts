@@ -1,26 +1,15 @@
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { conflictBrief, createdFrom, NOD_GIT, ownStart, rebasing } from './branch'
 import { hasRef, landed } from './gc'
 import type { Landing, Ledger, Repo, Task } from './ledger'
 import { notify, taskRef } from './notify'
 import { sessionName } from './place'
 import { message, OUTPUT_LIMIT, spawn } from './proc'
 import { type GitService, type OwnPr, serviceOf } from './prs'
+import { PR_TEXT, TEXT_ONLY } from './report'
 import { running, type Terminals } from './tmux'
-import {
-  askToLand,
-  baseOf,
-  conflictBrief,
-  createdFrom,
-  handOff,
-  NOD_GIT,
-  ownStart,
-  PR_TEXT,
-  rebasing,
-  restore,
-  type Send,
-  TEXT_ONLY,
-} from './worker'
+import { askToLand, baseOf, handOff, restore, type Send } from './worker'
 
 // Lands what the person lets nod land (`nod repo`): a repo task that succeeded goes onto the repo's
 // default branch. nod does the fixed steps outside the worker's sandbox, which has no network and
