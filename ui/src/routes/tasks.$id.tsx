@@ -227,10 +227,20 @@ function TaskPage() {
           ) : (
             <Screen key={`screen-${task.id}`} id={task.id} screen={screen} />
           )}
-          {/* With no live session, this box is the way to the worker. Keyed, as moving to another
+          {/* With no live session, this box is the way to the worker; with one, to the decisions
+              its terminal shows no dialog for, whatever else is open. Keyed, as moving to another
               task keeps this page: what was written does not go along. */}
           {canSend && (
-            <Composer key={task.id} taskId={task.id} open={open} live={screen !== null} />
+            <Composer
+              key={task.id}
+              taskId={task.id}
+              open={
+                screen === null
+                  ? open
+                  : decisions.find((d) => d.answer === null && NO_DIALOG.has(d.reason))
+              }
+              live={screen !== null}
+            />
           )}
         </aside>
       )}

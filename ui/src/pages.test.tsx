@@ -313,6 +313,20 @@ test('a live session shows Yes and No under its terminal for landing and rules o
     // Answered, the terminal is all there is again.
     expect(document.querySelector('.composer')).toBeNull()
   }
+  // Landing asks while a question before it is still open: its buttons show all the same.
+  const asked = (id: number, reason: string) => ({
+    id,
+    reason,
+    taskId: 24,
+    attemptId: 1,
+    question: 'ok?',
+    answer: null,
+    createdAt: AT,
+  })
+  answer = () => ({ ...live(24), decisions: [asked(33, 'question'), asked(34, 'land')] })
+  await reload()
+  expect(buttons()).toEqual(['Yes', 'No — stop landing'])
+  expect(document.querySelector('.composer-label')?.textContent).toContain('#34')
 })
 
 test("a worker's terminal looks as in a terminal app: its font, weights, cursor and dark theme to the box's edges, drawn with WebGL at Unicode 11 widths, its colours as the worker sets them", async () => {

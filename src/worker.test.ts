@@ -1949,6 +1949,28 @@ it('a worker learns its task through NOD_TASK, so the todos it changes name it',
   expect(workerEnv('/h', null)).not.toHaveProperty('NOD_TASK')
 })
 
+it("a worker's Claude Code runs nod's tool hook after each tool, failing or not, so a dialog a person answered in its terminal closes", () => {
+  const id = ledger.add({
+    brief: 'Push it',
+    repo: null,
+    branch: null,
+    checkCmd: null,
+    model: null,
+    after: [],
+    triggerId: null,
+    issue: null,
+  })
+  const argv = claudeArgs(ledger, home, ledger.get(id), ['--session-id', 's'], null, null)
+  const { hooks } = JSON.parse(argv[argv.indexOf('--settings') + 1] ?? '{}')
+  for (const event of ['PostToolUse', 'PostToolUseFailure']) {
+    const commands = hooks[event]?.flatMap((m: { hooks: { command: string }[] }) => m.hooks)
+    expect({ event, command: commands?.[0]?.command }).toEqual({
+      event,
+      command: expect.stringMatching(/ hook tool$/),
+    })
+  }
+})
+
 it("a worker's sandbox lets it keep Unix sockets in its own folder alone, which nod makes as it starts it and names in NOD_SOCKETS", () => {
   const id = ledger.add({
     brief: 'Run the tmux tests',
