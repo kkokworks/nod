@@ -3,6 +3,7 @@ import { chmodSync, existsSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tempDirs } from '../test/tmp'
 import { Ledger } from './ledger'
+import { Tmux } from './tmux'
 import { Todos } from './todos'
 import { addTrigger, nextRun, parseItems, scheduleEnv, scheduleOn, shell, tick } from './triggers'
 
@@ -109,9 +110,9 @@ test('a tick with watches brings back the todo whose watch exits 0, or can no lo
 
   writeFileSync(flag, '')
   const now = new Date()
-  expect((await tick(todos.ledger, home, now, false)).passed).toEqual([])
+  expect((await tick(todos.ledger, home, Tmux.of(home), now, false)).passed).toEqual([])
   expect(todos.get(pushed).status).toBe('waiting')
-  expect((await tick(todos.ledger, home, now, true)).passed).toEqual([pushed])
+  expect((await tick(todos.ledger, home, Tmux.of(home), now, true)).passed).toEqual([pushed])
   expect([pushed, never, gone].map((id) => todos.get(id).status)).toEqual([
     'next',
     'waiting',

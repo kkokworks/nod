@@ -14,7 +14,7 @@ import { testTmux } from '../test/tmux'
 import { land } from './land'
 import { type LandLevel, Ledger } from './ledger'
 import { workspaceOf } from './place'
-import { Terminals } from './tmux'
+import { Tmux } from './tmux'
 import { tick } from './triggers'
 import { answer, drop, onStop, type Send, tell } from './worker'
 
@@ -38,7 +38,7 @@ if (Bun.which('claude', { PATH: process.env.PATH }) !== join(bin, 'claude')) {
 process.env.CLAUDE_CONFIG_DIR = tmp.make('nod-land-claude-')
 const homes: string[] = []
 afterAll(() => {
-  for (const h of homes) Terminals.of(h).killServer()
+  for (const h of homes) Tmux.of(h).killServer()
   tmp.removeAll()
 })
 
@@ -130,7 +130,7 @@ function mainMoves(file: string, text: string): string {
 
 // The worker's turn ends with `reply`.
 const stops = (id: number, reply: string, continuing = false) =>
-  onStop(ledger, home, {
+  onStop(ledger, home, Tmux.of(home), {
     session_id: `s${id}`,
     last_assistant_message: reply,
     stop_hook_active: continuing,
@@ -153,7 +153,7 @@ test('at pr, nod rebases onto the moved default branch, has the worker write the
   const id = finished('feat/a', { 'a.txt': 'a\n' })
   const tip = mainMoves('m.txt', 'm\n')
 
-  expect(await land(ledger, home, { send })).toEqual([
+  expect(await land(ledger, home, Tmux.of(home), { send })).toEqual([
     { id, did: 'its worker writes the pull request' },
   ])
   // Its own commit, on the default branch as it is now; checked there before the worker is asked.
@@ -169,7 +169,7 @@ test('at pr, nod rebases onto the moved default branch, has the worker write the
   // Nothing changed since nod checked it, so nothing to review again.
   expect(reviews()).toEqual([])
 
-  const [opened] = await land(ledger, home, { send })
+  const [opened] = await land(ledger, home, Tmux.of(home), { send })
   expect(opened?.did).toBe(
     'pull request open, waiting for its merge: https://github.com/o/r/pull/1',
   )
@@ -184,11 +184,11 @@ test('at pr, nod rebases onto the moved default branch, has the worker write the
   // The default branch moves again: the pull request still merges, so it is left as reviewed.
   mainMoves('n.txt', 'n\n')
   const pushed = head(id)
-  await land(ledger, home, { send })
+  await land(ledger, home, Tmux.of(home), { send })
   expect(git(origin, 'rev-parse', 'refs/heads/feat/a')).toBe(pushed)
   // Until the service says it no longer merges.
   writeFileSync(join(service, 'merge-state'), 'DIRTY')
-  await land(ledger, home, { send })
+  await land(ledger, home, Tmux.of(home), { send })
   expect(git(origin, 'rev-parse', 'refs/heads/feat/a')).not.toBe(pushed)
   expect(git(origin, 'show', 'feat/a:n.txt')).toBe('n')
   expect(handed).toHaveLength(1)
@@ -200,13 +200,13 @@ test('at merge, a task on an earlier task’s branch lands after it, with only i
   const a = finished('feat/a', { 'a.txt': 'a\n' })
   const b = finished('feat/b', { 'b.txt': 'b\n' }, a)
 
-  expect(await land(ledger, home, { send })).toEqual([
+  expect(await land(ledger, home, Tmux.of(home), { send })).toEqual([
     { id: a, did: 'its worker writes the pull request' },
     { id: b, did: 'lands after n1' },
   ])
   await stops(a, 'Add a\n\nNOD: done | wrote it')
 
-  const second = await land(ledger, home, { send })
+  const second = await land(ledger, home, Tmux.of(home), { send })
   expect(second[0]).toEqual({ id: a, did: 'merged: https://github.com/o/r/pull/1' })
   expect(second[1]).toEqual({ id: b, did: 'its worker writes the pull request' })
   const squash = git(origin, 'rev-parse', 'main')
@@ -220,7 +220,9 @@ test('at merge, a task on an earlier task’s branch lands after it, with only i
   )
 
   await stops(b, 'Add b\n\nNOD: done | wrote it')
-  expect((await land(ledger, home, { send }))[0]?.did).toBe('merged: https://github.com/o/r/pull/2')
+  expect((await land(ledger, home, Tmux.of(home), { send }))[0]?.did).toBe(
+    'merged: https://github.com/o/r/pull/2',
+  )
   expect(git(origin, 'log', '--format=%s', 'main').split('\n')).toEqual(['Add b', 'Add a', 'init'])
   expect(git(origin, 'rev-list', '--merges', 'main')).toBe('')
 }, 30_000)
@@ -234,7 +236,7 @@ test('a branch its worker rebased onto the default branch itself lands only its 
   // Moving the default branch's commit it brought in again would conflict with this one.
   const tip = mainMoves('m.txt', 'm2\n')
 
-  expect(await land(ledger, home, { send })).toEqual([
+  expect(await land(ledger, home, Tmux.of(home), { send })).toEqual([
     { id, did: 'its worker writes the pull request' },
   ])
   expect(git(ws(id), 'log', '--format=%s', `${tip}..HEAD`)).toBe('change v.txt')
@@ -245,7 +247,7 @@ test('a branch its worker rebased onto the default branch during its landing tur
   setRepo('pr')
   const id = finished('feat/w', { 'w.txt': 'w\n' })
   mainMoves('n.txt', 'n\n')
-  expect(await land(ledger, home, { send })).toEqual([
+  expect(await land(ledger, home, Tmux.of(home), { send })).toEqual([
     { id, did: 'its worker writes the pull request' },
   ])
   // In that turn the worker brings in the default branch as it moved since.
@@ -262,7 +264,7 @@ test('a branch its worker rebased onto the default branch during its landing tur
   // Moving that commit again would conflict with this one.
   const tip = mainMoves('m.txt', 'm2\n')
 
-  expect(await land(ledger, home, { send })).toEqual([
+  expect(await land(ledger, home, Tmux.of(home), { send })).toEqual([
     { id, did: 'pull request open, waiting for its merge: https://github.com/o/r/pull/1' },
   ])
   expect(git(ws(id), 'log', '--format=%s', `${tip}..HEAD`)).toBe('change w.txt')
@@ -280,7 +282,9 @@ test('a conflict goes to the worker, which stages its resolution; nod goes on wi
   git(ws(id), 'commit', '-qam', 'f two')
   mainMoves('f.txt', 'main\n')
 
-  expect((await land(ledger, home, { send }))[0]?.did).toBe('its worker resolves a conflict')
+  expect((await land(ledger, home, Tmux.of(home), { send }))[0]?.did).toBe(
+    'its worker resolves a conflict',
+  )
   expect(handed[0]?.text).toContain('with conflicts in:\n- f.txt')
   expect(handed[0]?.text).toContain('dropping neither side silently')
   expect(handed[0]?.text).not.toContain("write it for the repo's readers")
@@ -317,10 +321,10 @@ test('a conflict goes to the worker, which stages its resolution; nod goes on wi
 test('a gate that fails asks the person, and dropping it stops landing while the task stays succeeded', async () => {
   setRepo('pr', { gateCmd: '! grep -q Secret "$NOD_PR"' })
   const id = finished('feat/g', { 'g.txt': 'g\n' })
-  await land(ledger, home, { send })
+  await land(ledger, home, Tmux.of(home), { send })
   await stops(id, 'Secret plan\n\nNOD: done | wrote it')
 
-  expect((await land(ledger, home, { send }))[0]?.did).toBe('asked: the gate failed')
+  expect((await land(ledger, home, Tmux.of(home), { send }))[0]?.did).toBe('asked: the gate failed')
   const [asked] = ledger.decisions(id).filter((d) => d.answer === null)
   expect(asked?.reason).toBe('check_failed')
   expect(asked?.question).toContain('the repo\'s gate `! grep -q Secret "$NOD_PR"` failed')
@@ -330,16 +334,16 @@ test('a gate that fails asks the person, and dropping it stops landing while the
     Bun.spawnSync(['git', '-C', origin, 'rev-parse', '-q', '--verify', 'feat/g']).exitCode,
   ).toBe(1)
 
-  expect(await drop(ledger, home, asked?.id ?? 0)).toBe('landing stopped')
+  expect(await drop(ledger, home, Tmux.of(home), asked?.id ?? 0)).toBe('landing stopped')
   expect(ledger.get(id).status).toBe('succeeded')
   expect(ledger.landing(id)?.stopped).toBe('dropped')
-  expect(await land(ledger, home, { send })).toEqual([])
+  expect(await land(ledger, home, Tmux.of(home), { send })).toEqual([])
 }, 30_000)
 
 test('a remote branch with commits nod did not push asks the person: no stops landing, yes tries again', async () => {
   setRepo('pr')
   const id = finished('feat/x', { 'x.txt': 'x\n' })
-  await land(ledger, home, { send })
+  await land(ledger, home, Tmux.of(home), { send })
   await stops(id, 'Add x\n\nNOD: done | wrote it')
   // Someone pushed a branch of that name with work of their own.
   const other = tmp.make('nod-other-')
@@ -349,19 +353,19 @@ test('a remote branch with commits nod did not push asks the person: no stops la
   git(other, 'push', '-q', 'origin', 'feat/x')
   const theirs = git(other, 'rev-parse', 'HEAD')
 
-  expect((await land(ledger, home, { send }))[0]?.did).toStartWith(
+  expect((await land(ledger, home, Tmux.of(home), { send }))[0]?.did).toStartWith(
     'asked: origin/feat/x has commits',
   )
   expect(git(origin, 'rev-parse', 'feat/x')).toBe(theirs)
   const asked = ledger.decisions(id).find((d) => d.answer === null)
   expect(asked?.reason).toBe('land')
-  expect(await answer(ledger, home, asked?.id ?? 0, 'yes', 'human')).toBe(true)
+  expect(await answer(ledger, home, Tmux.of(home), asked?.id ?? 0, 'yes', 'human')).toBe(true)
   expect(ledger.get(id).status).toBe('succeeded')
   expect(ledger.landing(id)?.stopped).toBeNull()
   // Still theirs, so asked again; no this time.
-  await land(ledger, home, { send })
+  await land(ledger, home, Tmux.of(home), { send })
   const again = ledger.decisions(id).find((d) => d.answer === null)
-  await answer(ledger, home, again?.id ?? 0, 'no, I will', 'human')
+  await answer(ledger, home, Tmux.of(home), again?.id ?? 0, 'no, I will', 'human')
   expect(ledger.landing(id)?.stopped).toBe('stopped by the person: no, I will')
   expect(ledger.get(id).status).toBe('succeeded')
   expect(git(origin, 'rev-parse', 'feat/x')).toBe(theirs)
@@ -372,13 +376,13 @@ test('only tasks added after the repo went up land on their own; nod land names 
   setRepo('pr')
   const linked = finished('feat/linked', { 'l.txt': 'l\n' })
   ledger.link(linked, ['https://github.com/o/r/pull/9'])
-  expect(await land(ledger, home, { send })).toEqual([])
-  expect(await land(ledger, home, { send, only: [older] })).toEqual([
+  expect(await land(ledger, home, Tmux.of(home), { send })).toEqual([])
+  expect(await land(ledger, home, Tmux.of(home), { send, only: [older] })).toEqual([
     { id: older, did: 'its worker writes the pull request' },
   ])
   // Off again: nothing lands, named or not.
   setRepo('off')
-  expect(await land(ledger, home, { send, only: [older] })).toEqual([])
+  expect(await land(ledger, home, Tmux.of(home), { send, only: [older] })).toEqual([])
 }, 30_000)
 
 test('a message while nod works in the worktree waits, so the worker does not edit files that move under it', async () => {
@@ -386,7 +390,7 @@ test('a message while nod works in the worktree waits, so the worker does not ed
   const id = finished('feat/busy', { 'b.txt': 'b\n' })
   // The parent of this test process, alive and not this process: another pass, mid-rebase.
   ledger.setLanding(id, { busy: process.ppid })
-  await expect(tell(ledger, home, id, 'one more thing')).rejects.toThrow(
+  await expect(tell(ledger, home, Tmux.of(home), id, 'one more thing')).rejects.toThrow(
     `nod is landing task n${id} right now`,
   )
   expect(ledger.attempts(id)).toHaveLength(1)
@@ -395,11 +399,11 @@ test('a message while nod works in the worktree waits, so the worker does not ed
 test('the tick lands on its fifth minutes, before it sweeps', async () => {
   setRepo('pr')
   const id = finished('feat/t', { 't.txt': 't\n' })
-  await land(ledger, home, { send })
+  await land(ledger, home, Tmux.of(home), { send })
   await stops(id, 'Add t\n\nNOD: done | wrote it')
-  const quiet = await tick(ledger, home, new Date(), false)
+  const quiet = await tick(ledger, home, Tmux.of(home), new Date(), false)
   expect(quiet.landed).toEqual([])
-  const { landed } = await tick(ledger, home, new Date(), true)
+  const { landed } = await tick(ledger, home, Tmux.of(home), new Date(), true)
   expect(landed).toEqual([
     { id, did: 'pull request open, waiting for its merge: https://github.com/o/r/pull/1' },
   ])
@@ -434,7 +438,9 @@ function conflicting(branch: string): number {
 test('a later done of the same landing does not write over the pull request text the worker gave', async () => {
   setRepo('pr', { checkCmd: 'test -f ok.txt' })
   const id = finished('feat/c', { 'c.txt': 'c\n' })
-  expect((await land(ledger, home, { send }))[0]?.did).toBe('its worker fixes the check')
+  expect((await land(ledger, home, Tmux.of(home), { send }))[0]?.did).toBe(
+    'its worker fixes the check',
+  )
   expect(handed[0]?.text).not.toContain("write it for the repo's readers")
   // The text first, but the check still fails; then the fix, reported in words of its own.
   await stops(id, 'I looked at it.\nNOD: done | looked')
@@ -450,7 +456,7 @@ test('a later done of the same landing does not write over the pull request text
 test('a conflict report above the pull request text is no title: the text is asked once the rebase is done', async () => {
   setRepo('pr')
   const id = conflicting('feat/t')
-  await land(ledger, home, { send })
+  await land(ledger, home, Tmux.of(home), { send })
   writeFileSync(join(ws(id), 'f.txt'), 'main\nmine\n')
   git(ws(id), 'add', 'f.txt')
   // As a worker asked for both writes them: what it did with the conflict, then the text.
@@ -479,14 +485,14 @@ test('a conflict nod cannot hand to the worker goes back as it was, so yes start
   const failing: Send = async () => {
     throw new Error('a permission dialog is open')
   }
-  expect((await land(ledger, home, { send: failing, only: [id] }))[0]?.did).toBe(
+  expect((await land(ledger, home, Tmux.of(home), { send: failing, only: [id] }))[0]?.did).toBe(
     'asked: nod could not hand its worker the landing: a permission dialog is open',
   )
   expect(rebasing(id)).toBe(false)
   expect(head(id)).toBe(before)
   const asked = ledger.decisions(id).find((d) => d.answer === null)
-  await answer(ledger, home, asked?.id ?? 0, 'yes', 'human')
-  expect((await land(ledger, home, { send, only: [id] }))[0]?.did).toBe(
+  await answer(ledger, home, Tmux.of(home), asked?.id ?? 0, 'yes', 'human')
+  expect((await land(ledger, home, Tmux.of(home), { send, only: [id] }))[0]?.did).toBe(
     'its worker resolves a conflict',
   )
 }, 30_000)
@@ -494,7 +500,7 @@ test('a conflict nod cannot hand to the worker goes back as it was, so yes start
 test('a rebase that will not go on for anything but a conflict counts as a failure to fix, and asks the person once retries run out', async () => {
   setRepo('pr')
   const id = conflicting('feat/u')
-  await land(ledger, home, { send })
+  await land(ledger, home, Tmux.of(home), { send })
   writeFileSync(join(ws(id), 'f.txt'), 'main\nmine\n')
   git(ws(id), 'add', 'f.txt')
   // A change left unstaged beside the resolution: git keeps the rebase where it is.
@@ -513,9 +519,9 @@ test("a remote branch at the task's start is someone else's, not the task's own 
   const theirs = theirBranch('feat/s')
   // The task starts from that branch, under its name.
   const id = finished('feat/s', { 's.txt': 's\n' }, undefined, 'origin/feat/s')
-  await land(ledger, home, { send })
+  await land(ledger, home, Tmux.of(home), { send })
   await stops(id, 'Add s\n\nNOD: done | wrote it')
-  expect((await land(ledger, home, { send }))[0]?.did).toStartWith(
+  expect((await land(ledger, home, Tmux.of(home), { send }))[0]?.did).toStartWith(
     'asked: origin/feat/s has commits nod did not push',
   )
   expect(git(origin, 'rev-parse', 'feat/s')).toBe(theirs)
@@ -527,7 +533,7 @@ test('nod pushes no branch that is the default one, no merge commit, and over no
   const named = finished('feat/d', { 'd.txt': 'd\n' })
   git(origin, 'branch', 'feat/d', 'main')
   git(origin, 'symbolic-ref', 'HEAD', 'refs/heads/feat/d')
-  expect((await land(ledger, home, { send, only: [named] }))[0]?.did).toBe(
+  expect((await land(ledger, home, Tmux.of(home), { send, only: [named] }))[0]?.did).toBe(
     'asked: Its branch feat/d is the default branch, which nod never pushes to.',
   )
   git(origin, 'symbolic-ref', 'HEAD', 'refs/heads/main')
@@ -537,9 +543,9 @@ test('nod pushes no branch that is the default one, no merge commit, and over no
   git(ws(merging), 'commit', '-q', '--allow-empty', '-m', 'side')
   git(ws(merging), 'checkout', '-q', 'feat/m')
   git(ws(merging), 'merge', '-q', '--no-ff', '-m', 'merge side', 'side')
-  await land(ledger, home, { send, only: [merging] })
+  await land(ledger, home, Tmux.of(home), { send, only: [merging] })
   await stops(merging, 'Add m\n\nNOD: done | wrote it')
-  expect((await land(ledger, home, { send, only: [merging] }))[0]?.did).toStartWith(
+  expect((await land(ledger, home, Tmux.of(home), { send, only: [merging] }))[0]?.did).toStartWith(
     'asked: Its branch has merge commits',
   )
   expect(
@@ -548,9 +554,9 @@ test('nod pushes no branch that is the default one, no merge commit, and over no
 
   // Someone pushed over the pull request's branch after nod did: the lease keeps theirs.
   const leased = finished('feat/l', { 'l.txt': 'l\n' })
-  await land(ledger, home, { send, only: [leased] })
+  await land(ledger, home, Tmux.of(home), { send, only: [leased] })
   await stops(leased, 'Add l\n\nNOD: done | wrote it')
-  await land(ledger, home, { send, only: [leased] })
+  await land(ledger, home, Tmux.of(home), { send, only: [leased] })
   const other = tmp.make('nod-other-')
   git(other, 'clone', '-q', origin, '.')
   git(other, 'checkout', '-q', 'feat/l')
@@ -559,7 +565,7 @@ test('nod pushes no branch that is the default one, no merge commit, and over no
   const theirs = git(other, 'rev-parse', 'HEAD')
   mainMoves('n.txt', 'n\n')
   writeFileSync(join(service, 'merge-state'), 'BEHIND')
-  expect((await land(ledger, home, { send, only: [leased] }))[0]?.did).toStartWith(
+  expect((await land(ledger, home, Tmux.of(home), { send, only: [leased] }))[0]?.did).toStartWith(
     'asked: The push of feat/l was refused',
   )
   expect(git(origin, 'rev-parse', 'feat/l')).toBe(theirs)
@@ -578,7 +584,7 @@ test('nod leaves a worktree alone while a turn runs in it', async () => {
     sessionId: `s${id}`,
     prompt: 'x',
   })
-  expect((await land(ledger, home, { send }))[0]?.did).toBe('its worker is busy')
+  expect((await land(ledger, home, Tmux.of(home), { send }))[0]?.did).toBe('its worker is busy')
   expect(head(id)).toBe(before)
 })
 
@@ -586,12 +592,12 @@ test('dropping a question asked on a conflict undoes the rebase and stops landin
   setRepo('pr')
   const id = conflicting('feat/q')
   const before = head(id)
-  await land(ledger, home, { send })
+  await land(ledger, home, Tmux.of(home), { send })
   expect(rebasing(id)).toBe(true)
   await stops(id, 'Main says main, mine says mine.\nNOD: question | which one?')
   const asked = ledger.decisions(id).find((d) => d.answer === null)
   expect(asked?.reason).toBe('question')
-  expect(await drop(ledger, home, asked?.id ?? 0)).toBe('landing stopped')
+  expect(await drop(ledger, home, Tmux.of(home), asked?.id ?? 0)).toBe('landing stopped')
   expect(rebasing(id)).toBe(false)
   expect(head(id)).toBe(before)
   expect(ledger.get(id).status).toBe('succeeded')
@@ -601,13 +607,13 @@ test('dropping a question asked on a conflict undoes the rebase and stops landin
 test('a pull request closed without its merge asks the person', async () => {
   setRepo('pr')
   const id = finished('feat/z', { 'z.txt': 'z\n' })
-  await land(ledger, home, { send })
+  await land(ledger, home, Tmux.of(home), { send })
   await stops(id, 'Add z\n\nNOD: done | wrote it')
-  await land(ledger, home, { send })
+  await land(ledger, home, Tmux.of(home), { send })
   const prs = JSON.parse(readFileSync(join(service, 'prs.json'), 'utf8'))
   prs[0].state = 'closed'
   writeFileSync(join(service, 'prs.json'), JSON.stringify(prs))
-  expect((await land(ledger, home, { send }))[0]?.did).toStartWith(
+  expect((await land(ledger, home, Tmux.of(home), { send }))[0]?.did).toStartWith(
     'asked: Its pull request was closed without being merged',
   )
   expect(ledger.decisions(id).find((d) => d.answer === null)?.reason).toBe('land')
@@ -616,9 +622,9 @@ test('a pull request closed without its merge asks the person', async () => {
 test('after a gate that failed, the words that answer it are no pull request text; nod asks for the text again', async () => {
   setRepo('pr', { gateCmd: '! grep -q Secret "$NOD_PR"' })
   const id = finished('feat/w', { 'w.txt': 'w\n' })
-  await land(ledger, home, { send })
+  await land(ledger, home, Tmux.of(home), { send })
   await stops(id, 'Secret plan\n\nNOD: done | wrote it')
-  await land(ledger, home, { send })
+  await land(ledger, home, Tmux.of(home), { send })
   const asked = ledger.decisions(id).find((d) => d.answer === null)
   if (asked === undefined) throw new Error('no decision')
   expect(ledger.landing(id)?.title).toBeNull()
@@ -636,13 +642,15 @@ test('after a gate that failed, the words that answer it are no pull request tex
   expect(ledger.landing(id)?.title).toBeNull()
   expect(await stops(id, 'Plan\n\nAdds w.\nNOD: done | wrote it again', true)).toBeNull()
   expect(ledger.landing(id)).toMatchObject({ title: 'Plan', body: 'Adds w.' })
-  expect((await land(ledger, home, { send }))[0]?.did).toStartWith('pull request open')
+  expect((await land(ledger, home, Tmux.of(home), { send }))[0]?.did).toStartWith(
+    'pull request open',
+  )
 }, 30_000)
 
 test('without its service on PATH, nod asks before anything goes out', async () => {
   setRepo('pr')
   const id = finished('feat/p', { 'p.txt': 'p\n' })
-  await land(ledger, home, { send })
+  await land(ledger, home, Tmux.of(home), { send })
   await stops(id, 'Add p\n\nNOD: done | wrote it')
   // Only what landing runs besides the service: git, tmux and the shell, wherever gh may live.
   const tools = tmp.make('nod-only-git-')
@@ -650,7 +658,7 @@ test('without its service on PATH, nod asks before anything goes out', async () 
   const path = process.env.PATH
   process.env.PATH = tools
   try {
-    expect((await land(ledger, home, { send }))[0]?.did).toBe(
+    expect((await land(ledger, home, Tmux.of(home), { send }))[0]?.did).toBe(
       'asked: landing this repo needs gh, which is not on PATH where nod lands.',
     )
   } finally {
@@ -672,7 +680,7 @@ test('the next conflict goes on however many retries the last one took', async (
   writeFileSync(join(ws(id), 'f.txt'), 'two\n')
   git(ws(id), 'commit', '-qam', 'f two')
   mainMoves('f.txt', 'main\n')
-  await land(ledger, home, { send })
+  await land(ledger, home, Tmux.of(home), { send })
   writeFileSync(join(ws(id), 'f.txt'), 'main\none\n')
   git(ws(id), 'add', 'f.txt')
   writeFileSync(join(ws(id), 'README'), 'changed\n')
@@ -692,9 +700,9 @@ test('landing work done tells the person nothing; the pull request does', async 
   chmodSync(join(home, 'notify'), 0o755)
   setRepo('pr')
   const id = finished('feat/n', { 'n.txt': 'n\n' })
-  await land(ledger, home, { send })
+  await land(ledger, home, Tmux.of(home), { send })
   await stops(id, 'Add n\n\nNOD: done | wrote it')
-  await land(ledger, home, { send })
+  await land(ledger, home, Tmux.of(home), { send })
   const heard = readdirSync(events).map(
     (f) => JSON.parse(readFileSync(join(events, f), 'utf8')).event,
   )

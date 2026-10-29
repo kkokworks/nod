@@ -32,7 +32,7 @@ import { branchOf, sessionName, socketsDir, workspaceOf } from './place'
 import { message, OUTPUT_LIMIT, spawn } from './proc'
 import { askedAgain, type Changes, reviewBrief } from './review'
 import { activeRules, hadTrouble, isNoRule, retroBrief } from './rules'
-import { pasted, quote, running, Terminals } from './tmux'
+import { pasted, quote, running, type Terminals } from './tmux'
 import { Todos } from './todos'
 import { oneLine } from './view'
 
@@ -320,7 +320,12 @@ export const ToolEvent = z.object({
 
 type Report = { status: 'done' | 'question' | 'failed'; text: string }
 
-export async function startTask(ledger: Ledger, home: string, taskId: number): Promise<void> {
+export async function startTask(
+  ledger: Ledger,
+  home: string,
+  terminals: Terminals,
+  taskId: number,
+): Promise<void> {
   const task = ledger.get(taskId)
   // A task that fails before its worker starts has no workspace and no conversation. Its failure is
   // recorded as a start that failed, so the error stays in its history once `nod resume` starts it
@@ -342,7 +347,7 @@ export async function startTask(ledger: Ledger, home: string, taskId: number): P
       .immediate()
     throw new Error(why, { cause: error })
   }
-  const { cwd, start } = await prepareWorkspace(ledger, home, task).catch(failed)
+  const { cwd, start } = await prepareWorkspace(ledger, home, terminals, task).catch(failed)
   const prompt = firstMessage(ledger, task, start)
   ledger.db
     .transaction(() => {
@@ -367,8 +372,8 @@ export async function startTask(ledger: Ledger, home: string, taskId: number): P
     if (started !== null) rmSync(started, { force: true })
     rmSync(promptFile(home, taskId), { force: true })
     const first = claudeArgs(ledger, home, task, ['--session-id', sessionId], prompt, started)
-    launch(home, taskId, cwd, first)
-    if (started !== null) await awaitStart(ledger, home, task, attemptId, started)
+    launch(home, terminals, taskId, cwd, first)
+    if (started !== null) await awaitStart(ledger, home, terminals, task, attemptId, started)
   } catch (error) {
     ledger.failAttempt(attemptId, message(error))
     ledger.error(taskId, message(error))
@@ -378,9 +383,13 @@ export async function startTask(ledger: Ledger, home: string, taskId: number): P
 
 // Starts the waiting tasks whose earlier tasks have all succeeded. A task that fails to start has
 // the error recorded on it by startTask, and the others still start.
-export async function startReady(ledger: Ledger, home: string): Promise<number[]> {
+export async function startReady(
+  ledger: Ledger,
+  home: string,
+  terminals: Terminals,
+): Promise<number[]> {
   const ids = ledger.claimReady()
-  await Promise.allSettled(ids.map((id) => startTask(ledger, home, id)))
+  await Promise.allSettled(ids.map((id) => startTask(ledger, home, terminals, id)))
   return ids
 }
 
@@ -420,6 +429,7 @@ export function baseOf(ledger: Ledger, task: Task): Task | null {
 export async function answer(
   ledger: Ledger,
   home: string,
+  terminals: Terminals,
   decisionId: number,
   text: string,
   actor: string,
@@ -438,7 +448,7 @@ export async function answer(
   const yes = YES.test(text.trim())
   // Trust and rules are yes-or-nothing: anything but yes ends the task.
   if ((decision.reason === 'trust' || decision.reason === 'rule') && !yes) {
-    return (await drop(ledger, home, decisionId)) === 'dropped'
+    return (await drop(ledger, home, terminals, decisionId)) === 'dropped'
   }
   // A decision on landing (land.ts) waits on no turn: yes lets landing try again (the next pass, or
   // nod land now), and anything else stops landing the task. Its work stands either way.
@@ -500,13 +510,12 @@ export async function answer(
   // say) leaves the task in error, and the person tells it again.
   const reply = async (words: string): Promise<void> => {
     try {
-      await deliver(ledger, home, decision.taskId, 'answer', words, decisionId)
+      await deliver(ledger, home, terminals, decision.taskId, 'answer', words, decisionId)
     } catch (error) {
       ledger.error(decision.taskId, message(error))
       throw error
     }
   }
-  const terminals = Terminals.of(home)
   const name = sessionName(decision.taskId)
   if (decision.reason === 'trust') {
     await acceptTrust(terminals, name, startedMarker(home, decision.taskId))
@@ -552,7 +561,12 @@ async function waitForScreen(terminals: Terminals, name: string, text: string): 
 // landing the task, whose work stands.
 export type Dropped = 'dropped' | 'closed' | 'landing stopped'
 
-export async function drop(ledger: Ledger, home: string, decisionId: number): Promise<Dropped> {
+export async function drop(
+  ledger: Ledger,
+  home: string,
+  terminals: Terminals,
+  decisionId: number,
+): Promise<Dropped> {
   const decision = ledger.decision(decisionId)
   const task = ledger.get(decision.taskId)
   // One left open on a task that ended only closes, and the task stays as it is.
@@ -575,7 +589,7 @@ export async function drop(ledger: Ledger, home: string, decisionId: number): Pr
         return others
       })
       .immediate()
-    await Terminals.of(home).close(sessionName(task.id))
+    await terminals.close(sessionName(task.id))
     const open = ledger.openAttempt(task.id)
     if (open !== null) ledger.failAttempt(open.id, 'its landing was stopped')
     if (task.workspace !== null && rebasing(task.workspace)) {
@@ -602,30 +616,36 @@ export async function drop(ledger: Ledger, home: string, decisionId: number): Pr
   await announce(home, task, closed, why)
   // The person takes back a todo whose task they ended.
   new Todos(ledger).followTasks(SELF)
-  await Terminals.of(home).close(sessionName(task.id))
+  await terminals.close(sessionName(task.id))
   await notify(home, { event: 'cancelled', task: taskRef(task) })
-  await startRetro(ledger, home, task)
+  await startRetro(ledger, home, terminals, task)
   return 'dropped'
 }
 
 // Looks back on a task that ran into trouble, in a new session that gets only its history, and
 // turns the rule it proposes into a decision. Once per task, and never on a retrospective.
 // A retrospective that fails to start has the error on its own task, never on the one it is about.
-async function startRetro(ledger: Ledger, home: string, task: Task): Promise<void> {
+async function startRetro(
+  ledger: Ledger,
+  home: string,
+  terminals: Terminals,
+  task: Task,
+): Promise<void> {
   if (task.retroId !== null || ledger.retroFor(task.id) !== null) return
   if (!hadTrouble(ledger, task.id)) return
   const id = ledger.addRetro(task, retroBrief(ledger, task, workerPrompt(ledger, null)))
-  await startTask(ledger, home, id).catch(notifyError(ledger, home, id))
+  await startTask(ledger, home, terminals, id).catch(notifyError(ledger, home, id))
 }
 
 export async function tell(
   ledger: Ledger,
   home: string,
+  terminals: Terminals,
   taskId: number,
   text: string,
 ): Promise<void> {
   await restore(ledger, home, taskId)
-  await deliver(ledger, home, taskId, 'followup', text, null)
+  await deliver(ledger, home, terminals, taskId, 'followup', text, null)
 }
 
 // A task that failed before its worker started has no conversation to reopen, so it starts anew,
@@ -636,9 +656,10 @@ export async function tell(
 export async function resume(
   ledger: Ledger,
   home: string,
+  terminals: Terminals,
   taskId: number,
 ): Promise<'reopened' | 'started'> {
-  if (Terminals.of(home).alive(sessionName(taskId))) {
+  if (terminals.alive(sessionName(taskId))) {
     throw new Error(`task n${taskId}'s session is still open; send it a message with \`nod tell\``)
   }
   const task = ledger.get(taskId)
@@ -647,11 +668,11 @@ export async function resume(
   const mark = restartMark(process.pid, taskId)
   if (ledger.claimRestart(taskId, mark, stale)) {
     if (stale !== null) await clearCutOff(ledger, home, task)
-    await startTask(ledger, home, taskId)
+    await startTask(ledger, home, terminals, taskId)
     return 'started'
   }
   await restore(ledger, home, taskId)
-  await deliver(ledger, home, taskId, 'resume', RESUME_PROMPT, null)
+  await deliver(ledger, home, terminals, taskId, 'resume', RESUME_PROMPT, null)
   return 'reopened'
 }
 
@@ -728,6 +749,7 @@ export type Send = (taskId: number, text: string) => Promise<void>
 export async function handOff(
   ledger: Ledger,
   home: string,
+  terminals: Terminals,
   taskId: number,
   text: string,
   send?: Send,
@@ -739,7 +761,7 @@ export async function handOff(
       return
     }
     await restore(ledger, home, taskId)
-    await deliver(ledger, home, taskId, 'land', text, null)
+    await deliver(ledger, home, terminals, taskId, 'land', text, null)
   } catch (error) {
     ledger.setLanding(taskId, { handedAt: null })
     throw error
@@ -765,6 +787,7 @@ export async function askToLand(
 export async function onStop(
   ledger: Ledger,
   home: string,
+  terminals: Terminals,
   event: z.infer<typeof StopEvent>,
 ): Promise<string | null> {
   const taskId = ledger.taskOfSession(event.session_id)
@@ -772,7 +795,6 @@ export async function onStop(
   // The turn went on after all (Claude Code continued it once the limit reset). From here to the
   // end, after nod has closed the turn, a restart would end this hook with Claude Code, so restarts
   // wait for it (settling, restartDue below). Hooks a test runs itself have no terminal.
-  const terminals = Terminals.of(home)
   const name = sessionName(taskId)
   const live = terminals.alive(name)
   // Set first: a message that comes from here on runs as a turn of its own (deliver).
@@ -784,12 +806,14 @@ export async function onStop(
   // And the turn it checks, so a message that finds another one open, the retry it starts, goes
   // into that one.
   if (live) terminals.setOption(name, SETTLING_OPTION, `${process.pid} ${attemptId}`)
-  let out = await settle(ledger, home, ledger.get(taskId), attemptId, event).catch((error) => {
-    ledger.failAttempt(attemptId, message(error))
-    // A task that ended meanwhile (dropped while this hook checked) stays as it ended.
-    if (!ended(ledger, taskId)) ledger.error(taskId, message(error))
-    return null
-  })
+  let out = await settle(ledger, home, terminals, ledger.get(taskId), attemptId, event).catch(
+    (error) => {
+      ledger.failAttempt(attemptId, message(error))
+      // A task that ended meanwhile (dropped while this hook checked) stays as it ended.
+      if (!ended(ledger, taskId)) ledger.error(taskId, message(error))
+      return null
+    },
+  )
   // Claude Code ended while nod checked its turn, and keepWorker starts another: a failed check
   // sent back now reaches no one, so the turn it would have gone on in was cut off.
   if (out !== null && claude !== 0 && !running(claude)) {
@@ -799,11 +823,11 @@ export async function onStop(
   }
   new Todos(ledger).followTasks(SELF)
   // A task that just succeeded may let others start.
-  await startReady(ledger, home)
+  await startReady(ledger, home, terminals)
   if (live && terminals.alive(name)) terminals.setOption(name, SETTLING_OPTION, null)
   // A restart that waited for this turn to end. One that cannot run must not change what the hook
   // answers; Claude Code keeps a hook's stderr in its debug log.
-  await restartDue(ledger, home, taskId).catch((error) =>
+  await restartDue(ledger, home, terminals, taskId).catch((error) =>
     console.error(`nod: could not restart task n${taskId}: ${message(error)}`),
   )
   return out
@@ -815,11 +839,11 @@ export async function onStop(
 export async function onStopFailure(
   ledger: Ledger,
   home: string,
+  terminals: Terminals,
   event: z.infer<typeof StopFailureEvent>,
 ): Promise<void> {
   const taskId = ledger.taskOfSession(event.session_id)
   if (taskId === null) return
-  const terminals = Terminals.of(home)
   if (terminals.alive(sessionName(taskId))) {
     terminals.setOption(sessionName(taskId), STALLED_OPTION, event.error)
   }
@@ -830,7 +854,7 @@ export async function onStopFailure(
       error: `Its turn stopped on an API error (${event.error}), which Claude Code does not go on from by itself.`,
     })
   }
-  await restartDue(ledger, home, taskId).catch((error) =>
+  await restartDue(ledger, home, terminals, taskId).catch((error) =>
     console.error(`nod: could not restart task n${taskId}: ${message(error)}`),
   )
 }
@@ -859,11 +883,11 @@ export async function onStopFailure(
 export async function onPrompt(
   ledger: Ledger,
   home: string,
+  terminals: Terminals,
   event: z.infer<typeof PromptEvent>,
 ): Promise<void> {
   const taskId = ledger.taskOfSession(event.session_id)
   if (taskId === null) return
-  const terminals = Terminals.of(home)
   const name = sessionName(taskId)
   const typed = terminals.attached(name) && !OWN_MESSAGE.test(event.prompt)
   // What a restart after an API error left for the new start (restart), which nod keeps nowhere
@@ -1013,6 +1037,7 @@ export async function onToolRan(
 export async function onNotification(
   ledger: Ledger,
   home: string,
+  terminals: Terminals,
   event: z.infer<typeof NotificationEvent>,
 ): Promise<void> {
   if (event.notification_type !== 'permission_prompt') return
@@ -1023,7 +1048,7 @@ export async function onNotification(
   // Claude Code runs no hook for, a prompt only a person may answer (2.1.310), or whose hook
   // failed, opens here.
   if (asking(ledger, taskId, attemptId) !== undefined) return
-  const screen = Terminals.of(home).screen(sessionName(taskId))
+  const screen = terminals.screen(sessionName(taskId))
   const prompt = screen.trimEnd().split('\n').slice(-15).join('\n')
   await decide(
     ledger,
@@ -1083,6 +1108,7 @@ async function decide(
 async function settle(
   ledger: Ledger,
   home: string,
+  terminals: Terminals,
   task: Task,
   attemptId: number,
   event: z.infer<typeof StopEvent>,
@@ -1124,7 +1150,7 @@ async function settle(
       report: text,
     })
     await dialogs()
-    carryUnheard(ledger, home, task, attemptId, event.session_id)
+    carryUnheard(ledger, home, terminals, task, attemptId, event.session_id)
     if (waiting || newer()) return null
     const still = work.map((w) => w.description ?? w.type ?? '?').join(', ')
     const note = work.length > 0 ? `${waitedNote(since)} Still running: ${still}.\n` : ''
@@ -1134,7 +1160,7 @@ async function settle(
   }
   ledger.endAttempt(attemptId, { outcome: 'succeeded', summary, report: text })
   await dialogs()
-  carryUnheard(ledger, home, task, attemptId, event.session_id)
+  carryUnheard(ledger, home, terminals, task, attemptId, event.session_id)
   // That turn decides, and the lines of this done go back to the worker at its done (heldBack).
   if (newer()) {
     holdLines(home, task.id, text)
@@ -1186,7 +1212,7 @@ async function settle(
           ledger.proposeRule(retro.id, summary)
         },
       )
-      if (proposed) await sendTells(ledger, home, task, tells)
+      if (proposed) await sendTells(ledger, home, terminals, task, tells)
       return null
     }
     // Nothing the task asked before waits on anything once it succeeds with no turn left running.
@@ -1208,8 +1234,8 @@ async function settle(
     await announce(home, task, closed, without)
     // Landing work done tells the person nothing yet; the pull request or the merge will.
     if (!lands) await notify(home, { event: 'succeeded', task: taskRef(task), summary })
-    await sendTells(ledger, home, task, tells)
-    await startRetro(ledger, home, task)
+    await sendTells(ledger, home, terminals, task, tells)
+    await startRetro(ledger, home, terminals, task)
     return null
   }
   // The next conflict of a rebase going on is the landing going on, not a failure to fix.
@@ -1393,13 +1419,28 @@ const peerMessage = (from: number, text: string): string =>
 // Each is checked again first: the person may have dropped its task while the checks ran.
 // ponytail: one dropped while restore rebuilds its folder is not started again (deliver refuses
 // it), but shows in ls with its folder until the next gc.
-async function sendTells(ledger: Ledger, home: string, from: Task, tells: Tell[]): Promise<void> {
+async function sendTells(
+  ledger: Ledger,
+  home: string,
+  terminals: Terminals,
+  from: Task,
+  tells: Tell[],
+): Promise<void> {
   for (const { to, text } of tells) {
     try {
       const why = cannotTell(ledger, from, to)
       if (why !== null) throw new Error(why)
       await restore(ledger, home, to)
-      await deliver(ledger, home, to, 'followup', peerMessage(from.id, text), null, from.id)
+      await deliver(
+        ledger,
+        home,
+        terminals,
+        to,
+        'followup',
+        peerMessage(from.id, text),
+        null,
+        from.id,
+      )
     } catch (error) {
       await notify(home, {
         event: 'error',
@@ -1677,6 +1718,7 @@ const textsOf = (content: unknown): unknown[] =>
 function carryUnheard(
   ledger: Ledger,
   home: string,
+  terminals: Terminals,
   task: Task,
   attemptId: number,
   sessionId: string,
@@ -1714,7 +1756,6 @@ function carryUnheard(
     })
     .immediate()
   if (carried === null) return
-  const terminals = Terminals.of(home)
   const name = sessionName(task.id)
   const live = terminals.alive(name)
   const gone = !live || restartingClaude(terminals, name)
@@ -1817,6 +1858,7 @@ function nodsTurns(ledger: Ledger, taskId: number): Attempt[] {
 async function deliver(
   ledger: Ledger,
   home: string,
+  terminals: Terminals,
   taskId: number,
   kind: AttemptKind,
   text: string,
@@ -1831,7 +1873,6 @@ async function deliver(
   const last = ledger.lastAttempt(taskId)
   const workspace = task.workspace
   if (last === null || workspace === null) throw notStarted(ledger, task)
-  const terminals = Terminals.of(home)
   const name = sessionName(taskId)
   const live = terminals.alive(name)
   // Claude Code is starting again: pasted now, the message would be lost, so it waits for the new
@@ -1936,7 +1977,7 @@ async function deliver(
     } else {
       // keepWorker starts it as any later start: the current account, trust, the message.
       leavePrompt(home, taskId, text)
-      launch(home, taskId, workspace, [])
+      launch(home, terminals, taskId, workspace, [])
     }
   } catch (error) {
     ledger.failAttempt(turn.attemptId, message(error))
@@ -1948,8 +1989,14 @@ async function deliver(
 // Opens the task's terminal, which keeps its Claude Code running (`nod run`, keepWorker). `first`:
 // the arguments of a task's first Claude Code; reopening a terminal gives none, and keepWorker
 // starts it as it starts it again.
-function launch(home: string, taskId: number, cwd: string, first: string[]): void {
-  Terminals.of(home).start(
+function launch(
+  home: string,
+  terminals: Terminals,
+  taskId: number,
+  cwd: string,
+  first: string[],
+): void {
+  terminals.start(
     sessionName(taskId),
     cwd,
     [process.execPath, CLI, 'run', String(taskId), ...first],
@@ -2065,10 +2112,10 @@ function takePrompt(home: string, taskId: number): string | null {
 export async function keepWorker(
   ledger: Ledger,
   home: string,
+  terminals: Terminals,
   taskId: number,
   first: string[],
 ): Promise<void> {
-  const terminals = Terminals.of(home)
   const name = sessionName(taskId)
   const pane = process.env.TMUX_PANE
   let child: Bun.Subprocess | null = null
@@ -2106,7 +2153,7 @@ export async function keepWorker(
       const next: Start | null =
         run === 0 && first.length > 0
           ? { argv: first, env: process.env, fresh: false, started: null, left: null }
-          : await Promise.race([nextRun(ledger, home, taskId), stopped.promise])
+          : await Promise.race([nextRun(ledger, home, terminals, taskId), stopped.promise])
       // The session may have ended while this waited.
       if (next === null || stopping) return
       left = next.left
@@ -2121,7 +2168,7 @@ export async function keepWorker(
       exited = child.exited
       failure = ''
       if (next.started !== null) {
-        void trustOnStart(ledger, home, taskId, next.fresh, next.started).catch(
+        void trustOnStart(ledger, home, terminals, taskId, next.fresh, next.started).catch(
           notifyError(ledger, home, taskId),
         )
       }
@@ -2161,14 +2208,14 @@ export async function keepWorker(
     // that start in the prompt file (deliver).
     terminals.setOption(name, RESTARTING_OPTION, '1')
     if (terminals.option(name, SETTLING_OPTION) !== '') {
-      void watchSettling(ledger, home, taskId).catch(notifyError(ledger, home, taskId))
+      void watchSettling(ledger, home, terminals, taskId).catch(notifyError(ledger, home, taskId))
     }
     // A restart ends Claude Code between turns, or with deliver's message still to come; a turn
     // open with no message left for the new start began in between, and was cut off.
     if (!asked && !up) quick++
     if (!asked || !existsSync(promptFile(home, taskId))) cut ??= open
     if (quick >= MAX_QUICK_EXITS) {
-      await giveUp(ledger, home, taskId, cut, failure)
+      await giveUp(ledger, home, terminals, taskId, cut, failure)
       return
     }
     if (!up) await Bun.sleep(RELAUNCH_DELAY_MS)
@@ -2199,9 +2246,14 @@ type Start = {
 // it starts anew with the brief and any message deliver left after it (`fresh`), and that turn
 // was not cut off. One kept only in the folder of the account it ran as before cannot go on in
 // this one.
-async function nextRun(ledger: Ledger, home: string, taskId: number): Promise<Start> {
+async function nextRun(
+  ledger: Ledger,
+  home: string,
+  terminals: Terminals,
+  taskId: number,
+): Promise<Start> {
   const config = configDir(home)
-  await ensureTrusted(home, config)
+  await ensureTrusted(home, terminals, config)
   // nod's environment with the account `config` in place of the one it has.
   const { CLAUDE_CONFIG_DIR: _, ...rest } = process.env
   const env = config === null ? rest : { ...rest, CLAUDE_CONFIG_DIR: config }
@@ -2242,36 +2294,46 @@ async function nextRun(ledger: Ledger, home: string, taskId: number): Promise<St
 async function trustOnStart(
   ledger: Ledger,
   home: string,
+  terminals: Terminals,
   taskId: number,
   fresh: boolean,
   started: string,
 ): Promise<void> {
-  if (!fresh) return acceptTrust(Terminals.of(home), sessionName(taskId), started)
+  if (!fresh) return acceptTrust(terminals, sessionName(taskId), started)
   const attempt = ledger.openAttempt(taskId) ?? ledger.lastAttempt(taskId)
-  if (attempt !== null) await awaitStart(ledger, home, ledger.get(taskId), attempt.id, started)
+  if (attempt !== null)
+    await awaitStart(ledger, home, terminals, ledger.get(taskId), attempt.id, started)
 }
 
 // A Stop hook that was checking the turn of the Claude Code that ended: once the hook ends too, a
 // check it did not finish goes on (goOnCut).
-async function watchSettling(ledger: Ledger, home: string, taskId: number): Promise<void> {
-  const terminals = Terminals.of(home)
+async function watchSettling(
+  ledger: Ledger,
+  home: string,
+  terminals: Terminals,
+  taskId: number,
+): Promise<void> {
   const name = sessionName(taskId)
   while (settling(terminals, name)) await Bun.sleep(SETTLE_POLL_MS)
-  if (terminals.alive(name)) await goOnCut(ledger, home, taskId)
+  if (terminals.alive(name)) await goOnCut(ledger, home, terminals, taskId)
 }
 
 // Goes on from the checks Stop hooks did not finish (goOnCut) of the workers whose terminal is up,
 // whose Claude Code went on without them; keepWorker does it as soon as one's Claude Code ends
 // (watchSettling). Every such terminal, so the mark of a hook gone goes whatever the task's status.
 // The tick runs it. Returns the tasks it went on with.
-export async function cutChecks(ledger: Ledger, home: string): Promise<number[]> {
-  const live = Terminals.of(home).sessions()
+export async function cutChecks(
+  ledger: Ledger,
+  home: string,
+  terminals: Terminals,
+): Promise<number[]> {
+  const live = terminals.sessions()
   const went: number[] = []
   for (const t of ledger.list()) {
     if (!live.has(sessionName(t.id))) continue
     // One that goes meanwhile must not keep the rest from going on.
     try {
-      if (await goOnCut(ledger, home, t.id)) went.push(t.id)
+      if (await goOnCut(ledger, home, terminals, t.id)) went.push(t.id)
     } catch (error) {
       console.error(`nod: could not go on with task n${t.id}: ${message(error)}`)
     }
@@ -2290,8 +2352,12 @@ const REPORT_AGAIN =
 // turn open, so its worker reports that turn again, and that turn's Stop hook checks it. Once in a
 // row: one cut off again, a check that outlasts the hook, goes to the person, and nod tell goes on.
 // Returns whether it went on.
-async function goOnCut(ledger: Ledger, home: string, taskId: number): Promise<boolean> {
-  const terminals = Terminals.of(home)
+async function goOnCut(
+  ledger: Ledger,
+  home: string,
+  terminals: Terminals,
+  taskId: number,
+): Promise<boolean> {
   const name = sessionName(taskId)
   const [pid = '', checked] = terminals.option(name, SETTLING_OPTION).split(' ')
   if (pid === '' || running(Number(pid))) return false
@@ -2313,7 +2379,7 @@ async function goOnCut(ledger: Ledger, home: string, taskId: number): Promise<bo
   let why = `${cutOff}, the second time since nod had its worker report a turn again for that: a check that takes longer than its Stop hook may (${STOP_HOOK_TIMEOUT_SECS / 60} minutes) never finishes. nod tell goes on.`
   if (!nodsTurns(ledger, taskId).some((a) => a.prompt === REPORT_AGAIN)) {
     try {
-      await deliver(ledger, home, taskId, 'resume', REPORT_AGAIN, null)
+      await deliver(ledger, home, terminals, taskId, 'resume', REPORT_AGAIN, null)
       return true
     } catch (error) {
       why = `${cutOff}, and nod could not have its worker report it again: ${message(error)}. nod tell goes on.`
@@ -2331,12 +2397,13 @@ async function goOnCut(ledger: Ledger, home: string, taskId: number): Promise<bo
 async function giveUp(
   ledger: Ledger,
   home: string,
+  terminals: Terminals,
   taskId: number,
   cut: Attempt | null,
   failure: string,
 ): Promise<void> {
   rmSync(promptFile(home, taskId), { force: true })
-  const screen = Terminals.of(home)
+  const screen = terminals
     .screen(sessionName(taskId))
     .replace(/\n\s*\n/g, '\n')
     .trim()
@@ -2378,8 +2445,13 @@ async function cutOff(
 // Raises a decision for each turn whose terminal is gone (keepWorker went with it), as after a
 // restart of the machine or of tmux. A task between turns needs nothing: the next message starts
 // it again in its conversation.
-export async function lostTurns(ledger: Ledger, home: string, now: Date): Promise<number[]> {
-  const live = Terminals.of(home).sessions()
+export async function lostTurns(
+  ledger: Ledger,
+  home: string,
+  terminals: Terminals,
+  now: Date,
+): Promise<number[]> {
+  const live = terminals.sessions()
   const lost: number[] = []
   for (const t of ledger.list()) {
     if (t.status !== 'running' && t.status !== 'needs_decision') continue
@@ -2399,8 +2471,12 @@ export async function lostTurns(ledger: Ledger, home: string, now: Date): Promis
 // is attached to or left less than that long ago, one whose Stop hook still checks its last turn
 // (settling), one with a turn open, or one showing a permission or trust dialog a decision waits
 // on. Its folder, branch and ledger rows stay. The tick runs it.
-export async function closeFinished(ledger: Ledger, home: string, now: Date): Promise<number[]> {
-  const terminals = Terminals.of(home)
+export async function closeFinished(
+  ledger: Ledger,
+  home: string,
+  terminals: Terminals,
+  now: Date,
+): Promise<number[]> {
   const live = terminals.sessions()
   const before = now.getTime() - IDLE_TERMINAL_MS
   const closed: number[] = []
@@ -2486,10 +2562,10 @@ export type Restart = 'restarted' | 'after its turn' | 'attached' | 'no terminal
 export async function restart(
   ledger: Ledger,
   home: string,
+  terminals: Terminals,
   taskId: number,
   why: string,
 ): Promise<Restart> {
-  const terminals = Terminals.of(home)
   const name = sessionName(taskId)
   const task = ledger.get(taskId)
   if (task.account === null || !terminals.alive(name)) return 'no terminal'
@@ -2521,10 +2597,14 @@ const continueAfter = (error: string): string =>
 // Restarts the workers due one: those a restart waits on, and, with an account rule, those whose
 // Claude Code runs as another account than the current one. `only`: just that task, for its Stop
 // hook. Returns the tasks restarted now.
-export async function restartDue(ledger: Ledger, home: string, only?: number): Promise<number[]> {
+export async function restartDue(
+  ledger: Ledger,
+  home: string,
+  terminals: Terminals,
+  only?: number,
+): Promise<number[]> {
   // Read in the one call that lists the sessions, not one a session: this runs at the end of every
   // nod command. The restart waited on comes last, as the one value with spaces (sessionOptions).
-  const terminals = Terminals.of(home)
   const read = () => terminals.sessionOptions(RESTARTING_OPTION, RESTART_OPTION)
   let live = read()
   const tasks = (only === undefined ? ledger.list() : [ledger.get(only)]).filter(
@@ -2544,7 +2624,7 @@ export async function restartDue(ledger: Ledger, home: string, only?: number): P
     const why =
       waiting || (changed ? `the account is now ${current || "Claude Code's default"}` : '')
     if (why === '') continue
-    if ((await restart(ledger, home, t.id, why)) === 'restarted') restarted.push(t.id)
+    if ((await restart(ledger, home, terminals, t.id, why)) === 'restarted') restarted.push(t.id)
     // Again after the wait (a notify), as the next worker's own Stop hook may have restarted it.
     live = read()
   }
@@ -2641,13 +2721,17 @@ export function workerEnv(
 // Claude Code asks about the repo it belongs to, so see awaitStart.
 // ponytail: answers the dialog by reading it off the screen. If Claude Code changes its wording,
 // this times out with the screen in the error rather than guessing.
-async function ensureTrusted(home: string, config: string | null): Promise<void> {
+async function ensureTrusted(
+  home: string,
+  terminals: Terminals,
+  config: string | null,
+): Promise<void> {
   const trusted = trustedFile(home, config)
   if (existsSync(trusted)) return
   // Tasks this process starts at once (startReady, a tick's) wait on the one check.
   let pending = trusting.get(trusted)
   if (pending === undefined) {
-    pending = trustWork(home, config, trusted).finally(() => trusting.delete(trusted))
+    pending = trustWork(home, terminals, config, trusted).finally(() => trusting.delete(trusted))
     trusting.set(trusted, pending)
   }
   await pending
@@ -2656,7 +2740,12 @@ async function ensureTrusted(home: string, config: string | null): Promise<void>
 // The checks ensureTrusted has in progress, by the file each writes once it is done.
 const trusting = new Map<string, Promise<void>>()
 
-async function trustWork(home: string, config: string | null, trusted: string): Promise<void> {
+async function trustWork(
+  home: string,
+  terminals: Terminals,
+  config: string | null,
+  trusted: string,
+): Promise<void> {
   const work = join(home, 'work')
   mkdirSync(work, { recursive: true })
   // Named for this process and account, so other processes starting workers at once (several
@@ -2667,7 +2756,6 @@ async function trustWork(home: string, config: string | null, trusted: string): 
   const settings = JSON.stringify({
     hooks: { SessionStart: [{ hooks: [{ type: 'command', command: `touch ${quote(started)}` }] }] },
   })
-  const terminals = Terminals.of(home)
   terminals.start(name, work, ['claude', '--settings', settings], workerEnv(home, null, config))
   try {
     await acceptTrust(terminals, name, started)
@@ -2709,11 +2797,11 @@ async function acceptTrust(terminals: Terminals, name: string, started: string):
 async function awaitStart(
   ledger: Ledger,
   home: string,
+  terminals: Terminals,
   task: Task,
   attemptId: number,
   started: string,
 ): Promise<void> {
-  const terminals = Terminals.of(home)
   const name = sessionName(task.id)
   const deadline = Date.now() + TRUST_TIMEOUT_MS
   while (!existsSync(started)) {
@@ -2777,9 +2865,10 @@ function mainRepo(path: string): string | null {
 async function prepareWorkspace(
   ledger: Ledger,
   home: string,
+  terminals: Terminals,
   task: Task,
 ): Promise<{ cwd: string; start: string | null }> {
-  await ensureTrusted(home, configDir(home))
+  await ensureTrusted(home, terminals, configDir(home))
   const cwd = workspaceOf(home, task)
   if (task.repo === null) {
     mkdirSync(cwd, { recursive: true })

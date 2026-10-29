@@ -14,7 +14,7 @@ import { tempDirs } from '../test/tmp'
 import { ALLOW, harmless, onPermissionRequest } from './allow'
 import { sendNotices } from './inbox'
 import { Ledger, type NewTask, type Task } from './ledger'
-import { Terminals } from './tmux'
+import { Tmux } from './tmux'
 import { Todos } from './todos'
 import { allowedLine, watch } from './view'
 import { answer, onNotification, onPrompt, tell } from './worker'
@@ -321,19 +321,19 @@ test('nod hook permission prints the allow only for what nod allows, nothing oth
 test('a prompt nod does not allow holds back nod tell from its turn as it shows, before its Notification, which opens no second decision; so does the next prompt of the turn once the first is answered', async () => {
   const { home, ledger, id, attemptId, event } = running()
   const notified = () =>
-    onNotification(ledger, home, {
+    onNotification(ledger, home, Tmux.of(home), {
       session_id: 's1',
       notification_type: 'permission_prompt',
       message: 'Claude needs your permission to use Bash',
     })
   const refused = () =>
-    expect(tell(ledger, home, id, 'also tag it')).rejects.toThrow(
+    expect(tell(ledger, home, Tmux.of(home), id, 'also tag it')).rejects.toThrow(
       /^answer permission decision d\d+ first: Enter would answer its dialog$/,
     )
   // The worker's terminal is up (tmux stands in), its turn going.
-  const alive = spyOn(Terminals.prototype, 'alive').mockReturnValue(true)
-  const option = spyOn(Terminals.prototype, 'option').mockReturnValue('')
-  const keys = spyOn(Terminals.prototype, 'keys').mockImplementation(() => {})
+  const alive = spyOn(Tmux.prototype, 'alive').mockReturnValue(true)
+  const option = spyOn(Tmux.prototype, 'option').mockReturnValue('')
+  const keys = spyOn(Tmux.prototype, 'keys').mockImplementation(() => {})
   try {
     expect(hook(home, JSON.stringify(event('git push origin feat/x')))).toBe('')
     expect(asked(ledger, id)).toEqual([['permission', attemptId, 'git push origin feat/x']])
@@ -344,7 +344,7 @@ test('a prompt nod does not allow holds back nod tell from its turn as it shows,
     // It is answered, through nod here, so nothing of it is left open (one the person answers in
     // the worker's terminal stays open to the turn's end), and the turn asks again: that prompt
     // holds the message back with a decision of its own as it shows.
-    await answer(ledger, home, ledger.decisions(id)[0]?.id ?? 0, 'yes', 'human')
+    await answer(ledger, home, Tmux.of(home), ledger.decisions(id)[0]?.id ?? 0, 'yes', 'human')
     expect(keys.mock.calls.map(([, key]) => key)).toEqual(['Enter'])
     expect(asked(ledger, id)).toEqual([])
     expect(hook(home, JSON.stringify(event('git push origin --tags')))).toBe('')
@@ -378,15 +378,17 @@ test("a prompt's decision whose turn the person stopped with Escape closes as th
   }
   const stop = { type: 'text', text: '[Request interrupted by user for tool use]' }
   expect(hook(home, JSON.stringify(event('git push origin feat/x')))).toBe('')
-  const alive = spyOn(Terminals.prototype, 'alive').mockReturnValue(true)
-  const option = spyOn(Terminals.prototype, 'option').mockReturnValue('')
-  const send = spyOn(Terminals.prototype, 'send').mockImplementation(() => {})
+  const alive = spyOn(Tmux.prototype, 'alive').mockReturnValue(true)
+  const option = spyOn(Tmux.prototype, 'option').mockReturnValue('')
+  const send = spyOn(Tmux.prototype, 'send').mockImplementation(() => {})
   try {
     transcript(asking)
-    await expect(tell(ledger, home, id, 'push to the fork')).rejects.toThrow(/^answer permission/)
+    await expect(tell(ledger, home, Tmux.of(home), id, 'push to the fork')).rejects.toThrow(
+      /^answer permission/,
+    )
     // Escape on the dialog ends the turn with no Stop (2.1.290).
     transcript(asking, { type: 'user', message: { role: 'user', content: [stop] } })
-    await tell(ledger, home, id, 'push to the fork')
+    await tell(ledger, home, Tmux.of(home), id, 'push to the fork')
     expect(send.mock.calls.map(([, text]) => text)).toEqual(['push to the fork'])
   } finally {
     alive.mockRestore()
@@ -416,18 +418,18 @@ test("a prompt's decision whose turn the person stopped with Escape closes as th
   const stop = { type: 'text', text: '[Request interrupted by user for tool use]' }
   expect(hook(home, JSON.stringify(event('git push origin feat/x')))).toBe('')
   // A person at the worker's terminal, which tmux stands in for.
-  const alive = spyOn(Terminals.prototype, 'alive').mockReturnValue(true)
-  const attached = spyOn(Terminals.prototype, 'attached').mockReturnValue(true)
-  const option = spyOn(Terminals.prototype, 'option').mockReturnValue('')
-  const send = spyOn(Terminals.prototype, 'send').mockImplementation(() => {})
+  const alive = spyOn(Tmux.prototype, 'alive').mockReturnValue(true)
+  const attached = spyOn(Tmux.prototype, 'attached').mockReturnValue(true)
+  const option = spyOn(Tmux.prototype, 'option').mockReturnValue('')
+  const send = spyOn(Tmux.prototype, 'send').mockImplementation(() => {})
   try {
     // They answer the dialog no with Escape, which ends the turn with no Stop (2.1.290), and type
     // what to do instead: the prompt hook runs before Claude Code keeps it.
     transcript(said([stop]))
-    await onPrompt(ledger, home, { session_id: 's1', prompt: 'push to the fork' })
+    await onPrompt(ledger, home, Tmux.of(home), { session_id: 's1', prompt: 'push to the fork' })
     expect(ledger.get(id).status).toBe('running')
     transcript(said([stop]), said('push to the fork'))
-    await tell(ledger, home, id, 'and tag it')
+    await tell(ledger, home, Tmux.of(home), id, 'and tag it')
     expect(send.mock.calls.map(([, text]) => text)).toEqual(['and tag it'])
   } finally {
     alive.mockRestore()
@@ -456,15 +458,15 @@ test('what a person types into a turn they stopped is kept even when closing its
     `${JSON.stringify({ type: 'user', message: { role: 'user', content: [stop] } })}\n`,
   )
   expect(hook(home, JSON.stringify(event('git push origin feat/x')))).toBe('')
-  const attached = spyOn(Terminals.prototype, 'attached').mockReturnValue(true)
-  const option = spyOn(Terminals.prototype, 'option').mockReturnValue('')
+  const attached = spyOn(Tmux.prototype, 'attached').mockReturnValue(true)
+  const option = spyOn(Tmux.prototype, 'option').mockReturnValue('')
   // The ledger is busy as the decision closes.
   const dismiss = spyOn(Ledger.prototype, 'dismiss').mockImplementation(() => {
     throw new Error('database is locked')
   })
   try {
     await expect(
-      onPrompt(ledger, home, { session_id: 's1', prompt: 'push to the fork' }),
+      onPrompt(ledger, home, Tmux.of(home), { session_id: 's1', prompt: 'push to the fork' }),
     ).rejects.toThrow('database is locked')
   } finally {
     attached.mockRestore()
@@ -501,14 +503,14 @@ test("a tool that ran closes its dialog's decision, as allowed in the terminal, 
   ])
   expect(ledger.get(id).status).toBe('running')
   // The root, a moment late, answers what it was shown: nothing reaches the worker, at work.
-  const alive = spyOn(Terminals.prototype, 'alive').mockReturnValue(true)
-  const keys = spyOn(Terminals.prototype, 'keys').mockImplementation(() => {})
+  const alive = spyOn(Tmux.prototype, 'alive').mockReturnValue(true)
+  const keys = spyOn(Tmux.prototype, 'keys').mockImplementation(() => {})
   try {
     for (const [decision, reply] of [
       [first, 'no'],
       [second, 'yes'],
     ] as const) {
-      await expect(answer(ledger, home, decision, reply, 'human')).rejects.toThrow(
+      await expect(answer(ledger, home, Tmux.of(home), decision, reply, 'human')).rejects.toThrow(
         /already answered/,
       )
     }
@@ -525,11 +527,11 @@ test("a tool that ran leaves a dialog's decision for the same command open when 
   expect(hook(home, JSON.stringify(event('git push origin feat/x')))).toBe('')
   expect(hook(home, JSON.stringify(event('git push origin feat/x')))).toBe('')
   const [first = 0, second = 0] = ledger.decisions(id).map((d) => d.id)
-  const alive = spyOn(Terminals.prototype, 'alive').mockReturnValue(true)
-  const option = spyOn(Terminals.prototype, 'option').mockReturnValue('')
-  const keys = spyOn(Terminals.prototype, 'keys').mockImplementation(() => {})
+  const alive = spyOn(Tmux.prototype, 'alive').mockReturnValue(true)
+  const option = spyOn(Tmux.prototype, 'option').mockReturnValue('')
+  const keys = spyOn(Tmux.prototype, 'keys').mockImplementation(() => {})
   try {
-    await answer(ledger, home, first, 'yes', 'human')
+    await answer(ledger, home, Tmux.of(home), first, 'yes', 'human')
     expect(keys.mock.calls.map(([, key]) => key)).toEqual(['Enter'])
   } finally {
     alive.mockRestore()
@@ -549,15 +551,15 @@ test("no to one of the prompts tools that ran at once queued closes the others' 
   expect(hook(home, JSON.stringify(event('git push origin feat/x')))).toBe('')
   expect(hook(home, JSON.stringify(event('git push origin --tags')))).toBe('')
   const [first] = ledger.decisions(id)
-  const alive = spyOn(Terminals.prototype, 'alive').mockReturnValue(true)
-  const option = spyOn(Terminals.prototype, 'option').mockReturnValue('')
-  const attached = spyOn(Terminals.prototype, 'attached').mockReturnValue(false)
-  const keys = spyOn(Terminals.prototype, 'keys').mockImplementation(() => {})
+  const alive = spyOn(Tmux.prototype, 'alive').mockReturnValue(true)
+  const option = spyOn(Tmux.prototype, 'option').mockReturnValue('')
+  const attached = spyOn(Tmux.prototype, 'attached').mockReturnValue(false)
+  const keys = spyOn(Tmux.prototype, 'keys').mockImplementation(() => {})
   // Claude Code shows the turn stopped once Escape is in.
-  const screen = spyOn(Terminals.prototype, 'screen').mockReturnValue('Interrupted')
-  const send = spyOn(Terminals.prototype, 'send').mockImplementation(() => {})
+  const screen = spyOn(Tmux.prototype, 'screen').mockReturnValue('Interrupted')
+  const send = spyOn(Tmux.prototype, 'send').mockImplementation(() => {})
   try {
-    await answer(ledger, home, first?.id ?? 0, 'no, not yet', 'human')
+    await answer(ledger, home, Tmux.of(home), first?.id ?? 0, 'no, not yet', 'human')
     expect(keys.mock.calls.map(([, key]) => key)).toEqual(['Escape'])
     expect(send.mock.calls.map(([, text]) => text)).toEqual([
       'Human decision: permission denied. no, not yet',

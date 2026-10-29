@@ -3,7 +3,7 @@ import { dirname, join, resolve } from 'node:path'
 import { FINISHED, type Ledger, type Task } from './ledger'
 import { branchOf, sessionName } from './place'
 import { message, spawn } from './proc'
-import { Terminals } from './tmux'
+import type { Terminals } from './tmux'
 
 // `clean`: tasks that had nothing left to remove, because gc or something else already removed it.
 export type GcReport = {
@@ -22,10 +22,14 @@ export type GcPick = { before: Date } | { ids: number[] } | { seen: Task[] }
 // back (restore in worker.ts). A plain workspace's files are the task's output, hence the age
 // cutoff unless the human names the task. Every task gc gets through is marked collected, so ls
 // stops listing it: gc is how the human says they have dealt with the task's result.
-export async function collect(ledger: Ledger, home: string, pick: GcPick): Promise<GcReport> {
+export async function collect(
+  ledger: Ledger,
+  home: string,
+  terminals: Terminals,
+  pick: GcPick,
+): Promise<GcReport> {
   const report: GcReport = { removed: [], clean: [], skipped: [] }
   const workRoot = `${join(home, 'work')}/`
-  const terminals = Terminals.of(home)
   const seen = (id: number): Task | undefined =>
     'seen' in pick ? pick.seen.find((t) => t.id === id) : undefined
   const picked = (task: Task): boolean => {

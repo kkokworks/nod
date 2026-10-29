@@ -6,7 +6,7 @@ import { notify, taskRef } from './notify'
 import { sessionName } from './place'
 import { message, OUTPUT_LIMIT, spawn } from './proc'
 import { type GitService, type OwnPr, serviceOf } from './prs'
-import { running, Terminals } from './tmux'
+import { running, type Terminals } from './tmux'
 import {
   askToLand,
   baseOf,
@@ -49,6 +49,7 @@ export type Moved = { id: number; did: string }
 export async function land(
   ledger: Ledger,
   home: string,
+  terminals: Terminals,
   opts: { only?: number[]; send?: Send } = {},
 ): Promise<Moved[]> {
   const moved: Moved[] = []
@@ -59,7 +60,7 @@ export async function land(
     // Two passes at once would rebase and push the same branches; the other one lands these.
     if (!ledger.claimRepo(repo.path, process.pid, running)) continue
     try {
-      await landRepo({ ledger, home, repo, send: opts.send, moved }, only)
+      await landRepo({ ledger, home, terminals, repo, send: opts.send, moved }, only)
     } finally {
       ledger.releaseRepo(repo.path, process.pid)
     }
@@ -67,13 +68,19 @@ export async function land(
   return moved
 }
 
-type Pass = { ledger: Ledger; home: string; repo: Repo; send?: Send; moved: Moved[] }
+type Pass = {
+  ledger: Ledger
+  home: string
+  terminals: Terminals
+  repo: Repo
+  send?: Send
+  moved: Moved[]
+}
 type Tip = { branch: string; commit: string }
 
 // The repo's tasks due to land, in the order they were added, so one that comes after another
 // (`--after`, on its branch) is looked at once that one has had its turn.
-function due(ledger: Ledger, home: string, repo: Repo, only: number[] | undefined): Task[] {
-  const terminals = Terminals.of(home)
+function due(ledger: Ledger, terminals: Terminals, repo: Repo, only: number[] | undefined): Task[] {
   return ledger.list().filter((t) => {
     if (t.repo !== repo.path || t.status !== 'succeeded' || t.workspace === null) return false
     const l = ledger.landing(t.id)
@@ -89,8 +96,8 @@ function due(ledger: Ledger, home: string, repo: Repo, only: number[] | undefine
 }
 
 async function landRepo(pass: Pass, only: number[] | undefined): Promise<void> {
-  const { ledger, home, repo } = pass
-  const tasks = due(ledger, home, repo, only)
+  const { ledger, terminals, repo } = pass
+  const tasks = due(ledger, terminals, repo, only)
   if (tasks.length === 0) return
   let tip: Tip
   try {
@@ -226,7 +233,7 @@ async function landTask(
   if (conflict !== null || failed !== null || text) {
     const said = landingMessage({ tip, base: l.base ?? base, conflict, failed, check, text })
     try {
-      await handOff(ledger, home, task.id, said, pass.send)
+      await handOff(ledger, home, pass.terminals, task.id, said, pass.send)
     } catch (error) {
       // No worker is on the conflict, so the branch goes back as it was: yes starts over.
       if (conflict !== null) await spawn([...GIT, 'rebase', '--abort'], ws)

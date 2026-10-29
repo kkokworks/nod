@@ -10,7 +10,7 @@ import { defineConfig, type Plugin } from 'vite'
 const terminal = async (http: Server): Promise<void> => {
   const path = join(import.meta.dirname, 'src/terminal.server.ts')
   const served: typeof import('./src/terminal.server') = await import(/* @vite-ignore */ path)
-  served.serveTerminals(http)
+  served.serveHome(http)
 }
 const terminalPlugin: Plugin = {
   name: 'nod-terminal',
