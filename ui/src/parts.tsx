@@ -205,6 +205,8 @@ export async function keep<T>(
   },
   load: () => Promise<T>,
 ): Promise<T> {
+  // A page loaded ahead, not shown: what it loads is not what the page shows.
+  if (ctx.cause === 'preload') return load()
   const id = ctx.route.id
   const key = keyOf(id, ctx.params, ctx.deps)
   // A load that a later one of the route overtook (a refresh still out as the page moved on) is
