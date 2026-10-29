@@ -7,8 +7,9 @@ import { socketsParent } from './tmp'
 // answered once started. Claude Code adds SANDBOX_RUNTIME=1 to the environment of only the
 // commands it runs in its sandbox, with the sandbox's TMPDIR and proxy. Skipping takes that and
 // tmux's `Operation not permitted`, which a sandbox gives it two ways (tmux 3.6a, measured):
-// - No pseudo-terminal, in every worker nod starts now (Claude Code 2.1.312). Its sandbox lets it
-//   keep sockets in its own folder (NOD_SOCKETS), where the probe makes its, but opens no
+// - No pseudo-terminal, in a worker nod starts now whose own folder is of use (Claude Code
+//   2.1.312). Its sandbox lets it keep sockets in that folder (NOD_SOCKETS), where the probe makes
+//   its, but opens no
 //   pseudo-terminal (`openpty: Operation not permitted`). new-session makes the socket, prints
 //   `create window failed: fork failed: Operation not permitted`, exits 1, and the server ends at
 //   once. worker.test.ts runs its workers in fake terminals for this (test/fake-terminals.ts).
@@ -29,8 +30,8 @@ export function tmuxSkip(
       : 'lets tmux make no socket here'
     return (
       `skipping the tests that need a tmux server: this sandbox ${blocked} (${stderr.trim()}). ` +
-      "They run outside the sandbox only when nod's check runs `bun test`: the task's acceptance " +
-      'check, if it does, or the check nod runs as it lands the branch'
+      "They run outside the sandbox only if one of nod's checks runs `bun test`: the task's " +
+      'acceptance check, or the check nod runs as it lands the branch'
     )
   }
   throw new Error(`tmux cannot start a server: ${stderr.trim() || '(it said nothing)'}`)

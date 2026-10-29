@@ -54,8 +54,8 @@ export function inboxSkip(
     return (
       'skipping the tests that need a Unix socket server: this sandbox lets this run listen on none ' +
       "(EPERM). A nod worker's sandbox allows one only in its own folder (NOD_SOCKETS), which this run " +
-      "lacks or cannot use (test/tmp.ts). They run outside the sandbox only when nod's check runs " +
-      "`bun test`: the task's acceptance check, if it does, or the check nod runs as it lands the branch"
+      "lacks or cannot use (test/tmp.ts). They run outside the sandbox only if one of nod's checks " +
+      "runs `bun test`: the task's acceptance check, or the check nod runs as it lands the branch"
     )
   }
   throw new Error(`cannot listen on a Unix socket: ${String(error)}`)
