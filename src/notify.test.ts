@@ -17,12 +17,14 @@ const LOAD_MS = 5000
 const LIMIT_MS = 1000
 
 // A shell loop that runs until the test lets it go, so that the test, not the clock, says when what
-// runs it ends. Removing the temp dirs lets it go too: a test that failed leaves nothing running.
+// runs it ends. It also ends once the temp dirs are removed or this process is gone: a test that
+// failed, or a run cut short before afterAll, leaves nothing running.
 function hold(): { loop: string; release: () => void } {
   const file = join(tmp.make('nod-hold-'), 'held')
   writeFileSync(file, '')
+  const held = `[ -e ${JSON.stringify(file)} ] && kill -0 ${process.pid} 2>/dev/null`
   return {
-    loop: `while [ -e ${JSON.stringify(file)} ]; do sleep 0.05; done`,
+    loop: `while ${held}; do sleep 0.05; done`,
     release: () => rmSync(file, { force: true }),
   }
 }
@@ -35,19 +37,24 @@ function withNotify(body: string, mode: number): string {
   return home
 }
 
-test('a notify script that cannot run is reported on stderr and throws nothing', async () => {
-  const errors = spyOn(console, 'error').mockImplementation(() => {})
-  try {
-    await notify(withNotify('#!/bin/sh\nexit 0\n', 0o644), event) // not executable
-    await notify(withNotify('exit 0\n', 0o755), event) // no #! line
-    expect(errors.mock.calls.map(([line]) => String(line))).toEqual([
-      expect.stringContaining('EACCES'),
-      expect.stringContaining('ENOEXEC'),
-    ])
-  } finally {
-    errors.mockRestore()
-  }
-})
+test(
+  'a notify script that cannot run is reported on stderr and throws nothing',
+  async () => {
+    // Two runs, each of which the load may push.
+    const errors = spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      await notify(withNotify('#!/bin/sh\nexit 0\n', 0o644), event) // not executable
+      await notify(withNotify('exit 0\n', 0o755), event) // no #! line
+      expect(errors.mock.calls.map(([line]) => String(line))).toEqual([
+        expect.stringContaining('EACCES'),
+        expect.stringContaining('ENOEXEC'),
+      ])
+    } finally {
+      errors.mockRestore()
+    }
+  },
+  2 * LOAD_MS,
+)
 
 test(
   'a notify script past its time ends with what it started, which holds its stderr',
@@ -179,13 +186,19 @@ test(
     // `sh` ends within the limit (it takes milliseconds alone, so the limit is all load) and leaves
     // in the background what holds the output. The test lets that go once the limit has passed: a
     // timer set after runGroup's, for as long, fires after it. Killed by then, it would not mark that
-    // it went on. The grace outlasts the limit, so the run waits for it.
+    // it went on. The grace outlasts the limit, so the run waits for it. Not marked when let go, it
+    // was held until then.
     const mark = join(tmp.make('nod-group-'), 'sent')
     const held = hold()
     const left = ['sh', '-c', `(${held.loop}; touch ${JSON.stringify(mark)}) &`]
     const run = runGroup(left, { env: process.env, timeoutMs: LOAD_MS, graceMs: 2 * LOAD_MS })
-    setTimeout(held.release, LOAD_MS)
+    let markedBefore: boolean | undefined
+    setTimeout(() => {
+      markedBefore = existsSync(mark)
+      held.release()
+    }, LOAD_MS)
     expect((await run).code).toBe(0)
+    expect(markedBefore).toBe(false)
     expect(existsSync(mark)).toBe(true)
   },
   3 * LOAD_MS,
