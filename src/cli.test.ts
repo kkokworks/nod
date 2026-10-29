@@ -1034,7 +1034,8 @@ test('a task is n<n>, a decision d<n> and a trigger c<n>, and each still takes i
   expect(nod('trigger', 'rm', `c${first}`)).toBe('removed\n')
   expect(nod('trigger', 'rm', String(second))).toBe('removed\n')
   expect(ledger.triggers()).toEqual([])
-})
+  // About 20 nod commands, each a bun process: about a second alone, longer on a loaded machine.
+}, 20_000)
 
 test('hook stop waits on the background work Claude Code says still runs, and tick asks once that has taken an hour', () => {
   const home = tmp.make('nod-wait-')
