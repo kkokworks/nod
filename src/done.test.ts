@@ -478,7 +478,7 @@ test("an errored repo task goes once a task added after the error does its todo,
   expect(shown.stdout.toString()).toContain('collected:')
 })
 
-test('a succeeded task with commits no remote has goes once its own pull request merged after them, and they stay on its branch for resume', async () => {
+test('a succeeded task with commits no remote has goes once its own pull request merged after them and no other linked one waits, and they stay on its branch for resume', async () => {
   const home = tmp.make('nod-done-')
   const claude = tmp.make('nod-done-claude-')
   process.env.CLAUDE_CONFIG_DIR = claude
@@ -574,6 +574,18 @@ test('a succeeded task with commits no remote has goes once its own pull request
     triggerId: null,
     issue: null,
   })
+  // Another link holds it back as it does a pushed task, unless it is closed or the person approved
+  // it since the task was added.
+  const alsoLinked = (name: string, pr: Partial<PullRequest> = {}): number => {
+    const id = finish(name, BEFORE)
+    prs.set(`${PR}${id}-also`, { ...OPEN, ...pr })
+    ledger.link(id, [`${PR}${id}-also`])
+    return id
+  }
+  const alsoOpen = alsoLinked('also-open')
+  const alsoApprovedBefore = alsoLinked('also-approved-before', { approvedAt: OLD })
+  const alsoApproved = alsoLinked('also-approved', { approvedAt: '2099-01-01T00:00:00Z' })
+  const alsoClosed = alsoLinked('also-closed', { state: 'closed' })
   const unread = finish('unread', BEFORE)
   const lookup: PrLookup = async (url) => {
     if (url === `${PR}${unread}`) throw new Error('tea exited 1')
@@ -586,13 +598,21 @@ test('a succeeded task with commits no remote has goes once its own pull request
   expect(swept.done).toEqual([
     { id: pushedElsewhere, reason: `merged: ${PR}${pushedElsewhere}` },
     { id: viaTodo, reason: `merged: ${PR}${viaTodo}` },
+    { id: alsoApproved, reason: `merged: ${PR}${alsoApproved}` },
+    { id: alsoClosed, reason: `merged: ${PR}${alsoClosed}` },
   ])
-  expect(swept.report).toEqual({ removed: [pushedElsewhere, viaTodo], clean: [], skipped: [] })
+  expect(swept.report).toEqual({
+    removed: [pushedElsewhere, viaTodo, alsoApproved, alsoClosed],
+    clean: [],
+    skipped: [],
+  })
   expect(swept.unchecked).toEqual([{ id: unread, error: 'tea exited 1' }])
   for (const id of [rewritten, sameSecond, otherBranch, notMerged, stillOpen, errored, dropped]) {
     expect(ledger.get(id).collectedAt).toBeNull()
   }
-  expect(ledger.get(waitedOn).collectedAt).toBeNull()
+  for (const id of [waitedOn, alsoOpen, alsoApprovedBefore]) {
+    expect(ledger.get(id).collectedAt).toBeNull()
+  }
   // The only copy of the commits stays on the branch, and resume finds it there.
   const cwd = workspaceOf(home, ledger.get(pushedElsewhere))
   expect(existsSync(cwd)).toBe(false)

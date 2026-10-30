@@ -188,9 +188,9 @@ const USAGE = `usage:
                                    into the default branch, a linked pull request merged, closed or
                                    approved by you, or finished 7+ days ago (one with commits no
                                    remote has only once a linked pull request of its branch merged
-                                   after its last commit, and only if it succeeded). Branches go
-                                   once a remote branch holds the commits or the remote's default
-                                   branch has the changes; ledger
+                                   after its last commit and no other linked one waits, and only
+                                   if it succeeded). Branches go once a remote branch holds the
+                                   commits or the remote's default branch has the changes; ledger
                                    rows and session transcripts stay, ls stops listing the tasks,
                                    and resume or tell brings one back. The schedule runs the
                                    signal check every 5 minutes

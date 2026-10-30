@@ -11,10 +11,10 @@ import { Todos } from './todos'
 // workspace's files are the task's output, which resume cannot bring back, so only age lets one
 // go; a retrospective's output is its report and the answer to it, kept in the ledger, so it goes
 // once it ends. Held back: commits on the branch that no remote has, since collecting hides the
-// only copy from ls, unless a succeeded task's own pull request merged after the last of them; a
-// queued task that starts from this one's branch; a person attached to the session. An errored
-// task goes only with age, as what went wrong is for the person to see first, or, in a repo, once a
-// newer task took its todo over.
+// only copy from ls, unless a succeeded task's own pull request merged after the last of them and
+// no other linked one waits; a queued task that starts from this one's branch; a person attached
+// to the session. An errored task goes only with age, as what went wrong is for the person to see
+// first, or, in a repo, once a newer task took its todo over.
 
 const STALE_DAYS = 7
 const DAY = 86_400_000
@@ -94,15 +94,19 @@ async function signal(
     if (task.status !== 'succeeded') return null
     // The branch's own pull request merged after its last commit: the work went up from elsewhere,
     // rebased on another branch, say, so these commits are not its only copy. A commit made or
-    // rewritten since is newer than the merge, and held back.
+    // rewritten since is newer than the merge, and held back. Any other link still waiting holds
+    // it back too, as it does a pushed task.
     // ponytail: a commit made before the merge and never pushed goes from ls too; it stays on the
     // branch (dropBranch in gc.ts), and resume brings it back.
+    let merged: string | null = null
     for (const url of linksOf(ledger, task)) {
       const pr = await prs(url)
-      if (pr?.state !== 'merged' || pr.head !== task.branch || pr.mergedAt === null) continue
-      if (Date.parse(branch.lastCommitAt) < Date.parse(pr.mergedAt)) return `merged: ${url}`
+      if (pr === null) continue
+      if (pr.state === 'open' && !approvedSince(pr, task)) return null
+      if (pr.state !== 'merged' || pr.head !== task.branch || pr.mergedAt === null) continue
+      if (Date.parse(branch.lastCommitAt) < Date.parse(pr.mergedAt)) merged ??= `merged: ${url}`
     }
-    return null
+    return merged
   }
   if (task.finishedAt !== null && Date.parse(task.finishedAt) <= now.getTime() - STALE_DAYS * DAY) {
     return `finished ${STALE_DAYS}+ days ago`
@@ -135,12 +139,15 @@ async function signal(
     const pr = await prs(url)
     if (pr === null) continue
     if (pr.state !== 'open') ends.push(`${pr.state}: ${url}`)
-    else if (pr.approvedAt !== null && Date.parse(pr.approvedAt) >= Date.parse(task.createdAt)) {
-      ends.push(`approved: ${url}`)
-    } else return null
+    else if (approvedSince(pr, task)) ends.push(`approved: ${url}`)
+    else return null
   }
   return ends.length > 0 ? ends.join(', ') : null
 }
+
+// Whether the person approved an open pull request since the task was added.
+const approvedSince = (pr: PullRequest, task: Task): boolean =>
+  pr.approvedAt !== null && Date.parse(pr.approvedAt) >= Date.parse(task.createdAt)
 
 // The links on a task and on its todo, each once.
 function linksOf(ledger: Ledger, task: Task): string[] {
