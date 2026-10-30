@@ -69,7 +69,7 @@ install)
   # locale, TMUX_TMPDIR.
   # Through a file, not a pipe: sh has no pipefail, so a pipe would hide bun failing.
   src=$(cd "$here/../../src" && pwd)
-  "$bun" -e "import { savedEnv } from '$src/worker.ts'
+  "$bun" -e "import { savedEnv } from '$src/env.ts'
 for (const [name, value] of Object.entries(savedEnv())) console.log(name + '\t' + value)" >"$saved"
   while IFS="$(printf '\t')" read -r name value; do
     plutil -replace "EnvironmentVariables.$name" -string "$value" "$new"

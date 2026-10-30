@@ -6,6 +6,7 @@ import { accountRule, configDir, describeRule, setAccountRule } from './account'
 import { ALLOW, onPermissionRequest, PermissionEvent } from './allow'
 import { finished } from './decisions'
 import { sweep } from './done'
+import { AUTOCOMPACT_PCT } from './env'
 import { collect, type GcPick, type GcReport, remotesHolding } from './gc'
 import {
   NotificationEvent,
@@ -88,7 +89,6 @@ import {
   watch,
 } from './view'
 import {
-  AUTOCOMPACT_PCT,
   answer,
   drop,
   keepWorker,

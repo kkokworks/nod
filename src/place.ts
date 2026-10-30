@@ -2,8 +2,9 @@ import { basename, join } from 'node:path'
 import type { Task } from './ledger'
 import { running, type Terminals } from './tmux'
 
-// Where a task lives: its worker's tmux session (and whether its Stop hook still runs there), its
-// workspace folder, its branch, and the folder its worker may keep Unix sockets in.
+// Where a task lives: its worker's tmux session (and whether its Stop hook still runs there, the
+// options nod keeps on it that more than worker.ts reads), its workspace folder, its branch, and the
+// folder its worker may keep Unix sockets in.
 
 // A repo task's worktree is named after its repo and branch, so a folder says what it holds.
 // ponytail: two repos with the same folder name and branch collide and `worktree add` fails; add
@@ -31,6 +32,13 @@ export const SETTLING_OPTION = 'nod_settling'
 export function settling(terminals: Terminals, name: string): boolean {
   return running(Number.parseInt(terminals.option(name, SETTLING_OPTION), 10))
 }
+
+// The API error that ended the worker's turn (StopFailure), until its Claude Code starts again
+// (keepWorker in worker.ts, which keeps the options only it reads).
+export const STALLED_OPTION = 'nod_stalled'
+// The pid of the Claude Code keepWorker runs, so its Stop hook can tell whether it is still there to
+// hear what the hook answers.
+export const CLAUDE_OPTION = 'nod_claude'
 
 // The one folder a worker's sandbox lets it make and reach Unix sockets in, so its tests can listen
 // on a socket, which the sandbox refuses anywhere else (EPERM, 2.1.310). tmux makes its socket here
