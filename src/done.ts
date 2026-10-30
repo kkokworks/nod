@@ -155,11 +155,14 @@ function linksOf(ledger: Ledger, task: Task): string[] {
   return [...new Set([...ledger.links(task.id), ...todoLinks.map((l) => l.url)])]
 }
 
-type BranchState = { own: number; landed: boolean; unpushed: boolean; lastCommitAt: string }
+type BranchState = { own: number; landed: boolean } & (
+  | { unpushed: false }
+  | { unpushed: true; lastCommitAt: string }
+)
 
 // A repo task's branch: how many commits the task made that the remote's default branch lacks,
 // whether the default branch has its changes, whether some of its commits are on no remote and not
-// merged either, and its last commit's time, the committer's, which a rebase sets anew. Null
+// merged either, and if so its last commit's time, the committer's, which a rebase sets anew. Null
 // without a repo, once the branch is gone, or for a task that never started and so keeps no branch
 // of its own (dropBranch in gc.ts): one by its name is someone else's. Only as fresh as the repo's
 // last fetch.
@@ -185,8 +188,9 @@ function branchState(task: Task): BranchState | null {
   const main = 'refs/remotes/origin/HEAD'
   const own = hasRef(repo, main) ? count(`${main}..${ref}`, ...notTheirs) : 0
   const merged = landed(repo, ref)
+  if (notOnRemotes === 0 || merged) return { own, landed: merged, unpushed: false }
+  // log.showSignature would print the signature's check ahead of the time.
   const last = git('log', '-1', '--no-show-signature', '--format=%cI', ref)
   if (last.exitCode !== 0) throw new Error(`git log in ${repo}: ${last.stderr.toString()}`)
-  const lastCommitAt = last.stdout.toString().trim()
-  return { own, landed: merged, unpushed: notOnRemotes > 0 && !merged, lastCommitAt }
+  return { own, landed: merged, unpushed: true, lastCommitAt: last.stdout.toString().trim() }
 }

@@ -478,7 +478,14 @@ test("an errored repo task goes once a task added after the error does its todo,
   expect(shown.stdout.toString()).toContain('collected:')
 })
 
-test('a succeeded task with commits no remote has goes once its own pull request merged after them and no other linked one waits, and they stay on its branch for resume', async () => {
+const BEFORE = '2026-03-08T00:00:00Z'
+const MERGE = '2026-03-09T00:00:00Z'
+const AFTER = '2026-03-09T01:00:00Z'
+
+// A repo, and `finish` to make a finished task on feat/<name> with a commit no remote has, written
+// before the merge and committed at `at`, and its pull request, merged at MERGE unless `pr` says
+// otherwise. The pull request is linked on the task, or on `todo` when given.
+function unpushedTasks() {
   const home = tmp.make('nod-done-')
   const claude = tmp.make('nod-done-claude-')
   process.env.CLAUDE_CONFIG_DIR = claude
@@ -491,15 +498,9 @@ test('a succeeded task with commits no remote has goes once its own pull request
   git(repo, 'commit', '-q', '--allow-empty', '-m', 'init')
   git(repo, 'update-ref', 'refs/remotes/origin/main', 'HEAD')
   git(repo, 'symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main')
-  const BEFORE = '2026-03-08T00:00:00Z'
-  const MERGE = '2026-03-09T00:00:00Z'
-  const AFTER = '2026-03-09T01:00:00Z'
   const todos = new Todos(ledger)
   const prs = new Map<string, PullRequest>()
-
-  // A finished task on feat/<name> with a commit no remote has, written before the merge and
-  // committed at `at`, and its pull request, merged at MERGE unless `pr` says otherwise. The
-  // pull request is linked on the task, or on `todo` when given.
+  const lookup: PrLookup = async (url) => prs.get(url) ?? null
   const finish = (name: string, at: string, pr: Partial<PullRequest> = {}, todo?: number) => {
     const branch = `feat/${name}`
     const spec: NewTask = {
@@ -546,6 +547,11 @@ test('a succeeded task with commits no remote has goes once its own pull request
     else todos.link(todo, url, null, 'human')
     return id
   }
+  return { home, ledger, repo, git, todos, prs, lookup, finish }
+}
+
+test('a succeeded task with commits no remote has goes once its own pull request merged after them, and they stay on its branch for resume', async () => {
+  const { home, ledger, repo, git, todos, lookup, finish } = unpushedTasks()
   const todo = todos.capture(
     { title: 'do it', notes: null, source: 'cli', sourceKey: null, url: null },
     'human',
@@ -574,45 +580,25 @@ test('a succeeded task with commits no remote has goes once its own pull request
     triggerId: null,
     issue: null,
   })
-  // Another link holds it back as it does a pushed task, unless it is closed or the person approved
-  // it since the task was added.
-  const alsoLinked = (name: string, pr: Partial<PullRequest> = {}): number => {
-    const id = finish(name, BEFORE)
-    prs.set(`${PR}${id}-also`, { ...OPEN, ...pr })
-    ledger.link(id, [`${PR}${id}-also`])
-    return id
-  }
-  const alsoOpen = alsoLinked('also-open')
-  const alsoApprovedBefore = alsoLinked('also-approved-before', { approvedAt: OLD })
-  const alsoApproved = alsoLinked('also-approved', { approvedAt: '2099-01-01T00:00:00Z' })
-  const alsoClosed = alsoLinked('also-closed', { state: 'closed' })
   const unread = finish('unread', BEFORE)
-  const lookup: PrLookup = async (url) => {
+  const reading: PrLookup = async (url) => {
     if (url === `${PR}${unread}`) throw new Error('tea exited 1')
-    return prs.get(url) ?? null
+    return lookup(url)
   }
   const head = git(repo, 'rev-parse', 'feat/elsewhere').trim()
 
-  const swept = await sweep(ledger, home, Tmux.of(home), lookup, NOW)
+  const swept = await sweep(ledger, home, Tmux.of(home), reading, NOW)
 
   expect(swept.done).toEqual([
     { id: pushedElsewhere, reason: `merged: ${PR}${pushedElsewhere}` },
     { id: viaTodo, reason: `merged: ${PR}${viaTodo}` },
-    { id: alsoApproved, reason: `merged: ${PR}${alsoApproved}` },
-    { id: alsoClosed, reason: `merged: ${PR}${alsoClosed}` },
   ])
-  expect(swept.report).toEqual({
-    removed: [pushedElsewhere, viaTodo, alsoApproved, alsoClosed],
-    clean: [],
-    skipped: [],
-  })
+  expect(swept.report).toEqual({ removed: [pushedElsewhere, viaTodo], clean: [], skipped: [] })
   expect(swept.unchecked).toEqual([{ id: unread, error: 'tea exited 1' }])
   for (const id of [rewritten, sameSecond, otherBranch, notMerged, stillOpen, errored, dropped]) {
     expect(ledger.get(id).collectedAt).toBeNull()
   }
-  for (const id of [waitedOn, alsoOpen, alsoApprovedBefore]) {
-    expect(ledger.get(id).collectedAt).toBeNull()
-  }
+  expect(ledger.get(waitedOn).collectedAt).toBeNull()
   // The only copy of the commits stays on the branch, and resume finds it there.
   const cwd = workspaceOf(home, ledger.get(pushedElsewhere))
   expect(existsSync(cwd)).toBe(false)
@@ -621,6 +607,57 @@ test('a succeeded task with commits no remote has goes once its own pull request
   expect(readFileSync(join(cwd, 'elsewhere.txt'), 'utf8')).toBe('elsewhere')
   expect(ledger.get(pushedElsewhere).collectedAt).toBeNull()
 }, 30_000)
+
+test('such a task waits on another linked pull request as a pushed task does, unless it is closed or the person approved it since the task was added, and age does not end the wait', async () => {
+  const { home, ledger, prs, lookup, finish } = unpushedTasks()
+  const alsoLinked = (name: string, pr: Partial<PullRequest> = {}): number => {
+    const id = finish(name, BEFORE)
+    prs.set(`${PR}${id}-also`, { ...OPEN, ...pr })
+    ledger.link(id, [`${PR}${id}-also`])
+    return id
+  }
+  const open = alsoLinked('also-open')
+  const approvedBefore = alsoLinked('also-approved-before', { approvedAt: OLD })
+  const approved = alsoLinked('also-approved', { approvedAt: '2099-01-01T00:00:00Z' })
+  const closed = alsoLinked('also-closed', { state: 'closed' })
+  const later = new Date(Date.now() + 8 * 86_400_000)
+
+  const swept = await sweep(ledger, home, Tmux.of(home), lookup, later)
+
+  expect(swept.done).toEqual([
+    { id: approved, reason: `merged: ${PR}${approved}` },
+    { id: closed, reason: `merged: ${PR}${closed}` },
+  ])
+  expect(ledger.get(open).collectedAt).toBeNull()
+  expect(ledger.get(approvedBefore).collectedAt).toBeNull()
+}, 30_000)
+
+test('a signature that log.showSignature prints does not hide the last commit time', async () => {
+  const { home, ledger, repo, git, lookup, finish } = unpushedTasks()
+  sh(['ssh-keygen', '-q', '-t', 'ed25519', '-N', '', '-f', join(home, 'key')], home)
+  git(repo, 'config', 'gpg.format', 'ssh')
+  git(repo, 'config', 'user.signingKey', join(home, 'key'))
+  git(repo, 'config', 'commit.gpgSign', 'true')
+  git(repo, 'config', 'log.showSignature', 'true')
+  const id = finish('signed', BEFORE)
+
+  const swept = await sweep(ledger, home, Tmux.of(home), lookup, NOW)
+
+  expect(swept.done).toEqual([{ id, reason: `merged: ${PR}${id}` }])
+})
+
+test('a git log that fails is reported on the task with commits no remote has, and holds back no other', async () => {
+  const { home, ledger, repo, git, lookup, finish } = unpushedTasks()
+  const unpushed = finish('unpushed', BEFORE)
+  const pushed = finish('pushed', BEFORE)
+  git(repo, 'update-ref', 'refs/remotes/origin/feat/pushed', 'feat/pushed')
+  git(repo, 'config', 'log.date', 'nonsense')
+
+  const swept = await sweep(ledger, home, Tmux.of(home), lookup, NOW)
+
+  expect(swept.done).toEqual([{ id: pushed, reason: `merged: ${PR}${pushed}` }])
+  expect(swept.unchecked).toEqual([{ id: unpushed, error: expect.stringContaining('git log in') }])
+})
 
 function sh(cmd: string[], cwd: string): string {
   const result = Bun.spawnSync(cmd, { cwd })
