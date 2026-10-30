@@ -40,9 +40,9 @@ import {
 
 // What nod does as a worker's Claude Code hooks come (`nod hook <event>` in cli.ts): what each
 // hook passes on stdin, and the step of the worker's lifecycle (worker.ts, its turns and decisions
-// in turns.ts and decisions.ts) it takes. Which hooks a
-// session gets is settings.ts's; the PermissionRequest hook's allow is allow.ts's, a project
-// session's inbox hook inbox.ts's. worker.ts does not import this module.
+// in turns.ts and decisions.ts) it takes. Which hooks a session gets is settings.ts's; the
+// PermissionRequest hook's allow is allow.ts's, a project session's inbox hook inbox.ts's.
+// worker.ts does not import this module.
 
 // What a permission decision gets once the tool it asked for ran (onToolRan): the person allowed it
 // in the worker's terminal, nod not having answered it.
