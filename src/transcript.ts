@@ -8,9 +8,9 @@ import { pasted } from './tmux'
 
 // Reading the transcript Claude Code keeps of a worker's session (JSONL): whether there is one, its
 // lines or its end, how its last turn ended, and what became of a message pasted in while a turn
-// ran. It only reads: what nod changes in the ledger by it (endTurnWithoutStop, forgetHeldBack,
-// stoppedDialogs, carryUnheard) is worker.ts's. This module imports none of worker.ts, hooks.ts or
-// land.ts.
+// ran. It only reads: what nod changes in the ledger by it is turns.ts's (endTurnWithoutStop,
+// forgetHeldBack, stoppedDialogs) and worker.ts's (carryUnheard). This module imports none of
+// worker.ts, hooks.ts or land.ts.
 
 // How Claude Code marks a turn the person stopped (endTurnWithoutStop), how much of the
 // transcript's end is read for it, and what a typed turn that ended without a Stop ends with in the

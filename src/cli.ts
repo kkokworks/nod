@@ -4,6 +4,7 @@ import { join, resolve } from 'node:path'
 import { parseArgs } from 'node:util'
 import { accountRule, configDir, describeRule, setAccountRule } from './account'
 import { ALLOW, onPermissionRequest, PermissionEvent } from './allow'
+import { finished } from './decisions'
 import { sweep } from './done'
 import { collect, type GcPick, type GcReport, remotesHolding } from './gc'
 import {
@@ -90,7 +91,6 @@ import {
   AUTOCOMPACT_PCT,
   answer,
   drop,
-  finished,
   keepWorker,
   type Restart,
   restart,

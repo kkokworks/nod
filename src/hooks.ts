@@ -1,5 +1,14 @@
 import { z } from 'zod'
 import type { PermissionEvent } from './allow'
+import {
+  announce,
+  asking,
+  closeDecisions,
+  decide,
+  ended,
+  goesOn,
+  QUESTION_LIMIT,
+} from './decisions'
 import type { Attempt, Ledger } from './ledger'
 import { notify, taskRef } from './notify'
 import { SETTLING_OPTION, sessionName } from './place'
@@ -9,33 +18,29 @@ import { pasted, running, type Terminals } from './tmux'
 import { Todos } from './todos'
 import { endedWithoutStop, HELD_BACK, transcriptTail } from './transcript'
 import {
-  announce,
-  asking,
-  CLAUDE_OPTION,
-  closeDecisions,
-  continueAfter,
   currentTurn,
   cutOff,
-  decide,
-  ended,
   forgetHeldBack,
-  goesOn,
   openTurn,
-  QUESTION_LIMIT,
-  restartDue,
-  SELF,
-  STALLED_OPTION,
   STOPPED_DIALOG,
-  type StopEvent,
-  settle,
-  startReady,
   stoppedDialogs,
   TYPED,
   typedHere,
+} from './turns'
+import {
+  CLAUDE_OPTION,
+  continueAfter,
+  restartDue,
+  SELF,
+  STALLED_OPTION,
+  type StopEvent,
+  settle,
+  startReady,
 } from './worker'
 
 // What nod does as a worker's Claude Code hooks come (`nod hook <event>` in cli.ts): what each
-// hook passes on stdin, and the step of the worker's lifecycle (worker.ts) it takes. Which hooks a
+// hook passes on stdin, and the step of the worker's lifecycle (worker.ts, its turns and decisions
+// in turns.ts and decisions.ts) it takes. Which hooks a
 // session gets is settings.ts's; the PermissionRequest hook's allow is allow.ts's, a project
 // session's inbox hook inbox.ts's. worker.ts does not import this module.
 

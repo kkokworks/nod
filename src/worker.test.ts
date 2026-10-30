@@ -36,6 +36,7 @@ import { testTmux } from '../test/tmux'
 import { tmuxTest } from '../test/tmux-server'
 import { setAccountRule, transcriptPath } from './account'
 import { ALLOW } from './allow'
+import { askToLand } from './decisions'
 import { collect } from './gc'
 import { onCompact, onPrompt, onStop } from './hooks'
 import { Ledger, RETRO_STATUS, type RetroOutcome, type Task, type TaskStatus } from './ledger'
@@ -49,7 +50,6 @@ import { Todos } from './todos'
 import { addTrigger, tick } from './triggers'
 import {
   answer,
-  askToLand,
   claudeArgs,
   closeFinished,
   drop,
