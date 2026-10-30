@@ -7,6 +7,20 @@ import { ALLOW, onPermissionRequest, PermissionEvent } from './allow'
 import { sweep } from './done'
 import { collect, type GcPick, type GcReport, remotesHolding } from './gc'
 import {
+  NotificationEvent,
+  onCompact,
+  onNotification,
+  onPermissionAsk,
+  onPrompt,
+  onStop,
+  onStopFailure,
+  onToolRan,
+  PromptEvent,
+  SessionStartEvent,
+  StopFailureEvent,
+  ToolEvent,
+} from './hooks'
+import {
   InboxEvent,
   onCommand,
   onInbox,
@@ -78,25 +92,13 @@ import {
   drop,
   finished,
   keepWorker,
-  NotificationEvent,
-  onCompact,
-  onNotification,
-  onPermissionAsk,
-  onPrompt,
-  onStop,
-  onStopFailure,
-  onToolRan,
-  PromptEvent,
   type Restart,
   restart,
   restartDue,
   resume,
-  SessionStartEvent,
   StopEvent,
-  StopFailureEvent,
   startReady,
   startTask,
-  ToolEvent,
   tell,
 } from './worker'
 

@@ -20,7 +20,7 @@ export function branchOf(task: Task): string {
 
 export const sessionName = (taskId: number): string => `task-${taskId}`
 
-// The pid of the Stop hook while it checks a turn it has already closed (onStop in worker.ts), and
+// The pid of the Stop hook while it checks a turn it has already closed (onStop in hooks.ts), and
 // once it knows it, that turn's attempt: `<pid> <attempt>`.
 export const SETTLING_OPTION = 'nod_settling'
 

@@ -20,7 +20,7 @@ const SEND_TIMEOUT_MS = 5000
 // What a session's SessionStart and SessionEnd hooks pass on stdin; only what nod reads.
 export const InboxEvent = z.object({ session_id: z.string(), hook_event_name: z.string() })
 
-// The hooks nod open gives a project session (openSettings in worker.ts): as it starts, where it
+// The hooks nod open gives a project session (openSettings in settings.ts): as it starts, where it
 // takes messages (Claude Code exports the socket to its hooks), and what waited for it goes; once it
 // ends, none, unless the session runs on elsewhere since (nod open of the same session in another
 // terminal). A session nod open did not open records nothing, only takes its socket from any

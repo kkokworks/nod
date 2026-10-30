@@ -31,8 +31,10 @@ nod 는 여러 에이전트를 동시에 돌려 일을 처리하고, 사람에�
 | `src/place.ts` | 작업이 있는 곳. 워커의 tmux 세션 이름(`sessionName`), 작업 폴더(`workspaceOf`), 브랜치(`branchOf`), 워커가 Unix 소켓을 둘 폴더(`socketsDir`). 장부의 타입 말고는 nod 의 다른 모듈을 부르지 않습니다. |
 | `src/report.ts` | 워커 보고 읽기. 마지막 보고 줄(`parseReport`), 그 위의 `NOD: in` 줄(`parseCaptures`)과 `NOD: tell` 줄(`parseTells`), 착지 때 보고 위에 쓰는 PR 글(`prText`)과 그 글을 워커에게 청하는 문구(`PR_TEXT`·`TEXT_ONLY`). 글자만 다루고 nod 의 다른 모듈을 부르지 않습니다. |
 | `src/branch.ts` | 작업 브랜치의 git 상태. 브랜치를 만든 곳(`createdFrom`)과 자기 커밋이 시작하는 곳(`ownStart`), HEAD(`headOf`), 멈춘 rebase(`rebasing`·`conflictBrief`)와 훅 없이 도는 nod 의 git(`NOD_GIT`). 작업 검증(`verify.ts`)과 착지(`land.ts`)가 함께 씁니다. `proc.ts` 말고는 nod 의 다른 모듈을 부르지 않습니다. |
-| `src/worker.ts` | 워커 생명주기. 띄우기, 칸 안에서 Claude Code 를 지켜 다시 띄우기(`keepWorker`), Stop 훅 처리(보고 읽기 → 검증(`verify.ts`) → 다시 시키거나 결정 열기, 백그라운드 작업이 남았으면 기다리기, `NOD: tell` 을 다른 작업에 보내기), Notification 훅 처리(권한 확인 → 결정), UserPromptSubmit 훅 처리(사람이 칸에 친 차례를 시작할 때 그 글과 함께 장부에 열기), 답·후속 지시를 같은 세션에 보내기, 끝난 세션을 대화 기록에서 다시 열기, 앞 작업이 끝나면 기다리던 작업 띄우기, 계정이 바뀐 워커 다시 띄우기, 칸째 사라진 차례와 너무 오래 기다린 작업을 결정으로, 끝난 지 한 시간이 지난 작업의 칸 닫기. |
-| `src/allow.ts` | 워커의 권한 확인 가운데 nod 가 스스로 허락하는 것. PermissionRequest 훅 처리(그 작업의 폴더 안에서만 영향이 있고 다시 만들 수 있는 Bash 명령인지 코드로 판정 → 허락을 돌려주고 장부·프로젝트 세션 알림에 남김, 아니면 아무것도 돌려주지 않고 그 자리에서 결정을 엶, `worker.ts` 의 `onPermissionAsk`). |
+| `src/worker.ts` | 워커 생명주기. 띄우기, 칸 안에서 Claude Code 를 지켜 다시 띄우기(`keepWorker`), 끝난 차례 판정(`settle`: 보고 읽기 → 검증(`verify.ts`) → 다시 시키거나 결정 열기, 백그라운드 작업이 남았으면 기다리기, `NOD: tell` 을 다른 작업에 보내기), 결정 열기(`decide`), 답·후속 지시를 같은 세션에 보내기, 끝난 세션을 대화 기록에서 다시 열기, 앞 작업이 끝나면 기다리던 작업 띄우기, 계정이 바뀐 워커 다시 띄우기, 칸째 사라진 차례와 너무 오래 기다린 작업을 결정으로, 끝난 지 한 시간이 지난 작업의 칸 닫기. `hooks.ts` 를 부르지 않습니다. |
+| `src/hooks.ts` | 워커의 Claude Code 훅이 왔을 때 하는 일(`nod hook <사건>`). 훅이 넘기는 사건의 모양과 그 처리: Stop(`onStop`, 판정은 `settle`), StopFailure(API 오류 표시·알림), UserPromptSubmit(사람이 칸에 친 차례를 시작할 때 그 글과 함께 장부에 열기), nod 가 허락하지 않은 PermissionRequest(그 자리에서 결정, `onPermissionAsk`), 도구가 돈 뒤(칸에서 허락한 확인의 결정 닫기, `onToolRan`), Notification(권한 확인 → 결정), 압축 뒤 SessionStart(지시 원문 다시 넣기, `onCompact`). Stop 사건의 모양(`StopEvent`)은 `settle` 이 받으므로 `worker.ts` 에 있습니다. |
+| `src/settings.ts` | 워커 세션과 `nod open` 프로젝트 세션의 Claude Code 설정(`--settings`). 워커의 샌드박스와 훅(`workerSettings`), 프로젝트 세션의 훅(`openSettings`), 훅이 부르는 명령(`nod hook <사건>`)과 훅마다의 제한 시간. 독립 리뷰어(`verify.ts`)와 폴더 신뢰 확인 세션(`worker.ts` 의 `trustWork`)의 설정은 각자 만듭니다. `worker.ts` 와 `todo-cli.ts` 가 함께 씁니다. nod 의 모듈 가운데 `tmux.ts`(`quote`)와 `verify.ts`(`SANDBOX`)만 부릅니다. |
+| `src/allow.ts` | 워커의 권한 확인 가운데 nod 가 스스로 허락하는 것. PermissionRequest 훅 처리(그 작업의 폴더 안에서만 영향이 있고 다시 만들 수 있는 Bash 명령인지 코드로 판정 → 허락을 돌려주고 장부·프로젝트 세션 알림에 남김, 아니면 아무것도 돌려주지 않고 그 자리에서 결정을 엶, `hooks.ts` 의 `onPermissionAsk`). |
 | `src/account.ts` | 워커가 쓸 계정(Claude 설정 폴더) 규칙. 기본은 띄우는 셸의 `CLAUDE_CONFIG_DIR`, 그 밖에 파일에서 읽기와 명령 출력(`<홈>/account.json`). 설정 폴더에서 세션의 대화 기록 찾기(`transcriptPath`). |
 | `src/triggers.ts` | 트리거. 일정 계산, source 명령의 출력에서 새 항목 고르기, 때가 된 트리거로 작업 넣기(tick), 매분 끝난 작업의 칸 닫기, 5분마다 대기 감시와 끝난 작업 정리, OS 스케줄러에 매분 tick 등록·해제. |
 | `src/notify.ts` | 결정이 열리거나 작업이 끝나는 등의 일이 생기면 사람이 둔 `<홈>/notify` 를 부릅니다. |
@@ -621,7 +623,7 @@ nod 장부에 사람이 할 일을 GTD 방식으로 둡니다. 목표와 단계�
 8. **따라 바꾼 변경의 누가(`actor`)는 `nod` 입니다.** 훅이 도는 환경에는 `NOD_TASK` 가 있어서 환경으로 정하면 `worker:<작업>` 이 되지만, 실제로 바꾼 것은 워커가 아니라 nod 입니다.
 9. **결과 한 줄과 링크는 할 일에 옮겨 적지 않고 작업에서 읽어 보여 줍니다.** 작업이 성공한 뒤에 `nod link` 로 붙는 PR 링크도 바로 보이고, 같은 값이 두 곳에 있다가 어긋날 일이 없습니다.
 10. **열린 결정은 다음 행동 목록의 맨 위에 `d<결정> decide` 로 나옵니다.** 결정마다 할 일을 따로 만들지 않습니다. 결정은 워커를 세워 두므로 다른 다음 행동보다 앞에 둡니다. 결정에는 상황이 없어 어떤 상황으로 걸러도 보이고, `--project` 로 거르면 그 프로젝트의 할 일을 맡은 작업의 결정만 보입니다. 프로젝트 집계에서도 다음 행동으로 셉니다.
-11. **`todos.ts` 는 장부(`Ledger`)를 통해 작업과 결정을 읽고, 할 일 표에만 씁니다.** 장부는 할 일을 모릅니다. 장부가 `todos.ts` 를 부르면 서로를 부르는 순환이 생기므로, 따라 바꾸는 호출은 `worker.ts` 에 둡니다.
+11. **`todos.ts` 는 장부(`Ledger`)를 통해 작업과 결정을 읽고, 할 일 표에만 씁니다.** 장부는 할 일을 모릅니다. 장부가 `todos.ts` 를 부르면 서로를 부르는 순환이 생기므로, 따라 바꾸는 호출은 `worker.ts`(`nod drop`)와 `hooks.ts`(Stop 훅)에 둡니다.
 
 하지 않은 것: 할 일을 끝내거나 버려도 맡긴 작업은 멈추지 않습니다. 지금 nod 에서 작업을 멈추는 길은 결정을 `nod drop` 하는 것뿐이라, 멈추는 명령이 필요해지면 그때 만듭니다.
 
