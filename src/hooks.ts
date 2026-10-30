@@ -11,7 +11,7 @@ import {
 } from './decisions'
 import type { Attempt, Ledger } from './ledger'
 import { notify, taskRef } from './notify'
-import { SETTLING_OPTION, sessionName } from './place'
+import { CLAUDE_OPTION, SETTLING_OPTION, STALLED_OPTION, sessionName } from './place'
 import { message } from './proc'
 import { askedAgain } from './review'
 import { pasted, running, type Terminals } from './tmux'
@@ -27,16 +27,7 @@ import {
   TYPED,
   typedHere,
 } from './turns'
-import {
-  CLAUDE_OPTION,
-  continueAfter,
-  restartDue,
-  SELF,
-  STALLED_OPTION,
-  type StopEvent,
-  settle,
-  startReady,
-} from './worker'
+import { continueAfter, restartDue, SELF, type StopEvent, settle, startReady } from './worker'
 
 // What nod does as a worker's Claude Code hooks come (`nod hook <event>` in cli.ts): what each
 // hook passes on stdin, and the step of the worker's lifecycle (worker.ts, its turns and decisions

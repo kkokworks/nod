@@ -3,6 +3,7 @@ import { join } from 'node:path'
 import { z } from 'zod'
 import { localTime } from './days'
 import { sweep } from './done'
+import { savedEnv } from './env'
 import { sendNotices } from './inbox'
 import { land, type Moved } from './land'
 import { Ledger, type Trigger } from './ledger'
@@ -20,7 +21,6 @@ import {
   overdueWaits,
   restartDue,
   SELF,
-  savedEnv,
   startTask,
   tell,
 } from './worker'
