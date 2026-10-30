@@ -2,7 +2,8 @@ import { z } from 'zod'
 
 // What a worker's report says, read from its text: the last `NOD: <status> | <text>` line, the
 // `NOD: in` and `NOD: tell` lines above it, and as it lands the pull request's text above them all,
-// with what the worker is asked for that text. What nod does with them is in worker.ts (settle).
+// with what the worker is asked for that text. What nod does with them is in worker.ts (settle),
+// and with the pull request's text in verify.ts (verifyLanding).
 
 // More than this in one report is more than a person can clarify, or a worker gone wrong.
 const MAX_CAPTURES = 50
