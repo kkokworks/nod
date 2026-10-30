@@ -1,7 +1,7 @@
 import { existsSync, readdirSync, rmdirSync, rmSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { FINISHED, type Ledger, type Task } from './ledger'
-import { branchOf, sessionName } from './place'
+import { branchOf, sessionName, settling } from './place'
 import { message, spawn } from './proc'
 import type { Terminals } from './tmux'
 
@@ -79,6 +79,12 @@ export async function collect(
       // A turn the person types in keeps the status succeeded until it ends.
       if (terminals.attached(sessionName(id))) {
         skip('a person is attached to its terminal')
+        continue
+      }
+      // Left as closeFinished leaves it: the task just ended, and its hook may still tell of that.
+      const name = sessionName(id)
+      if (terminals.alive(name) && settling(terminals, name)) {
+        skip('its Stop hook is still running')
         continue
       }
       if (!unchanged(task)) {

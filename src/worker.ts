@@ -37,7 +37,7 @@ import {
   type Task,
 } from './ledger'
 import { notify, notifyError, taskRef } from './notify'
-import { branchOf, sessionName, socketsDir, workspaceOf } from './place'
+import { branchOf, SETTLING_OPTION, sessionName, settling, socketsDir, workspaceOf } from './place'
 import { message, OUTPUT_LIMIT, spawn } from './proc'
 import {
   type Capture,
@@ -203,9 +203,6 @@ const STALLED_OPTION = 'nod_stalled'
 // Set from when keepWorker's Claude Code ends, or keepWorker is asked to end it, until the next one
 // is up: a message pasted in between would be lost, so it waits in the prompt file.
 const RESTARTING_OPTION = 'nod_restarting'
-// The pid of the Stop hook while it checks a turn it has already closed (onStop), and once it
-// knows it, that turn's attempt: `<pid> <attempt>`.
-const SETTLING_OPTION = 'nod_settling'
 // The pid of the Claude Code keepWorker runs, so its Stop hook can tell whether it is still there to
 // hear what the hook answers.
 const CLAUDE_OPTION = 'nod_claude'
@@ -1929,12 +1926,6 @@ function launch(
 function startAgain(terminals: Terminals, name: string): void {
   terminals.setOption(name, RESTARTING_OPTION, '1')
   process.kill(terminals.panePid(name), 'SIGUSR1')
-}
-
-// Whether a Stop hook is still checking the worker's last turn. A hook that went without clearing
-// its pid (cut off with Claude Code, or timed out) no longer counts.
-function settling(terminals: Terminals, name: string): boolean {
-  return running(Number.parseInt(terminals.option(name, SETTLING_OPTION), 10))
 }
 
 // Whether the live session's Claude Code is starting again, or the one keepWorker started is gone

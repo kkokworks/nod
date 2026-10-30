@@ -1,7 +1,7 @@
 import { existsSync, lstatSync } from 'node:fs'
 import { z } from 'zod'
 import { Ledger, type Notice, type Task } from './ledger'
-import { message } from './proc'
+import { message, unbroken } from './proc'
 import { type Project, Todos } from './todos'
 import { allowedLine, firstLine, indent, oneLine, taskLabel } from './view'
 
@@ -172,9 +172,11 @@ export async function tellSessions(home: string): Promise<void> {
 // of a task in no project, and a decision answered since, goes to none. A project with no session
 // running keeps them. A send that fails keeps them too, and a socket that is gone (the session
 // ended without its SessionEnd hook, `ended`) is forgotten until the session says it again.
-// ponytail: notices are marked sent before the send, so a process killed between the two loses
-// them; and a session that starts again while another process sends to its old socket hears them
-// only at the next send (a tick, an event). A lease on the mark would close both.
+// Notices are marked sent before the send, so the two are unbroken: a hook that nod ends by closing
+// its terminal (drop) ends once the send is done, not between the two, with the notices it marked.
+// ponytail: a process killed outright (SIGKILL) between the two still loses them; and a session
+// that starts again while another process sends to its old socket hears them only at the next send
+// (a tick, an event). A lease on the mark would close both.
 export async function sendNotices(
   ledger: Ledger,
   send = sendLine,
@@ -193,29 +195,31 @@ export async function sendNotices(
     const session = todos.latestSession(projectId)
     const socket = session?.socket ?? null
     if (session === null || socket === null) continue
-    const claimed = ledger.claimNotices(
-      notices.map((n) => n.id),
-      session.sessionId,
-    )
-    const these = notices.filter((n) => claimed.ids.includes(n.id))
-    if (these.length === 0) continue
-    try {
-      const content = noticesText(ledger, todos.project(projectId), these)
-      const said = {
-        type: 'user',
-        session_id: session.sessionId,
-        message: { role: 'user', content },
+    await unbroken(async () => {
+      const claimed = ledger.claimNotices(
+        notices.map((n) => n.id),
+        session.sessionId,
+      )
+      const these = notices.filter((n) => claimed.ids.includes(n.id))
+      if (these.length === 0) return
+      try {
+        const content = noticesText(ledger, todos.project(projectId), these)
+        const said = {
+          type: 'user',
+          session_id: session.sessionId,
+          message: { role: 'user', content },
+        }
+        await send(socket, `${JSON.stringify(said)}\n`)
+      } catch (error) {
+        ledger.unclaimNotices(claimed.ids, claimed.at)
+        const { code } = Object(error) as { code?: unknown }
+        if (code !== 'ENOENT' && code !== 'ECONNREFUSED') {
+          console.error(`nod: could not tell p${projectId}'s session: ${message(error)}`)
+        } else if (ended(socket, env)) {
+          todos.setSocket(session.sessionId, null, socket)
+        }
       }
-      await send(socket, `${JSON.stringify(said)}\n`)
-    } catch (error) {
-      ledger.unclaimNotices(claimed.ids, claimed.at)
-      const { code } = Object(error) as { code?: unknown }
-      if (code !== 'ENOENT' && code !== 'ECONNREFUSED') {
-        console.error(`nod: could not tell p${projectId}'s session: ${message(error)}`)
-      } else if (ended(socket, env)) {
-        todos.setSocket(session.sessionId, null, socket)
-      }
-    }
+    })
   }
 }
 

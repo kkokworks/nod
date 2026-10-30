@@ -20,14 +20,47 @@ function killGroup(pid: number, signal: NodeJS.Signals = 'SIGKILL'): void {
 }
 
 function endRunning(signal: NodeJS.Signals): void {
-  // A process with a handler of its own decides what the signal ends (the keeper ignores Ctrl-C).
+  // A process with a handler of its own decides what the signal ends (the keeper ignores Ctrl-C),
+  // and one in the middle of unbroken work ends once that is done.
   if (process.listenerCount(signal) > 1) return
+  end(signal)
+}
+
+function end(signal: NodeJS.Signals): void {
   // The signal itself, not SIGKILL, so git removes its lock as it goes (review).
   for (const pid of running) killGroup(pid, signal)
   running.clear()
   for (const s of ENDING) process.off(s, endRunning)
   // The process ends on the signal, as it did without this handler.
   process.kill(process.pid, signal)
+}
+
+// Work that must not stop halfway: a send of notices marked sent before it goes (inbox.ts), which
+// a hook nod ends by closing its terminal would otherwise lose. A signal that would end this
+// process meanwhile ends it once the work is done, which the work's own limit bounds. One the
+// process has a handler of its own for went to that handler, as ever.
+let unbrokenRuns = 0
+let held: NodeJS.Signals | null = null
+const hold = (signal: NodeJS.Signals): void => {
+  held ??= signal
+}
+
+export async function unbroken<T>(work: () => Promise<T>): Promise<T> {
+  if (unbrokenRuns++ === 0) for (const s of ENDING) process.on(s, hold)
+  try {
+    return await work()
+  } finally {
+    // A signal that came as the work ended is heard before the handler goes.
+    await new Promise((resolve) => setImmediate(resolve))
+    if (--unbrokenRuns === 0) {
+      for (const s of ENDING) process.off(s, hold)
+      const signal = held
+      held = null
+      // Past endRunning, there while commands run.
+      const own = signal !== null && process.listenerCount(signal) > (running.size > 0 ? 1 : 0)
+      if (signal !== null && !own) end(signal)
+    }
+  }
 }
 
 // Runs a command in a process group of its own, so the timeout ends all of a pipeline: killing only
