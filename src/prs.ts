@@ -86,8 +86,8 @@ export function pullRequests(cwd: string): PrLookup {
       .map((r) => ({ login: r.user?.login ?? null, state: r.state, at: r.submitted_at }))
     return {
       state: pr.merged ? 'merged' : pr.state,
-      head: pr.head.ref,
-      mergedAt: pr.merged_at ?? null,
+      head: pr.head.label,
+      mergedAt: pr.merged_at,
       approvedAt: approvedAt(standing, me),
     }
   }
@@ -124,8 +124,9 @@ const GH_PR = z.object({
 const GITEA_PR = z.object({
   state: z.enum(['open', 'closed']),
   merged: z.boolean(),
-  merged_at: z.string().nullish(), // the API's schema marks it optional
-  head: z.object({ ref: z.string() }),
+  merged_at: z.string().nullable(),
+  // The branch's name; `ref` says refs/pull/<n>/head once the branch is deleted.
+  head: z.object({ label: z.string() }),
 })
 const GITEA_REVIEWS = z.array(
   z.object({

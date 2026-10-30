@@ -71,6 +71,8 @@ describe('nod opens and squash merges its pull requests through the repo service
       expect((await service.view(pr)).state).toBe('open')
       await service.merge(pr, { head, title: 'Add a', body: 'Body' })
       expect((await service.view(pr)).state).toBe('merged')
+      // The merged branch deleted on the remote still reads as the pull request's head.
+      git(origin, 'update-ref', '-d', 'refs/heads/feat/a')
       expect(await pullRequests(repo)(pr)).toEqual({
         state: 'merged',
         head: 'feat/a',

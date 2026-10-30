@@ -36,7 +36,11 @@ const git = (...a: string[]): string => {
   if (r.exitCode !== 0) throw new Error(`git ${a.join(' ')}: ${r.stderr.toString()}`)
   return r.stdout.toString().trim()
 }
-const headOf = (pr: Pr): string => git('rev-parse', `refs/heads/${pr.head}`)
+// The head branch's commit, or nothing once the branch is deleted.
+const headOf = (pr: Pr): string =>
+  Bun.spawnSync(['git', 'rev-parse', '--verify', '-q', `refs/heads/${pr.head}`], { cwd: origin })
+    .stdout.toString()
+    .trim()
 const mergeState = (): string =>
   existsSync(join(dir, 'merge-state'))
     ? readFileSync(join(dir, 'merge-state'), 'utf8').trim()
@@ -142,7 +146,12 @@ if (tool === 'gh') {
     merged: p.state === 'merged',
     merged_at: p.mergedAt ?? null,
     mergeable: mergeState() === 'CLEAN',
-    head: { ref: p.head, sha: headOf(p) },
+    // As Gitea and Forgejo answer: `ref` is the branch only while the branch exists.
+    head: {
+      label: p.head,
+      ref: headOf(p) === '' ? `refs/pull/${p.number}/head` : p.head,
+      sha: headOf(p),
+    },
   })
   if (endpoint === 'user') {
     console.log(JSON.stringify({ login: 'me' }))

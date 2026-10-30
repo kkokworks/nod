@@ -19,7 +19,8 @@ const NOW = new Date('2026-03-10T00:00:00.000Z')
 const RECENT = '2026-03-09T00:00:00.000Z'
 const OLD = '2026-03-01T00:00:00.000Z'
 const OPEN: PullRequest = { state: 'open', head: 'feat/other', mergedAt: null, approvedAt: null }
-const MERGED: PullRequest = { ...OPEN, state: 'merged', mergedAt: RECENT }
+// Merged after any commit a test makes, so only the branch's name can hold a task back from it.
+const MERGED: PullRequest = { ...OPEN, state: 'merged', mergedAt: '2099-01-01T00:00:00Z' }
 
 test('done signals: dropped, taken over, merged into the default branch, every pull request closed or approved, or old', async () => {
   const home = tmp.make('nod-done-')
