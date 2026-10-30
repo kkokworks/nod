@@ -1456,7 +1456,7 @@ export class Ledger {
   // Ends a turn that waited on background work as `outcome`, only while it still waits and no turn
   // has started since, in one statement: of two ticks at once one gets it, and a turn that came
   // (the work finished) keeps the task going. `past`: later attempts that count as no turn (a
-  // person's that ended without a Stop, in worker.ts). Returns whether this one did.
+  // person's that ended without a Stop, noTurn in turns.ts). Returns whether this one did.
   endWait(id: number, outcome: Outcome, past: number[] = []): boolean {
     const ended = this.first(
       q
@@ -1492,7 +1492,7 @@ export class Ledger {
   }
 
   // Words a person typed that Claude Code never took in, out of the ledger (forgetHeldBack in
-  // worker.ts): a message that went into a turn, or what started one.
+  // turns.ts): a message that went into a turn, or what started one.
   forgetMessage(id: number): void {
     this.run(q.deleteFrom('messages').where('id', '=', id))
   }
