@@ -7,6 +7,7 @@ import { message } from './proc'
 import { askedAgain } from './review'
 import { pasted, running, type Terminals } from './tmux'
 import { Todos } from './todos'
+import { endedWithoutStop, HELD_BACK, transcriptTail } from './transcript'
 import {
   announce,
   asking,
@@ -17,10 +18,8 @@ import {
   cutOff,
   decide,
   ended,
-  endedWithoutStop,
   forgetHeldBack,
   goesOn,
-  HELD_BACK,
   openTurn,
   QUESTION_LIMIT,
   restartDue,
@@ -32,7 +31,6 @@ import {
   startReady,
   stoppedDialogs,
   TYPED,
-  transcriptTail,
   typedHere,
 } from './worker'
 
