@@ -12,12 +12,13 @@ import { join, resolve } from 'node:path'
 import { git } from '../test/remote'
 import { tempDirs } from '../test/tmp'
 import { ALLOW, harmless, onPermissionRequest } from './allow'
+import { onNotification, onPrompt } from './hooks'
 import { sendNotices } from './inbox'
 import { Ledger, type NewTask, type Task } from './ledger'
 import { Tmux } from './tmux'
 import { Todos } from './todos'
 import { allowedLine, watch } from './view'
-import { answer, onNotification, onPrompt, tell } from './worker'
+import { answer, tell } from './worker'
 
 const tmp = tempDirs()
 afterAll(tmp.removeAll)

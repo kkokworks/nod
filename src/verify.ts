@@ -25,7 +25,7 @@ import { type Changes, reviewBrief } from './review'
 // anything, so limit where it can write and what it can reach instead. Measured on 2.1.289:
 // writes outside the workspace and network to unlisted domains fail; worktree commits still work.
 // The reviewer runs in it as it is; a worker's settings add its sockets folder (workerSettings in
-// worker.ts).
+// settings.ts).
 export const SANDBOX = {
   enabled: true,
   autoAllowBashIfSandboxed: true,
@@ -34,7 +34,7 @@ export const SANDBOX = {
 }
 
 // The check and the review both run inside the Stop hook, so the hook outlasts them
-// (STOP_HOOK_TIMEOUT_SECS in worker.ts).
+// (STOP_HOOK_TIMEOUT_SECS in settings.ts).
 const REVIEW_TIMEOUT_MS = 600_000
 // What `claude -p` prints first when a hook blocks the message it was given (2.1.310).
 const BLOCKED = 'UserPromptSubmit operation blocked by hook:'

@@ -4,9 +4,9 @@ import { join, resolve } from 'node:path'
 import { projectFolder } from '../test/projects'
 import { tempDirs } from '../test/tmp'
 import { Ledger } from './ledger'
+import { openSettings } from './settings'
 import { actorFromEnv, openSession, sessionFromEnv } from './todo-cli'
 import { Todos } from './todos'
-import { openSettings } from './worker'
 
 const tmp = tempDirs()
 afterAll(tmp.removeAll)
