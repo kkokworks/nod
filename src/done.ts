@@ -95,7 +95,7 @@ async function signal(
     // The branch's own pull request merged after its last commit: the work went up from elsewhere,
     // rebased on another branch, say, so these commits are not its only copy. A commit made or
     // rewritten since is newer than the merge, and held back. Any other link still waiting holds
-    // it back too, as it does a pushed task.
+    // it back too, as it does a pushed task, though here age does not end the wait.
     // ponytail: a commit made before the merge and never pushed goes from ls too; it stays on the
     // branch (dropBranch in gc.ts), and resume brings it back.
     let merged: string | null = null
@@ -185,6 +185,8 @@ function branchState(task: Task): BranchState | null {
   const main = 'refs/remotes/origin/HEAD'
   const own = hasRef(repo, main) ? count(`${main}..${ref}`, ...notTheirs) : 0
   const merged = landed(repo, ref)
-  const lastCommitAt = git('log', '-1', '--format=%cI', ref).stdout.toString().trim()
+  const last = git('log', '-1', '--no-show-signature', '--format=%cI', ref)
+  if (last.exitCode !== 0) throw new Error(`git log in ${repo}: ${last.stderr.toString()}`)
+  const lastCommitAt = last.stdout.toString().trim()
   return { own, landed: merged, unpushed: notOnRemotes > 0 && !merged, lastCommitAt }
 }
