@@ -173,8 +173,8 @@ const entries = (event: string): LogEntry[] =>
         .filter((e) => e.event === event)
     : []
 
-async function until<T>(get: () => T | null | undefined | false): Promise<T> {
-  const deadline = Date.now() + 10_000
+async function until<T>(get: () => T | null | undefined | false, ms = 10_000): Promise<T> {
+  const deadline = Date.now() + ms
   while (Date.now() < deadline) {
     const value = get()
     if (value) return value
@@ -2224,10 +2224,14 @@ test('a worker in a folder whose path Claude Code changes more of for its transc
   const id = await add('hang until ended')
   await until(() => entries('turn')[0])
   endClaude(id)
-  const decision = await until(() => ledger.decisions(id)[0])
+  // Six seconds of it are fixed, with no knob to shorten them: the Claude Code ended before it was
+  // up starts again a second later (RELAUNCH_DELAY_MS in worker.ts), and the turn becomes a decision
+  // once that one is up, five seconds after (QUICK_EXIT_MS). Where other work runs, the ten seconds
+  // other waits here get once ran out.
+  const decision = await until(() => ledger.decisions(id)[0], 20_000)
   expect(decision.question).toContain('ended in the middle of a turn')
   expect(entries('launch').map((l) => l.resumed)).toEqual([false, true])
-}, 30_000)
+}, 40_000)
 
 test('a message that comes before a first turn that never began goes in after the brief', async () => {
   writeFileSync(join(home, 'fake-exit'), '')

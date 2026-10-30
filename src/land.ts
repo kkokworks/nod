@@ -10,6 +10,7 @@ import { message, OUTPUT_LIMIT, spawn } from './proc'
 import { type GitService, type OwnPr, serviceOf } from './prs'
 import { PR_TEXT, TEXT_ONLY } from './report'
 import { running, type Terminals } from './tmux'
+import { runCheck } from './verify'
 import { baseOf, handOff, restore, type Send } from './worker'
 
 // Lands what the person lets nod land (`nod repo`): a repo task that succeeded goes onto the repo's
@@ -209,9 +210,9 @@ async function landTask(
     if (check !== null) {
       if (!claim(ledger, task.id)) return noteFor(pass, task, 'its worker is busy')
       // In a group of its own, as the remote's git calls, so the timeout ends what it started.
-      const run = await spawn(['sh', '-c', check], ws, { timeoutMs: CHECK_TIMEOUT_MS })
+      const run = await runCheck(check, ws, CHECK_TIMEOUT_MS)
       ledger.setLanding(task.id, { busy: null })
-      if (run.code !== 0) failed = run.output.slice(-OUTPUT_LIMIT)
+      if (!run.passed) failed = run.output
     }
     if (failed === null) l = ledger.setLanding(task.id, { ready: head })
   }

@@ -235,9 +235,62 @@ export async function verifyLanding(
   return verdict === null ? null : { ...verdict, head }
 }
 
-async function runCheck(cmd: string, cwd: string): Promise<{ passed: boolean; output: string }> {
-  const { code, output } = await spawn(['sh', '-c', cmd], cwd)
-  return { passed: code === 0, output: output.slice(-OUTPUT_LIMIT) }
+// A check nod runs: the task's acceptance check (verify), and the check as the branch lands
+// (land.ts). Without `timeoutMs`, it is not killed.
+export async function runCheck(
+  cmd: string,
+  cwd: string,
+  timeoutMs?: number,
+): Promise<{ passed: boolean; output: string }> {
+  const { code, output } = await spawn(['sh', '-c', cmd], cwd, { timeoutMs })
+  return {
+    passed: code === 0,
+    output: code === 0 ? output.slice(-OUTPUT_LIMIT) : failedOutput(output),
+  }
+}
+
+// bun's test runner prints this alone on stdout, so first in the output (spawn).
+const BUN_TEST = /^bun test v\d/m
+// How it marks a failed test, and an error's own line: `error: …` for an Error, else its name.
+const FAILED = String.raw`(?:\(fail\)|✗) ` // ✗ in color
+const ERROR = String.raw`(?:error|\w*Error): `
+// What it prints of a failure, as a single line each, past the source it quotes. Not every error
+// line: it prints one for each Error a passing test logs too, as a UI's tests do of those they
+// catch. What tells them apart: a failed test's error has its stack right above the test's line,
+// and a logged one's has an empty line after it.
+const BUN_FAILURE = new RegExp(
+  `^(?:${[
+    `${FAILED}.*`,
+    String.raw`[ \t]+\^ this test timed out.*`,
+    String.raw`${ERROR}.*(?=\n(?:(?!${FAILED}|${ERROR}).*\n)*? +at .*\n${FAILED})`,
+    // An error out of any test (in loading a file, say), which no failed test's line follows.
+    String.raw`# Unhandled error between tests\n-+\n(?:(?: *\d+ \|.*| *\^.*)?\n)*((?! *\d+ \|)(?! *\^)(?!-+$).+)`,
+  ].join('|')})$`,
+  'gm',
+)
+
+// Of a failed check's output, its end, as of any command; but what bun's test runner said failed
+// goes first. It prints a failure where the test ran, and repeats the test's name at the end only
+// with over 20 tests passed and no agent's variable around (measured on 1.3.14). A check in a Stop
+// hook inherits Claude Code's CLAUDECODE, so its end has only the counts, and what ran after a
+// failure (another file's warnings) pushed it out, and the worker could not tell which test failed.
+// A tick's landing check has no such variable: the failure's name then comes twice, the first time
+// with its cause. Other checks' output is cut as ever, and so is one whose end still shows every
+// failure.
+function failedOutput(output: string): string {
+  const tail = output.slice(-OUTPUT_LIMIT)
+  if (output.length <= OUTPUT_LIMIT) return tail
+  const plain = Bun.stripANSI(output)
+  if (!BUN_TEST.test(plain)) return tail
+  const found = Array.from(plain.matchAll(BUN_FAILURE))
+  const cut = plain.length - Bun.stripANSI(tail).length
+  if (!found.some((m) => m.index < cut)) return tail
+  const failures = found
+    .map((m) => m[1] ?? m[0])
+    .join('\n')
+    .slice(0, OUTPUT_LIMIT / 2)
+  const head = `bun test reported these failures, which the end of its output below may not show:\n${failures}\n…\n`
+  return head + plain.slice(-(OUTPUT_LIMIT - head.length))
 }
 
 async function uncommittedChanges(worktree: string): Promise<string> {

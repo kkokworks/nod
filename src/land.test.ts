@@ -8,6 +8,7 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { join, resolve } from 'node:path'
+import { NOISY_FAILURE } from '../test/noisy-failure'
 import { calls, clonedRepo, fakeService, git } from '../test/remote'
 import { tempDirs } from '../test/tmp'
 import { testTmux } from '../test/tmux'
@@ -453,6 +454,18 @@ test('a later done of the same landing does not write over the pull request text
   expect(await stops(id, 'I added ok.txt and committed it.\nNOD: done | fixed', true)).toBeNull()
   expect(ledger.landing(id)).toMatchObject({ title: 'Add c', body: 'Adds c.' })
 }, 30_000)
+
+test("what bun's test runner said failed as the branch lands reaches its worker, past the warnings that fill the check's end", async () => {
+  setRepo('pr', { checkCmd: NOISY_FAILURE.check })
+  finished('feat/n', NOISY_FAILURE.files)
+  expect((await land(ledger, home, Tmux.of(home), { send }))[0]?.did).toBe(
+    'its worker fixes the check',
+  )
+  expect(handed[0]?.text).toContain("\nerror: Cannot find module './gone'")
+  expect(handed[0]?.text).toContain("\nSyntaxError: Export named 'gone' not found in module")
+  expect(handed[0]?.text).toContain('\n(fail) the one that fails')
+  expect(handed[0]?.text).toContain('Warning: a noisy render 300\n')
+})
 
 test('a conflict report above the pull request text is no title: the text is asked once the rebase is done', async () => {
   setRepo('pr')
