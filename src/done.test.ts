@@ -1,6 +1,7 @@
 import { afterAll, expect, spyOn, test } from 'bun:test'
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { projectFolder } from '../test/projects'
 import { tempDirs } from '../test/tmp'
 import { doneTasks, type PrLookup, type PullRequest, sweep } from './done'
 import { collect } from './gc'
@@ -8,6 +9,7 @@ import { Ledger, type NewTask } from './ledger'
 import { workspaceOf } from './place'
 import { Tmux } from './tmux'
 import { Todos } from './todos'
+import { restore } from './worker'
 
 const tmp = tempDirs()
 afterAll(tmp.removeAll)
@@ -16,6 +18,8 @@ const PR = 'https://git.example.com/o/r/pulls/'
 const NOW = new Date('2026-03-10T00:00:00.000Z')
 const RECENT = '2026-03-09T00:00:00.000Z'
 const OLD = '2026-03-01T00:00:00.000Z'
+const OPEN: PullRequest = { state: 'open', head: 'feat/other', mergedAt: null, approvedAt: null }
+const MERGED: PullRequest = { ...OPEN, state: 'merged', mergedAt: RECENT }
 
 test('done signals: dropped, taken over, merged into the default branch, every pull request closed or approved, or old', async () => {
   const home = tmp.make('nod-done-')
@@ -153,11 +157,11 @@ test('done signals: dropped, taken over, merged into the default branch, every p
   drop(turnedDown)
 
   const prs: Record<string, PullRequest> = {
-    [`${PR}1#issuecomment-9`]: { state: 'open', approvedAt: '2026-03-09T01:00:00Z' },
-    [`${PR}2`]: { state: 'open', approvedAt: null },
-    [`${PR}3`]: { state: 'merged', approvedAt: null },
-    [`${PR}5`]: { state: 'open', approvedAt: null },
-    [`${PR}6`]: { state: 'open', approvedAt: '2026-03-08T00:00:00Z' },
+    [`${PR}1#issuecomment-9`]: { ...OPEN, approvedAt: '2026-03-09T01:00:00Z' },
+    [`${PR}2`]: OPEN,
+    [`${PR}3`]: MERGED,
+    [`${PR}5`]: OPEN,
+    [`${PR}6`]: { ...OPEN, approvedAt: '2026-03-08T00:00:00Z' },
   }
   const lookup: PrLookup = async (url) => {
     if (url === `${PR}4`) throw new Error('tea exited 1')
@@ -236,7 +240,7 @@ test("the finished tasks' signals are read at once, a slow git service waited on
   const lookup: PrLookup = async (url) => {
     if (url === `${PR}1`) await secondAsked
     else askedSecond()
-    return { state: 'merged', approvedAt: null }
+    return MERGED
   }
 
   expect(await doneTasks(ledger, Tmux.of(home), lookup, NOW)).toEqual({
@@ -377,7 +381,7 @@ test('sweep collects a task only as its signal read it: one that ran again and f
   const lookup: PrLookup = async () => {
     ledger.setRunning(old, cwd)
     ledger.succeed(old)
-    return { state: 'open', approvedAt: null }
+    return OPEN
   }
 
   const swept = await sweep(ledger, home, Tmux.of(home), lookup, NOW)
@@ -472,6 +476,130 @@ test("an errored repo task goes once a task added after the error does its todo,
   expect(shown.stdout.toString()).toContain('failed start: it broke')
   expect(shown.stdout.toString()).toContain('collected:')
 })
+
+test('a succeeded task with commits no remote has goes once its own pull request merged after them, and they stay on its branch for resume', async () => {
+  const home = tmp.make('nod-done-')
+  const claude = tmp.make('nod-done-claude-')
+  process.env.CLAUDE_CONFIG_DIR = claude
+  const ledger = new Ledger(home)
+  const repo = join(home, 'repo')
+  mkdirSync(repo)
+  const git = (cwd: string, ...args: string[]): string =>
+    sh(['git', '-c', 'user.email=t@t', '-c', 'user.name=t', ...args], cwd)
+  git(repo, 'init', '-q', '-b', 'main')
+  git(repo, 'commit', '-q', '--allow-empty', '-m', 'init')
+  git(repo, 'update-ref', 'refs/remotes/origin/main', 'HEAD')
+  git(repo, 'symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main')
+  const BEFORE = '2026-03-08T00:00:00Z'
+  const MERGE = '2026-03-09T00:00:00Z'
+  const AFTER = '2026-03-09T01:00:00Z'
+  const todos = new Todos(ledger)
+  const prs = new Map<string, PullRequest>()
+
+  // A finished task on feat/<name> with a commit no remote has, written before the merge and
+  // committed at `at`, and its pull request, merged at MERGE unless `pr` says otherwise. The
+  // pull request is linked on the task, or on `todo` when given.
+  const finish = (name: string, at: string, pr: Partial<PullRequest> = {}, todo?: number) => {
+    const branch = `feat/${name}`
+    const spec: NewTask = {
+      brief: name,
+      repo,
+      branch,
+      checkCmd: null,
+      model: null,
+      after: [],
+      triggerId: null,
+      issue: null,
+    }
+    const id = todo === undefined ? ledger.add(spec) : ledger.addTodoTask(spec, todo)
+    const cwd = workspaceOf(home, ledger.get(id))
+    git(repo, 'worktree', 'add', '-q', '-b', branch, cwd)
+    writeFileSync(join(cwd, `${name}.txt`), name)
+    git(cwd, 'add', '.')
+    sh(
+      [
+        'env',
+        `GIT_COMMITTER_DATE=${at}`,
+        'git',
+        '-c',
+        'user.email=t@t',
+        '-c',
+        'user.name=t',
+        'commit',
+        '-q',
+        `--date=${BEFORE}`,
+        '-m',
+        name,
+      ],
+      cwd,
+    )
+    ledger.setRunning(id, cwd)
+    const sessionId = `session-${id}`
+    ledger.startAttempt({ taskId: id, kind: 'start', decisionId: null, sessionId, prompt: name })
+    ledger.succeed(id)
+    mkdirSync(projectFolder(claude, cwd), { recursive: true })
+    writeFileSync(join(projectFolder(claude, cwd), `${sessionId}.jsonl`), '{}\n')
+    const url = `${PR}${id}`
+    prs.set(url, { ...MERGED, head: branch, mergedAt: MERGE, ...pr })
+    if (todo === undefined) ledger.link(id, [url])
+    else todos.link(todo, url, null, 'human')
+    return id
+  }
+  const todo = todos.capture(
+    { title: 'do it', notes: null, source: 'cli', sourceKey: null, url: null },
+    'human',
+  ).todo.id
+
+  const pushedElsewhere = finish('elsewhere', BEFORE)
+  const viaTodo = finish('via-todo', BEFORE, {}, todo)
+  // Rewritten after the merge: its author's time is still before it.
+  const rewritten = finish('rewritten', AFTER)
+  const sameSecond = finish('same-second', MERGE)
+  const otherBranch = finish('other-branch', BEFORE, { head: 'feat/someone-elses' })
+  const notMerged = finish('not-merged', BEFORE, { state: 'closed' })
+  const stillOpen = finish('still-open', BEFORE, { state: 'open', mergedAt: null })
+  const errored = finish('errored', BEFORE)
+  ledger.error(errored, 'crashed')
+  const dropped = finish('dropped', BEFORE)
+  ledger.db.query("update tasks set status = 'cancelled' where id = $id").run({ id: dropped })
+  const waitedOn = finish('waited-on', BEFORE)
+  ledger.add({
+    brief: 'after the base',
+    repo,
+    branch: 'feat/next',
+    checkCmd: null,
+    model: null,
+    after: [waitedOn],
+    triggerId: null,
+    issue: null,
+  })
+  const unread = finish('unread', BEFORE)
+  const lookup: PrLookup = async (url) => {
+    if (url === `${PR}${unread}`) throw new Error('tea exited 1')
+    return prs.get(url) ?? null
+  }
+  const head = git(repo, 'rev-parse', 'feat/elsewhere').trim()
+
+  const swept = await sweep(ledger, home, Tmux.of(home), lookup, NOW)
+
+  expect(swept.done).toEqual([
+    { id: pushedElsewhere, reason: `merged: ${PR}${pushedElsewhere}` },
+    { id: viaTodo, reason: `merged: ${PR}${viaTodo}` },
+  ])
+  expect(swept.report).toEqual({ removed: [pushedElsewhere, viaTodo], clean: [], skipped: [] })
+  expect(swept.unchecked).toEqual([{ id: unread, error: 'tea exited 1' }])
+  for (const id of [rewritten, sameSecond, otherBranch, notMerged, stillOpen, errored, dropped]) {
+    expect(ledger.get(id).collectedAt).toBeNull()
+  }
+  expect(ledger.get(waitedOn).collectedAt).toBeNull()
+  // The only copy of the commits stays on the branch, and resume finds it there.
+  const cwd = workspaceOf(home, ledger.get(pushedElsewhere))
+  expect(existsSync(cwd)).toBe(false)
+  expect(git(repo, 'rev-parse', 'feat/elsewhere').trim()).toBe(head)
+  await restore(ledger, home, pushedElsewhere)
+  expect(readFileSync(join(cwd, 'elsewhere.txt'), 'utf8')).toBe('elsewhere')
+  expect(ledger.get(pushedElsewhere).collectedAt).toBeNull()
+}, 30_000)
 
 function sh(cmd: string[], cwd: string): string {
   const result = Bun.spawnSync(cmd, { cwd })

@@ -10,19 +10,22 @@ import { Todos } from './todos'
 // a repo task too early costs a rebuild, not the task, and the signals can be generous. A plain
 // workspace's files are the task's output, which resume cannot bring back, so only age lets one
 // go; a retrospective's output is its report and the answer to it, kept in the ledger, so it goes
-// once it ends. Always held back: commits on the branch that no remote has, since collecting hides the only
-// copy from ls; a queued task that starts from this one's branch; a person attached to the
-// session. An errored task goes only with age, as what went wrong is for the person to see first,
-// or, in a repo, once a newer task took its todo over.
+// once it ends. Held back: commits on the branch that no remote has, since collecting hides the
+// only copy from ls, unless a succeeded task's own pull request merged after the last of them; a
+// queued task that starts from this one's branch; a person attached to the session. An errored
+// task goes only with age, as what went wrong is for the person to see first, or, in a repo, once a
+// newer task took its todo over.
 
 const STALE_DAYS = 7
 const DAY = 86_400_000
 
-// A linked pull request: whether it is still open, and when the person approved it, if their last
-// review that approved or asked for changes approved. A link that is not a pull request reads as
-// null.
+// A linked pull request: whether it is still open, its head branch's name, when it merged, and when
+// the person approved it, if their last review that approved or asked for changes approved. A link
+// that is not a pull request reads as null.
 export type PullRequest = {
   state: 'open' | 'merged' | 'closed'
+  head: string
+  mergedAt: string | null
   approvedAt: string | null
 }
 export type PrLookup = (url: string) => Promise<PullRequest | null>
@@ -86,8 +89,21 @@ async function signal(
   now: Date,
 ): Promise<string | null> {
   const branch = branchState(task)
-  if (branch?.unpushed) return null
   if (ledger.waiting(task.id).length > 0) return null
+  if (branch?.unpushed) {
+    if (task.status !== 'succeeded') return null
+    // The branch's own pull request merged after its last commit: the work went up from elsewhere,
+    // rebased on another branch, say, so these commits are not its only copy. A commit made or
+    // rewritten since is newer than the merge, and held back.
+    // ponytail: a commit made before the merge and never pushed goes from ls too; it stays on the
+    // branch (dropBranch in gc.ts), and resume brings it back.
+    for (const url of linksOf(ledger, task)) {
+      const pr = await prs(url)
+      if (pr?.state !== 'merged' || pr.head !== task.branch || pr.mergedAt === null) continue
+      if (Date.parse(branch.lastCommitAt) < Date.parse(pr.mergedAt)) return `merged: ${url}`
+    }
+    return null
+  }
   if (task.finishedAt !== null && Date.parse(task.finishedAt) <= now.getTime() - STALE_DAYS * DAY) {
     return `finished ${STALE_DAYS}+ days ago`
   }
@@ -114,9 +130,8 @@ async function signal(
   // --link, nod todo set --link); those that are no pull request, a chat message say, do not.
   // ponytail: a todo's links are all its rounds'; one merged in an earlier round ends a later round
   // that has not linked its own yet, which costs a rebuild if it goes on.
-  const todoLinks = task.todoId === null ? [] : new Todos(ledger).links(task.todoId)
   const ends: string[] = []
-  for (const url of new Set([...ledger.links(task.id), ...todoLinks.map((l) => l.url)])) {
+  for (const url of linksOf(ledger, task)) {
     const pr = await prs(url)
     if (pr === null) continue
     if (pr.state !== 'open') ends.push(`${pr.state}: ${url}`)
@@ -127,12 +142,21 @@ async function signal(
   return ends.length > 0 ? ends.join(', ') : null
 }
 
+// The links on a task and on its todo, each once.
+function linksOf(ledger: Ledger, task: Task): string[] {
+  const todoLinks = task.todoId === null ? [] : new Todos(ledger).links(task.todoId)
+  return [...new Set([...ledger.links(task.id), ...todoLinks.map((l) => l.url)])]
+}
+
+type BranchState = { own: number; landed: boolean; unpushed: boolean; lastCommitAt: string }
+
 // A repo task's branch: how many commits the task made that the remote's default branch lacks,
-// whether the default branch has its changes, and whether some of its commits are on no remote and
-// not merged either. Null without a repo, once the branch is gone, or for a task that never started
-// and so keeps no branch of its own (dropBranch in gc.ts): one by its name is someone else's. Only
-// as fresh as the repo's last fetch.
-function branchState(task: Task): { own: number; landed: boolean; unpushed: boolean } | null {
+// whether the default branch has its changes, whether some of its commits are on no remote and not
+// merged either, and its last commit's time, the committer's, which a rebase sets anew. Null
+// without a repo, once the branch is gone, or for a task that never started and so keeps no branch
+// of its own (dropBranch in gc.ts): one by its name is someone else's. Only as fresh as the repo's
+// last fetch.
+function branchState(task: Task): BranchState | null {
   const { repo, branch } = task
   if (repo === null || branch === null || task.workspace === null) return null
   const ref = `refs/heads/${branch}`
@@ -154,5 +178,6 @@ function branchState(task: Task): { own: number; landed: boolean; unpushed: bool
   const main = 'refs/remotes/origin/HEAD'
   const own = hasRef(repo, main) ? count(`${main}..${ref}`, ...notTheirs) : 0
   const merged = landed(repo, ref)
-  return { own, landed: merged, unpushed: notOnRemotes > 0 && !merged }
+  const lastCommitAt = git('log', '-1', '--format=%cI', ref).stdout.toString().trim()
+  return { own, landed: merged, unpushed: notOnRemotes > 0 && !merged, lastCommitAt }
 }

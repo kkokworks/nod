@@ -43,7 +43,16 @@ export function pullRequests(cwd: string): PrLookup {
 
   const github = async (repo: string, n: string): Promise<PullRequest> => {
     const pr = GH_PR.parse(
-      await json(['gh', 'pr', 'view', n, '--repo', repo, '--json', 'state,reviews']),
+      await json([
+        'gh',
+        'pr',
+        'view',
+        n,
+        '--repo',
+        repo,
+        '--json',
+        'state,reviews,headRefName,mergedAt',
+      ]),
     )
     const me = await once(logins, 'github', async () =>
       (await run(['gh', 'api', 'user', '--jq', '.login'])).trim(),
@@ -53,7 +62,12 @@ export function pullRequests(cwd: string): PrLookup {
       state: r.state,
       at: r.submittedAt,
     }))
-    return { state: GH_STATE[pr.state], approvedAt: approvedAt(reviews, me) }
+    return {
+      state: GH_STATE[pr.state],
+      head: pr.headRefName,
+      mergedAt: pr.mergedAt,
+      approvedAt: approvedAt(reviews, me),
+    }
   }
   const gitea = async (base: string, repo: string, n: string): Promise<PullRequest> => {
     const api = `${base}/api/v1`
@@ -70,7 +84,12 @@ export function pullRequests(cwd: string): PrLookup {
     const standing = reviews
       .filter((r) => !r.dismissed)
       .map((r) => ({ login: r.user?.login ?? null, state: r.state, at: r.submitted_at }))
-    return { state: pr.merged ? 'merged' : pr.state, approvedAt: approvedAt(standing, me) }
+    return {
+      state: pr.merged ? 'merged' : pr.state,
+      head: pr.head.ref,
+      mergedAt: pr.merged_at ?? null,
+      approvedAt: approvedAt(standing, me),
+    }
   }
 
   return async (url) => {
@@ -92,6 +111,8 @@ export function pullRequests(cwd: string): PrLookup {
 const GH_STATE = { OPEN: 'open', MERGED: 'merged', CLOSED: 'closed' } as const
 const GH_PR = z.object({
   state: z.enum(['OPEN', 'MERGED', 'CLOSED']),
+  headRefName: z.string(),
+  mergedAt: z.string().nullable(),
   reviews: z.array(
     z.object({
       author: z.object({ login: z.string() }).nullable(),
@@ -100,7 +121,12 @@ const GH_PR = z.object({
     }),
   ),
 })
-const GITEA_PR = z.object({ state: z.enum(['open', 'closed']), merged: z.boolean() })
+const GITEA_PR = z.object({
+  state: z.enum(['open', 'closed']),
+  merged: z.boolean(),
+  merged_at: z.string().nullish(), // the API's schema marks it optional
+  head: z.object({ ref: z.string() }),
+})
 const GITEA_REVIEWS = z.array(
   z.object({
     user: z.object({ login: z.string() }).nullable(),
