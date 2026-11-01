@@ -2358,6 +2358,32 @@ test('a turn a usage limit ended does not hold up a restart: the new account con
   expect(ledger.attempts(id).map((a) => [a.kind, a.outcome])).toEqual([['start', 'succeeded']])
 }, 30_000)
 
+test('a turn an API error Claude Code does not go on from ended is a decision the project session hears, and the answer goes on in the same conversation', async () => {
+  const id = await add('stall on server_error')
+  const decision = await until(() => ledger.decisions(id)[0])
+  expect(decision.reason).toBe('interrupted')
+  expect(decision.question).toContain('API error (server_error)')
+  expect(decision.question).toContain('API Error: server_error')
+  expect(decision.question).toContain('> stall on server_error')
+  expect(status(id)).toBe('needs_decision')
+  expect(ledger.attempts(id).map((a) => [a.kind, a.outcome])).toEqual([['start', 'error']])
+  // What reaches the project session (sendNotices in inbox.ts).
+  const notices = ledger.db
+    .query<{ event: string; decision_id: number | null }, [number]>(
+      'select event, decision_id from notices where task_id = ?',
+    )
+    .all(id)
+  expect(notices).toEqual([{ event: 'decision', decision_id: decision.id }])
+
+  await answer(ledger, home, terminals, decision.id, 'check and carry on', 'human')
+  await reaches(id, 'succeeded')
+  expect(entries('launch')).toHaveLength(1) // the same Claude Code went on
+  expect(entries('turn').map((t) => t.message)).toEqual([
+    'stall on server_error',
+    expect.stringMatching(/^Your last turn was cut off.*\nHuman decision: check and carry on$/s),
+  ])
+}, 30_000)
+
 test('a restart waits while nod checks a turn it has closed, and comes once', async () => {
   const current = join(home, 'account')
   const [a, b] = accounts('a', 'b')
