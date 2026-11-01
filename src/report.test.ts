@@ -84,6 +84,15 @@ it('the pull request title is its # heading, and a status line above it goes, ou
       body: '## What changed\nThe cache is saved on exit.',
     })
   }
+  // An empty heading is no title, above the title or with none.
+  expect(prText('Same after the rebase.\n# \n# Keep it warm\nBody\nNOD: done | ok')).toEqual({
+    title: 'Keep it warm',
+    body: 'Body',
+  })
+  expect(prText('Keep it warm\n#\nBody\nNOD: done | ok')).toEqual({
+    title: 'Keep it warm',
+    body: '#\nBody',
+  })
 })
 
 it('a pull request title on the first line stays the title, whatever headings its body has', () => {
@@ -111,5 +120,8 @@ it('a pull request title on the first line stays the title, whatever headings it
   expect(prText(`Fix it\n${nested}\nNOD: done | ok`)).toEqual({ title: 'Fix it', body: nested })
   const tagged = '```\ncode\n```sh\n# a comment\n```'
   expect(prText(`Fix it\n${tagged}\nNOD: done | ok`)).toEqual({ title: 'Fix it', body: tagged })
+  for (const fenced of ['~~~\n# a comment\n~~~\n## Notes', '```sh\n# never closed\n# Notes']) {
+    expect(prText(`Fix it\n${fenced}\nNOD: done | ok`)).toEqual({ title: 'Fix it', body: fenced })
+  }
   expect(prText('\n**NOD: done | nothing**')).toBeNull()
 })

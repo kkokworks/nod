@@ -136,8 +136,9 @@ export function prText(report: string): { title: string; body: string } | null {
   }
 }
 
-// The index of the first Markdown heading outside code fences, or -1. A fence closes on a line of
-// its own marks, at least as many and nothing after them: a "```sh" line inside it is its code.
+// The index of the first Markdown heading with words, outside code fences, or -1: an empty one is
+// neither a title nor a section. A fence closes on a line of its own marks, at least as many and
+// nothing after them: a "```sh" line inside it is its code.
 function firstHeading(lines: string[]): number {
   let fence: string | null = null
   for (const [i, line] of lines.entries()) {
@@ -145,7 +146,7 @@ function firstHeading(lines: string[]): number {
     const closes = marks?.startsWith(fence ?? '\n') && /^ {0,3}(`+|~+)[ \t]*$/.test(line)
     if (fence === null && marks !== undefined) fence = marks
     else if (closes) fence = null
-    else if (fence === null && /^ {0,3}#{1,6}(?:[ \t]|$)/.test(line)) return i
+    else if (fence === null && /^ {0,3}#{1,6}[ \t]+\S/.test(line)) return i
   }
   return -1
 }
