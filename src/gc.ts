@@ -4,6 +4,7 @@ import { FINISHED, type Ledger, type Task } from './ledger'
 import { branchOf, sessionName, settling } from './place'
 import { message, spawn } from './proc'
 import type { Terminals } from './tmux'
+import { endTurnWithoutStop } from './turns'
 
 // `clean`: tasks that had nothing left to remove, because gc or something else already removed it.
 export type GcReport = {
@@ -85,6 +86,15 @@ export async function collect(
       const name = sessionName(id)
       if (terminals.alive(name) && settling(terminals, name)) {
         skip('its Stop hook is still running')
+        continue
+      }
+      // As closeFinished: a person typed a turn in and left while it runs (onPrompt opened it; the
+      // status changes only at its Stop). One that ended without a Stop is closed first, so it does
+      // not hold gc back for good. Only in a live terminal, as closeFinished looks at no other: a
+      // turn whose Claude Code went with its terminal never ends, and has nothing left to cut off.
+      endTurnWithoutStop(ledger, home, id)
+      if (terminals.alive(name) && ledger.openAttempt(id) !== null) {
+        skip('a turn is open in its terminal')
         continue
       }
       if (!unchanged(task)) {

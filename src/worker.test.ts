@@ -558,6 +558,38 @@ test('a turn a person types into a finished task is in the ledger from its start
   })
 })
 
+// The same for gc, by hand or the tick's sweep: the task reads as succeeded until that turn's Stop.
+test('gc leaves a finished task with a turn a person typed still open, and takes it once that turn ended without a Stop', async () => {
+  const id = await finished('first')
+  const name = sessionName(id)
+  fake.attach(name)
+  terminals.send(name, 'hang until ended')
+  await until(() => turnsOf(id).length === 2)
+  fake.detach(name)
+  expect(ledger.get(id).status).toBe('succeeded')
+
+  expect(await collect(ledger, home, terminals, { ids: [id] })).toEqual({
+    removed: [],
+    clean: [],
+    skipped: [{ id, reason: 'a turn is open in its terminal' }],
+  })
+  expect(terminals.alive(name)).toBe(true)
+  expect(existsSync(workspaceOf(home, ledger.get(id)))).toBe(true)
+  expect(ledger.get(id).collectedAt).toBeNull()
+
+  // They had stopped it with Escape (no Stop): gc ends the turn, then takes the task as any other.
+  const session = ledger.attempts(id)[0]?.sessionId ?? ''
+  const file = transcriptPath(ledger.get(id).account || null, session)
+  const stop = { role: 'user', content: [{ type: 'text', text: '[Request interrupted by user]' }] }
+  appendFileSync(file ?? '', `${JSON.stringify({ type: 'user', message: stop })}\n`)
+  expect((await collect(ledger, home, terminals, { ids: [id] })).removed).toEqual([id])
+  expect(terminals.alive(name)).toBe(false)
+  expect(ledger.attempts(id).at(-1)).toMatchObject({
+    outcome: 'error',
+    error: 'the person stopped it (Escape)',
+  })
+})
+
 // A person attaches to a finished task and steers it: they stop a turn at its permission dialog
 // (Escape, no Stop), then type another, which goes on in the turn still open.
 test('what a person types into a worker’s terminal is kept once each, as theirs, for the review of its turn, and nod does not send it again', async () => {
