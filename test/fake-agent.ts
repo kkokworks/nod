@@ -205,8 +205,10 @@ async function turn(message: string, continuing: boolean): Promise<void> {
     await new Promise(() => {})
   } else if (head.startsWith('stall')) {
     // Like Claude Code as an API error ends the turn: StopFailure in place of Stop. `stall on
-    // <error>` names the error; a usage limit's by default.
+    // <error>` names the error; a usage limit's by default. `… once ended`: only once the test
+    // makes end.txt, so something can come while the turn runs.
     const error = /^stall on (\S+)/.exec(head)?.[1] ?? 'rate_limit'
+    if (head.includes('once ended')) while (!existsSync('end.txt')) await Bun.sleep(50)
     await runHooks('StopFailure', {
       session_id: sessionId,
       error,

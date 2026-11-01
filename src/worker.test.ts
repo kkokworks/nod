@@ -2384,6 +2384,23 @@ test('a turn an API error Claude Code does not go on from ended is a decision th
   ])
 }, 30_000)
 
+test('a turn an API error ended goes on as the account a restart waited for, with no decision', async () => {
+  const current = join(home, 'account')
+  const [a, b] = accounts('a', 'b')
+  setAccountRule(home, { file: current })
+  writeFileSync(current, `${a}\n`)
+  const id = await add('stall on authentication_failed once ended')
+  await until(() => entries('turn')[0])
+  writeFileSync(current, `${b}\n`)
+  expect(await restartDue(ledger, home, terminals)).toEqual([]) // its turn runs: the restart waits
+  writeFileSync(join(ledger.get(id).workspace ?? '', 'end.txt'), '')
+  await reaches(id, 'succeeded')
+  expect(ledger.decisions(id)).toEqual([])
+  expect(entries('launch').map((l) => l.config)).toEqual([a, b])
+  expect(entries('launch')[1]?.prompt).toContain('API error (authentication_failed)')
+  expect(ledger.attempts(id).map((a) => [a.kind, a.outcome])).toEqual([['start', 'succeeded']])
+}, 30_000)
+
 test('a restart waits while nod checks a turn it has closed, and comes once', async () => {
   const current = join(home, 'account')
   const [a, b] = accounts('a', 'b')

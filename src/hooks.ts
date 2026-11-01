@@ -125,13 +125,15 @@ export async function onStop(
 
 // Called by the StopFailure hook. After a usage limit the turn stays open: Claude Code continues it
 // by itself once the limit resets. A restart it waits on, as another account, runs now and
-// continues it. Other errors (a login, the server out of reach) it does not go on from, so the turn
-// is cut off as one whose Claude Code ended (cutOff): a decision, which the project session hears
-// and `nod ls` shows, as the person decides how it goes on. Told only by <home>/notify, as before,
-// it reached no session, and the task read as running for hours.
+// continues it. Other errors (a login, the server out of reach) it does not go on from, so unless
+// such a restart continues it, the turn is cut off as one whose Claude Code ended (cutOff): a
+// decision, which the project session hears and `nod ls` shows, as the person decides how it goes
+// on. Told only by <home>/notify, as before, it reached no session, and the task read as running
+// for hours. A restart that comes later continues it too (the mark stays), and the decision closes
+// as gone on without an answer, as any the worker goes on past.
 // ponytail: Claude Code does not wait for this hook (2.1.314's binary), so a message that comes
-// while it starts goes into the turn it then cuts off; the next turn's Stop closes the decision as
-// gone on without an answer (currentTurn).
+// while it starts goes into the turn it then cuts off, where the review of the turn it runs does
+// not see it; that turn's Stop closes the decision as gone on without an answer (currentTurn).
 export async function onStopFailure(
   ledger: Ledger,
   home: string,
@@ -143,15 +145,15 @@ export async function onStopFailure(
   if (terminals.alive(sessionName(taskId))) {
     terminals.setOption(sessionName(taskId), STALLED_OPTION, event.error)
   }
-  if (event.error !== 'rate_limit') {
-    const turn = await currentAttempt(ledger, home, taskId, event.session_id)
-    const why = `Its turn stopped on an API error (${event.error}), which Claude Code does not go on from by itself.`
-    const shown = event.last_assistant_message?.trim()
-    await cutOff(ledger, home, taskId, ledger.attempt(turn), shown ? `${why}\n${shown}` : why)
-  }
-  await restartDue(ledger, home, terminals, taskId).catch((error) =>
-    console.error(`nod: could not restart task n${taskId}: ${message(error)}`),
-  )
+  const restarted = await restartDue(ledger, home, terminals, taskId).catch((error): number[] => {
+    console.error(`nod: could not restart task n${taskId}: ${message(error)}`)
+    return []
+  })
+  if (event.error === 'rate_limit' || restarted.includes(taskId)) return
+  const turn = await currentAttempt(ledger, home, taskId, event.session_id)
+  const why = `Its turn stopped on an API error (${event.error}), which Claude Code does not go on from by itself.`
+  const shown = event.last_assistant_message?.trim().slice(0, QUESTION_LIMIT)
+  await cutOff(ledger, home, taskId, ledger.attempt(turn), shown ? `${why}\n${shown}` : why)
 }
 
 // Called by the UserPromptSubmit hook. A turn a person types into the worker's terminal is in the
