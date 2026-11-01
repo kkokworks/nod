@@ -1,5 +1,5 @@
 import { expect, it } from 'bun:test'
-import { parseCaptures, parseReport, parseTells } from './report'
+import { parseCaptures, parseReport, parseTells, prText } from './report'
 
 it('the report line is read from the end, through Markdown emphasis', () => {
   expect(parseReport('NOD: question | old\nmore\n**NOD: Done** | `shipped`')).toEqual({
@@ -67,4 +67,42 @@ it('a report says what to tell other tasks in NOD: tell lines, which nod reads o
       error: expect.stringContaining(bad),
     })
   }
+})
+
+it('the pull request title is its # heading, and a status line above it goes, out of the body too', () => {
+  const report = [
+    'The diff and the numbers are the same after the rebase.',
+    '# Keep the cache warm across restarts',
+    '',
+    '## What changed',
+    'The cache is saved on exit.',
+    'NOD: done | wrote it',
+  ].join('\n')
+  expect(prText(report)).toEqual({
+    title: 'Keep the cache warm across restarts',
+    body: '## What changed\nThe cache is saved on exit.',
+  })
+})
+
+it('a pull request title on the first line stays the title, whatever headings its body has', () => {
+  const body = [
+    '## What changed',
+    'Counts from one.',
+    '```sh',
+    '# run the tests',
+    'bun test',
+    '```',
+    '# Notes',
+    'None.',
+  ].join('\n')
+  for (const title of ['Fix the off-by-one in a.ts', '# Fix the off-by-one in a.ts']) {
+    expect(prText(`${title}\n\n${body}\nNOD: done | wrote it`)).toEqual({
+      title: 'Fix the off-by-one in a.ts',
+      body,
+    })
+  }
+  // Nor is a shell comment in its code the title, with no section before it.
+  const code = '```sh\n# run the tests\nbun test\n```'
+  expect(prText(`Fix it\n${code}\nNOD: done | ok`)).toEqual({ title: 'Fix it', body: code })
+  expect(prText('\n**NOD: done | nothing**')).toBeNull()
 })
