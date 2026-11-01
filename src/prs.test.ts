@@ -58,6 +58,12 @@ describe('nod opens and squash merges its pull requests through the repo service
       expect(pr).toMatch(tool === 'gh' ? /^https:\/\/github\.com\/o\/r\/pull\/1$/ : /pulls\/1$/)
       expect(await service.find('feat/a')).toBe(pr)
       expect(await service.view(pr)).toMatchObject({ state: 'open', head, merge: 'clean' })
+      expect(await pullRequests(repo)(pr)).toEqual({
+        state: 'open',
+        head: 'feat/a',
+        mergedAt: null,
+        approvedAt: null,
+      })
 
       // A head that moved since nod checked it is not merged.
       const moved = { head: 'f'.repeat(40), title: 'Add a', body: '' }
@@ -67,6 +73,14 @@ describe('nod opens and squash merges its pull requests through the repo service
       expect((await service.view(pr)).state).toBe('merged')
       // A later task given the same branch name is not that merged pull request's.
       expect(await service.find('feat/a')).toBeNull()
+      // The merged branch deleted on the remote still reads as the pull request's head.
+      git(origin, 'update-ref', '-d', 'refs/heads/feat/a')
+      expect(await pullRequests(repo)(pr)).toEqual({
+        state: 'merged',
+        head: 'feat/a',
+        mergedAt: expect.any(String),
+        approvedAt: null,
+      })
       // One commit on main with the branch's files, and no merge commit.
       expect(git(origin, 'log', '--format=%s', 'main').split('\n')).toEqual(['Add a', 'init'])
       expect(git(origin, 'show', 'main:a.txt')).toBe('a')

@@ -15,6 +15,7 @@ type Pr = {
   title: string
   body: string
   state: 'open' | 'merged' | 'closed'
+  mergedAt?: string
 }
 
 const dir = process.env.FAKE_SERVICE
@@ -35,7 +36,11 @@ const git = (...a: string[]): string => {
   if (r.exitCode !== 0) throw new Error(`git ${a.join(' ')}: ${r.stderr.toString()}`)
   return r.stdout.toString().trim()
 }
-const headOf = (pr: Pr): string => git('rev-parse', `refs/heads/${pr.head}`)
+// The head branch's commit, or nothing once the branch is deleted.
+const headOf = (pr: Pr): string =>
+  Bun.spawnSync(['git', 'rev-parse', '--verify', '-q', `refs/heads/${pr.head}`], { cwd: origin })
+    .stdout.toString()
+    .trim()
 const mergeState = (): string =>
   existsSync(join(dir, 'merge-state'))
     ? readFileSync(join(dir, 'merge-state'), 'utf8').trim()
@@ -84,12 +89,15 @@ const squash = (pr: Pr, head: string, title: string): void => {
   const commit = git('commit-tree', `${head}^{tree}`, '-p', parent, '-m', title)
   git('update-ref', `refs/heads/${pr.base}`, commit)
   pr.state = 'merged'
+  pr.mergedAt = new Date().toISOString()
   save()
 }
 
 if (tool === 'gh') {
   const [, sub] = args
-  if (sub === 'list') {
+  if (args[0] === 'api') {
+    console.log('me')
+  } else if (sub === 'list') {
     const head = opt('--head')
     const shown = prs
       .filter((p) => p.head === head)
@@ -104,7 +112,9 @@ if (tool === 'gh') {
     })
     console.log(`Creating pull request\n${pr.url}`)
   } else if (sub === 'view') {
-    const pr = byUrl(args[2] ?? '')
+    // By address, or by number with --repo as pullRequests asks.
+    const ref = args[2] ?? ''
+    const pr = byUrl(/^\d+$/.test(ref) ? `https://github.com/${opt('--repo')}/pull/${ref}` : ref)
     const status = mergeState()
     console.log(
       JSON.stringify({
@@ -112,6 +122,9 @@ if (tool === 'gh') {
         mergeable: status === 'DIRTY' ? 'CONFLICTING' : 'MERGEABLE',
         mergeStateStatus: status,
         headRefOid: headOf(pr),
+        headRefName: pr.head,
+        mergedAt: pr.mergedAt ?? null,
+        reviews: [],
       }),
     )
   } else if (sub === 'merge') {
@@ -121,7 +134,8 @@ if (tool === 'gh') {
     throw new Error(`fake gh does not know ${args.join(' ')}`)
   }
 } else if (tool === 'tea') {
-  const endpoint = args.at(-1) ?? ''
+  // pullRequests asks by full address, serviceOf by the path under the API.
+  const endpoint = (args.at(-1) ?? '').replace(/^https:\/\/[^/]+\/api\/v1\//, '')
   const post = args.includes('POST')
   const body = post ? JSON.parse(stdin) : null
   const list = /^repos\/([^/]+\/[^/]+)\/pulls\?/.exec(endpoint)
@@ -130,10 +144,20 @@ if (tool === 'gh') {
     html_url: p.url,
     state: p.state === 'open' ? 'open' : 'closed',
     merged: p.state === 'merged',
+    merged_at: p.mergedAt ?? null,
     mergeable: mergeState() === 'CLEAN',
-    head: { ref: p.head, sha: headOf(p) },
+    // As Gitea and Forgejo answer: `ref` is the branch only while the branch exists.
+    head: {
+      label: p.head,
+      ref: headOf(p) === '' ? `refs/pull/${p.number}/head` : p.head,
+      sha: headOf(p),
+    },
   })
-  if (list !== null) {
+  if (endpoint === 'user') {
+    console.log(JSON.stringify({ login: 'me' }))
+  } else if (endpoint.includes('/reviews?')) {
+    console.log('[]')
+  } else if (list !== null) {
     console.log(JSON.stringify(prs.map(toApi)))
   } else if (post && /^repos\/[^/]+\/[^/]+\/pulls$/.test(endpoint)) {
     const repo = endpoint.split('/').slice(1, 3).join('/')
