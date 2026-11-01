@@ -39,7 +39,7 @@ import { ALLOW } from './allow'
 import { askToLand } from './decisions'
 import { workerEnv } from './env'
 import { collect } from './gc'
-import { onCompact, onPrompt, onStop } from './hooks'
+import { onCompact, onPrompt, onStop, onStopFailure } from './hooks'
 import { Ledger, RETRO_STATUS, type RetroOutcome, type Task, type TaskStatus } from './ledger'
 import { notify } from './notify'
 import { sessionName, socketsDir, workspaceOf } from './place'
@@ -2399,6 +2399,48 @@ test('a turn an API error ended goes on as the account a restart waited for, wit
   expect(entries('launch').map((l) => l.config)).toEqual([a, b])
   expect(entries('launch')[1]?.prompt).toContain('API error (authentication_failed)')
   expect(ledger.attempts(id).map((a) => [a.kind, a.outcome])).toEqual([['start', 'succeeded']])
+}, 30_000)
+
+test('the decision an API error raised stays with the person when the account changes after it', async () => {
+  const current = join(home, 'account')
+  const [a, b] = accounts('a', 'b')
+  setAccountRule(home, { file: current })
+  writeFileSync(current, `${a}\n`)
+  const id = await add('stall on server_error')
+  const decision = await until(() => ledger.decisions(id)[0])
+  // The hook's last step, after the decision: the mark that a restart would continue past it on.
+  await until(() => terminals.option(sessionName(id), 'nod_stalled') === '')
+
+  writeFileSync(current, `${b}\n`)
+  expect(await restartDue(ledger, home, terminals)).toEqual([id]) // a worker between turns
+  // Up once the new Claude Code has lasted five seconds (QUICK_EXIT_MS in worker.ts).
+  await until(() => terminals.option(sessionName(id), 'nod_restarting') === '', 20_000)
+  expect(entries('launch').map((l) => [l.config, l.prompt])).toEqual([
+    [a, 'stall on server_error'],
+    [b, null],
+  ])
+  expect(ledger.decision(decision.id).answer).toBeNull()
+  expect(status(id)).toBe('needs_decision')
+}, 40_000)
+
+test('an API error raises no decision once no turn is open, or while Claude Code starts again', async () => {
+  const done = await add('first')
+  await reaches(done, 'succeeded')
+  await settled(done)
+  const finished = ledger.attempts(done)[0]?.sessionId ?? ''
+  await onStopFailure(ledger, home, terminals, { session_id: finished, error: 'server_error' })
+  expect(ledger.decisions(done)).toEqual([])
+  expect(ledger.attempts(done)).toHaveLength(1)
+  expect(status(done)).toBe('succeeded')
+
+  // Another process's restart is under way: the new start goes on with the turn (keepWorker).
+  const id = await add('hang here')
+  await until(() => entries('turn')[1])
+  terminals.setOption(sessionName(id), 'nod_restarting', '1')
+  const session = ledger.attempts(id)[0]?.sessionId ?? ''
+  await onStopFailure(ledger, home, terminals, { session_id: session, error: 'server_error' })
+  expect(ledger.decisions(id)).toEqual([])
+  expect(ledger.openAttempt(id)?.kind).toBe('start')
 }, 30_000)
 
 test('a restart waits while nod checks a turn it has closed, and comes once', async () => {

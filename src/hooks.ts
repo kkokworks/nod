@@ -26,7 +26,15 @@ import {
   TYPED,
   typedHere,
 } from './turns'
-import { continueAfter, restartDue, SELF, type StopEvent, settle, startReady } from './worker'
+import {
+  continueAfter,
+  restartDue,
+  restartingClaude,
+  SELF,
+  type StopEvent,
+  settle,
+  startReady,
+} from './worker'
 
 // What nod does as a worker's Claude Code hooks come (`nod hook <event>` in cli.ts): what each
 // hook passes on stdin, and the step of the worker's lifecycle (worker.ts, its turns and decisions
@@ -129,11 +137,13 @@ export async function onStop(
 // such a restart continues it, the turn is cut off as one whose Claude Code ended (cutOff): a
 // decision, which the project session hears and `nod ls` shows, as the person decides how it goes
 // on. Told only by <home>/notify, as before, it reached no session, and the task read as running
-// for hours. A restart that comes later continues it too (the mark stays), and the decision closes
-// as gone on without an answer, as any the worker goes on past.
+// for hours. Not a turn that a start under way (another process's restart, or Claude Code gone)
+// goes on with, or raises as cut off once up (keepWorker); nor once no turn is open: a message
+// went on past the error, and its Stop closed the turn.
 // ponytail: Claude Code does not wait for this hook (2.1.314's binary), so a message that comes
 // while it starts goes into the turn it then cuts off, where the review of the turn it runs does
-// not see it; that turn's Stop closes the decision as gone on without an answer (currentTurn).
+// not see it; that turn's Stop closes the decision as gone on without an answer (currentTurn). A
+// turn the ledger never had (its prompt hook failed) raises nothing.
 export async function onStopFailure(
   ledger: Ledger,
   home: string,
@@ -142,18 +152,22 @@ export async function onStopFailure(
 ): Promise<void> {
   const taskId = ledger.taskOfSession(event.session_id)
   if (taskId === null) return
-  if (terminals.alive(sessionName(taskId))) {
-    terminals.setOption(sessionName(taskId), STALLED_OPTION, event.error)
-  }
+  const name = sessionName(taskId)
+  if (terminals.alive(name)) terminals.setOption(name, STALLED_OPTION, event.error)
   const restarted = await restartDue(ledger, home, terminals, taskId).catch((error): number[] => {
     console.error(`nod: could not restart task n${taskId}: ${message(error)}`)
     return []
   })
   if (event.error === 'rate_limit' || restarted.includes(taskId)) return
+  const live = terminals.alive(name)
+  if ((live && restartingClaude(terminals, name)) || ledger.openAttempt(taskId) === null) return
   const turn = await currentAttempt(ledger, home, taskId, event.session_id)
   const why = `Its turn stopped on an API error (${event.error}), which Claude Code does not go on from by itself.`
   const shown = event.last_assistant_message?.trim().slice(0, QUESTION_LIMIT)
   await cutOff(ledger, home, taskId, ledger.attempt(turn), shown ? `${why}\n${shown}` : why)
+  // The person decides how it goes on: a restart that comes later starts Claude Code as for a worker
+  // between turns, not with "continue" past the decision (restart in worker.ts).
+  if (live) terminals.setOption(name, STALLED_OPTION, null)
 }
 
 // Called by the UserPromptSubmit hook. A turn a person types into the worker's terminal is in the
@@ -188,7 +202,7 @@ export async function onPrompt(
   const name = sessionName(taskId)
   const typed = terminals.attached(name) && !OWN_MESSAGE.test(event.prompt)
   // What a restart after an API error left for the new start (restart), which nod keeps nowhere
-  // else; the mark stays until a Stop.
+  // else; the mark stays until a Stop, or the decision the error raises (onStopFailure).
   const stalled = typed ? terminals.option(name, STALLED_OPTION) : ''
   const left = stalled === '' ? [] : [continueAfter(stalled)]
   const said = `${TYPED}\n${event.prompt}`
