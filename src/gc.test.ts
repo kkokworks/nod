@@ -635,6 +635,43 @@ test('gc reads each task again as it gets to it: one told to go on meanwhile is 
   }
 })
 
+// Its terminal went (a restart of the machine, say) with a turn a person typed still open: nothing
+// ends that turn, so it must not keep the task from gc for good.
+test('gc takes a finished task whose open turn went with its terminal', async () => {
+  const home = tmp.make('nod-gc-')
+  process.env.CLAUDE_CONFIG_DIR = tmp.make('nod-gc-claude-')
+  const ledger = new Ledger(home)
+  const id = ledger.add({
+    brief: 'typed into, then its terminal went',
+    repo: null,
+    branch: null,
+    checkCmd: null,
+    model: null,
+    after: [],
+    triggerId: null,
+    issue: null,
+  })
+  const cwd = workspaceOf(home, ledger.get(id))
+  mkdirSync(cwd, { recursive: true })
+  ledger.setRunning(id, cwd)
+  ledger.succeed(id)
+  // As the prompt hook of a turn a person typed opens it (onPrompt).
+  ledger.startAttempt({
+    taskId: id,
+    kind: 'followup',
+    decisionId: null,
+    sessionId: 'gone',
+    prompt: '(typed into the terminal)\nhang',
+  })
+
+  expect(await collect(ledger, home, Tmux.of(home), { ids: [id] })).toEqual({
+    removed: [id],
+    clean: [],
+    skipped: [],
+  })
+  expect(existsSync(cwd)).toBe(false)
+})
+
 test('gc --older-than leaves a task a queued one waits for, as sweep does', async () => {
   const home = tmp.make('nod-gc-')
   process.env.CLAUDE_CONFIG_DIR = tmp.make('nod-gc-claude-')
