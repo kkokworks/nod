@@ -640,8 +640,13 @@ export async function settle(
   const text = event.last_assistant_message.trim()
   const report = parseReport(text)
   const summary = report?.text ?? oneLine(text, 200)
+  const work = event.background_tasks ?? []
   // A worker that keeps going after a failed check often drops the report line; the check decides.
-  const done = report?.status === 'done' || (report === null && event.stop_hook_active)
+  // Not while background work it started still runs: it stopped to wait for that (waiting below).
+  // Nor once that wait is past WAIT_LIMIT_MS: a turn that never reported and whose work still runs
+  // is not done, so it asks the person as any other wait does.
+  const done =
+    report?.status === 'done' || (report === null && event.stop_hook_active && work.length === 0)
   // A message that came while this hook ran started another turn, which Claude Code runs once the
   // hook ends: that turn's stop decides, not this one. So does one that came in the turn but that
   // the worker had not taken in by its end (carryUnheard). Asked again in the transaction that acts
@@ -664,7 +669,6 @@ export async function settle(
     // Background work the worker started still runs, and Claude Code starts its next turn once that
     // is done (2.1.309), so what it asks now waits on nothing the person can give yet. Not past
     // WAIT_LIMIT_MS of waiting in a row, though (overdueWaits does it between turns).
-    const work = event.background_tasks ?? []
     const since = waitingSince(ledger, task.id) ?? Date.now()
     const overdue = Date.now() - since >= WAIT_LIMIT_MS
     const waiting = work.length > 0 && !overdue
