@@ -3122,6 +3122,37 @@ it('a turn that stops while background work it started still runs waits for that
   expect(status(done)).toBe('succeeded')
 })
 
+it('a retry that stops with no report while background work it started still runs waits for that work, and is not checked as done', async () => {
+  // The stop of a turn Claude Code continued as the Stop hook blocked it: a retry of a failed check.
+  const retried = (session: string, report: string, running: string[]) =>
+    onStop(ledger, home, terminals, {
+      session_id: session,
+      last_assistant_message: report,
+      stop_hook_active: true,
+      background_tasks: running.map((description) => ({ type: 'subagent', description })),
+    })
+  const turns = (id: number) => ledger.attempts(id).map((a) => [a.kind, a.outcome, a.checkResult])
+  const id = started('review-strict: write it', 'retry-waits')
+  expect(await stopped('retry-waits', 'NOD: done | did it')).not.toBeNull()
+  expect(await retried('retry-waits', 'Fixing it; a review still runs.', ['review'])).toBeNull()
+  expect(status(id)).toBe('running')
+  expect(ledger.decisions(id)).toEqual([])
+  expect(turns(id)).toEqual([
+    ['start', 'succeeded', 'failed'],
+    ['retry', 'waiting', null],
+  ])
+
+  // With no work left running, a retry with no report is checked as done, as before.
+  const checked = started('review-strict: write it', 'retry-checked')
+  expect(await stopped('retry-checked', 'NOD: done | did it')).not.toBeNull()
+  expect(await retried('retry-checked', 'Fixed it.', [])).not.toBeNull()
+  expect(turns(checked)).toEqual([
+    ['start', 'succeeded', 'failed'],
+    ['retry', 'succeeded', 'failed'],
+    ['retry', null, null],
+  ])
+}, 30_000)
+
 it('a task that has waited on background work past the limit asks the person, at its next stop or at the tick', async () => {
   const id = started('review it', 'waits-long')
   await stopped('waits-long', 'NOD: question | Waiting for the review', ['review'])
