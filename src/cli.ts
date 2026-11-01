@@ -31,7 +31,7 @@ import {
   tellProject,
   unheardWork,
 } from './inbox'
-import { land } from './land'
+import { dueTasks, land } from './land'
 import {
   type Attempt,
   type Decision,
@@ -227,7 +227,10 @@ const USAGE = `usage:
                                    went up and ones whose landing stopped too. What needs judgment
                                    (a conflict, a check that fails once rebased, the pull request's
                                    text) goes to the task's worker, and what only you can clear
-                                   becomes a decision
+                                   becomes a decision. Inside a sandbox (SANDBOX_RUNTIME=1) it
+                                   lands nothing, as the check would run in it: it lists what the
+                                   tick lands outside it, or says to run it outside if the
+                                   schedule is off
   nod schedule [on | off]          whether the OS scheduler runs the tick every minute; on, it
                                    runs with this shell's PATH and Claude config dir, which the
                                    triggers' workers and the watches use. It stays on until off
@@ -529,7 +532,7 @@ switch (command) {
     const took = await answer(ledger, home, terminals, id, said, actorFromEnv())
     if (reason === 'land') {
       console.log(/^y(es)?$/i.test(said) ? 'landing it again' : 'stopped landing it')
-      // Yes tries again now, not at the next fifth minute.
+      // Yes tries again now, not at the next fifth minute, unless this is a sandbox (leaveToTick).
       if (/^y(es)?$/i.test(said)) await landCommand([taskId])
     } else {
       console.log(took ? `answered; sent to task n${taskId}` : `closed; task n${taskId} had ended`)
@@ -733,9 +736,37 @@ async function landCommand(ids: number[]): Promise<void> {
     }
     if (ledger.landing(id)?.stopped) ledger.setLanding(id, { stopped: null, note: null })
   }
+  if (process.env.SANDBOX_RUNTIME === '1') {
+    leaveToTick(ids.length > 0 ? ids : undefined)
+    return
+  }
   const moved = await land(ledger, home, terminals, ids.length > 0 ? { only: ids } : {})
   for (const m of moved) console.log(`n${m.id} ${m.did}`)
   if (moved.length === 0) console.log('nothing to land')
+}
+
+// Claude Code adds SANDBOX_RUNTIME=1 to the commands it runs in its sandbox, and a check run from
+// there runs in it: what the sandbox blocks skips (nod's tmux tests, test/tmux-server.ts), and the
+// check passes all the same. So nod land lands nothing there and says what the tick, outside it,
+// lands. One named that only nod land would look at (added before its repo went up) gets its
+// landing row, from which on the tick lands it too.
+function leaveToTick(only: number[] | undefined): void {
+  const tasks = dueTasks(ledger, terminals, only)
+  if (tasks.length === 0) {
+    console.log('nothing to land')
+    return
+  }
+  for (const t of tasks) if (ledger.landing(t.id) === null) ledger.setLanding(t.id, {})
+  const ticks = scheduleEnv(home) !== null
+  const why =
+    'nod land lands nothing inside a sandbox (SANDBOX_RUNTIME=1): the check would run in it, where the tests it blocks skip, and could pass all the same.'
+  console.log(
+    ticks
+      ? `${why} The tick lands these outside it at its next fifth minute; nod show <task> has where each stands.`
+      : `${why} The schedule is off, so no tick lands them: run nod land in a shell outside the sandbox, or turn the schedule on there (nod schedule on).`,
+  )
+  const waits = ticks ? 'waits for the tick' : 'waits for nod land outside the sandbox'
+  for (const t of tasks) console.log(`n${t.id} ${waits}`)
 }
 
 function printRepo(r: Repo): void {
