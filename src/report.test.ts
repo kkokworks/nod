@@ -70,18 +70,20 @@ it('a report says what to tell other tasks in NOD: tell lines, which nod reads o
 })
 
 it('the pull request title is its # heading, and a status line above it goes, out of the body too', () => {
-  const report = [
-    'The diff and the numbers are the same after the rebase.',
-    '# Keep the cache warm across restarts',
-    '',
-    '## What changed',
-    'The cache is saved on exit.',
-    'NOD: done | wrote it',
-  ].join('\n')
-  expect(prText(report)).toEqual({
-    title: 'Keep the cache warm across restarts',
-    body: '## What changed\nThe cache is saved on exit.',
-  })
+  for (const heading of ['# ', '  # ']) {
+    const report = [
+      'The diff and the numbers are the same after the rebase.',
+      `${heading}Keep the cache warm across restarts`,
+      '',
+      '## What changed',
+      'The cache is saved on exit.',
+      'NOD: done | wrote it',
+    ].join('\n')
+    expect(prText(report)).toEqual({
+      title: 'Keep the cache warm across restarts',
+      body: '## What changed\nThe cache is saved on exit.',
+    })
+  }
 })
 
 it('a pull request title on the first line stays the title, whatever headings its body has', () => {
@@ -104,5 +106,10 @@ it('a pull request title on the first line stays the title, whatever headings it
   // Nor is a shell comment in its code the title, with no section before it.
   const code = '```sh\n# run the tests\nbun test\n```'
   expect(prText(`Fix it\n${code}\nNOD: done | ok`)).toEqual({ title: 'Fix it', body: code })
+  // A fence line with more after its marks is code in a fence, as Markdown has it, not its end.
+  const nested = '````md\n```sh\n# run the tests\n```\n````'
+  expect(prText(`Fix it\n${nested}\nNOD: done | ok`)).toEqual({ title: 'Fix it', body: nested })
+  const tagged = '```\ncode\n```sh\n# a comment\n```'
+  expect(prText(`Fix it\n${tagged}\nNOD: done | ok`)).toEqual({ title: 'Fix it', body: tagged })
   expect(prText('\n**NOD: done | nothing**')).toBeNull()
 })

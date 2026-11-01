@@ -112,15 +112,14 @@ export function parseTells(text: string): { tells: Tell[] } | { error: string } 
 // asked for the heading; a body's `##` section or a shell comment in its code then is no title.
 // ponytail: under such a first-line title, a body whose first heading is a `# ` one gives that
 // heading as the title: it is the shape of a status line above the title, told apart only by
-// guessing.
+// guessing, so PR_TEXT asks for `##` sections.
 // The `NOD:` lines are nod's. Null without a title.
 export function prText(report: string): { title: string; body: string } | null {
   const lines = report.split('\n').filter((l) => nodLine(l) === null)
   const heading = firstHeading(lines)
-  const at = /^#[ \t]/.test(lines[heading] ?? '')
-    ? heading
-    : lines.findIndex((l) => l.trim() !== '')
-  const first = lines[at]
+  const titled = /^ {0,3}#[ \t]/.test(lines[heading] ?? '')
+  const at = titled ? heading : lines.findIndex((l) => l.trim() !== '')
+  const first = titled ? lines[at]?.trimStart() : lines[at]
   if (first === undefined) return null
   const title = first
     .replace(/^#+\s*/, '')
@@ -137,15 +136,15 @@ export function prText(report: string): { title: string; body: string } | null {
   }
 }
 
-// The index of the first Markdown heading outside code fences, or -1.
-// ponytail: a fence closes on its own marks, info string or not; CommonMark's finer rules if a
-// worker's text ever needs them.
+// The index of the first Markdown heading outside code fences, or -1. A fence closes on a line of
+// its own marks, at least as many and nothing after them: a "```sh" line inside it is its code.
 function firstHeading(lines: string[]): number {
   let fence: string | null = null
   for (const [i, line] of lines.entries()) {
     const marks = /^ {0,3}(`{3,}|~{3,})/.exec(line)?.[1]
-    if (marks !== undefined && fence === null) fence = marks
-    else if (marks !== undefined && fence !== null && marks.startsWith(fence)) fence = null
+    const closes = marks?.startsWith(fence ?? '\n') && /^ {0,3}(`+|~+)[ \t]*$/.test(line)
+    if (fence === null && marks !== undefined) fence = marks
+    else if (closes) fence = null
     else if (fence === null && /^ {0,3}#{1,6}(?:[ \t]|$)/.test(line)) return i
   }
   return -1
@@ -156,4 +155,4 @@ function firstHeading(lines: string[]): number {
 export const TEXT_ONLY =
   'Change nothing else this turn, and skip the subagent review: nothing changes.'
 export const PR_TEXT =
-  "nod then opens a pull request for your branch. Above your report line, write it for the repo's readers: its title as a `# ` heading on the first line, then its body in Markdown (what changed and why, how it was checked, and the conflict table if you resolved any). It goes out as you write it, so leave out anything that must not be published."
+  "nod then opens a pull request for your branch. Above your report line, write it for the repo's readers: its title as a `# ` heading on the first line, then its body in Markdown with `##` sections (what changed and why, how it was checked, and the conflict table if you resolved any). It goes out as you write it, so leave out anything that must not be published."
