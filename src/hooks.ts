@@ -10,7 +10,6 @@ import {
   QUESTION_LIMIT,
 } from './decisions'
 import type { Attempt, Ledger } from './ledger'
-import { notify, taskRef } from './notify'
 import { CLAUDE_OPTION, SETTLING_OPTION, STALLED_OPTION, sessionName } from './place'
 import { message } from './proc'
 import { askedAgain } from './review'
@@ -27,7 +26,15 @@ import {
   TYPED,
   typedHere,
 } from './turns'
-import { continueAfter, restartDue, SELF, type StopEvent, settle, startReady } from './worker'
+import {
+  continueAfter,
+  restartDue,
+  restartingClaude,
+  SELF,
+  type StopEvent,
+  settle,
+  startReady,
+} from './worker'
 
 // What nod does as a worker's Claude Code hooks come (`nod hook <event>` in cli.ts): what each
 // hook passes on stdin, and the step of the worker's lifecycle (worker.ts, its turns and decisions
@@ -48,8 +55,14 @@ export const NotificationEvent = z.object({
   notification_type: z.string(),
   message: z.string(),
 })
-// Sent instead of Stop when an API error ended the turn: a usage limit, a login (2.1.309).
-export const StopFailureEvent = z.object({ session_id: z.string(), error: z.string() })
+// Sent instead of Stop when an API error ended the turn: a usage limit, a login (2.1.309), the API
+// out of reach (`server_error`, 2.1.314). `last_assistant_message`: the error as Claude Code shows
+// it, such as `API Error: Can't reach the API server … (ENOTFOUND)` (2.1.314).
+export const StopFailureEvent = z.object({
+  session_id: z.string(),
+  error: z.string(),
+  last_assistant_message: z.string().optional(),
+})
 // Sent as Claude Code takes in a message, before its turn (measured on 2.1.310 with `claude -p`:
 // session_id, transcript_path, cwd, prompt_id, permission_mode, hook_event_name, prompt).
 export const PromptEvent = z.object({ session_id: z.string(), prompt: z.string() })
@@ -118,9 +131,19 @@ export async function onStop(
   return out
 }
 
-// Called by the StopFailure hook. The turn stays open: Claude Code continues it by itself once a
-// usage limit resets. A restart it waits on, as another account, runs now and continues it. Other
-// errors (a login, the server) it does not go on from, so the person hears of them.
+// Called by the StopFailure hook. After a usage limit the turn stays open: Claude Code continues it
+// by itself once the limit resets. A restart it waits on, as another account, runs now and
+// continues it. Other errors (a login, the server out of reach) it does not go on from, so unless
+// such a restart continues it, the turn is cut off as one whose Claude Code ended (cutOff): a
+// decision, which the project session hears and `nod ls` shows, as the person decides how it goes
+// on. Told only by <home>/notify, as before, it reached no session, and the task read as running
+// for hours. Not a turn that a start under way (another process's restart, or Claude Code gone)
+// goes on with, or raises as cut off once up (keepWorker); nor once no turn is open: a message
+// went on past the error, and its Stop closed the turn.
+// ponytail: Claude Code does not wait for this hook (2.1.314's binary), so a message that comes
+// while it starts goes into the turn it then cuts off, where the review of the turn it runs does
+// not see it; that turn's Stop closes the decision as gone on without an answer (currentTurn). A
+// turn the ledger never had (its prompt hook failed) raises nothing.
 export async function onStopFailure(
   ledger: Ledger,
   home: string,
@@ -129,19 +152,22 @@ export async function onStopFailure(
 ): Promise<void> {
   const taskId = ledger.taskOfSession(event.session_id)
   if (taskId === null) return
-  if (terminals.alive(sessionName(taskId))) {
-    terminals.setOption(sessionName(taskId), STALLED_OPTION, event.error)
-  }
-  if (event.error !== 'rate_limit') {
-    await notify(home, {
-      event: 'error',
-      task: taskRef(ledger.get(taskId)),
-      error: `Its turn stopped on an API error (${event.error}), which Claude Code does not go on from by itself.`,
-    })
-  }
-  await restartDue(ledger, home, terminals, taskId).catch((error) =>
-    console.error(`nod: could not restart task n${taskId}: ${message(error)}`),
-  )
+  const name = sessionName(taskId)
+  if (terminals.alive(name)) terminals.setOption(name, STALLED_OPTION, event.error)
+  const restarted = await restartDue(ledger, home, terminals, taskId).catch((error): number[] => {
+    console.error(`nod: could not restart task n${taskId}: ${message(error)}`)
+    return []
+  })
+  if (event.error === 'rate_limit' || restarted.includes(taskId)) return
+  const live = terminals.alive(name)
+  if ((live && restartingClaude(terminals, name)) || ledger.openAttempt(taskId) === null) return
+  const turn = await currentAttempt(ledger, home, taskId, event.session_id)
+  const why = `Its turn stopped on an API error (${event.error}), which Claude Code does not go on from by itself.`
+  const shown = event.last_assistant_message?.trim().slice(0, QUESTION_LIMIT)
+  await cutOff(ledger, home, taskId, ledger.attempt(turn), shown ? `${why}\n${shown}` : why)
+  // The person decides how it goes on: a restart that comes later starts Claude Code as for a worker
+  // between turns, not with "continue" past the decision (restart in worker.ts).
+  if (live) terminals.setOption(name, STALLED_OPTION, null)
 }
 
 // Called by the UserPromptSubmit hook. A turn a person types into the worker's terminal is in the
@@ -176,7 +202,7 @@ export async function onPrompt(
   const name = sessionName(taskId)
   const typed = terminals.attached(name) && !OWN_MESSAGE.test(event.prompt)
   // What a restart after an API error left for the new start (restart), which nod keeps nowhere
-  // else; the mark stays until a Stop.
+  // else; the mark stays until a Stop, or the decision the error raises (onStopFailure).
   const stalled = typed ? terminals.option(name, STALLED_OPTION) : ''
   const left = stalled === '' ? [] : [continueAfter(stalled)]
   const said = `${TYPED}\n${event.prompt}`

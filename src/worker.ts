@@ -1139,7 +1139,7 @@ function startAgain(terminals: Terminals, name: string): void {
 
 // Whether the live session's Claude Code is starting again, or the one keepWorker started is gone
 // before keepWorker marks the restart.
-function restartingClaude(terminals: Terminals, name: string): boolean {
+export function restartingClaude(terminals: Terminals, name: string): boolean {
   // The pid first: keepWorker marks the restart before it starts the next Claude Code, so a pid
   // read before the mark is of the one that ended.
   const claude = Number(terminals.option(name, CLAUDE_OPTION))
