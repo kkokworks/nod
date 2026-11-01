@@ -387,6 +387,42 @@ test('only tasks added after the repo went up land on their own; nod land names 
   expect(await land(ledger, home, Tmux.of(home), { send, only: [older] })).toEqual([])
 }, 30_000)
 
+test('nod land inside a sandbox runs no check and leaves the landing to the tick, which lands a task added before its repo went up too', async () => {
+  const id = finished('feat/sandboxed', { 's.txt': 's\n' })
+  const ran = join(tmp.make('nod-land-check-'), 'ran')
+  setRepo('pr', { checkCmd: `touch ${JSON.stringify(ran)}` })
+  const head = git(ws(id), 'rev-parse', 'HEAD')
+  const inSandbox = (): string[] => {
+    const r = Bun.spawnSync(['bun', resolve(import.meta.dir, 'cli.ts'), 'land', String(id)], {
+      env: { ...process.env, SANDBOX_RUNTIME: '1' },
+    })
+    expect(r.stderr.toString()).toBe('')
+    expect(r.exitCode).toBe(0)
+    return r.stdout.toString().trimEnd().split('\n')
+  }
+  const why =
+    'nod land lands nothing inside a sandbox (SANDBOX_RUNTIME=1): the check would run in it, where the tests it blocks skip, and could pass all the same.'
+  expect(inSandbox()).toEqual([
+    `${why} The schedule is off, so no tick lands them: run nod land in a shell outside the sandbox, or turn the schedule on there (nod schedule on).`,
+    `n${id} waits for nod land outside the sandbox`,
+  ])
+  // What says the schedule is on (scheduleEnv).
+  writeFileSync(join(home, 'schedule.json'), '{}\n')
+  expect(inSandbox()).toEqual([
+    `${why} The tick lands these outside it at its next fifth minute; nod show <task> has where each stands.`,
+    `n${id} waits for the tick`,
+  ])
+  // Nothing ran, moved or went to the worker.
+  expect(existsSync(ran)).toBe(false)
+  expect(git(ws(id), 'rev-parse', 'HEAD')).toBe(head)
+  expect(handed).toEqual([])
+  // The tick's pass, which names no task, lands it now.
+  expect(await land(ledger, home, Tmux.of(home), { send })).toEqual([
+    { id, did: 'its worker writes the pull request' },
+  ])
+  expect(existsSync(ran)).toBe(true)
+}, 30_000)
+
 test('a message while nod works in the worktree waits, so the worker does not edit files that move under it', async () => {
   setRepo('pr')
   const id = finished('feat/busy', { 'b.txt': 'b\n' })

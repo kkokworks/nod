@@ -19,7 +19,8 @@ import { baseOf, handOff, restore, type Send } from './worker'
 // the person's gate, push, the pull request, and at `merge` its squash merge. The worker, in its
 // own conversation, does what needs judgment: a conflict, a check that fails after the rebase, the
 // pull request's text (handOff in worker.ts, a `land` turn). What only the person can clear is a
-// decision (askToLand). The tick runs it every fifth minute, and `nod land` now.
+// decision (askToLand). The tick runs it every fifth minute, and `nod land` now, but not from inside
+// a sandbox (landCommand in cli.ts).
 
 // The tick lands last but for its sweep, and the scheduler starts no tick while one runs, so a long
 // check holds back the sweep and the next ticks' triggers and watches.
@@ -45,9 +46,7 @@ export async function land(
 ): Promise<Moved[]> {
   const moved: Moved[] = []
   const { only } = opts
-  const paths = only === undefined ? null : new Set(only.map((id) => ledger.get(id).repo))
-  for (const repo of ledger.repos()) {
-    if (repo.land === 'off' || (paths !== null && !paths.has(repo.path))) continue
+  for (const repo of landingRepos(ledger, only)) {
     // Two passes at once would rebase and push the same branches; the other one lands these.
     if (!ledger.claimRepo(repo.path, process.pid, running)) continue
     try {
@@ -57,6 +56,18 @@ export async function land(
     }
   }
   return moved
+}
+
+// The tasks a pass would look at now (`only` as for land), landing none: what `nod land` leaves to
+// the tick from inside a sandbox (cli.ts).
+export function dueTasks(ledger: Ledger, terminals: Terminals, only?: number[]): Task[] {
+  return landingRepos(ledger, only).flatMap((repo) => due(ledger, terminals, repo, only))
+}
+
+// The repos that let nod land, of the tasks `only` names if it names any.
+function landingRepos(ledger: Ledger, only: number[] | undefined): Repo[] {
+  const paths = only === undefined ? null : new Set(only.map((id) => ledger.get(id).repo))
+  return ledger.repos().filter((r) => r.land !== 'off' && (paths === null || paths.has(r.path)))
 }
 
 type Pass = {

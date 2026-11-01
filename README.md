@@ -150,7 +150,7 @@ nod repo ~/code/app pr --check 'bun test && bun run typecheck'   # rebase·검�
 nod repo ~/code/app merge --gate 'sh ~/.nod/gates/public.sh'     # squash 머지까지, push 전마다 점검
 nod repo ~/code/app            # 지금 설정과 바꾼 이력
 nod repo ~/code/app off        # 기본: 지금처럼 사람이 올림
-nod land                       # 다음 5분을 기다리지 않고 지금
+nod land                       # 다음 5분을 기다리지 않고 지금 (샌드박스 밖에서)
 nod land n7                    # 켜기 전에 넣은 작업이나 착지를 멈춘 작업도 이름을 대면 올림
 ```
 
@@ -158,7 +158,7 @@ nod land n7                    # 켜기 전에 넣은 작업이나 착지를 멈
 
 push 전마다 nod 는 merge commit 이 없는지와 작업 브랜치가 기본 브랜치가 아닌지 보고, 레포의 점검(`--gate`)을 돌립니다. 점검은 `NOD_BASE..NOD_HEAD`(올릴 커밋)와 `NOD_PR`(PR 제목·본문 파일)을 받아 0 으로 끝나야 하며, 실패하면 결정으로 올라와 답이 워커에게 갑니다. push 는 작업 브랜치에만 `--force-with-lease` 로 하고, PR 은 GitHub 이면 `gh`, 그 밖(Gitea·Forgejo)이면 `tea` 로 엽니다. PR 주소는 저절로 `nod link` 되고, 머지되면 gc 가 정리합니다. `merge` 단계는 squash 로만, 확인한 head 가 그대로이고 원격 기본 브랜치가 그 사이 움직이지 않았을 때만 머지합니다. `pr` 단계는 열린 PR 이 충돌하거나 뒤처졌다고 서비스가 말할 때만 다시 rebase 합니다.
 
-push 가 거절되거나(남이 그 브랜치에 push), 서비스가 PR 열기·머지를 거절하거나, PR 이 머지 없이 닫히면 결정(`land`)이 열립니다. `yes` 면 다시 시도하고, 그 밖의 답이면 그 작업의 착지를 멈춥니다. 착지 중에 열린 결정을 `nod drop` 하면 작업을 취소하지 않고 착지만 멈춥니다(rebase 도중이면 되돌림). PR 을 열거나 머지하면 `<홈>/notify` 에 `pr_opened`·`merged` 가 가고, 착지가 기다리는 것이 바뀔 때마다 `landing` 이 갑니다. `nod ls` 의 요약 칸과 `nod show` 의 `landing:` 줄이 어디까지 됐는지 보여 줍니다. tick 은 스케줄의 환경으로 돌므로 `gh`·`tea`·git 의 로그인(키체인·설정 파일)이 그 환경에서 되어야 합니다.
+push 가 거절되거나(남이 그 브랜치에 push), 서비스가 PR 열기·머지를 거절하거나, PR 이 머지 없이 닫히면 결정(`land`)이 열립니다. `yes` 면 다시 시도하고, 그 밖의 답이면 그 작업의 착지를 멈춥니다. 착지 중에 열린 결정을 `nod drop` 하면 작업을 취소하지 않고 착지만 멈춥니다(rebase 도중이면 되돌림). PR 을 열거나 머지하면 `<홈>/notify` 에 `pr_opened`·`merged` 가 가고, 착지가 기다리는 것이 바뀔 때마다 `landing` 이 갑니다. `nod ls` 의 요약 칸과 `nod show` 의 `landing:` 줄이 어디까지 됐는지 보여 줍니다. tick 은 스케줄의 환경으로 돌므로 `gh`·`tea`·git 의 로그인(키체인·설정 파일)이 그 환경에서 되어야 합니다. Claude Code 샌드박스 안(`SANDBOX_RUNTIME=1`)에서 부른 `nod land` 는 아무것도 착지하지 않습니다. 검증이 그 샌드박스 안에서 돌면 샌드박스가 막는 시험을 건너뛴 채 통과할 수 있기 때문입니다. 대신 샌드박스 밖의 tick 이 착지할 작업을 알리고, 스케줄이 꺼져 있으면 샌드박스 밖의 셸에서 `nod land` 를 돌리라고 알립니다.
 
 점검 명령은 레포 밖에 둡니다. 점검이 찾는 낱말 자체가 공개하면 안 되는 것일 수 있고, 브랜치 안의 스크립트는 워커가 고칠 수 있기 때문입니다. 공개 레포의 점검은 예를 들어 이렇게 씁니다(낱말 파일 `~/.nod/gates/words` 도 레포 밖).
 
