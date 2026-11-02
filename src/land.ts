@@ -203,8 +203,12 @@ async function landTask(
     )
     if (r.code === 0) {
       const moved = await git(ws, 'rev-parse', 'HEAD')
-      // A rebase with no conflict moves the same commits, so the text written on them goes along.
-      const textHead = l.textHead === head ? moved : l.textHead
+      // A rebase with no conflict moves the same changes, so the text written on them goes along;
+      // not when it dropped what the default branch has already (a commit it took in, say).
+      const changes = (from: string, to: string) => git(ws, 'diff', '--numstat', from, to)
+      const same =
+        l.textHead === head && (await changes(base, head)) === (await changes(tip.commit, moved))
+      const textHead = same ? moved : l.textHead
       l = ledger.setLanding(task.id, { base: tip.commit, ready: null, busy: null, textHead })
       head = moved
     } else if (rebasing(ws)) {

@@ -775,6 +775,25 @@ test('a rebase alone after the pull request text keeps the text', async () => {
   expect(openedTitle()).toBe('Add j')
 }, 30_000)
 
+test('a rebase that drops a change the default branch already has asks for the text again', async () => {
+  setRepo('pr')
+  const id = finished('feat/i', { 'i.txt': 'i\n' })
+  writeFileSync(join(ws(id), 'm.txt'), 'm\n')
+  git(ws(id), 'add', '-A')
+  git(ws(id), 'commit', '-qm', 'add m')
+  await land(ledger, home, Tmux.of(home), { send })
+  await stops(id, 'Add i and m\n\nNOD: done | wrote it')
+  // The same change goes into the default branch another way, so the rebase leaves it out.
+  const tip = mainMoves('m.txt', 'm\n')
+
+  expect(await land(ledger, home, Tmux.of(home), { send })).toEqual([
+    { id, did: 'its worker writes the pull request' },
+  ])
+  expect(git(ws(id), 'log', '--format=%s', `${tip}..HEAD`)).toBe('change i.txt')
+  expect(handed).toHaveLength(2)
+  expect(ledger.landing(id)?.title).toBeNull()
+}, 30_000)
+
 test('without its service on PATH, nod asks before anything goes out', async () => {
   setRepo('pr')
   const id = finished('feat/p', { 'p.txt': 'p\n' })
