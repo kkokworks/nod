@@ -194,7 +194,9 @@ export async function verifyLanding(
   // reports on that work, not on the pull request. A gate that fails clears it (land.ts).
   const pr = reported && prompt.includes(PR_TEXT) ? prText(report) : null
   const had = ledger.landing(task.id)
-  if (pr !== null && had?.pr === null && had.title === null) ledger.setLanding(task.id, pr)
+  // With the head it was written on, which landing compares with the head that goes out (land.ts).
+  if (pr !== null && had?.pr === null && had.title === null)
+    ledger.setLanding(task.id, { ...pr, textHead: await headOf(ws) })
   if (rebasing(ws)) {
     const unmerged = await unmergedFiles(ws)
     if (unmerged !== '') {

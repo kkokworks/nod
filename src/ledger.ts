@@ -138,8 +138,10 @@ export type Repo = {
 export type RepoEdit = Partial<Pick<Repo, 'land' | 'checkCmd' | 'gateCmd'>>
 export type RepoChange = { actor: string; change: Changed; at: string }
 // How far a task's landing has got (land.ts). `base`: the commit its own work sits on, moved by
-// each rebase; `ready`: the head that passed the check on that base; `pushed`: what nod last
-// pushed to its branch; `pr`: the pull request nod opened. `handedAt`: since when the worker has
+// each rebase; `ready`: the head that passed the check on that base; `title`, `body`: the pull
+// request's text the worker wrote, on the head `textHead` (moved by nod's own rebases, so a later
+// commit asks for the text again); `pushed`: what nod last pushed to its branch; `pr`: the pull
+// request nod opened. `handedAt`: since when the worker has
 // landing work (a conflict, a failed check, the pull request's text) it has not finished; `busy`:
 // the process working in its worktree right now. `stopped`: why landing stopped, null while it goes
 // on; `note`: what it waits for or last failed on, which the person hears once each time it changes.
@@ -149,6 +151,7 @@ export type Landing = {
   ready: string | null
   title: string | null
   body: string | null
+  textHead: string | null
   pushed: string | null
   pr: string | null
   handedAt: string | null
@@ -632,6 +635,9 @@ export const MIGRATIONS = [
   where status != 'cancelled'
     and retro_id in (select id from retros where outcome in ('declined', 'dropped'));
   `,
+  // v26: the head of its branch a landing's pull request text was written on (land.ts). A text
+  // from before has none, so it is asked again before its pull request opens.
+  'alter table landings add column text_head text;',
 ]
 // The migration that moves <home>/rules.md into the ledger, numbered as user_version counts.
 const RULES_FILE_MIGRATION = 17
@@ -729,6 +735,7 @@ const EMPTY_LANDING: Omit<Landing, 'taskId' | 'updatedAt'> = {
   ready: null,
   title: null,
   body: null,
+  textHead: null,
   pushed: null,
   pr: null,
   handedAt: null,
