@@ -151,6 +151,21 @@ test('v25 moves each retrospective that has its outcome to the status the outcom
   expect(ledger.unsentNotices()).toEqual([])
 })
 
+test('v26 keeps the pull request text of a v25 landing, with no head it was written on', () => {
+  const home = freshHome()
+  const old = new Database(join(home, 'nod.db'), { create: true, strict: true })
+  for (const sql of MIGRATIONS.slice(0, 25)) old.exec(sql)
+  old.exec(`pragma user_version = 25;
+    insert into tasks (id, brief, created_at) values (1, 'x', 'at');
+    insert into landings (task_id, title, body, updated_at) values (1, 'Add a', 'Adds a.', 'at');`)
+  old.close()
+  expect(new Ledger(home).landing(1)).toMatchObject({
+    title: 'Add a',
+    body: 'Adds a.',
+    textHead: null,
+  })
+})
+
 test("a retrospective's task goes to the status its outcome has as it ends, and nothing later moves it off", () => {
   const ledger = new Ledger(freshHome())
   for (const [outcome, want] of Object.entries(RETRO_STATUS) as [RetroOutcome, TaskStatus][]) {
