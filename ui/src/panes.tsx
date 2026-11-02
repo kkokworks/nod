@@ -129,10 +129,17 @@ export function Splitter({ name }: { name: Pane }) {
       }}
       onPointerMove={(e) => {
         const d = drag.current
-        if (d !== null) d.width = resize(d.from, e.clientX - d.x, d.box)
+        if (d === null) return
+        // No button held: the drag's end did not come here (the capture failed), so it ends now.
+        if (e.buttons === 0) finish(name, drag)
+        else d.width = resize(d.from, e.clientX - d.x, d.box)
       }}
+      onPointerUp={() => finish(name, drag)}
+      onPointerCancel={() => finish(name, drag)}
       onLostPointerCapture={() => finish(name, drag)}
       onKeyDown={(e) => {
+        // With a modifier, the key is the browser's (⌘← and Alt+← go back).
+        if (e.altKey || e.ctrlKey || e.metaKey) return
         const by = e.key === 'ArrowRight' ? STEP : e.key === 'ArrowLeft' ? -STEP : 0
         if (by === 0) return
         e.preventDefault()

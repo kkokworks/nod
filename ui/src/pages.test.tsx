@@ -416,10 +416,21 @@ test('the terminal pane opens at the width stored in the browser, and a drag or 
     expect(root.style.getPropertyValue('--term-w')).toBe('516px')
     expect(localStorage.getItem(KEY)).toBe('516')
     expect(edge.getAttribute('aria-valuenow')).toBe('57')
+    // With a modifier, ← is the browser's: ⌘← and Alt+← go back.
+    const back = new KeyboardEvent('keydown', {
+      key: 'ArrowLeft',
+      altKey: true,
+      bubbles: true,
+      cancelable: true,
+    })
+    act(() => {
+      edge.dispatchEvent(back)
+    })
+    expect(back.defaultPrevented).toBe(false)
     // A drag sets the width as it goes and stores it when it ends; the page keeps its 320px.
-    const pointer = (type: string, clientX: number) =>
+    const pointer = (type: string, clientX: number, buttons = 1) =>
       act(() => {
-        edge.dispatchEvent(new PointerEvent(type, { clientX, button: 0, bubbles: true }))
+        edge.dispatchEvent(new PointerEvent(type, { clientX, button: 0, buttons, bubbles: true }))
       })
     pointer('pointerdown', 700)
     pointer('pointermove', 600)
@@ -434,6 +445,13 @@ test('the terminal pane opens at the width stored in the browser, and a drag or 
     // A move after the drag ended does nothing.
     pointer('pointermove', 650)
     expect(root.style.getPropertyValue('--term-w')).toBe('880px')
+    // A move with no button held ends a drag whose end did not come (the capture failed).
+    pointer('pointerdown', 700)
+    pointer('pointermove', 690)
+    pointer('pointermove', 600, 0)
+    expect(localStorage.getItem(KEY)).toBe('510')
+    expect(root.classList.contains('resizing')).toBe(false)
+    expect(root.style.getPropertyValue('--term-w')).toBe('510px')
     // A drag the page moves on in the middle of ends there, its width stored, the page's text free.
     pointer('pointerdown', 700)
     pointer('pointermove', 650)

@@ -198,10 +198,15 @@ pre {
   outline: none;
 }
 
-/* The sidebar keeps to the window, and so does its edge. */
+/* The sidebar keeps to the window, and so does its edge: from its border rightwards, off the
+   sidebar's scrollbar, with the line on the border. */
 .splitter-side {
   position: fixed;
-  left: calc(var(--side-w, 280px) - 5px);
+  left: calc(var(--side-w, 280px) - 1px);
+}
+
+.splitter-side::after {
+  left: 0;
 }
 
 /* In the middle of the page's right padding, down the window, as the column is stuck to it. */
