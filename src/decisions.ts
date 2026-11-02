@@ -1,9 +1,12 @@
 import type { Decision, DecisionReason, Ledger, Task } from './ledger'
 import { notify, taskRef } from './notify'
+import { message } from './proc'
+import { Todos } from './todos'
 
 // The decisions a task asks the person, in the ledger: opening one (decide), closing those nothing
 // waits on any more (closeDecisions) and the task going on past them (goesOn), telling a to-do list
-// that mirrors them (announce), and whether the task ended, so a decision left open on it only
+// that mirrors them (announce) and the project's session what a person answered (noticeAnswered),
+// and whether the task ended, so a decision left open on it only
 // closes (ended, finished). What an answer does in the worker's terminal is worker.ts's (answer).
 // This module takes no terminal, and imports none of worker.ts, hooks.ts or land.ts.
 
@@ -117,6 +120,56 @@ export function ended(ledger: Ledger, taskId: number): boolean {
 // A task that ended, or succeeded: a decision left open on it only closes (answer, drop).
 export const finished = (ledger: Ledger, taskId: number): boolean =>
   ledger.get(taskId).status === 'succeeded' || ended(ledger, taskId)
+
+// What a permission decision asks, from the tool and the input it would run with; the decision of
+// the dialog a tool's run answered is found by it again (onToolRan), as is the one the person
+// refused in the worker's terminal (refusedDialogs).
+export function permissionQuestion(tool: string, input: Record<string, unknown>): string {
+  const { command } = input
+  const asked = typeof command === 'string' ? command : JSON.stringify(input)
+  return `Claude needs your permission to use ${tool}. Answer yes to allow; anything else denies.\n${asked.slice(0, QUESTION_LIMIT)}`
+}
+
+// `by` for what no person said: a nod worker's nod d<n>, nod drop or nod tell (NOD_TASK), or a tell
+// of nod's own (a watch that passed, triggers.ts).
+export const NO_PERSON = 'no person'
+
+// A person answered or dropped these, with nod d<n> or nod drop (a shell, a Claude session, the web
+// UI), in the worker's terminal, or went on past them with nod tell: the project's latest session
+// hears it (inbox.ts), as it heard each open, so it does not ask the person again. Not when that
+// session did it itself (`by`, the Claude session that did, sessionFromEnv), nor when no person did
+// (NO_PERSON), nor of what nod closed itself (a turn that ended or went on, a newer proposal, a task
+// dropped), which callers do not hand here. `note`: what the line shows in place of the answer the
+// decision keeps, as a tell's words for one closed as gone on past. Recorded right after the close,
+// with no await between; one the ledger cannot take (busy) only goes to stderr, as the close
+// stands and what follows it still has to run.
+export function noticeAnswered(
+  ledger: Ledger,
+  closed: Decision[],
+  by: string | null = null,
+  note: string | null = null,
+): void {
+  if (by === NO_PERSON) return
+  for (const d of closed) {
+    try {
+      const todos = new Todos(ledger)
+      const project = todos.projectOf(ledger.get(d.taskId))
+      if (by !== null && project !== null && todos.latestSession(project)?.sessionId === by)
+        continue
+      ledger.addNotice({
+        taskId: d.taskId,
+        decisionId: d.id,
+        attemptId: d.attemptId,
+        event: 'answered',
+        note,
+      })
+    } catch (error) {
+      console.error(
+        `nod: could not record d${d.id}'s answer for the project's session: ${message(error)}`,
+      )
+    }
+  }
+}
 
 // Tells a to-do list that mirrors open decisions that these closed.
 export async function announce(

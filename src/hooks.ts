@@ -7,6 +7,8 @@ import {
   decide,
   ended,
   goesOn,
+  noticeAnswered,
+  permissionQuestion,
   QUESTION_LIMIT,
 } from './decisions'
 import { followWork } from './done'
@@ -281,14 +283,6 @@ export async function onPermissionAsk(
   await announce(home, ledger.get(taskId), turn.closed, turn.why)
 }
 
-// What a permission decision asks, from the tool and the input it would run with; the decision of
-// the dialog a tool's run answered is found by it again (onToolRan).
-function permissionQuestion(tool: string, input: Record<string, unknown>): string {
-  const { command } = input
-  const asked = typeof command === 'string' ? command : JSON.stringify(input)
-  return `Claude needs your permission to use ${tool}. Answer yes to allow; anything else denies.\n${asked.slice(0, QUESTION_LIMIT)}`
-}
-
 // Called by the PostToolUse and PostToolUseFailure hooks: a tool ran, so the dialog that asked for
 // it was answered yes, in the worker's terminal if nod did not answer it. Its decision closes, or
 // nod's answer after would type Enter or Escape into a worker that went on (answer), and the task
@@ -318,6 +312,7 @@ export async function onToolRan(
   const ran = same.find((d) => d.answer === null)
   if (ran === undefined || same.some((d) => d.answeredAt !== null)) return
   const closed = closeDecisions(ledger, taskId, (d) => d.id === ran.id, ALLOWED_HERE)
+  noticeAnswered(ledger, closed)
   // A dialog another tool queued still holds the task.
   if (ledger.decisions(taskId).every((d) => d.answer !== null)) goesOn(ledger, taskId, closed)
   await announce(home, ledger.get(taskId), closed, ALLOWED_HERE)

@@ -12,6 +12,8 @@ import {
   ended,
   finished,
   goesOn,
+  NO_PERSON,
+  noticeAnswered,
   QUESTION_LIMIT,
   refuseEnded,
   WENT_ON,
@@ -48,8 +50,10 @@ import { hasTranscript, heardOf, transcriptLines } from './transcript'
 import {
   CUT,
   cutOff,
+  DENIED_HERE,
   endTurnWithoutStop,
   noTurn,
+  refusedDialogs,
   STOPPED_DIALOG,
   stoppedDialogs,
   typedHere,
@@ -286,8 +290,9 @@ export function baseOf(ledger: Ledger, task: Task): Task | null {
   return ledger.after(task.id).find((a) => task.repo !== null && a.repo === task.repo) ?? null
 }
 
-// `actor`: who answers, recorded on the rule a yes to a rule decision adds. Returns whether the task
-// took the answer; false when the decision only closed, its task having ended.
+// `actor`: who answers, recorded on the rule a yes to a rule decision adds. `by`: the Claude session
+// that answers, if one does (noticeAnswered). Returns whether the task took the answer; false when
+// the decision only closed, its task having ended.
 export async function answer(
   ledger: Ledger,
   home: string,
@@ -295,12 +300,16 @@ export async function answer(
   decisionId: number,
   text: string,
   actor: string,
+  by: string | null = null,
 ): Promise<boolean> {
   const decision = ledger.decision(decisionId)
   // Before anything acts on it, as bringing a collected task back (restore below).
   if (decision.answer !== null) throw new Error(`decision d${decisionId} is already answered`)
-  // A to-do list that mirrors open decisions can close this one.
-  const told = (): Promise<void> => announce(home, ledger.get(decision.taskId), [decision], text)
+  // The project's session hears of it, and a to-do list that mirrors open decisions can close it.
+  const told = (): Promise<void> => {
+    noticeAnswered(ledger, [decision], by)
+    return announce(home, ledger.get(decision.taskId), [decision], text)
+  }
   // One left open on a task that ended only closes: no turn starts, and the task stays as it is.
   if (finished(ledger, decision.taskId)) {
     ledger.dismiss(decisionId, text)
@@ -310,7 +319,7 @@ export async function answer(
   const yes = YES.test(text.trim())
   // Trust and rules are yes-or-nothing: anything but yes ends the task.
   if ((decision.reason === 'trust' || decision.reason === 'rule') && !yes) {
-    return (await drop(ledger, home, terminals, decisionId)) === 'dropped'
+    return (await drop(ledger, home, terminals, decisionId, by)) === 'dropped'
   }
   // A decision on landing (land.ts) waits on no turn: yes lets landing try again (the next pass, or
   // nod land now), and anything else stops landing the task. Its work stands either way.
@@ -423,17 +432,20 @@ async function waitForScreen(terminals: Terminals, name: string, text: string): 
 // landing the task, whose work stands.
 export type Dropped = 'dropped' | 'closed' | 'landing stopped'
 
+// `by`: the Claude session that drops it, if one does (noticeAnswered).
 export async function drop(
   ledger: Ledger,
   home: string,
   terminals: Terminals,
   decisionId: number,
+  by: string | null = null,
 ): Promise<Dropped> {
   const decision = ledger.decision(decisionId)
   const task = ledger.get(decision.taskId)
   // One left open on a task that ended only closes, and the task stays as it is.
   if (finished(ledger, task.id)) {
     ledger.dismiss(decisionId, '(dropped)')
+    noticeAnswered(ledger, [decision], by)
     await announce(home, task, [decision], '(dropped)')
     return 'closed'
   }
@@ -451,6 +463,7 @@ export async function drop(
         return others
       })
       .immediate()
+    noticeAnswered(ledger, [decision], by)
     await terminals.close(sessionName(task.id))
     const open = ledger.openAttempt(task.id)
     if (open !== null) ledger.failAttempt(open.id, 'its landing was stopped')
@@ -475,6 +488,7 @@ export async function drop(
       return others
     })
     .immediate()
+  noticeAnswered(ledger, [decision], by)
   await announce(home, task, closed, why)
   // The person takes back a todo whose task they ended.
   await followWork(ledger, SELF, null)
@@ -499,15 +513,18 @@ async function startRetro(
   await startTask(ledger, home, terminals, id).catch(notifyError(ledger, home, id))
 }
 
+// `by`: who tells it, for the questions the message goes on past (deliver): the Claude session a
+// person tells it from, null for a person's shell or the web UI, NO_PERSON for a worker or nod.
 export async function tell(
   ledger: Ledger,
   home: string,
   terminals: Terminals,
   taskId: number,
   text: string,
+  by: string | null = NO_PERSON,
 ): Promise<void> {
   await restore(ledger, home, taskId)
-  await deliver(ledger, home, terminals, taskId, 'followup', text, null)
+  await deliver(ledger, home, terminals, taskId, 'followup', text, null, null, by)
 }
 
 // A task that failed before its worker started has no conversation to reopen, so it starts anew,
@@ -659,9 +676,12 @@ export async function settle(
   const past = '(it got past the trust dialog)'
   const dialogs = async (): Promise<void> => {
     const ofTurn = (d: Decision): boolean => d.reason === 'permission' && d.attemptId === attemptId
+    // One its transcript shows they refused there is their answer, which the project's session hears.
+    const denied = refusedDialogs(ledger, home, task.id, attemptId)
     const closed = closeDecisions(ledger, task.id, ofTurn, TURN_ENDED)
     const trusted = closeDecisions(ledger, task.id, (d) => d.reason === 'trust', past)
-    goesOn(ledger, task.id, [...closed, ...trusted])
+    goesOn(ledger, task.id, [...denied, ...closed, ...trusted])
+    await announce(home, task, denied, DENIED_HERE)
     await announce(home, task, closed, TURN_ENDED)
     await announce(home, task, trusted, past)
   }
@@ -983,7 +1003,9 @@ function nodsTurns(ledger: Ledger, taskId: number): Attempt[] {
 
 // Sends a message into the task's session so the worker keeps its context. A session that has ended
 // (exited, machine restarted) is reopened from Claude Code's transcript first. `from`: the task
-// whose worker sent it (sendTells), null for the person's or nod's.
+// whose worker sent it (sendTells), null for the person's or nod's. `by`: who sent a person's
+// message (tell): the questions it goes on past reach the project's session as their answer, with
+// the message (noticeAnswered); NO_PERSON for nod's and a worker's, which close as gone on past.
 async function deliver(
   ledger: Ledger,
   home: string,
@@ -993,6 +1015,7 @@ async function deliver(
   text: string,
   decisionId: number | null,
   from: number | null = null,
+  by: string | null = NO_PERSON,
 ): Promise<void> {
   // A turn the person stopped takes no message: the message starts a turn of its own.
   const stopped = stoppedDialogs(ledger, home, taskId)
@@ -1078,6 +1101,7 @@ async function deliver(
       return { attemptId, started: true, cut, closed }
     })
     .immediate()
+  noticeAnswered(ledger, turn.closed, by, `(told the worker) ${text}`)
   // The worker is mid-turn: Claude Code queues the message into the turn in progress, and the
   // ledger keeps it with that turn, for the reviewer. Its Enter would answer a permission dialog
   // that turn shows, so that is answered first.

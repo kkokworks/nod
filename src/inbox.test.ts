@@ -1,12 +1,17 @@
 import { afterAll, expect, spyOn, test } from 'bun:test'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
+import { FakeTerminals } from '../test/fake-terminals'
 import { inboxServer, inboxTest } from '../test/inbox-server'
 import { socketsParent, tempDirs } from '../test/tmp'
+import { decide, WENT_ON } from './decisions'
 import { onCommand, onInbox, sendNotices, tellProject, unheardWork } from './inbox'
 import { Ledger, type NewTask } from './ledger'
 import { notify } from './notify'
+import { Tmux } from './tmux'
 import { Todos } from './todos'
+import { CUT, currentTurn, cutOff, openTurn, TYPED } from './turns'
+import { answer, drop } from './worker'
 
 const tmp = tempDirs()
 afterAll(tmp.removeAll)
@@ -716,3 +721,216 @@ test('nod add, tell and an answer run in a Claude session say on stderr that no 
   writeFileSync(socket, '')
   expect(nod(C, 'tell', `n${id}`, 'and the docs')).not.toContain('hears nothing')
 }, 30_000)
+
+// The decisions a person answered that wait to go to a project's session, as `answered` notices.
+const answeredNotices = (ledger: Ledger): (number | null)[] =>
+  ledger
+    .unsentNotices()
+    .filter((n) => n.event === 'answered')
+    .map((n) => n.decisionId)
+
+test("a decision a person answers or drops goes to the project's latest session as a line, wherever they did it but in that session itself", async () => {
+  const { home, ledger, todos, p, task, turn, sent, send } = setup()
+  todos.addSession(p.id, B, '/work/two')
+  todos.addSession(p.id, A, '/work/one')
+  // Never typed into: each decision only closes (a task that ended, landing), so no worker runs.
+  const terminals = Tmux.of(home)
+  // A decision left open on a task that succeeded.
+  const open = (text: string): number => {
+    const id = task(text)
+    const d = ledger.ask(id, turn(id, 'failed', 'asked'), 'question', `${text}?`)
+    ledger.succeed(id)
+    return d
+  }
+  const web = open('From the web')
+  const older = open('From an older session')
+  const shell = open('Dropped in a shell')
+  const latest = open('From the latest session')
+  const droppedThere = open('Dropped in the latest session')
+  const long = open('Long')
+  const landing = task('Land it')
+  const land = ledger.ask(landing, turn(landing, 'succeeded', 'done'), 'land', 'Land again?')
+
+  // The web UI answers as nod.server.ts does, naming no session; nod d<n> and nod drop name the
+  // Claude session they run in (sessionFromEnv), or none in a shell.
+  await answer(ledger, home, terminals, web, 'yes\r\nand tag it', 'human:ui')
+  await answer(ledger, home, terminals, older, 'use main', 'claude:bbbb2222', B)
+  await drop(ledger, home, terminals, shell, null)
+  await answer(ledger, home, terminals, latest, 'no', 'claude:aaaa1111', A)
+  await drop(ledger, home, terminals, droppedThere, A)
+  // Cut at 200 characters, the last an emoji, which JavaScript keeps as two code units.
+  await answer(
+    ledger,
+    home,
+    terminals,
+    long,
+    `${'word '.repeat(39)}four😀 and more\nafter`,
+    'human',
+  )
+  await answer(ledger, home, terminals, land, 'not now', 'human:ui')
+  expect(answeredNotices(ledger)).toEqual([web, older, shell, long, land])
+
+  // They wait for the session as any notice does, and go once it takes messages.
+  todos.setSocket(A, '/socks/a')
+  await sendNotices(ledger, send)
+  const lines = (sent[0]?.message.content ?? '').split('\n\n').filter((l) => l.includes('answered'))
+  const next = 'next: tell the person in a line; it is closed, so answer it no more'
+  expect(lines).toEqual([
+    `decision d${web} question answered by the person (task n1 t1): yes and tag it\n${next}`,
+    `decision d${older} question answered by the person (task n2 t2): use main\n${next}`,
+    `decision d${shell} question answered by the person (task n3 t3): (dropped)\n${next}`,
+    `decision d${long} question answered by the person (task n6 t6): ${'word '.repeat(39)}four😀…\n${next}`,
+    `decision d${land} land answered by the person (task n7 t7): not now\n${next}`,
+  ])
+  expect(sent.map((s) => s.session_id)).toEqual([A])
+  expect(ledger.unsentNotices()).toEqual([])
+})
+
+test('nod d<n> and nod drop d<n> run in the project’s latest session, or by a nod worker, leave no notice for it; run in another Claude session or a shell they do', () => {
+  const { home, ledger, todos, p, task, turn } = setup()
+  todos.addSession(p.id, B, '/work/two')
+  todos.addSession(p.id, A, '/work/one')
+  const {
+    CLAUDECODE: _,
+    CLAUDE_CODE_SESSION_ID: __,
+    CLAUDE_CODE_MESSAGING_SOCKET: ___,
+    NOD_TASK: ____,
+    NOD_ACTOR: _____,
+    ...shell
+  } = process.env
+  const nod = (session: string | null, ...args: string[]): void => {
+    const claude = session === null ? {} : { CLAUDECODE: '1', CLAUDE_CODE_SESSION_ID: session }
+    const r = Bun.spawnSync(['bun', cli, ...args], { env: { ...shell, NOD_HOME: home, ...claude } })
+    expect(r.exitCode).toBe(0)
+  }
+  // A nod worker's Claude Code, as its env has it: an answer of its is no person's.
+  const worker = (...args: string[]): void => {
+    const env = {
+      ...shell,
+      NOD_HOME: home,
+      CLAUDECODE: '1',
+      CLAUDE_CODE_SESSION_ID: C,
+      NOD_TASK: '1',
+    }
+    expect(Bun.spawnSync(['bun', cli, ...args], { env }).exitCode).toBe(0)
+  }
+  // Decisions left open on tasks that succeeded: an answer only closes them, and no worker runs.
+  const open = (): number => {
+    const id = task('Done already')
+    const d = ledger.ask(id, turn(id, 'failed', 'asked'), 'question', 'Still?')
+    ledger.succeed(id)
+    return d
+  }
+  const [inLatest, droppedInLatest, inOther, droppedInOlder, inShell, byWorker, droppedByWorker] = [
+    open(),
+    open(),
+    open(),
+    open(),
+    open(),
+    open(),
+    open(),
+  ]
+  nod(A, `d${inLatest}`, 'yes')
+  nod(A, 'drop', `d${droppedInLatest}`)
+  nod(C, `d${inOther}`, 'yes')
+  nod(B, 'drop', `d${droppedInOlder}`)
+  nod(null, `d${inShell}`, 'never mind')
+  worker(`d${byWorker}`, 'yes')
+  worker('drop', `d${droppedByWorker}`)
+  expect(ledger.decision(byWorker).answer).toBe('yes')
+  expect(ledger.decision(droppedByWorker).answer).toBe('(dropped)')
+  expect(answeredNotices(ledger)).toEqual([inOther, droppedInOlder, inShell])
+}, 30_000)
+
+test("a question the person answers by typing into the worker's terminal goes to the project's session; what nod closes itself does not", async () => {
+  const { home, ledger, task, turn } = setup()
+  const asking = (text: string) => {
+    const id = task(text)
+    return { id, d: ledger.ask(id, turn(id, 'failed', 'which'), 'question', 'Which branch?') }
+  }
+  // The person types into the worker's terminal: the turn their words open answers the question.
+  const typed = asking('Typed into')
+  openTurn(ledger, typed.id, 's', `${TYPED}\nuse main`)
+  expect(currentTurn(ledger, typed.id, 's').closed.map((d) => d.id)).toEqual([typed.d])
+  expect(ledger.decision(typed.d).answer).toBe('use main')
+
+  // Claude Code goes on by itself, with no words of theirs: it went on without an answer.
+  const itself = asking('Went on')
+  openTurn(ledger, itself.id, 's')
+  expect(currentTurn(ledger, itself.id, 's').closed.map((d) => d.answer)).toEqual([null])
+  expect(ledger.decision(itself.d).answer).toBe(WENT_ON)
+  // A newer question replaces the one before.
+  const again = asking('Asked again')
+  await decide(ledger, home, again.id, turn(again.id, 'failed', 'which'), 'question', 'Really?')
+  expect(ledger.decision(again.d).answer).toBe(WENT_ON)
+  // The turn showing a dialog is cut off with its terminal.
+  const cut = task('Cut off')
+  const attemptId = ledger.startAttempt({
+    taskId: cut,
+    kind: 'start',
+    decisionId: null,
+    sessionId: 's',
+    prompt: 'p',
+  })
+  const dialog = ledger.ask(cut, attemptId, 'permission', 'Allow git push?')
+  expect(await cutOff(ledger, home, cut, ledger.attempt(attemptId), 'Claude Code ended')).toBe(true)
+  expect(ledger.decision(dialog).answer).toBe(CUT)
+
+  expect(answeredNotices(ledger)).toEqual([typed.d])
+})
+
+test("a drop that ends a task or stops its landing, and a no to trust, which drops, go to the project's session unless its latest session gave them", async () => {
+  const { home, ledger, todos, p, task, turn } = setup()
+  todos.addSession(p.id, B, '/work/two')
+  todos.addSession(p.id, A, '/work/one')
+  // No worker runs: no terminal is open, so closing one does nothing.
+  const terminals = FakeTerminals.of(home)
+  // An open decision on a task waiting on it, and a dialog's beside it, which closes with it as
+  // nod's: not failed, so no retrospective follows the drop.
+  const waiting = (reason: 'question' | 'land' | 'trust') => {
+    const id = task(`Waits on ${reason}`)
+    const attemptId = turn(id, 'succeeded', 'asked')
+    const d = ledger.ask(id, attemptId, reason, `${reason}?`)
+    ledger.ask(id, attemptId, 'permission', 'Allow git push?')
+    return d
+  }
+  const ended = waiting('question')
+  const landing = waiting('land')
+  const trustedNot = waiting('trust')
+  const trustedNotThere = waiting('trust')
+  expect(await drop(ledger, home, terminals, ended)).toBe('dropped')
+  expect(await drop(ledger, home, terminals, landing, B)).toBe('landing stopped')
+  // Anything but yes to trust drops the task, as the person who said it.
+  expect(await answer(ledger, home, terminals, trustedNot, 'no', 'human')).toBe(true)
+  expect(await answer(ledger, home, terminals, trustedNotThere, 'no', 'claude:aaaa1111', A)).toBe(
+    true,
+  )
+  expect(ledger.decision(trustedNotThere).answer).toBe('(dropped)')
+  // The dialogs closed with them, by nod, as nobody waits on them any more.
+  expect(ledger.openDecisions()).toEqual([])
+  expect(answeredNotices(ledger)).toEqual([ended, landing, trustedNot])
+})
+
+test('an answer the ledger cannot record for the project session still stands, and what follows it runs', async () => {
+  const { home, ledger, task, turn } = setup()
+  const id = task('Done already')
+  const d = ledger.ask(id, turn(id, 'failed', 'asked'), 'question', 'Still?')
+  ledger.succeed(id)
+  const add = ledger.addNotice.bind(ledger)
+  const busy = spyOn(ledger, 'addNotice').mockImplementation((n) => {
+    if (n.event === 'answered') throw new Error('database is locked')
+    return add(n)
+  })
+  const said = spyOn(console, 'error').mockImplementation(() => {})
+  try {
+    expect(await answer(ledger, home, FakeTerminals.of(home), d, 'yes', 'human')).toBe(false)
+    expect(said.mock.calls.map(([line]) => String(line))).toContain(
+      `nod: could not record d${d}'s answer for the project's session: database is locked`,
+    )
+  } finally {
+    busy.mockRestore()
+    said.mockRestore()
+  }
+  expect(ledger.decision(d).answer).toBe('yes')
+  expect(answeredNotices(ledger)).toEqual([])
+})

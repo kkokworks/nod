@@ -7,7 +7,8 @@ import { allowedLine, firstLine, indent, oneLine, taskLabel } from './view'
 
 // nod tells a project's session, the one nod open opened for it last, what `nod watch` would print
 // for it: each of the project's tasks that ends (once its check and review are done) and each of
-// its decisions that opens, and what a person sends it with `nod tell p<n>`. The ledger records
+// its decisions that opens, and what a person sends it with `nod tell p<n>`; also what nod allowed
+// a worker itself, and each decision a person answered elsewhere (decisions.ts). The ledger records
 // each as a notice with the change itself (ledger.ts); sendNotices sends what is unsent into the
 // session's inbox socket, as another Claude session on this machine does (SendMessage), after each
 // notify and on each tick. What finds no session running, or a send that fails, waits for the next.
@@ -16,6 +17,8 @@ import { allowedLine, firstLine, indent, oneLine, taskLabel } from './view'
 
 // A local socket takes far less; a hook waits on it.
 const SEND_TIMEOUT_MS = 5000
+// How much of a person's answer an `answered` notice shows, on one line, with `…` after one cut.
+const ANSWER_LIMIT = 200
 
 // What a session's SessionStart and SessionEnd hooks pass on stdin; only what nod reads.
 export const InboxEvent = z.object({ session_id: z.string(), hook_event_name: z.string() })
@@ -169,9 +172,10 @@ export async function tellSessions(home: string): Promise<void> {
 }
 
 // Sends each project's unsent notices, oldest first, to its latest session, all in one message. One
-// of a task in no project, and a decision answered since, goes to none. A project with no session
-// running keeps them. A send that fails keeps them too, and a socket that is gone (the session
-// ended without its SessionEnd hook, `ended`) is forgotten until the session says it again.
+// of a task in no project, and a decision's opening once it was answered, goes to none. A project
+// with no session running keeps them. A send that fails keeps them too, and a socket that is gone
+// (the session ended without its SessionEnd hook, `ended`) is forgotten until the session says it
+// again.
 // Notices are marked sent before the send, so the two are unbroken: a hook that nod ends by closing
 // its terminal (drop) ends once the send is done, not between the two, with the notices it marked.
 // ponytail: a process killed outright (SIGKILL) between the two still loses them; and a session
@@ -187,7 +191,10 @@ export async function sendNotices(
   for (const n of ledger.unsentNotices()) {
     const project =
       n.projectId ?? (n.taskId === null ? null : todos.projectOf(ledger.get(n.taskId)))
-    const answered = n.decisionId !== null && ledger.decision(n.decisionId).answer !== null
+    const answered =
+      n.event === 'decision' &&
+      n.decisionId !== null &&
+      ledger.decision(n.decisionId).answer !== null
     if (project === null || answered) ledger.claimNotices([n.id], null)
     else waiting.set(project, [...(waiting.get(project) ?? []), n])
   }
@@ -258,6 +265,17 @@ function noticeText(ledger: Ledger, n: Notice): string {
   if (n.event === 'tell') return n.note ?? ''
   if (n.event === 'allowed') return allowedLine(n)
   const task = ledger.get(n.taskId ?? 0)
+  if (n.event === 'answered') {
+    const d = ledger.decision(n.decisionId ?? 0)
+    // What the person said: the decision's answer, or the notice's own words for one they went on
+    // past (a tell). By code point, so a character outside the BMP (an emoji) is not cut in half.
+    const said = [...(n.note ?? d.answer ?? '').replace(/\r\n|\r|\n/g, ' ')]
+    const cut = `${said.slice(0, ANSWER_LIMIT).join('')}${said.length > ANSWER_LIMIT ? '…' : ''}`
+    return [
+      `decision d${d.id} ${d.reason} answered by the person (${taskLabel(task)}): ${cut}`,
+      'next: tell the person in a line; it is closed, so answer it no more',
+    ].join('\n')
+  }
   if (n.event === 'decision') {
     const d = ledger.decision(n.decisionId ?? 0)
     return [

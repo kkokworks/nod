@@ -7,9 +7,10 @@ import { jsonOrNull } from './report'
 import { pasted } from './tmux'
 
 // Reading the transcript Claude Code keeps of a worker's session (JSONL): whether there is one, its
-// lines or its end, how its last turn ended, and what became of a message pasted in while a turn
-// ran. It only reads: what nod changes in the ledger by it is turns.ts's (endTurnWithoutStop,
-// forgetHeldBack, stoppedDialogs) and worker.ts's (carryUnheard). This module imports none of
+// lines or its end, how its last turn ended, what became of a message pasted in while a turn ran,
+// and which tool calls the person refused. It only reads: what nod changes in the ledger by it is
+// turns.ts's (endTurnWithoutStop, forgetHeldBack, stoppedDialogs, refusedDialogs) and worker.ts's
+// (carryUnheard). This module imports none of
 // worker.ts, hooks.ts or land.ts.
 
 // How Claude Code marks a turn the person stopped (endTurnWithoutStop), how much of the
@@ -150,6 +151,57 @@ export function heardOf(lines: string[], text: string): Fate {
     fate = type === 'queue-operation' && operation === 'enqueue' ? 'queued' : 'heard'
   }
   return fate
+}
+
+// What Claude Code gives the worker as a tool's result once the person refused it in its permission
+// dialog, with or without words of theirs after it, and once they stopped it with Escape (2.1.316's
+// binary: a turn's own dialog, not a subagent's, whose refusal says "Permission for this tool use
+// was denied"; nor a rule's or a hook's, which say why).
+const REFUSED = "The user doesn't want to proceed with this tool use."
+
+// A tool call of the worker's, not a subagent's (sidechain), in a transcript's end `lines`
+// (transcriptTail), oldest first, and whether the person refused it (REFUSED).
+export type ToolCall = { name: string; input: Record<string, unknown>; refused: boolean }
+
+const ToolUse = z.object({
+  type: z.literal('tool_use'),
+  id: z.string(),
+  name: z.string(),
+  input: z.record(z.string(), z.unknown()),
+})
+const ToolResult = z.object({
+  type: z.literal('tool_result'),
+  tool_use_id: z.string(),
+  is_error: z.boolean().optional(),
+  content: z.unknown(),
+})
+
+// The worker's tool calls in `lines`, and which the person refused, as Claude Code keeps them: a
+// `tool_use` block of an assistant message, and its `tool_result` in a user message after it.
+// ponytail: matched by Claude Code's own words, undocumented; words it changes read as no refusal.
+export function toolCalls(lines: string[]): ToolCall[] {
+  const calls = new Map<string, ToolCall>()
+  for (const line of lines) {
+    const parsed = TranscriptEntry.safeParse(jsonOrNull(line))
+    if (!parsed.success || parsed.data.isSidechain === true) continue
+    const { type, message } = parsed.data
+    const blocks = Array.isArray(message?.content) ? message.content : []
+    for (const block of blocks) {
+      const use = type === 'assistant' ? ToolUse.safeParse(block) : null
+      if (use?.success) {
+        const { id, name, input } = use.data
+        calls.set(id, { name, input, refused: false })
+      }
+      const result = type === 'user' ? ToolResult.safeParse(block) : null
+      const call = result?.success ? calls.get(result.data.tool_use_id) : undefined
+      if (result?.success && call !== undefined && result.data.is_error === true) {
+        call.refused = textsOf(result.data.content).some(
+          (t) => typeof t === 'string' && t.startsWith(REFUSED),
+        )
+      }
+    }
+  }
+  return [...calls.values()]
 }
 
 // The text of a transcript message's `content`: a string, or the text blocks of a list.

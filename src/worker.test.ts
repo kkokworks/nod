@@ -36,7 +36,7 @@ import { testTmux } from '../test/tmux'
 import { tmuxTest } from '../test/tmux-server'
 import { setAccountRule, transcriptPath } from './account'
 import { ALLOW } from './allow'
-import { askToLand } from './decisions'
+import { askToLand, permissionQuestion } from './decisions'
 import { workerEnv } from './env'
 import { collect } from './gc'
 import { onCompact, onPrompt, onStop, onStopFailure } from './hooks'
@@ -3609,6 +3609,77 @@ it("a permission answered in the worker's terminal does not stay open once its t
   ])
 })
 
+it("a permission the person refused in the worker's terminal closes as their answer once its turn ends, which the project session hears; one nod cannot tell refused closes as the turn ended", async () => {
+  const session = 'refused-there'
+  const id = started('ship it', session)
+  const attempt = ledger.openAttempt(id)
+  if (attempt === null) throw new Error('no turn')
+  const asked = (command: string) =>
+    ledger.ask(id, attempt.id, 'permission', permissionQuestion('Bash', { command }))
+  const refused = asked('git push origin feat/x')
+  const letRun = asked('git push origin --tags')
+  const withWords = asked('rm -rf build')
+  const subagents = asked('npm publish')
+  const again = asked('git fetch origin')
+  // A subagent's dialog, worded from the screen (onNotification): no call of the worker's matches.
+  const screen = ledger.ask(id, attempt.id, 'permission', 'Claude needs your permission')
+  // The worker's transcript as Claude Code keeps it (2.1.316's binary): each call, and its result.
+  const no =
+    "The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file)."
+  const entries: object[] = []
+  const call = (n: number, command: string, result: string, error: boolean, sidechain = false) => {
+    const isSidechain = sidechain
+    entries.push({
+      type: 'assistant',
+      isSidechain,
+      message: { content: [{ type: 'tool_use', id: `t${n}`, name: 'Bash', input: { command } }] },
+    })
+    const block = { type: 'tool_result', tool_use_id: `t${n}`, content: result, is_error: error }
+    entries.push({ type: 'user', isSidechain, message: { content: [block] } })
+  }
+  call(1, 'git push origin feat/x', `${no} STOP what you are doing and wait.`, true)
+  call(2, 'git push origin --tags', 'Everything up-to-date', false)
+  call(
+    3,
+    'rm -rf build',
+    `${no} To tell you how to proceed, the user said:\nuse the clean script`,
+    true,
+  )
+  call(4, 'npm publish', `${no} STOP what you are doing and wait.`, true, true)
+  // Refused, then run again and let through: the last call decides.
+  call(5, 'git fetch origin', `${no} STOP what you are doing and wait.`, true)
+  call(6, 'git fetch origin', '', false)
+  const sessions = projectFolder(
+    process.env.CLAUDE_CONFIG_DIR ?? '',
+    workspaceOf(home, ledger.get(id)),
+  )
+  mkdirSync(sessions, { recursive: true })
+  writeFileSync(
+    join(sessions, `${session}.jsonl`),
+    entries.map((e) => `${JSON.stringify(e)}\n`).join(''),
+  )
+
+  await stopped(session, 'NOD: done | shipped')
+  expect(status(id)).toBe('succeeded')
+  const answers = new Map(ledger.decisions(id).map((d) => [d.id, d.answer]))
+  expect([refused, letRun, withWords, subagents, again, screen].map((d) => answers.get(d))).toEqual(
+    [
+      '(denied in the terminal)',
+      '(its turn ended)',
+      '(denied in the terminal)',
+      '(its turn ended)',
+      '(its turn ended)',
+      '(its turn ended)',
+    ],
+  )
+  const heard = ledger.db
+    .query<{ decisionId: number }, [number]>(
+      "select decision_id as decisionId from notices where task_id = ? and event = 'answered'",
+    )
+    .all(id)
+  expect(heard.map((n) => n.decisionId)).toEqual([refused, withWords])
+})
+
 // Makes <home>/notify take a while, so a hook that tells it something does too.
 function slowNotify(): void {
   writeFileSync(join(home, 'notify'), '#!/bin/sh\nsleep 1\n')
@@ -3794,10 +3865,10 @@ it('whatever ends a retrospective, its task ends as the outcome has it, and a tu
     await stopped(session, 'NOD: question | Still there?')
     expect(status(retro)).toBe(want)
     expect(ledger.decisions(retro).filter((d) => d.answer === null)).toEqual([])
-    // It ended once.
+    // It ended once. Its decisions, and the person's answers to them, are not ends.
     const notices = ledger.db
       .query<{ event: string }, [number]>(
-        "select event from notices where task_id = ? and event != 'decision'",
+        "select event from notices where task_id = ? and event not in ('decision', 'answered')",
       )
       .all(retro)
     expect(notices.map((n) => n.event)).toEqual([want])

@@ -4,7 +4,7 @@ import { join, resolve } from 'node:path'
 import { parseArgs } from 'node:util'
 import { accountRule, configDir, describeRule, setAccountRule } from './account'
 import { ALLOW, onPermissionRequest, PermissionEvent } from './allow'
-import { finished } from './decisions'
+import { finished, NO_PERSON } from './decisions'
 import { followWork, sweep } from './done'
 import { AUTOCOMPACT_PCT } from './env'
 import { collect, type GcPick, type GcReport, remotesHolding } from './gc'
@@ -358,7 +358,7 @@ switch (command) {
     }
     const id = taskRef(rest[0])
     warnUnheard([id])
-    await tell(ledger, home, terminals, id, words(rest.slice(1)))
+    await tell(ledger, home, terminals, id, words(rest.slice(1)), answerer())
     console.log('sent')
     break
   }
@@ -446,7 +446,8 @@ switch (command) {
       closed: 'closed; its task had ended',
       'landing stopped': 'stopped landing it; the task stays succeeded',
     }
-    console.log(said[await drop(ledger, home, terminals, parseRef(rest[0] ?? '', 'd', true))])
+    const id = parseRef(rest[0] ?? '', 'd', true)
+    console.log(said[await drop(ledger, home, terminals, id, answerer())])
     break
   }
   case 'gc':
@@ -537,7 +538,7 @@ switch (command) {
     // finished, and no to landing again.
     const stops = reason === 'land' && !/^y(es)?$/i.test(said)
     if (answered === null && !finished(ledger, taskId) && !stops) warnUnheard([taskId])
-    const took = await answer(ledger, home, terminals, id, said, actorFromEnv())
+    const took = await answer(ledger, home, terminals, id, said, actorFromEnv(), answerer())
     if (reason === 'land') {
       console.log(/^y(es)?$/i.test(said) ? 'landing it again' : 'stopped landing it')
       // Yes tries again now, not at the next fifth minute, unless this is a sandbox (leaveToTick).
@@ -1039,6 +1040,12 @@ function mySession(mine: boolean | undefined): string | null {
     throw new Error("--mine picks a Claude session's tasks; run it in that session")
   }
   return session
+}
+
+// Who answers, drops or tells here, for the project's session (noticeAnswered): a nod worker, which
+// is no person, or the Claude session this runs in, or null for a person's shell.
+function answerer(): string | null {
+  return process.env.NOD_TASK === undefined ? sessionFromEnv() : NO_PERSON
 }
 
 // Before a command sets these tasks going: a Claude session whose work no project session hears

@@ -12,6 +12,7 @@ import { join, resolve } from 'node:path'
 import { git } from '../test/remote'
 import { tempDirs } from '../test/tmp'
 import { ALLOW, harmless, onPermissionRequest } from './allow'
+import { NO_PERSON } from './decisions'
 import { onNotification, onPrompt } from './hooks'
 import { sendNotices } from './inbox'
 import { Ledger, type NewTask, type Task } from './ledger'
@@ -284,6 +285,14 @@ function hook(home: string, stdin: string, name = 'permission'): string {
   return run.stdout.toString()
 }
 
+// The decisions a person answered that wait to go to the project's session (no session takes
+// messages here), oldest first.
+const answeredNotices = (ledger: Ledger) =>
+  ledger
+    .unsentNotices()
+    .filter((n) => n.event === 'answered')
+    .map((n) => n.decisionId)
+
 // The task's open decisions: why, on which turn, and the line of the question that names what the
 // worker asked for.
 const asked = (ledger: Ledger, id: number) =>
@@ -362,6 +371,53 @@ test('a prompt nod does not allow holds back nod tell from its turn as it shows,
   expect(ledger.get(id).status).toBe('needs_decision')
 }, 15_000)
 
+test("a question a person's nod tell goes on past goes to the project's session with their words, but not when its latest session, a worker or nod sent it", async () => {
+  const { home, ledger, todos, project, id, attemptId } = running()
+  todos.addSession(project.id, 'root-0', '/work/zero')
+  todos.addSession(project.id, 'root-1', '/work/one')
+  // The worker asks as each turn ends.
+  const question = (turn: number): number => {
+    ledger.endAttempt(turn, { outcome: 'needs_decision', summary: 'which?', report: 'which?' })
+    return ledger.ask(id, turn, 'question', 'Which branch?')
+  }
+  const alive = spyOn(Tmux.prototype, 'alive').mockReturnValue(true)
+  const attached = spyOn(Tmux.prototype, 'attached').mockReturnValue(false)
+  const option = spyOn(Tmux.prototype, 'option').mockReturnValue('')
+  const send = spyOn(Tmux.prototype, 'send').mockImplementation(() => {})
+  const told: number[] = []
+  try {
+    // From a shell or the web UI, the project's older session, its latest, a worker, and nod (a
+    // watch that passed, which names no one).
+    const from: [string, (text: string) => Promise<void>][] = [
+      ['shell', (text) => tell(ledger, home, Tmux.of(home), id, text, null)],
+      ['root-0', (text) => tell(ledger, home, Tmux.of(home), id, text, 'root-0')],
+      ['root-1', (text) => tell(ledger, home, Tmux.of(home), id, text, 'root-1')],
+      ['worker', (text) => tell(ledger, home, Tmux.of(home), id, text, NO_PERSON)],
+      ['nod', (text) => tell(ledger, home, Tmux.of(home), id, text)],
+    ]
+    for (const [who, send] of from) {
+      const d = question(ledger.openAttempt(id)?.id ?? attemptId)
+      told.push(d)
+      await send(`use main (${who})`)
+      expect(ledger.decision(d).answer).toBe('(it went on without an answer)')
+    }
+  } finally {
+    for (const spy of [alive, attached, option, send]) spy.mockRestore()
+  }
+  const [shell = 0, older = 0] = told
+  expect(answeredNotices(ledger)).toEqual([shell, older])
+  todos.setSocket('root-1', '/socks/root-1')
+  const sent: string[] = []
+  await sendNotices(ledger, async (_, line) => {
+    sent.push((JSON.parse(line) as { message: { content: string } }).message.content)
+  })
+  const lines = (sent[0] ?? '').split('\n\n').filter((l) => l.includes('answered by'))
+  expect(lines.map((l) => l.split('\n')[0])).toEqual([
+    `decision d${shell} question answered by the person (task n1 t1): (told the worker) use main (shell)`,
+    `decision d${older} question answered by the person (task n1 t1): (told the worker) use main (root-0)`,
+  ])
+}, 15_000)
+
 test("a prompt's decision whose turn the person stopped with Escape closes as the next message goes in; while the turn goes on, it holds the message back", async () => {
   const { home, ledger, id, attemptId, event } = running()
   // Claude Code keeps the session's transcript in the account the worker runs as.
@@ -432,6 +488,8 @@ test("a prompt's decision whose turn the person stopped with Escape closes as th
     transcript(said([stop]), said('push to the fork'))
     await tell(ledger, home, Tmux.of(home), id, 'and tag it')
     expect(send.mock.calls.map(([, text]) => text)).toEqual(['and tag it'])
+    // The project's session hears they answered it, as it heard it open.
+    expect(answeredNotices(ledger)).toEqual(ledger.decisions(id).map((d) => d.id))
   } finally {
     alive.mockRestore()
     attached.mockRestore()
@@ -503,6 +561,8 @@ test("a tool that ran closes its dialog's decision, as allowed in the terminal, 
     [second, '(allowed in the terminal)'],
   ])
   expect(ledger.get(id).status).toBe('running')
+  // The project's session hears the person answered each, in the terminal.
+  expect(answeredNotices(ledger)).toEqual([first, second])
   // The root, a moment late, answers what it was shown: nothing reaches the worker, at work.
   const alive = spyOn(Tmux.prototype, 'alive').mockReturnValue(true)
   const keys = spyOn(Tmux.prototype, 'keys').mockImplementation(() => {})
@@ -520,6 +580,7 @@ test("a tool that ran closes its dialog's decision, as allowed in the terminal, 
     alive.mockRestore()
     keys.mockRestore()
   }
+  expect(answeredNotices(ledger)).toEqual([first, second])
 }, 15_000)
 
 test("a tool that ran leaves a dialog's decision for the same command open when nod answered one like it in the turn: the run may be the one nod allowed", async () => {
