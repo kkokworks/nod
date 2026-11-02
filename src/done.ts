@@ -4,7 +4,7 @@ import { sessionName } from './place'
 import { message, readAtOnce } from './proc'
 import { pushUrls, sameRepo } from './prs'
 import type { Terminals } from './tmux'
-import { Todos } from './todos'
+import { type Left, Todos } from './todos'
 
 // When a finished task is done with, so gc can collect it without the human naming it. gc keeps
 // the session's transcript and resume rebuilds the worktree (restore in worker.ts), so collecting
@@ -95,14 +95,10 @@ async function signal(
   if (ledger.waiting(task.id).length > 0) return null
   if (branch?.unpushed) {
     if (task.status !== 'succeeded') return null
-    // The branch's own pull request merged after its last commit: the work went up from elsewhere,
-    // rebased on another branch, say, so these commits are not its only copy. Its own: its head is
-    // a branch of this name in the repo nod pushes to, `origin`'s (pushUrls); one of that name in
-    // another repo or a fork is someone else's, and one whose head repo is not known is held back
-    // too. A commit made or rewritten since is newer than the merge, and held back. Any other link
-    // still waiting holds it back too, as it does a pushed task, though here age does not end the
-    // wait. Only as its remote addresses are written: an ssh alias for the service's host reads as
-    // another host, and holds back.
+    // The branch's own pull request (ownPr) merged after its last commit: the work went up from
+    // elsewhere, rebased on another branch, say, so these commits are not its only copy. A commit
+    // made or rewritten since is newer than the merge, and held back. Any other link still waiting
+    // holds it back too, as it does a pushed task, though here age does not end the wait.
     // ponytail: a commit made before the merge and never pushed goes from ls too; it stays on the
     // branch (dropBranch in gc.ts), and resume brings it back.
     let merged: string | null = null
@@ -110,9 +106,7 @@ async function signal(
       const pr = await prs(url)
       if (pr === null) continue
       if (pr.state === 'open' && !approvedSince(pr, task)) return null
-      if (pr.state !== 'merged' || pr.head !== task.branch || pr.mergedAt === null) continue
-      if (task.repo === null || !pushUrls(task.repo).some((u) => sameRepo(pr.headRepo, u))) continue
-      if (Date.parse(branch.lastCommitAt) < Date.parse(pr.mergedAt)) merged ??= `merged: ${url}`
+      if (mergedAfter(pr, branch) && ownPr(task, pr)) merged ??= `merged: ${url}`
     }
     return merged
   }
@@ -156,6 +150,79 @@ async function signal(
 // Whether the person approved an open pull request since the task was added.
 const approvedSince = (pr: PullRequest, task: Task): boolean =>
   pr.approvedAt !== null && Date.parse(pr.approvedAt) >= Date.parse(task.createdAt)
+
+// Whether a pull request is the task's branch's own: its head is a branch of that name in the repo
+// nod pushes to, `origin`'s (pushUrls). One of that name in another repo or a fork is someone
+// else's, and so is one whose head repo is not known. Only as its remote addresses are written: an
+// ssh alias for the service's host reads as another host.
+const ownPr = (task: Task, pr: PullRequest): boolean =>
+  pr.head === task.branch &&
+  task.repo !== null &&
+  pushUrls(task.repo).some((u) => sameRepo(pr.headRepo, u))
+
+// Whether a pull request merged after the branch's last commit, where that is known (a branch with
+// commits no remote has): a commit made since is not in it.
+const mergedAfter = (pr: PullRequest, branch: BranchState | null): boolean =>
+  pr.state === 'merged' &&
+  pr.mergedAt !== null &&
+  (branch?.unpushed !== true || Date.parse(branch.lastCommitAt) < Date.parse(pr.mergedAt))
+
+// Whether nod lands the task itself (land.ts) and has not merged it yet nor stopped: its repo lets
+// nod land, and it is named (`only`, or else a landing begun) or was added since the repo let nod
+// land. A link someone else made means its result went out another way.
+export function lands(ledger: Ledger, task: Task, only?: number[]): boolean {
+  const repo = ledger.repos().find((r) => r.path === task.repo)
+  if (repo === undefined || repo.land === 'off') return false
+  const l = ledger.landing(task.id)
+  if (l !== null && (l.stopped !== null || l.mergedAt !== null)) return false
+  const named = only === undefined ? l !== null : only.includes(task.id)
+  const since = repo.raisedAt !== null && task.createdAt >= repo.raisedAt
+  if (!named && !(only === undefined && since)) return false
+  return ledger.links(task.id).every((url) => url === l?.pr)
+}
+
+// Where a succeeded task's work leaves its todo (followTasks in todos.ts): done once the task's
+// changes are in the default branch, its own pull request (ownPr) merged, or nod merged it, and
+// when it made no commits of its own; waiting while that pull request is open, or nod lands it;
+// next while its commits wait on the person. `prs` null, as the hooks call it, reads no git
+// service: a task with links waits for gc or the tick to read them.
+// ponytail: a repo with no `origin/HEAD` reads as one whose tasks made no commits, as in gc; and a
+// link that is no pull request (a chat message on the todo) also waits until it is read.
+export async function workLeft(ledger: Ledger, task: Task, prs: PrLookup | null): Promise<Left> {
+  const { repo } = task
+  if (repo === null || task.branch === null || task.workspace === null) return { status: 'done' }
+  if (ledger.landing(task.id)?.mergedAt) return { status: 'done' }
+  const branch = branchState(task)
+  // gc deletes the branch once a remote has its commits or the default branch its changes; the
+  // head it recorded tells which.
+  const inMain =
+    branch === null
+      ? task.head !== null && landed(repo, task.head)
+      : branch.own === 0 || branch.landed
+  if (inMain) return { status: 'done' }
+  let merged = false
+  for (const url of linksOf(ledger, task)) {
+    if (prs === null) return { status: 'waiting', pr: null }
+    const pr = await prs(url)
+    if (pr === null || !ownPr(task, pr)) continue
+    if (pr.state === 'open') return { status: 'waiting', pr: url }
+    if (mergedAfter(pr, branch)) merged = true
+  }
+  if (merged) return { status: 'done' }
+  return lands(ledger, task) ? { status: 'waiting', pr: null } : { status: 'next' }
+}
+
+// Moves the todos that wait on their tasks along by what the work left (followTasks in todos.ts).
+// With `prs`, as gc and the tick call it, it reads the linked pull requests and looks again at the
+// todos it left open; a task it cannot read is told on stderr and looked at the next time.
+export function followWork(ledger: Ledger, actor: string, prs: PrLookup | null): Promise<void> {
+  const left = (task: Task): Promise<Left | null> =>
+    workLeft(ledger, task, prs).catch((error) => {
+      console.error(`nod: could not read what task n${task.id} left: ${message(error)}`)
+      return null
+    })
+  return new Todos(ledger).followTasks(actor, left, prs !== null)
+}
 
 // The links on a task and on its todo, each once.
 function linksOf(ledger: Ledger, task: Task): string[] {

@@ -82,7 +82,15 @@ export type Todo = {
   createdAt: string
   // When the status last changed: since when it has waited, or when it was done.
   statusAt: string
+  // The end of its latest task that nod last moved it by, leaving it open on that task's work:
+  // waiting on its pull request or landing, or next for commits the default branch lacks
+  // (followTasks). Null otherwise; a change of status clears it.
+  followed: string | null
 }
+
+// Where a succeeded task's work leaves its todo (workLeft in done.ts): done, waiting on the
+// branch's pull request (linked to the todo when known) or nod's landing, or next for the person.
+export type Left = { status: 'done' | 'next' } | { status: 'waiting'; pr: string | null }
 
 export type Project = {
   id: number
@@ -316,15 +324,19 @@ export class Todos {
       const change = diff(before, after)
       if (Object.keys(change).length > 0) {
         const at = now()
-        const statusAt = 'status' in change ? at : before.statusAt
+        const moved = 'status' in change
         this.run(
           q
             .updateTable('todos')
-            .set({ ...after, statusAt })
+            .set({
+              ...after,
+              statusAt: moved ? at : before.statusAt,
+              followed: moved ? null : before.followed,
+            })
             .where('id', '=', id),
         )
         this.recordTodo(id, actor, change, at)
-        if ('status' in change && after.status === 'done') this.repeatNext(id, actor)
+        if (moved && after.status === 'done') this.repeatNext(id, actor)
         // A new watch, or none, has not run yet.
         if ('watch' in change) this.run(q.deleteFrom('watchChecks').where('todoId', '=', id))
       }
@@ -346,7 +358,12 @@ export class Todos {
   // A todo brought from another system with its own times: when it was captured, when its status
   // last changed, and `at`, when it last moved, which becomes its one recorded change by `actor`.
   // Its values are checked as an edit's are.
-  importTodo(t: Omit<Todo, 'id'>, links: TodoLink[], actor: string, at: string): number {
+  importTodo(
+    t: Omit<Todo, 'id' | 'followed'>,
+    links: TodoLink[],
+    actor: string,
+    at: string,
+  ): number {
     filled('title', t.title)
     oneOf('todo status', t.status, TODO_STATUSES)
     if (t.repeat !== null) oneOf('repeat', t.repeat, REPEATS)
@@ -522,16 +539,25 @@ export class Todos {
     return all.filter((f): f is Found => f !== null && (prefix === '' || f.kind === FINDS[prefix]))
   }
 
-  // Moves each todo waiting on nod along once none of its tasks can go on: done when the last one
-  // succeeded, back to next when it was cancelled, so the person takes it back. Every such todo is
-  // looked at, so those of tasks a cancel cascaded to move too. One with a watch waits on its watch,
-  // even when its task is told more and ends again.
-  followTasks(actor: string): void {
+  // Moves each todo waiting on nod along once none of its tasks can go on: back to next when the
+  // last one was cancelled, so the person takes it back; when it succeeded, where `left` says its
+  // work leaves it (workLeft in done.ts), with the pull request it waits on linked. One left open,
+  // waiting or next, is followed: each end is looked at once, so the hooks read git once a task
+  // ends, not at every call, and again when it ends again; `again` looks again at those left as
+  // they were (gc, the tick), until the work is in the default branch. `left` gives null when it
+  // cannot tell yet. Every such todo is looked at, so those of tasks a cancel cascaded to move too.
+  // One with a watch waits on its watch, even when its task is told more and ends again, and one
+  // whose status the person changed is theirs.
+  async followTasks(
+    actor: string,
+    left: (task: Task) => Promise<Left | null>,
+    again = false,
+  ): Promise<void> {
     const waiting = this.run(
       q
         .selectFrom('todos')
         .selectAll()
-        .where('status', '=', 'waiting')
+        .where((eb) => eb.or([eb('status', '=', 'waiting'), eb('followed', 'is not', null)]))
         .where('waitingOn', 'is', null)
         .where('watch', 'is', null),
     )
@@ -539,9 +565,36 @@ export class Todos {
       const tasks = this.ledger.tasksOf(todo.id)
       const last = tasks.at(-1)
       if (last === undefined || tasks.some((t) => UNFINISHED.includes(t.status))) continue
-      // It finished before the todo began waiting: the person has set it waiting since, on no task.
-      if (last.finishedAt === null || last.finishedAt < todo.statusAt) continue
-      this.set(todo.id, { status: last.status === 'succeeded' ? 'done' : 'next' }, actor)
+      const { finishedAt } = last
+      if (finishedAt === null) continue
+      // An end not looked at yet. One before the todo began waiting is not: the person has set it
+      // waiting since, on no task.
+      const fresh =
+        todo.followed === null ? finishedAt >= todo.statusAt : finishedAt !== todo.followed
+      if (!fresh && !(again && todo.followed !== null)) continue
+      const to: Left | null = last.status === 'succeeded' ? await left(last) : { status: 'next' }
+      if (to === null) continue
+      // Immediate: what it checks holds until it writes, whoever else moves the todo.
+      this.db
+        .transaction(() => {
+          // Only as it was read: `left` takes a while, and the person may have moved it meanwhile,
+          // or the task gone on.
+          const now = this.get(todo.id)
+          const same = (['status', 'statusAt', 'followed', 'waitingOn', 'watch'] as const).every(
+            (k) => now[k] === todo[k],
+          )
+          if (!same || this.ledger.get(last.id).finishedAt !== finishedAt) return
+          const pr = to.status === 'waiting' ? to.pr : null
+          this.set(todo.id, { status: to.status }, actor, pr === null ? [] : [pr])
+          const open = last.status === 'succeeded' && to.status !== 'done'
+          this.run(
+            q
+              .updateTable('todos')
+              .set({ followed: open ? finishedAt : null })
+              .where('id', '=', todo.id),
+          )
+        })
+        .immediate()
     }
   }
 

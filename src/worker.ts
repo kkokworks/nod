@@ -16,6 +16,7 @@ import {
   refuseEnded,
   WENT_ON,
 } from './decisions'
+import { followWork } from './done'
 import { workerEnv } from './env'
 import { hasRef, onlyCopy } from './gc'
 import {
@@ -476,7 +477,7 @@ export async function drop(
     .immediate()
   await announce(home, task, closed, why)
   // The person takes back a todo whose task they ended.
-  new Todos(ledger).followTasks(SELF)
+  await followWork(ledger, SELF, null)
   await terminals.close(sessionName(task.id))
   await notify(home, { event: 'cancelled', task: taskRef(task) })
   await startRetro(ledger, home, terminals, task)

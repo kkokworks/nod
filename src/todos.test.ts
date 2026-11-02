@@ -1,5 +1,8 @@
 import { afterAll, expect, setSystemTime, test } from 'bun:test'
+import { mkdirSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { tempDirs } from '../test/tmp'
+import { followWork, type PrLookup, type PullRequest } from './done'
 import { Ledger, type NewTask, type Task } from './ledger'
 import { type Found, OPEN, parseRef, type TodoEdit, type TodoFilter, Todos } from './todos'
 
@@ -10,6 +13,9 @@ const books = () => {
   const ledger = new Ledger(tmp.make('nod-todos-'))
   return { ledger, todos: new Todos(ledger) }
 }
+// As the hooks follow tasks. A task in no repo made no commits, so its todo is done once it
+// succeeds.
+const follow = (todos: Todos): Promise<void> => followWork(todos.ledger, 'nod', null)
 const fresh = (): Todos => books().todos
 const captured = (todos: Todos, title: string, source = 'cli', sourceKey: string | null = null) =>
   todos.capture({ title, notes: null, source, sourceKey, url: null }, 'human').todo
@@ -163,7 +169,7 @@ test('the last check of a watch is the one it ran in this wait', () => {
   expect(todos.lastCheck(todos.get(t.id))).toBeNull()
 })
 
-test('a todo waiting on its task has no watch: handing it over drops one, and none is given', () => {
+test('a todo waiting on its task has no watch: handing it over drops one, and none is given', async () => {
   const { ledger, todos } = books()
   const t = captured(todos, 'Ship the fix')
   todos.set(t.id, { status: 'waiting', watch: 'test -f shipped' }, 'human')
@@ -174,13 +180,13 @@ test('a todo waiting on its task has no watch: handing it over drops one, and no
   )
   // Once the task has ended, the todo is the person's again and can be watched.
   ledger.succeed(first)
-  todos.followTasks('nod')
+  await follow(todos)
   expect(todos.set(t.id, { status: 'waiting', watch: 'test -f shipped' }, 'human').watch).toBe(
     'test -f shipped',
   )
 })
 
-test('--back-to names the task that did the todo; a passing watch hands the todo back to it', () => {
+test('--back-to names the task that did the todo; a passing watch hands the todo back to it', async () => {
   const { ledger, todos } = books()
   const t = captured(todos, 'Get the review answered')
   const did = todos.delegate(t.id, task, 'human')
@@ -189,7 +195,7 @@ test('--back-to names the task that did the todo; a passing watch hands the todo
     ledger.setRunning(id, `/work/${id}`)
     ledger.succeed(id)
   }
-  todos.followTasks('nod')
+  await follow(todos)
   const watch = 'test -f answered'
   expect(() => todos.set(t.id, { status: 'waiting', backTo: did }, 'human')).toThrow(
     '--back-to is for when a watch passes',
@@ -223,11 +229,11 @@ test('--back-to names the task that did the todo; a passing watch hands the todo
   ])
   expect(back.notes).toMatch(/ watch passed, back to task n\d+: test -f answered$/)
   // It waits on the task now: not moved by its earlier end, moved by the next one.
-  todos.followTasks('nod')
+  await follow(todos)
   expect(todos.get(t.id).status).toBe('waiting')
   ledger.setRunning(did, `/work/${did}`)
   ledger.succeed(did)
-  todos.followTasks('nod')
+  await follow(todos)
   expect(todos.get(t.id).status).toBe('done')
 
   // A task gc collected comes back when told, so it can still be named.
@@ -235,19 +241,19 @@ test('--back-to names the task that did the todo; a passing watch hands the todo
   expect(todos.set(t.id, { status: 'waiting', watch, backTo: did }, 'human').backTo).toBe(did)
 })
 
-test('--back-to takes only the latest task, the one whose end moves the todo', () => {
+test('--back-to takes only the latest task, the one whose end moves the todo', async () => {
   const { ledger, todos } = books()
   const t = captured(todos, 'Get the review answered')
-  const ended = (id: number) => {
+  const ended = async (id: number) => {
     ledger.setRunning(id, `/work/${id}`)
     ledger.succeed(id)
-    todos.followTasks('nod')
+    await follow(todos)
   }
   const earlier = todos.delegate(t.id, task, 'human')
-  ended(earlier)
+  await ended(earlier)
   todos.set(t.id, { status: 'next' }, 'human')
   const latest = todos.delegate(t.id, task, 'human')
-  ended(latest)
+  await ended(latest)
   const watch = 'test -f answered'
   // followTasks goes by the latest task, so an earlier one carrying on would never move the todo.
   expect(() => todos.set(t.id, { status: 'waiting', watch, backTo: earlier }, 'human')).toThrow(
@@ -255,25 +261,25 @@ test('--back-to takes only the latest task, the one whose end moves the todo', (
   )
   todos.set(t.id, { status: 'waiting', watch, backTo: latest }, 'human')
   todos.endWatch(t.id, watch, 'passed', 'nod', true)
-  ended(latest)
+  await ended(latest)
   expect(todos.get(t.id).status).toBe('done')
 })
 
-test('a watched todo waits on its watch, not on a task told more after it began waiting', () => {
+test('a watched todo waits on its watch, not on a task told more after it began waiting', async () => {
   const { ledger, todos } = books()
   const t = captured(todos, 'Get the review answered')
   const did = todos.delegate(t.id, task, 'human')
-  const ended = () => {
+  const ended = async () => {
     ledger.setRunning(did, `/work/${did}`)
     ledger.succeed(did)
-    todos.followTasks('nod')
+    await follow(todos)
   }
-  ended()
+  await ended()
   Bun.sleepSync(2) // so it starts waiting after the task ended, on a millisecond clock
   const watch = 'test -f answered'
   todos.set(t.id, { status: 'waiting', watch, backTo: did }, 'human')
   Bun.sleepSync(2)
-  ended() // the person told the task something (nod tell), and it ended again
+  await ended() // the person told the task something (nod tell), and it ended again
   expect(todos.get(t.id)).toMatchObject({ status: 'waiting', watch, backTo: did })
 })
 
@@ -520,7 +526,7 @@ test('a decision is d<n> and a trigger c<n>, or their bare number as before; not
   expect(() => parseRef('d12', 'c', true)).toThrow('not a trigger: d12 (write c<n>)')
 })
 
-test('a delegated todo waits on its tasks, and follows the last once none can go on', () => {
+test('a delegated todo waits on its tasks, and follows the last once none can go on', async () => {
   const { ledger, todos } = books()
   const t = captured(todos, 'Write the release notes')
   const first = todos.delegate(t.id, task, 'human')
@@ -528,14 +534,14 @@ test('a delegated todo waits on its tasks, and follows the last once none can go
   expect(ledger.get(first).todoId).toBe(t.id)
   const second = todos.delegate(t.id, { ...task, after: [first] }, 'human')
   ledger.succeed(first)
-  todos.followTasks('nod')
+  await follow(todos)
   expect(todos.get(t.id).status).toBe('waiting')
   // A task in error can still be resumed.
   ledger.error(second, 'session ended')
-  todos.followTasks('nod')
+  await follow(todos)
   expect(todos.get(t.id).status).toBe('waiting')
   ledger.succeed(second)
-  todos.followTasks('nod')
+  await follow(todos)
   expect(todos.changes(t.id).map((c) => [c.actor, c.change])).toEqual([
     [
       'human',
@@ -548,7 +554,7 @@ test('a delegated todo waits on its tasks, and follows the last once none can go
   expect(() => todos.delegate(t.id, task, 'human')).toThrow(`t${t.id} is done; reopen it`)
 })
 
-test('a task handed over without a todo gets one of its own, in the project given', () => {
+test('a task handed over without a todo gets one of its own, in the project given', async () => {
   const { ledger, todos } = books()
   const p = project(todos, 'Launch')
   const id = todos.delegateNew(
@@ -566,7 +572,7 @@ test('a task handed over without a todo gets one of its own, in the project give
     source: 'nod',
   })
   ledger.succeed(id)
-  todos.followTasks('nod')
+  await follow(todos)
   expect(todos.get(todoId).status).toBe('done')
   // A closed project takes no new open todo, so nothing is added.
   todos.setProject(p.id, { status: 'done' }, 'human')
@@ -668,18 +674,18 @@ test('a number finds every kind it numbers, a prefix only its own kind, nothing 
   expect(todos.find('2').at(-1)?.status).toBe('closed')
 })
 
-test('a todo whose task was dropped comes back; one waiting on a person or on no task stays', () => {
+test('a todo whose task was dropped comes back; one waiting on a person or on no task stays', async () => {
   const { ledger, todos } = books()
   const t = captured(todos, 'Fix the build')
   ledger.drop(ask(ledger, todos.delegate(t.id, task, 'human'), 'Which branch?'))
-  todos.followTasks('nod')
+  await follow(todos)
   expect(todos.get(t.id).status).toBe('next')
   Bun.sleepSync(2)
   // Set waiting again by the person after its task ended: it waits on nothing nod runs.
   todos.set(t.id, { status: 'waiting' }, 'human')
   const kim = captured(todos, 'Ask about the invoice')
   todos.set(kim.id, { status: 'waiting', waitingOn: 'Kim' }, 'human')
-  todos.followTasks('nod')
+  await follow(todos)
   expect([todos.get(t.id).status, todos.get(kim.id).status]).toEqual(['waiting', 'waiting'])
 })
 
@@ -814,3 +820,206 @@ test('the weekly review is the last done todo of the review series, and a waited
   ])
   expect(todos.trust(today).stale.map((x) => x.todo.id)).toEqual([kim.id])
 })
+
+// ── a delegated todo and its task's commits ──
+
+const PR = 'https://git.example.com/o/r/pulls/'
+const ORIGIN = 'https://git.example.com/o/r'
+const LATER = '2099-01-01T00:00:00.000Z'
+
+// A ledger, and a repo whose `origin` is ORIGIN with its default branch at the first commit. Each
+// todo handed over goes to a task on a branch of its own, which succeeds having made a commit or
+// none. `hooks` follows the tasks as the hooks do, reading no git service; `gc` as gc and the
+// tick do, reading the pull requests in `prs`.
+const repoBooks = () => {
+  const home = tmp.make('nod-todos-')
+  const ledger = new Ledger(home)
+  const todos = new Todos(ledger)
+  const repo = join(home, 'repo')
+  mkdirSync(repo)
+  const git = (cwd: string, ...args: string[]): void => {
+    const cmd = ['git', '-c', 'user.email=t@t', '-c', 'user.name=t', '-C', cwd, ...args]
+    const r = Bun.spawnSync(cmd)
+    if (r.exitCode !== 0) throw new Error(`${cmd.join(' ')}: ${r.stderr.toString()}`)
+  }
+  const commit = (cwd: string, file: string): void => {
+    writeFileSync(join(cwd, file), file)
+    git(cwd, 'add', '.')
+    git(cwd, 'commit', '-q', '-m', file)
+  }
+  git(repo, 'init', '-q')
+  git(repo, 'commit', '-q', '--allow-empty', '-m', 'init')
+  git(repo, 'remote', 'add', 'origin', ORIGIN)
+  git(repo, 'update-ref', 'refs/remotes/origin/main', 'HEAD')
+  git(repo, 'symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main')
+  const handOver = (commits: boolean) => {
+    const title = `todo ${todos.ledger.list().length + 1}`
+    const todo = captured(todos, title).id
+    const branch = `feat/${todo}`
+    const id = todos.delegate(todo, { ...task, brief: title, repo, branch }, 'human')
+    const cwd = join(home, 'work', branch)
+    git(repo, 'worktree', 'add', '-q', '-b', branch, cwd)
+    if (commits) commit(cwd, `${branch.replace('/', '-')}.txt`)
+    ledger.setRunning(id, cwd)
+    ledger.succeed(id)
+    return { todo, task: id, branch }
+  }
+  const prs: Record<string, PullRequest> = {}
+  const lookup: PrLookup = async (url) => prs[url] ?? null
+  // The branch's own pull request, open.
+  const opened = (branch: string): PullRequest => ({
+    state: 'open',
+    head: branch,
+    headRepo: ORIGIN,
+    mergedAt: null,
+    approvedAt: null,
+  })
+  const statuses = (...ts: { todo: number }[]) => ts.map((t) => todos.get(t.todo).status)
+  return {
+    ledger,
+    todos,
+    repo,
+    git,
+    commit,
+    handOver,
+    prs,
+    opened,
+    statuses,
+    hooks: () => followWork(ledger, 'nod', null),
+    gc: () => followWork(ledger, 'nod', lookup),
+  }
+}
+
+test('a succeeded task leaves its todo done without commits of its own, waiting on its open pull request, next for commits alone', async () => {
+  const b = repoBooks()
+  const none = b.handOver(false)
+  const open = b.handOver(true)
+  b.ledger.link(open.task, [`${PR}1`])
+  b.prs[`${PR}1`] = b.opened(open.branch)
+  const alone = b.handOver(true)
+  // A branch of that name in a fork is someone else's.
+  const forked = b.handOver(true)
+  b.ledger.link(forked.task, [`${PR}2`])
+  b.prs[`${PR}2`] = { ...b.opened(forked.branch), headRepo: 'https://git.example.com/fork/r' }
+
+  // The hooks read no git service: a task with links waits for gc to read them.
+  await b.hooks()
+  expect(b.statuses(none, open, alone, forked)).toEqual(['done', 'waiting', 'next', 'waiting'])
+  expect(b.todos.links(open.todo)).toEqual([])
+  await b.gc()
+  expect(b.statuses(none, open, alone, forked)).toEqual(['done', 'waiting', 'next', 'next'])
+  // The pull request it waits on is on the todo.
+  expect(b.todos.links(open.todo).map((l) => l.url)).toEqual([`${PR}1`])
+  expect(b.todos.changes(open.todo).at(-1)).toMatchObject({
+    actor: 'nod',
+    change: { link: [null, `${PR}1`] },
+  })
+}, 30_000)
+
+test('a todo nod left open is done once its commits are in the default branch, and only gc looks again', async () => {
+  const b = repoBooks()
+  const merging = b.handOver(true)
+  b.ledger.link(merging.task, [`${PR}1`])
+  b.prs[`${PR}1`] = b.opened(merging.branch)
+  const squashed = b.handOver(true)
+  // Pushed and opened later, by the root session, say, which links it to the task.
+  const later = b.handOver(true)
+  const theirs = b.handOver(true)
+  await b.gc()
+  expect(b.statuses(merging, squashed, later, theirs)).toEqual(['waiting', 'next', 'next', 'next'])
+  // Taken back by the person: theirs from now on.
+  b.todos.set(theirs.todo, { status: 'waiting' }, 'human')
+
+  b.prs[`${PR}1`] = { ...b.opened(merging.branch), state: 'merged', mergedAt: LATER }
+  b.commit(b.repo, `${squashed.branch.replace('/', '-')}.txt`)
+  b.git(b.repo, 'update-ref', 'refs/remotes/origin/main', 'HEAD')
+  b.ledger.link(later.task, [`${PR}2`])
+  b.prs[`${PR}2`] = b.opened(later.branch)
+  b.ledger.link(theirs.task, [`${PR}3`])
+  b.prs[`${PR}3`] = { ...b.opened(theirs.branch), state: 'merged', mergedAt: LATER }
+  // The hooks looked once each task ended, and do not again.
+  await b.hooks()
+  expect(b.statuses(merging, squashed, later, theirs)).toEqual([
+    'waiting',
+    'next',
+    'next',
+    'waiting',
+  ])
+  await b.gc()
+  expect(b.statuses(merging, squashed, later, theirs)).toEqual([
+    'done',
+    'done',
+    'waiting',
+    'waiting',
+  ])
+  expect(b.todos.links(later.todo).map((l) => l.url)).toEqual([`${PR}2`])
+  b.prs[`${PR}2`] = { ...b.opened(later.branch), state: 'merged', mergedAt: LATER }
+  await b.gc()
+  expect(b.statuses(later, theirs)).toEqual(['done', 'waiting'])
+  // A pull request closed without merging leaves the commits to the person.
+  const closed = b.handOver(true)
+  b.ledger.link(closed.task, [`${PR}4`])
+  b.prs[`${PR}4`] = { ...b.opened(closed.branch), state: 'closed' }
+  await b.gc()
+  expect(b.statuses(closed)).toEqual(['next'])
+}, 30_000)
+
+test('in a repo nod lands, the todo waits on the landing, done once merged and next once it stops', async () => {
+  const b = repoBooks()
+  b.ledger.setRepo(b.repo, { land: 'pr' }, 'human')
+  const landing = b.handOver(true)
+  const stopping = b.handOver(true)
+  await b.hooks()
+  expect(b.statuses(landing, stopping)).toEqual(['waiting', 'waiting'])
+  // nod opened its pull request (land.ts), then merged it.
+  b.ledger.setLanding(landing.task, { pr: `${PR}1` })
+  b.ledger.link(landing.task, [`${PR}1`])
+  b.prs[`${PR}1`] = b.opened(landing.branch)
+  b.ledger.setLanding(stopping.task, { stopped: 'dropped' })
+  await b.gc()
+  expect(b.statuses(landing, stopping)).toEqual(['waiting', 'next'])
+  expect(b.todos.links(landing.todo).map((l) => l.url)).toEqual([`${PR}1`])
+  b.ledger.setLanding(landing.task, { mergedAt: LATER })
+  await b.gc()
+  expect(b.statuses(landing)).toEqual(['done'])
+}, 30_000)
+
+test('a todo left waiting is looked at again when its task ends again, though its status stayed', async () => {
+  const b = repoBooks()
+  b.ledger.setRepo(b.repo, { land: 'pr' }, 'human')
+  const t = b.handOver(true)
+  await b.hooks()
+  expect(b.statuses(t)).toEqual(['waiting'])
+  const { statusAt, followed } = b.todos.get(t.todo)
+  expect(followed).toBe(b.ledger.get(t.task).finishedAt)
+  b.ledger.setLanding(t.task, { mergedAt: LATER })
+  await b.hooks()
+  expect(b.statuses(t)).toEqual(['waiting'])
+  // Told more (a landing turn, say), it ended again.
+  b.ledger.setRunning(t.task, b.ledger.get(t.task).workspace ?? '')
+  b.ledger.succeed(t.task)
+  b.ledger.db.run('update tasks set finished_at = ? where id = ?', [LATER, t.task])
+  expect(b.todos.get(t.todo).statusAt).toBe(statusAt)
+  await b.hooks()
+  expect(b.todos.get(t.todo)).toMatchObject({ status: 'done', followed: null })
+}, 30_000)
+
+test('a todo left next is looked at again when its task ends again', async () => {
+  const b = repoBooks()
+  const t = b.handOver(true)
+  await b.hooks()
+  expect(b.todos.get(t.todo)).toMatchObject({
+    status: 'next',
+    followed: b.ledger.get(t.task).finishedAt,
+  })
+  // Its commits went in another way; the hooks do not look again until the task ends again.
+  b.commit(b.repo, `${t.branch.replace('/', '-')}.txt`)
+  b.git(b.repo, 'update-ref', 'refs/remotes/origin/main', 'HEAD')
+  await b.hooks()
+  expect(b.statuses(t)).toEqual(['next'])
+  b.ledger.setRunning(t.task, b.ledger.get(t.task).workspace ?? '')
+  b.ledger.succeed(t.task)
+  b.ledger.db.run('update tasks set finished_at = ? where id = ?', [LATER, t.task])
+  await b.hooks()
+  expect(b.todos.get(t.todo)).toMatchObject({ status: 'done', followed: null })
+}, 30_000)

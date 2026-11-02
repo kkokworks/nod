@@ -9,12 +9,12 @@ import {
   goesOn,
   QUESTION_LIMIT,
 } from './decisions'
+import { followWork } from './done'
 import type { Attempt, Ledger } from './ledger'
 import { CLAUDE_OPTION, SETTLING_OPTION, STALLED_OPTION, sessionName } from './place'
 import { message } from './proc'
 import { askedAgain } from './review'
 import { pasted, running, type Terminals } from './tmux'
-import { Todos } from './todos'
 import { endedWithoutStop, HELD_BACK, transcriptTail } from './transcript'
 import {
   currentTurn,
@@ -119,7 +119,7 @@ export async function onStop(
     const retry = ledger.openAttempt(taskId)
     if (retry !== null) await cutOff(ledger, home, taskId, retry, UNHEARD)
   }
-  new Todos(ledger).followTasks(SELF)
+  await followWork(ledger, SELF, null)
   // A task that just succeeded may let others start.
   await startReady(ledger, home, terminals)
   if (live && terminals.alive(name)) terminals.setOption(name, SETTLING_OPTION, null)
