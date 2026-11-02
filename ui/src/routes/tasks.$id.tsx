@@ -5,6 +5,7 @@ import type { Decision } from '../../../src/ledger'
 import { int } from '../input'
 import type { Message } from '../nod.server'
 import { detail, send } from '../nod.server'
+import { Splitter } from '../panes'
 import {
   DecisionCard,
   duration,
@@ -219,6 +220,7 @@ function TaskPage() {
 
       {aside && (
         <aside className="computer">
+          <Splitter name="term" />
           {screen === null ? (
             <div className="idle-note">
               <span className="dot" /> No live session

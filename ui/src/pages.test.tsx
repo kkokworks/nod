@@ -91,6 +91,7 @@ const { Search } = await import('./search')
 const projects = await import('./routes/projects')
 const { Failed, NotFound } = await import('./parts')
 const { RETRY_MS, TERMINAL } = await import('./terminal')
+const { SHOW_STORED } = await import('./panes')
 const shell = await import('./routes/__root')
 if (before === undefined) delete process.env.NOD_HOME
 else process.env.NOD_HOME = before
@@ -388,6 +389,86 @@ test('a live screen whose attach failed leaves no terminal of it behind once it 
   }
   expect(Socket.made).toHaveLength(1)
   expect(document.querySelectorAll('.term .xterm')).toHaveLength(1)
+})
+
+test('the terminal pane opens at the width stored in the browser, and a drag or ← → sets and stores a new one', async () => {
+  const KEY = 'nod-pane-width-term'
+  const root = document.documentElement
+  // happy-dom lays nothing out: the terminal's column 500px wide, in a page 1200px wide.
+  const rects = spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (
+    this: HTMLElement,
+  ) {
+    const width = this.matches('.computer') ? 500 : this.matches('.task-layout') ? 1200 : 0
+    return { width } as DOMRect
+  })
+  try {
+    localStorage.setItem(KEY, '480')
+    answer = (id) => live(id as number)
+    // As the page's head does as it loads.
+    new Function(SHOW_STORED)()
+    await go('/tasks/28')
+    expect(root.style.getPropertyValue('--term-w')).toBe('480px')
+    const edge = document.querySelector<HTMLElement>('.splitter-term')
+    if (edge === null) throw new Error('no edge')
+    // ← widens the pane at the right, by its 500px measured now.
+    act(() => {
+      edge.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true }))
+    })
+    expect(root.style.getPropertyValue('--term-w')).toBe('516px')
+    expect(localStorage.getItem(KEY)).toBe('516')
+    expect(edge.getAttribute('aria-valuenow')).toBe('57')
+    // With a modifier, ← is the browser's: ⌘← and Alt+← go back.
+    const back = new KeyboardEvent('keydown', {
+      key: 'ArrowLeft',
+      altKey: true,
+      bubbles: true,
+      cancelable: true,
+    })
+    act(() => {
+      edge.dispatchEvent(back)
+    })
+    expect(back.defaultPrevented).toBe(false)
+    // A drag sets the width as it goes and stores it when it ends; the page keeps its 320px.
+    const pointer = (type: string, clientX: number, buttons = 1) =>
+      act(() => {
+        edge.dispatchEvent(new PointerEvent(type, { clientX, button: 0, buttons, bubbles: true }))
+      })
+    pointer('pointerdown', 700)
+    pointer('pointermove', 600)
+    expect(root.style.getPropertyValue('--term-w')).toBe('600px')
+    expect(root.classList.contains('resizing')).toBe(true)
+    expect(localStorage.getItem(KEY)).toBe('516')
+    pointer('pointermove', 0)
+    expect(root.style.getPropertyValue('--term-w')).toBe('880px')
+    pointer('lostpointercapture', 0)
+    expect(localStorage.getItem(KEY)).toBe('880')
+    expect(root.classList.contains('resizing')).toBe(false)
+    // A move after the drag ended does nothing.
+    pointer('pointermove', 650)
+    expect(root.style.getPropertyValue('--term-w')).toBe('880px')
+    // A move with no button held ends a drag whose end did not come (the capture failed).
+    pointer('pointerdown', 700)
+    pointer('pointermove', 690)
+    pointer('pointermove', 600, 0)
+    expect(localStorage.getItem(KEY)).toBe('510')
+    expect(root.classList.contains('resizing')).toBe(false)
+    expect(root.style.getPropertyValue('--term-w')).toBe('510px')
+    // A drag the page moves on in the middle of ends there, its width stored, the page's text free.
+    pointer('pointerdown', 700)
+    pointer('pointermove', 650)
+    await go('/find')
+    expect(root.classList.contains('resizing')).toBe(false)
+    expect(localStorage.getItem(KEY)).toBe('550')
+    // The pane made again keeps the newest width, on the root, not one stored before (as when
+    // storing failed).
+    localStorage.setItem(KEY, '480')
+    await go('/tasks/28')
+    expect(root.style.getPropertyValue('--term-w')).toBe('550px')
+  } finally {
+    rects.mockRestore()
+    localStorage.removeItem(KEY)
+    root.style.removeProperty('--term-w')
+  }
 })
 
 test("a live worker's screen attaches to its session, takes keys, and lets go when the page moves on or the session ends", async () => {
