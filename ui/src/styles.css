@@ -642,7 +642,8 @@ kbd + kbd {
 /* A tag in a row of them can hold free text (whom a todo waits on, a check command) longer than a
    narrow window is wide. It still moves to a line of its own whole; only there does it wrap, as a
    line of text: as flex items its parts would shrink together, and since `anywhere` lets a word's
-   minimum width be one letter, a label as `check` would break a letter at a time beside its command. */
+   minimum width be one letter, a label such as `check` would break a letter at a time beside its
+   command. */
 .tags .tag,
 .todo-tags .tag {
   display: inline-block;
