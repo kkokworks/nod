@@ -2,7 +2,7 @@ import { chmodSync, existsSync, readFileSync, rmSync, writeFileSync } from 'node
 import { join } from 'node:path'
 import { z } from 'zod'
 import { localTime } from './days'
-import { sweep } from './done'
+import { followWork, sweep } from './done'
 import { savedEnv } from './env'
 import { sendNotices } from './inbox'
 import { land, type Moved } from './land'
@@ -141,9 +141,17 @@ export async function tick(
         return []
       })
     : []
+  // One lookup for both, so a pull request is read once. The todos first: the sweep may delete a
+  // branch they are read by.
+  const prs = pullRequests(home)
+  if (watches) {
+    await followWork(ledger, SELF, prs).catch((error) =>
+      console.error(`nod: could not follow the todos' tasks: ${message(error)}`),
+    )
+  }
   // Clean: one whose workspace was gone already, collected all the same.
   const collected = watches
-    ? await sweep(ledger, home, terminals, pullRequests(home), now).then(({ report }) => [
+    ? await sweep(ledger, home, terminals, prs, now).then(({ report }) => [
         ...report.removed,
         ...report.clean,
       ])

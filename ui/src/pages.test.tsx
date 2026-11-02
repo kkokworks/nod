@@ -225,6 +225,7 @@ const todoItem = (id: number, title: string) => ({
   sourceKey: null,
   createdAt: AT,
   statusAt: AT,
+  followed: null,
   project: null,
   waitingFor: null,
 })

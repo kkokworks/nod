@@ -2,6 +2,7 @@ import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { conflictBrief, createdFrom, NOD_GIT, ownStart, rebasing } from './branch'
 import { askToLand } from './decisions'
+import { lands } from './done'
 import { hasRef, landed } from './gc'
 import type { Landing, Ledger, Repo, Task } from './ledger'
 import { notify, taskRef } from './notify'
@@ -85,13 +86,7 @@ type Tip = { branch: string; commit: string }
 function due(ledger: Ledger, terminals: Terminals, repo: Repo, only: number[] | undefined): Task[] {
   return ledger.list().filter((t) => {
     if (t.repo !== repo.path || t.status !== 'succeeded' || t.workspace === null) return false
-    const l = ledger.landing(t.id)
-    if (l !== null && (l.stopped !== null || l.mergedAt !== null)) return false
-    const named = only === undefined ? l !== null : only.includes(t.id)
-    const since = repo.raisedAt !== null && t.createdAt >= repo.raisedAt
-    if (!named && !(only === undefined && since)) return false
-    // A link someone else made: its result went out another way.
-    if (ledger.links(t.id).some((url) => url !== l?.pr)) return false
+    if (!lands(ledger, t, only)) return false
     // A turn the person types in keeps the status succeeded until it ends.
     return !terminals.attached(sessionName(t.id))
   })

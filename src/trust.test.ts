@@ -23,6 +23,7 @@ const todo = (id: number, edit: Partial<Todo>): Todo => ({
   sourceKey: null,
   createdAt: at('2026-10-20T10:00'),
   statusAt: at('2026-10-20T10:00'),
+  followed: null,
   ...edit,
 })
 const project = (id: number, next: number): Project & { next: number } => ({

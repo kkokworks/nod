@@ -13,6 +13,9 @@ const GITHUB = /^https:\/\/github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)/
 const GITEA = /^(https?:\/\/[^/]+)\/([^/]+)\/([^/]+)\/pulls\/(\d+)/
 const TIMEOUT_MS = 30_000
 
+// Whether a link reads as a pull request pullRequests can look up, without looking it up.
+export const isPullRequest = (url: string): boolean => GITHUB.test(url) || GITEA.test(url)
+
 type Review = { login: string | null; state: string; at: string | null }
 const CHANGES = new Set(['CHANGES_REQUESTED', 'REQUEST_CHANGES'])
 

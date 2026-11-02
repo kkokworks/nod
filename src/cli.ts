@@ -5,7 +5,7 @@ import { parseArgs } from 'node:util'
 import { accountRule, configDir, describeRule, setAccountRule } from './account'
 import { ALLOW, onPermissionRequest, PermissionEvent } from './allow'
 import { finished } from './decisions'
-import { sweep } from './done'
+import { followWork, sweep } from './done'
 import { AUTOCOMPACT_PCT } from './env'
 import { collect, type GcPick, type GcReport, remotesHolding } from './gc'
 import {
@@ -96,6 +96,7 @@ import {
   restart,
   restartDue,
   resume,
+  SELF,
   StopEvent,
   startReady,
   startTask,
@@ -119,8 +120,12 @@ const USAGE = `usage:
                                    started from the earlier task's branch in the same repo.
                                    --issue names the issue it works on, so ls, decisions and
                                    notify events show it. --todo delegates that todo to the
-                                   task: it waits on the task, is done once it succeeds, and is
-                                   a next action again if it is dropped; the brief may then be
+                                   task: it waits on the task, is a next action again if it is
+                                   dropped, and once it succeeds is done if its branch has no
+                                   commits the default branch lacks, else waits on the branch's
+                                   open pull request (linked to the todo) or nod's landing, and
+                                   is a next action without either; gc and the tick close it
+                                   once the commits are in the default branch; the brief may then be
                                    left out for the todo's title and notes. Without --todo the
                                    task gets a todo of its own, titled by the brief's first line,
                                    in --project when given. Run in a Claude session, the task
@@ -193,7 +198,10 @@ const USAGE = `usage:
                                    once a remote branch holds the commits or the remote's default
                                    branch has the changes; ledger rows and session transcripts
                                    stay, ls stops listing the tasks, and resume or tell brings one
-                                   back. The schedule runs the signal check every 5 minutes
+                                   back. With neither, it first moves the todos nod left open on
+                                   their tasks' commits: done once the commits are in the default
+                                   branch, waiting while the branch's pull request is open, next
+                                   once none is. The schedule runs both every 5 minutes
   nod trigger add <cron> <brief...> [--source <command>] [--repo <path> --branch <prefix>]
                   [--check <command>] [--model <model>]
                                    add a task on a schedule (5-field cron, local time); with
@@ -1059,13 +1067,12 @@ async function gc(args: string[]): Promise<void> {
     throw new Error('name tasks or give --older-than, not both')
   }
   if (positionals.length === 0 && olderThan === undefined) {
-    const { report, done, unchecked } = await sweep(
-      ledger,
-      home,
-      terminals,
-      pullRequests(home),
-      new Date(),
+    // As the tick: the todos first, with the same lookup, and their failure does not stop the gc.
+    const prs = pullRequests(home)
+    await followWork(ledger, SELF, prs).catch((error) =>
+      console.error(`nod: could not follow the todos' tasks: ${message(error)}`),
     )
+    const { report, done, unchecked } = await sweep(ledger, home, terminals, prs, new Date())
     printGc(report)
     for (const d of done) if (report.removed.includes(d.id)) console.log(`  n${d.id}: ${d.reason}`)
     for (const u of unchecked) console.log(`unchecked n${u.id}: ${u.error}`)

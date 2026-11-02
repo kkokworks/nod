@@ -644,6 +644,9 @@ export const MIGRATIONS = [
   update landings set text_head = pushed
   where title is not null and pushed is not null and pr is null;
   `,
+  // v27: the end of a todo's task that nod last moved it by, leaving it open on the task's work
+  // (followTasks in todos.ts).
+  'alter table todos add column followed text;',
 ]
 // The migration that moves <home>/rules.md into the ledger, numbered as user_version counts.
 const RULES_FILE_MIGRATION = 17

@@ -64,7 +64,7 @@ const MProject = z.object({
 type MProject = z.infer<typeof MProject>
 
 export type Tools = { planeUrl: string | null; forgejoOrg: string | null }
-type NewTodo = Omit<Todo, 'id' | 'projectId'> & { project: string | null }
+type NewTodo = Omit<Todo, 'id' | 'projectId' | 'followed'> & { project: string | null }
 export type Imported = {
   projects: { key: string; row: Omit<Project, 'id'>; at: string }[]
   // `nodTask`: the nod task it was delegated to, from a first line `nod #<task>`.
