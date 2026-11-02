@@ -678,6 +678,10 @@ test("with pushurls on origin, the pull request's head is one of theirs, not ori
   git(repo, 'config', 'remote.origin.url', 'https://git.example.com/upstream/r')
   git(repo, 'config', '--unset', 'remote.origin.pushurl', 'me/r')
   expect(await done()).toEqual([{ id, reason: `merged: ${PR}${id}` }])
+  // An empty pushurl drops those before it (git 2.46 and later): pushes go only to the fork.
+  git(repo, 'config', '--add', 'remote.origin.pushurl', '')
+  git(repo, 'config', '--add', 'remote.origin.pushurl', 'git@git.example.com:me/r.git')
+  expect(await done()).toEqual([])
 }, 30_000)
 
 test('a signature that log.showSignature prints does not hide the last commit time', async () => {

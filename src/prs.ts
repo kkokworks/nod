@@ -194,9 +194,11 @@ export function originUrl(repo: string): string | null {
 }
 
 // Where `git push origin` goes, as written: each of its pushurls, or else its url. None without.
+// An empty pushurl drops those before it, as git 2.46 and later read the list.
 export function pushUrls(repo: string): string[] {
   const push = Bun.spawnSync(['git', '-C', repo, 'config', '--get-all', 'remote.origin.pushurl'])
-  const urls = push.exitCode === 0 ? push.stdout.toString().split('\n').filter(Boolean) : []
+  const all = push.exitCode === 0 ? push.stdout.toString().replace(/\n$/, '').split('\n') : []
+  const urls = all.slice(all.lastIndexOf('') + 1)
   const url = originUrl(repo)
   return urls.length > 0 ? urls : url === null ? [] : [url]
 }
