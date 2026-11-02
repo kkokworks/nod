@@ -3,13 +3,16 @@
 // repo standing in for the remote. It keeps its state in $FAKE_SERVICE: the bare repo's path in
 // `origin`, the pull requests in `prs.json`, and each call in `calls.jsonl`. A file `merge-state`
 // overrides what gh reports a pull request's mergeStateStatus is (tea's `mergeable` is false for
-// anything but CLEAN), and a file `refuse` makes creating and merging fail with its text.
+// anything but CLEAN), a file `refuse` makes creating and merging fail with its text, and a file
+// `head-repo` overrides which repo a pull request's head branch is in: a fork's `owner/repo`, say,
+// or none when it is empty, as for a fork since deleted.
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 type Pr = {
   number: number
   url: string
+  repo: string // owner/repo, the repo the pull request is on
   head: string
   base: string
   title: string
@@ -68,14 +71,25 @@ const create = (
   repo: string,
   host: string,
   path: string,
-  p: Omit<Pr, 'number' | 'url' | 'state'>,
+  p: Omit<Pr, 'number' | 'url' | 'repo' | 'state'>,
 ) => {
   refuse()
   const number = prs.length + 1
-  const pr: Pr = { ...p, number, url: `https://${host}/${repo}/${path}/${number}`, state: 'open' }
+  const pr: Pr = {
+    ...p,
+    repo,
+    number,
+    url: `https://${host}/${repo}/${path}/${number}`,
+    state: 'open',
+  }
   prs.push(pr)
   save()
   return pr
+}
+// The `owner/repo` the head branch is in: the pull request's own unless `head-repo` says otherwise.
+const headRepo = (pr: Pr): string | null => {
+  const file = join(dir, 'head-repo')
+  return existsSync(file) ? readFileSync(file, 'utf8').trim() || null : pr.repo
 }
 // As a squash merge does: one commit with the head's tree on top of the base, which the head must
 // already sit on for the tree to be right.
@@ -116,6 +130,7 @@ if (tool === 'gh') {
     const ref = args[2] ?? ''
     const pr = byUrl(/^\d+$/.test(ref) ? `https://github.com/${opt('--repo')}/pull/${ref}` : ref)
     const status = mergeState()
+    const [owner, name] = headRepo(pr)?.split('/') ?? []
     console.log(
       JSON.stringify({
         state: pr.state.toUpperCase(),
@@ -123,6 +138,9 @@ if (tool === 'gh') {
         mergeStateStatus: status,
         headRefOid: headOf(pr),
         headRefName: pr.head,
+        // Both null once the head's fork is deleted.
+        headRepository: name === undefined ? null : { id: 'R_1', name },
+        headRepositoryOwner: owner === undefined ? null : { id: 'U_1', login: owner },
         mergedAt: pr.mergedAt ?? null,
         reviews: [],
       }),
@@ -151,6 +169,7 @@ if (tool === 'gh') {
       label: p.head,
       ref: headOf(p) === '' ? `refs/pull/${p.number}/head` : p.head,
       sha: headOf(p),
+      repo: headRepo(p) === null ? null : { full_name: headRepo(p) },
     },
   })
   if (endpoint === 'user') {
