@@ -113,7 +113,7 @@ task n13 error: the worktree could not be made: …
 `nod open` 으로 연 프로젝트 세션에는 nod 가 직접 알리므로 `nod watch` 를 걸지 않아도 됩니다. 그 프로젝트의 작업이 성공·오류·취소로 끝날 때(검증과 독립 리뷰가 끝난 뒤, watch 가 끝을 내는 그때)와 결정이 열릴 때, nod 가 그 프로젝트의 마지막 세션(`nod open` 이 다시 여는 세션)에 메시지를 넣습니다. 받는 세션에는 다른 Claude 세션이 보낸 메시지로 보이고, 사람의 승인으로 치지 않습니다. 글은 watch 의 줄과 같은 정보에 시도 번호(결정이면 결정 번호)와 다음에 할 일을 붙여, 같은 알림이 두 번 와도 알아볼 수 있습니다. 알림은 상태가 바뀌는 그 자리에서 장부에 먼저 적고 그다음 보냅니다. 세션이 꺼져 있으면 못 보낸 채 남았다가, 그 세션을 `nod open` 으로 다시 열면(계정을 바꿔 열어도) 쌓인 것을 한 메시지로 보냅니다. 보내는 때는 알림 이벤트마다(`<홈>/notify` 를 돌리는 그때)와 tick(매분)입니다. nod 가 워커의 권한 확인이나 이미 믿은 레포의 신뢰 확인을 스스로 허락했을 때도 `n<작업> 허락: …` 한 줄을 보냅니다(위). 사람이 그 세션 밖(웹 화면, 셸이나 다른 Claude 세션의 `nod <결정> <답>`·`nod drop <결정>`, 워커 칸에서 직접 허락·거절하거나 친 글)에서 결정에 답하거나 닫으면 `decision d<결정> <이유> answered by the person (task n<작업> …): <답>` 한 줄을 보냅니다. 그 세션이 직접 답한 결정과 nod 가 스스로 닫은 결정(차례가 끝남·끊김, 답 없이 이어 감, 새 질문이 대신함 등)은 보내지 않습니다. 보내기 전에 답한 결정은 열렸다는 알림을 보내지 않고, 프로젝트가 없는 작업은 어느 세션에도 보내지 않습니다. `nod tell p<번호> '<말>'` 로 사람도 같은 길로 프로젝트 세션에 말을 보낼 수 있고, 꺼져 있으면 열릴 때 갑니다.
 
 ```
-nod, project p1 Release: 2 notices, oldest first
+nod, project p1 Release: 3 notices, oldest first
 
 task n11 t29 PROJ-12 succeeded, attempt 2: 원인은 만료된 토큰 재사용, 고친 커밋 2개
 next: nod show n11, then send its result out
@@ -121,6 +121,9 @@ next: nod show n11, then send its result out
 decision d7 question (task n12 t30 PROJ-12: 결제 오류 원인 조사)
   어느 환경의 로그를 볼까요?
 next: tell the person; nod d7 <their answer> answers it, nod drop d7 drops it
+
+decision d6 permission answered by the person (task n13 t31 PROJ-12): (allowed in the terminal)
+next: tell the person in a line; it is closed, so answer it no more
 ```
 
 nod 는 Claude Code 가 세션마다 여는 수신 소켓에 이 메시지를 한 줄로 씁니다. 같은 PC 에서 `SendMessage` 가 쓰는 길입니다. 소켓 경로는 `nod open` 이 세션에 붙이는 SessionStart 훅(`nod hook inbox`)이, Claude Code 가 훅에 주는 `CLAUDE_CODE_MESSAGING_SOCKET` 을 장부에 적고, SessionEnd 훅이 지웁니다. 한계가 있습니다. 줄의 형식은 Claude Code 문서에 없고 실행 파일에서 찾은 것이라 바뀔 수 있고, 소켓은 아무것도 돌려주지 않아 전달을 확인할 수 없습니다. Claude Code 가 형식을 바꿔 조용히 버려도 nod 는 보낸 것으로 칩니다. 권한 확인을 건너뛰는 모드(bypassPermissions)의 세션은 이런 메시지를 사람이 승인할 때까지 붙잡아 둡니다. `claude --resume` 으로 직접 열었거나 이 기능 전에 연 세션은 훅이 없어, 그 세션 안의 첫 nod 명령이 Bash 에도 export 된 소켓을 장부에 적고 기다리던 알림을 보냅니다. 그 전까지는 받지 못합니다. 프로젝트 세션인데 받을 수 없으면(그 프로젝트의 최신 세션이 아니거나 소켓이 없음) nod 명령이 stderr 에 그렇다고 말하니 `nod open` 으로 다시 엽니다. 다른 Claude 세션이 프로젝트의 일을 `nod add`·`nod tell`·결정 답·`nod resume`·`nod restart` 로 굴리는데 그 프로젝트의 최신 세션도 받을 수 없으면(없음, 장부에 소켓이 없음, 소켓 파일이 없어짐) 그 명령도 stderr 에 그렇다고 말하니, 그 세션에서 `nod watch --mine`(다른 세션이 맡긴 작업이면 `nod watch`)을 걸거나 `nod open` 으로 프로젝트 세션을 엽니다. `/clear` 하면 대화가 새 세션 ID 로 이어져 `nod open` 으로 다시 열 때까지 알림을 받지 못합니다(알림은 장부에 남음). 다만 `claude --resume` 으로 연 세션은 `/clear` 를 알려 줄 훅이 없어, 그 뒤 nod 명령을 돌리기 전까지 보낸 알림은 버려지고 다시 가지 않습니다. 다시 연 뒤 `nod ls --mine`·`nod --mine` 으로 놓친 끝과 결정을 봅니다. 자세한 것은 [docs/design.md](docs/design.md) 의 「프로젝트 세션에 직접 알리기」에 있습니다.
