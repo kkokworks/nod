@@ -2,7 +2,7 @@ import { collect, type GcReport, hasRef, landed } from './gc'
 import { FINISHED, type Ledger, type Task } from './ledger'
 import { sessionName } from './place'
 import { message, readAtOnce } from './proc'
-import { originUrl, sameRepo } from './prs'
+import { pushUrls, sameRepo } from './prs'
 import type { Terminals } from './tmux'
 import { Todos } from './todos'
 
@@ -97,10 +97,12 @@ async function signal(
     if (task.status !== 'succeeded') return null
     // The branch's own pull request merged after its last commit: the work went up from elsewhere,
     // rebased on another branch, say, so these commits are not its only copy. Its own: its head is
-    // a branch of this name in the repo of `origin`, where nod pushes; one of that name in another
-    // repo or a fork is someone else's, and one whose head repo is not known is held back too. A
-    // commit made or rewritten since is newer than the merge, and held back. Any other link still
-    // waiting holds it back too, as it does a pushed task, though here age does not end the wait.
+    // a branch of this name in the repo nod pushes to, `origin`'s (pushUrls); one of that name in
+    // another repo or a fork is someone else's, and one whose head repo is not known is held back
+    // too. A commit made or rewritten since is newer than the merge, and held back. Any other link
+    // still waiting holds it back too, as it does a pushed task, though here age does not end the
+    // wait. Only as its remote addresses are written: an ssh alias for the service's host reads as
+    // another host, and holds back.
     // ponytail: a commit made before the merge and never pushed goes from ls too; it stays on the
     // branch (dropBranch in gc.ts), and resume brings it back.
     let merged: string | null = null
@@ -109,7 +111,7 @@ async function signal(
       if (pr === null) continue
       if (pr.state === 'open' && !approvedSince(pr, task)) return null
       if (pr.state !== 'merged' || pr.head !== task.branch || pr.mergedAt === null) continue
-      if (task.repo === null || !sameRepo(pr.headRepo, originUrl(task.repo))) continue
+      if (task.repo === null || !pushUrls(task.repo).some((u) => sameRepo(pr.headRepo, u))) continue
       if (Date.parse(branch.lastCommitAt) < Date.parse(pr.mergedAt)) merged ??= `merged: ${url}`
     }
     return merged

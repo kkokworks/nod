@@ -193,6 +193,14 @@ export function originUrl(repo: string): string | null {
   return url.exitCode === 0 ? url.stdout.toString() : null
 }
 
+// Where `git push origin` goes, as written: each of its pushurls, or else its url. None without.
+export function pushUrls(repo: string): string[] {
+  const push = Bun.spawnSync(['git', '-C', repo, 'config', '--get-all', 'remote.origin.pushurl'])
+  const urls = push.exitCode === 0 ? push.stdout.toString().split('\n').filter(Boolean) : []
+  const url = originUrl(repo)
+  return urls.length > 0 ? urls : url === null ? [] : [url]
+}
+
 // Whether two remote addresses name one repo, however each is written: https or ssh, with `.git`
 // or without, in any case. An address that is missing or unreadable matches none.
 export function sameRepo(a: string | null, b: string | null): boolean {

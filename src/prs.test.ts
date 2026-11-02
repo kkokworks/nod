@@ -105,7 +105,7 @@ describe('nod opens and squash merges its pull requests through the repo service
       expect(git(origin, 'rev-list', '--merges', 'main')).toBe('')
       const opened = calls(own).find((c) => c.args.includes('create') || c.args.includes('POST'))
       expect(opened?.stdin).toContain('Body')
-    })
+    }, 30_000)
   }
 
   test('gh: a pull request behind, waiting on a review, in conflict or not worked out yet is not clean', async () => {

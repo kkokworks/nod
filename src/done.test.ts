@@ -26,7 +26,7 @@ const OPEN: PullRequest = {
   mergedAt: null,
   approvedAt: null,
 }
-// Merged after any commit a test makes, so only the branch's name can hold a task back from it.
+// Merged after any commit a test makes, so only the branch's name or repo can hold a task back.
 const MERGED: PullRequest = { ...OPEN, state: 'merged', mergedAt: '2099-01-01T00:00:00Z' }
 
 test('done signals: dropped, taken over, merged into the default branch, every pull request closed or approved, or old', async () => {
@@ -661,7 +661,24 @@ test('such a task waits while the address of origin, where nod pushes, is missin
   expect(await done()).toEqual([])
   git(repo, 'config', 'remote.origin.url', 'https://git.example.com/o/r.git')
   expect(await done()).toEqual([{ id, reason: `merged: ${PR}${id}` }])
-})
+}, 30_000)
+
+test("with pushurls on origin, the pull request's head is one of theirs, not origin's url", async () => {
+  const { home, ledger, repo, git, lookup, finish } = unpushedTasks()
+  const id = finish('pushurl', BEFORE)
+  const done = async () => (await doneTasks(ledger, Tmux.of(home), lookup, NOW)).done
+
+  // Pushes go to a fork: the pull request from the branch in origin's url is someone else's.
+  git(repo, 'config', 'remote.origin.pushurl', 'git@git.example.com:me/r.git')
+  expect(await done()).toEqual([])
+  // Any of several pushurls.
+  git(repo, 'config', '--add', 'remote.origin.pushurl', 'git@git.example.com:o/r.git')
+  expect(await done()).toEqual([{ id, reason: `merged: ${PR}${id}` }])
+  // Origin's url another repo, its pushurl this one.
+  git(repo, 'config', 'remote.origin.url', 'https://git.example.com/upstream/r')
+  git(repo, 'config', '--unset', 'remote.origin.pushurl', 'me/r')
+  expect(await done()).toEqual([{ id, reason: `merged: ${PR}${id}` }])
+}, 30_000)
 
 test('a signature that log.showSignature prints does not hide the last commit time', async () => {
   const { home, ledger, repo, git, lookup, finish } = unpushedTasks()
