@@ -12,6 +12,7 @@ import { type ReactNode, type Ref, useEffect, useRef } from 'react'
 import { BUILD } from '../build'
 import { bindKeys, ignoreOnPage, KEYS } from '../keys'
 import { type Overview, overview } from '../nod.server'
+import { Splitter } from '../panes'
 import { Failed, keep, keepShown, TaskId, TaskItem, useStale } from '../parts'
 import { Search } from '../search'
 import css from '../styles.css?url'
@@ -126,6 +127,7 @@ function Layout({ data, children }: { data: Overview | null; children: ReactNode
   return (
     <div className="app">
       <Sidebar data={data} />
+      <Splitter name="side" />
       <main className="main">
         <UndoBar>{children}</UndoBar>
       </main>

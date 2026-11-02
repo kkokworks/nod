@@ -390,6 +390,63 @@ test('a live screen whose attach failed leaves no terminal of it behind once it 
   expect(document.querySelectorAll('.term .xterm')).toHaveLength(1)
 })
 
+test('the terminal pane opens at the width stored in the browser, and a drag or ← → sets and stores a new one', async () => {
+  const KEY = 'nod-pane-width-term'
+  const root = document.documentElement
+  // happy-dom lays nothing out: the terminal's column 500px wide, in a page 1200px wide.
+  const rects = spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (
+    this: HTMLElement,
+  ) {
+    const width = this.matches('.computer') ? 500 : this.matches('.task-layout') ? 1200 : 0
+    return { width } as DOMRect
+  })
+  try {
+    localStorage.setItem(KEY, '480')
+    answer = (id) => live(id as number)
+    // From a page without the pane, so the task page's pane is made anew.
+    await go('/find')
+    await go('/tasks/28')
+    expect(root.style.getPropertyValue('--term-w')).toBe('480px')
+    const edge = document.querySelector<HTMLElement>('.splitter-term')
+    if (edge === null) throw new Error('no edge')
+    // ← widens the pane at the right, by its 500px measured now.
+    act(() => {
+      edge.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true }))
+    })
+    expect(root.style.getPropertyValue('--term-w')).toBe('516px')
+    expect(localStorage.getItem(KEY)).toBe('516')
+    expect(edge.getAttribute('aria-valuenow')).toBe('57')
+    // A drag sets the width as it goes and stores it when it ends; the page keeps its 320px.
+    const pointer = (type: string, clientX: number) =>
+      act(() => {
+        edge.dispatchEvent(new PointerEvent(type, { clientX, button: 0, bubbles: true }))
+      })
+    pointer('pointerdown', 700)
+    pointer('pointermove', 600)
+    expect(root.style.getPropertyValue('--term-w')).toBe('600px')
+    expect(root.classList.contains('resizing')).toBe(true)
+    expect(localStorage.getItem(KEY)).toBe('516')
+    pointer('pointermove', 0)
+    expect(root.style.getPropertyValue('--term-w')).toBe('880px')
+    pointer('lostpointercapture', 0)
+    expect(localStorage.getItem(KEY)).toBe('880')
+    expect(root.classList.contains('resizing')).toBe(false)
+    // A move after the drag ended does nothing.
+    pointer('pointermove', 650)
+    expect(root.style.getPropertyValue('--term-w')).toBe('880px')
+    // A drag the page moves on in the middle of ends there, its width stored, the page's text free.
+    pointer('pointerdown', 700)
+    pointer('pointermove', 650)
+    await go('/find')
+    expect(root.classList.contains('resizing')).toBe(false)
+    expect(localStorage.getItem(KEY)).toBe('550')
+  } finally {
+    rects.mockRestore()
+    localStorage.removeItem(KEY)
+    root.style.removeProperty('--term-w')
+  }
+})
+
 test("a live worker's screen attaches to its session, takes keys, and lets go when the page moves on or the session ends", async () => {
   answer = (id) => live(id as number)
   Socket.made.length = 0
