@@ -697,6 +697,126 @@ test('after a gate that failed, the words that answer it are no pull request tex
   )
 }, 30_000)
 
+// A turn the person starts once the task succeeded (`nod tell`), in which the worker does `work`.
+async function followUp(id: number, work: () => void): Promise<void> {
+  ledger.setRunning(id, ws(id))
+  ledger.startAttempt({
+    taskId: id,
+    kind: 'followup',
+    decisionId: null,
+    sessionId: `s${id}`,
+    prompt: 'one more thing',
+  })
+  work()
+  expect(await stops(id, 'Did the one more thing.\nNOD: done | did it')).toBeNull()
+  expect(ledger.get(id).status).toBe('succeeded')
+}
+
+const openedTitle = (): string | undefined => {
+  const args = calls(service).find((c) => c.args[1] === 'create')?.args ?? []
+  return args[args.indexOf('--title') + 1]
+}
+
+test('a commit after the pull request text was written asks for the text again before the pull request opens', async () => {
+  setRepo('pr')
+  const id = finished('feat/e', { 'e.txt': 'e\n' })
+  await land(ledger, home, Tmux.of(home), { send })
+  await stops(id, 'Add e\n\nAdds e.txt.\nNOD: done | wrote it')
+  // Before the pull request opens, a follow-up changes the branch the text was written on.
+  await followUp(id, () => {
+    writeFileSync(join(ws(id), 'f.txt'), 'f\n')
+    git(ws(id), 'add', '-A')
+    git(ws(id), 'commit', '-qm', 'add f')
+  })
+
+  expect(await land(ledger, home, Tmux.of(home), { send })).toEqual([
+    { id, did: 'its worker writes the pull request' },
+  ])
+  expect(handed).toHaveLength(2)
+  expect(handed[1]?.text).toContain("write it for the repo's readers")
+  expect(ledger.landing(id)?.title).toBeNull()
+  expect(calls(service).some((c) => c.args[1] === 'create')).toBe(false)
+  await stops(id, 'Add e and f\n\nAdds e.txt and f.txt.\nNOD: done | wrote it again')
+  expect((await land(ledger, home, Tmux.of(home), { send }))[0]?.did).toStartWith(
+    'pull request open',
+  )
+  expect(openedTitle()).toBe('Add e and f')
+}, 30_000)
+
+test('a turn after the pull request text that leaves the branch as it was does not ask for it again', async () => {
+  setRepo('pr')
+  const id = finished('feat/k', { 'k.txt': 'k\n' })
+  await land(ledger, home, Tmux.of(home), { send })
+  await stops(id, 'Add k\n\nNOD: done | wrote it')
+  await followUp(id, () => {})
+
+  expect((await land(ledger, home, Tmux.of(home), { send }))[0]?.did).toStartWith(
+    'pull request open',
+  )
+  expect(handed).toHaveLength(1)
+  expect(openedTitle()).toBe('Add k')
+}, 30_000)
+
+test('a rebase alone after the pull request text keeps the text', async () => {
+  setRepo('pr')
+  const id = finished('feat/j', { 'j.txt': 'j\n' })
+  await land(ledger, home, Tmux.of(home), { send })
+  await stops(id, 'Add j\n\nNOD: done | wrote it')
+  const written = head(id)
+  const tip = mainMoves('m.txt', 'm\n')
+
+  expect((await land(ledger, home, Tmux.of(home), { send }))[0]?.did).toStartWith(
+    'pull request open',
+  )
+  // Rebased onto the moved default branch, so a head other than the one the text was written on.
+  expect(git(ws(id), 'log', '--format=%s', `${tip}..HEAD`)).toBe('change j.txt')
+  expect(head(id)).not.toBe(written)
+  expect(handed).toHaveLength(1)
+  expect(openedTitle()).toBe('Add j')
+}, 30_000)
+
+test('a rebase over a file the default branch renamed keeps the text', async () => {
+  setRepo('pr')
+  writeFileSync(join(repo, 'f.txt'), 'one\ntwo\nthree\n')
+  git(repo, 'add', '-A')
+  git(repo, 'commit', '-qm', 'add f')
+  git(repo, 'push', '-q', 'origin', 'main')
+  const id = finished('feat/rn', { 'f.txt': 'one\nTWO\nthree\n' })
+  await land(ledger, home, Tmux.of(home), { send })
+  await stops(id, 'Change f\n\nNOD: done | wrote it')
+  const other = tmp.make('nod-other-')
+  git(other, 'clone', '-q', origin, '.')
+  git(other, 'mv', 'f.txt', 'g.txt')
+  git(other, 'commit', '-qm', 'rename f')
+  git(other, 'push', '-q', 'origin', 'main')
+
+  expect((await land(ledger, home, Tmux.of(home), { send }))[0]?.did).toStartWith(
+    'pull request open',
+  )
+  expect(git(ws(id), 'show', 'HEAD:g.txt')).toBe('one\nTWO\nthree')
+  expect(handed).toHaveLength(1)
+  expect(openedTitle()).toBe('Change f')
+}, 30_000)
+
+test('a rebase that drops a change the default branch already has asks for the text again', async () => {
+  setRepo('pr')
+  const id = finished('feat/i', { 'i.txt': 'i\n' })
+  writeFileSync(join(ws(id), 'm.txt'), 'm\n')
+  git(ws(id), 'add', '-A')
+  git(ws(id), 'commit', '-qm', 'add m')
+  await land(ledger, home, Tmux.of(home), { send })
+  await stops(id, 'Add i and m\n\nNOD: done | wrote it')
+  // The same change goes into the default branch another way, so the rebase leaves it out.
+  const tip = mainMoves('m.txt', 'm\n')
+
+  expect(await land(ledger, home, Tmux.of(home), { send })).toEqual([
+    { id, did: 'its worker writes the pull request' },
+  ])
+  expect(git(ws(id), 'log', '--format=%s', `${tip}..HEAD`)).toBe('change i.txt')
+  expect(handed).toHaveLength(2)
+  expect(ledger.landing(id)?.title).toBeNull()
+}, 30_000)
+
 test('without its service on PATH, nod asks before anything goes out', async () => {
   setRepo('pr')
   const id = finished('feat/p', { 'p.txt': 'p\n' })

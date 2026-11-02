@@ -191,10 +191,13 @@ export async function verifyLanding(
   if (ws === null) throw new Error(`task n${task.id} has no workspace`)
   if (task.repo === null) return verify(ledger, task, report)
   // Only while there is none: a later done of the same landing (a second conflict, a fixed check)
-  // reports on that work, not on the pull request. A gate that fails clears it (land.ts).
+  // reports on that work, not on the pull request. A gate that fails clears it, and so does a change
+  // of the branch since it was written (land.ts).
   const pr = reported && prompt.includes(PR_TEXT) ? prText(report) : null
   const had = ledger.landing(task.id)
-  if (pr !== null && had?.pr === null && had.title === null) ledger.setLanding(task.id, pr)
+  // With the head it was written on, which landing compares with the head that goes out (land.ts).
+  if (pr !== null && had?.pr === null && had.title === null)
+    ledger.setLanding(task.id, { ...pr, textHead: await headOf(ws) })
   if (rebasing(ws)) {
     const unmerged = await unmergedFiles(ws)
     if (unmerged !== '') {

@@ -202,8 +202,16 @@ async function landTask(
       ws,
     )
     if (r.code === 0) {
-      l = ledger.setLanding(task.id, { base: tip.commit, ready: null, busy: null })
-      head = await git(ws, 'rev-parse', 'HEAD')
+      const moved = await git(ws, 'rev-parse', 'HEAD')
+      // A rebase with no conflict moves the same changes, so the text written on them goes along;
+      // not when it dropped what the default branch has already (a commit it took in, say). Counts
+      // only, as a file the default branch renamed keeps its changes.
+      const changes = (from: string, to: string) => git(ws, 'diff', '--shortstat', from, to)
+      const same =
+        l.textHead === head && (await changes(base, head)) === (await changes(tip.commit, moved))
+      const textHead = same ? moved : l.textHead
+      l = ledger.setLanding(task.id, { base: tip.commit, ready: null, busy: null, textHead })
+      head = moved
     } else if (rebasing(ws)) {
       conflict = await conflictBrief(ws)
     } else {
@@ -228,6 +236,11 @@ async function landTask(
     if (failed === null) l = ledger.setLanding(task.id, { ready: head })
   }
 
+  // A text written on another head is about another branch: a turn since (a follow-up, an answer, a
+  // fix, a conflict's resolution) changed it, so the worker writes it again for what goes out.
+  if (l.pr === null && l.title !== null && l.textHead !== head) {
+    l = ledger.setLanding(task.id, { title: null, body: null, textHead: null })
+  }
   // What needs the worker goes to it in one turn, but the pull request's text in a turn of its own:
   // written under a conflict's or a fix's report, that report's first line became its title. Once
   // that work is done, its Stop asks for the text (verifyLanding).
