@@ -267,8 +267,9 @@ function noticeText(ledger: Ledger, n: Notice): string {
   const task = ledger.get(n.taskId ?? 0)
   if (n.event === 'answered') {
     const d = ledger.decision(n.decisionId ?? 0)
-    const said = oneLine(d.answer ?? '', Infinity)
-    const cut = said.length > ANSWER_LIMIT ? `${said.slice(0, ANSWER_LIMIT)}…` : said
+    // By code point, so a character outside the BMP (an emoji) is not cut in half.
+    const said = [...(d.answer ?? '').replace(/\r\n|\r|\n/g, ' ')]
+    const cut = `${said.slice(0, ANSWER_LIMIT).join('')}${said.length > ANSWER_LIMIT ? '…' : ''}`
     return [
       `decision d${d.id} ${d.reason} answered by the person (${taskLabel(task)}): ${cut}`,
       'next: tell the person in a line; it is closed, so answer it no more',

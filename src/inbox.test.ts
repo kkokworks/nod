@@ -753,12 +753,20 @@ test("a decision a person answers or drops goes to the project's latest session 
 
   // The web UI answers as nod.server.ts does, naming no session; nod d<n> and nod drop name the
   // Claude session they run in (sessionFromEnv), or none in a shell.
-  await answer(ledger, home, terminals, web, 'yes', 'human:ui')
+  await answer(ledger, home, terminals, web, 'yes\r\nand tag it', 'human:ui')
   await answer(ledger, home, terminals, older, 'use main', 'claude:bbbb2222', B)
   await drop(ledger, home, terminals, shell, null)
   await answer(ledger, home, terminals, latest, 'no', 'claude:aaaa1111', A)
   await drop(ledger, home, terminals, droppedThere, A)
-  await answer(ledger, home, terminals, long, `${'word '.repeat(60)}\nmore`, 'human')
+  // Cut at 200 characters, the last an emoji, which JavaScript keeps as two code units.
+  await answer(
+    ledger,
+    home,
+    terminals,
+    long,
+    `${'word '.repeat(39)}four😀 and more\nafter`,
+    'human',
+  )
   await answer(ledger, home, terminals, land, 'not now', 'human:ui')
   expect(answeredNotices(ledger)).toEqual([web, older, shell, long, land])
 
@@ -768,10 +776,10 @@ test("a decision a person answers or drops goes to the project's latest session 
   const lines = (sent[0]?.message.content ?? '').split('\n\n').filter((l) => l.includes('answered'))
   const next = 'next: tell the person in a line; it is closed, so answer it no more'
   expect(lines).toEqual([
-    `decision d${web} question answered by the person (task n1 t1): yes\n${next}`,
+    `decision d${web} question answered by the person (task n1 t1): yes and tag it\n${next}`,
     `decision d${older} question answered by the person (task n2 t2): use main\n${next}`,
     `decision d${shell} question answered by the person (task n3 t3): (dropped)\n${next}`,
-    `decision d${long} question answered by the person (task n6 t6): ${'word '.repeat(40)}…\n${next}`,
+    `decision d${long} question answered by the person (task n6 t6): ${'word '.repeat(39)}four😀…\n${next}`,
     `decision d${land} land answered by the person (task n7 t7): not now\n${next}`,
   ])
   expect(sent.map((s) => s.session_id)).toEqual([A])
@@ -877,10 +885,14 @@ test("a drop that ends a task or stops its landing, and a no to trust, which dro
   todos.addSession(p.id, A, '/work/one')
   // No worker runs: no terminal is open, so closing one does nothing.
   const terminals = FakeTerminals.of(home)
-  // An open decision on a task waiting on it; a question, so no retrospective follows the drop.
+  // An open decision on a task waiting on it, and a dialog's beside it, which closes with it as
+  // nod's: not failed, so no retrospective follows the drop.
   const waiting = (reason: 'question' | 'land' | 'trust') => {
     const id = task(`Waits on ${reason}`)
-    return ledger.ask(id, turn(id, 'succeeded', 'asked'), reason, `${reason}?`)
+    const attemptId = turn(id, 'succeeded', 'asked')
+    const d = ledger.ask(id, attemptId, reason, `${reason}?`)
+    ledger.ask(id, attemptId, 'permission', 'Allow git push?')
+    return d
   }
   const ended = waiting('question')
   const landing = waiting('land')
@@ -894,6 +906,8 @@ test("a drop that ends a task or stops its landing, and a no to trust, which dro
     true,
   )
   expect(ledger.decision(trustedNotThere).answer).toBe('(dropped)')
+  // The dialogs closed with them, by nod, as nobody waits on them any more.
+  expect(ledger.openDecisions()).toEqual([])
   expect(answeredNotices(ledger)).toEqual([ended, landing, trustedNot])
 })
 
