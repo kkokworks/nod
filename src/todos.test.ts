@@ -1,10 +1,12 @@
 import { afterAll, expect, setSystemTime, test } from 'bun:test'
 import { mkdirSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { tempDirs } from '../test/tmp'
 import { followWork, type PrLookup, type PullRequest } from './done'
 import { Ledger, type NewTask, type Task } from './ledger'
+import { Tmux } from './tmux'
 import { type Found, OPEN, parseRef, type TodoEdit, type TodoFilter, Todos } from './todos'
+import { tick } from './triggers'
 
 const tmp = tempDirs()
 afterAll(tmp.removeAll)
@@ -837,10 +839,11 @@ const repoBooks = () => {
   const todos = new Todos(ledger)
   const repo = join(home, 'repo')
   mkdirSync(repo)
-  const git = (cwd: string, ...args: string[]): void => {
+  const git = (cwd: string, ...args: string[]): string => {
     const cmd = ['git', '-c', 'user.email=t@t', '-c', 'user.name=t', '-C', cwd, ...args]
     const r = Bun.spawnSync(cmd)
     if (r.exitCode !== 0) throw new Error(`${cmd.join(' ')}: ${r.stderr.toString()}`)
+    return r.stdout.toString().trim()
   }
   const commit = (cwd: string, file: string): void => {
     writeFileSync(join(cwd, file), file)
@@ -876,6 +879,7 @@ const repoBooks = () => {
   })
   const statuses = (...ts: { todo: number }[]) => ts.map((t) => todos.get(t.todo).status)
   return {
+    home,
     ledger,
     todos,
     repo,
@@ -1021,8 +1025,64 @@ test('in a repo nod lands, the todo waits on the landing, done once merged and n
   expect(b.statuses(landing, stopping)).toEqual(['waiting', 'next'])
   expect(b.todos.links(landing.todo).map((l) => l.url)).toEqual([`${PR}1`])
   b.ledger.setLanding(landing.task, { mergedAt: LATER })
+  // Told more after nod merged it: its new commit is not in the merge, and nod lands it no more.
+  const more = b.handOver(true)
+  b.ledger.setLanding(more.task, { mergedAt: '2000-01-01T00:00:00.000Z' })
   await b.gc()
-  expect(b.statuses(landing)).toEqual(['done'])
+  expect(b.statuses(landing, more)).toEqual(['done', 'next'])
+}, 30_000)
+
+test('a todo whose branch gc deleted is read by the head gc recorded', async () => {
+  const b = repoBooks()
+  // Pushed, its pull request merged, and gc deleted the branch, as a remote holds it.
+  const gone = (mergedAt: string) => {
+    const t = b.handOver(true)
+    b.git(b.repo, 'update-ref', `refs/remotes/origin/${t.branch}`, t.branch)
+    const url = `${PR}${t.task}`
+    b.ledger.link(t.task, [url])
+    b.prs[url] = { ...b.opened(t.branch), state: 'merged', mergedAt }
+    b.ledger.collected(t.task, b.git(b.repo, 'rev-parse', t.branch))
+    b.git(b.repo, 'worktree', 'remove', '--force', b.ledger.get(t.task).workspace ?? '')
+    b.git(b.repo, 'branch', '-D', t.branch)
+    return t
+  }
+  const merged = gone(LATER)
+  // A commit came after the merge: it is not in it.
+  const since = gone('2000-01-01T00:00:00.000Z')
+  await b.gc()
+  expect(b.statuses(merged, since)).toEqual(['done', 'next'])
+}, 30_000)
+
+test('the tick and nod gc follow the todos nod left open', async () => {
+  // Commits alone, left next, whose changes then went into the default branch.
+  const inMain = () => {
+    const b = repoBooks()
+    const t = b.handOver(true)
+    return { b, t }
+  }
+  const settled = async ({ b, t }: ReturnType<typeof inMain>) => {
+    await b.hooks()
+    b.commit(b.repo, `${t.branch.replace('/', '-')}.txt`)
+    b.git(b.repo, 'update-ref', 'refs/remotes/origin/main', 'HEAD')
+    return b.statuses(t)
+  }
+  const ticked = inMain()
+  expect(await settled(ticked)).toEqual(['next'])
+  const { home } = ticked.b
+  // Only on a minute it runs the watches and gc.
+  await tick(ticked.b.ledger, home, Tmux.of(home), new Date(), false)
+  expect(ticked.b.statuses(ticked.t)).toEqual(['next'])
+  await tick(ticked.b.ledger, home, Tmux.of(home), new Date(), true)
+  expect(ticked.b.statuses(ticked.t)).toEqual(['done'])
+
+  const swept = inMain()
+  expect(await settled(swept)).toEqual(['next'])
+  const { CLAUDECODE: _, CLAUDE_CODE_SESSION_ID: __, NOD_TASK: ___, ...shell } = process.env
+  const gc = Bun.spawnSync(['bun', resolve(import.meta.dir, 'cli.ts'), 'gc'], {
+    env: { ...shell, NOD_HOME: swept.b.home },
+  })
+  expect(gc.exitCode).toBe(0)
+  expect(swept.b.statuses(swept.t)).toEqual(['done'])
 }, 30_000)
 
 test('a todo left waiting is looked at again when its task ends again, though its status stayed', async () => {

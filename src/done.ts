@@ -106,7 +106,8 @@ async function signal(
       const pr = await prs(url)
       if (pr === null) continue
       if (pr.state === 'open' && !approvedSince(pr, task)) return null
-      if (mergedAfter(pr, branch.lastCommitAt) && ownPr(task, pr)) merged ??= `merged: ${url}`
+      if (pr.state === 'merged' && mergedAfter(pr.mergedAt, branch.lastCommitAt) && ownPr(task, pr))
+        merged ??= `merged: ${url}`
     }
     return merged
   }
@@ -160,12 +161,10 @@ const ownPr = (task: Task, pr: PullRequest): boolean =>
   task.repo !== null &&
   pushUrls(task.repo).some((u) => sameRepo(pr.headRepo, u))
 
-// Whether a pull request merged after the branch's last commit, where that is known: a commit made
-// since is not in it.
-const mergedAfter = (pr: PullRequest, lastCommitAt: string | null): boolean =>
-  pr.state === 'merged' &&
-  pr.mergedAt !== null &&
-  (lastCommitAt === null || Date.parse(lastCommitAt) < Date.parse(pr.mergedAt))
+// Whether a merge came after the branch's last commit, where that is known: a commit made since is
+// not in it.
+const mergedAfter = (mergedAt: string | null, lastCommitAt: string | null): boolean =>
+  mergedAt !== null && (lastCommitAt === null || Date.parse(lastCommitAt) < Date.parse(mergedAt))
 
 // Whether nod lands the task itself (land.ts) and has not merged it yet nor stopped: its repo lets
 // nod land, and it is named (`only`, or else a landing begun) or was added since the repo let nod
@@ -190,7 +189,6 @@ export function lands(ledger: Ledger, task: Task, only?: number[]): boolean {
 export async function workLeft(ledger: Ledger, task: Task, prs: PrLookup | null): Promise<Left> {
   const { repo } = task
   if (repo === null || task.branch === null || task.workspace === null) return { status: 'done' }
-  if (ledger.landing(task.id)?.mergedAt) return { status: 'done' }
   const branch = branchState(task)
   // gc deletes the branch once a remote has its commits or the default branch its changes; the
   // head it recorded tells which.
@@ -199,15 +197,18 @@ export async function workLeft(ledger: Ledger, task: Task, prs: PrLookup | null)
       ? task.head !== null && landed(repo, task.head)
       : branch.own === 0 || branch.landed
   if (inMain) return { status: 'done' }
-  // A pushed branch too may have commits made after its pull request merged.
-  let last: string | null | undefined
-  const lastCommitAt = (): string | null =>
-    (last ??=
-      branch === null
-        ? null
-        : branch.unpushed
-          ? branch.lastCommitAt
-          : commitTime(repo, `refs/heads/${task.branch}`))
+  // When its last commit was made, that of the head gc recorded once the branch is gone: one made
+  // after a merge, pushed or not, is not in it. Unknown without either.
+  let lastAt: string | null | undefined
+  const lastCommitAt = (): string | null => {
+    if (lastAt !== undefined) return lastAt
+    const ref = branch === null ? task.head : `refs/heads/${task.branch}`
+    lastAt = branch?.unpushed ? branch.lastCommitAt : ref === null ? null : commitTime(repo, ref)
+    return lastAt
+  }
+  // nod merged its landing (land.ts).
+  const landedAt = ledger.landing(task.id)?.mergedAt ?? null
+  if (landedAt !== null && mergedAfter(landedAt, lastCommitAt())) return { status: 'done' }
   let merged = false
   for (const url of linksOf(ledger, task)) {
     if (prs === null) {
@@ -217,7 +218,7 @@ export async function workLeft(ledger: Ledger, task: Task, prs: PrLookup | null)
     const pr = await prs(url)
     if (pr === null || !ownPr(task, pr)) continue
     if (pr.state === 'open') return { status: 'waiting', pr: url }
-    if (pr.state === 'merged' && mergedAfter(pr, lastCommitAt())) merged = true
+    if (pr.state === 'merged' && mergedAfter(pr.mergedAt, lastCommitAt())) merged = true
   }
   if (merged) return { status: 'done' }
   return lands(ledger, task) ? { status: 'waiting', pr: null } : { status: 'next' }

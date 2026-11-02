@@ -21,6 +21,7 @@ import {
   type Task,
   type TaskStatus,
 } from './ledger'
+import { readAtOnce } from './proc'
 import { REVIEW_SOURCE, type Trust, trust } from './trust'
 
 // The person's own todos, kept the GTD way: captured into the inbox, clarified into a next action,
@@ -545,9 +546,10 @@ export class Todos {
   // waiting or next, is followed: each end is looked at once, so the hooks read git once a task
   // ends, not at every call, and again when it ends again; `again` looks again at those left as
   // they were (gc, the tick), until the work is in the default branch. `left` gives null when it
-  // cannot tell yet. Every such todo is looked at, so those of tasks a cancel cascaded to move too.
-  // One with a watch waits on its watch, even when its task is told more and ends again, and one
-  // whose status the person changed is theirs.
+  // cannot tell yet; several are read at once (readAtOnce), as a git service may take a while on
+  // each. Every such todo is looked at, so those of tasks a cancel cascaded to move too. One with a
+  // watch waits on its watch, even when its task is told more and ends again, and one whose status
+  // the person changed is theirs.
   async followTasks(
     actor: string,
     left: (task: Task) => Promise<Left | null>,
@@ -561,19 +563,26 @@ export class Todos {
         .where('waitingOn', 'is', null)
         .where('watch', 'is', null),
     )
-    for (const todo of waiting) {
+    const due = waiting.flatMap((todo) => {
       const tasks = this.ledger.tasksOf(todo.id)
       const last = tasks.at(-1)
-      if (last === undefined || tasks.some((t) => UNFINISHED.includes(t.status))) continue
+      if (last === undefined || tasks.some((t) => UNFINISHED.includes(t.status))) return []
       const { finishedAt } = last
-      if (finishedAt === null) continue
+      if (finishedAt === null) return []
       // An end not looked at yet. One before the todo began waiting is not: the person has set it
       // waiting since, on no task.
       const fresh =
         todo.followed === null ? finishedAt >= todo.statusAt : finishedAt !== todo.followed
-      if (!fresh && !(again && todo.followed !== null)) continue
-      const to: Left | null = last.status === 'succeeded' ? await left(last) : { status: 'next' }
-      if (to === null) continue
+      return fresh || (again && todo.followed !== null) ? [{ todo, last, finishedAt }] : []
+    })
+    const read = await readAtOnce(
+      due,
+      async ({ last }): Promise<Left | null> =>
+        last.status === 'succeeded' ? left(last) : { status: 'next' },
+    )
+    for (const [i, { todo, last, finishedAt }] of due.entries()) {
+      const to = read[i]
+      if (to === null || to === undefined) continue
       // Immediate: what it checks holds until it writes, whoever else moves the todo.
       this.db
         .transaction(() => {
