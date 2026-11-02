@@ -146,9 +146,9 @@ const TURN_ENDED = '(its turn ended)'
 
 // ponytail: fixed retry budget; make it per-task if real checks need more.
 const CHECK_RETRIES = 2
-// A task waits on background work this long in a row at most; past it, its next stop or the tick
-// asks the person what it last asked. Work that never ends (a server left running) or that went
-// with its Claude Code would keep it waiting for good.
+// A task waits on background work this long in a row at most, counting only the time no turn was
+// open (waited); past it, its next stop or the tick asks the person what it last asked. Work that
+// never ends (a server left running) or that went with its Claude Code would keep it waiting for good.
 // ponytail: one fixed limit; make it per task if real background work takes longer.
 const WAIT_LIMIT_MS = 60 * 60_000
 // What two tasks' workers may send each other (`NOD: tell`), both ways, before nod asks the person
