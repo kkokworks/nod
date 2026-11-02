@@ -146,9 +146,9 @@ const TURN_ENDED = '(its turn ended)'
 
 // ponytail: fixed retry budget; make it per-task if real checks need more.
 const CHECK_RETRIES = 2
-// A task waits on background work this long in a row at most; past it, its next stop or the tick
-// asks the person what it last asked. Work that never ends (a server left running) or that went
-// with its Claude Code would keep it waiting for good.
+// A task waits on background work this long in a row at most, counting only the time no turn was
+// open (waited); past it, its next stop or the tick asks the person what it last asked. Work that
+// never ends (a server left running) or that went with its Claude Code would keep it waiting for good.
 // ponytail: one fixed limit; make it per task if real background work takes longer.
 const WAIT_LIMIT_MS = 60 * 60_000
 // What two tasks' workers may send each other (`NOD: tell`), both ways, before nod asks the person
@@ -668,9 +668,10 @@ export async function settle(
     const failed = report?.status === 'failed'
     // Background work the worker started still runs, and Claude Code starts its next turn once that
     // is done (2.1.309), so what it asks now waits on nothing the person can give yet. Not past
-    // WAIT_LIMIT_MS of waiting in a row, though (overdueWaits does it between turns).
-    const since = waitingSince(ledger, task.id) ?? Date.now()
-    const overdue = Date.now() - since >= WAIT_LIMIT_MS
+    // WAIT_LIMIT_MS of waiting in a row with no turn open, though (overdueWaits does it between
+    // turns): this turn's own run is not waiting.
+    const wait = waited(ledger, task.id, Date.now()) ?? 0
+    const overdue = wait >= WAIT_LIMIT_MS
     const waiting = work.length > 0 && !overdue
     ledger.endAttempt(attemptId, {
       outcome: waiting ? 'waiting' : failed ? 'failed' : 'needs_decision',
@@ -681,7 +682,7 @@ export async function settle(
     carryUnheard(ledger, home, terminals, task, attemptId, event.session_id)
     if (waiting || newer()) return null
     const still = work.map((w) => w.description ?? w.type ?? '?').join(', ')
-    const note = work.length > 0 ? `${waitedNote(since)} Still running: ${still}.\n` : ''
+    const note = work.length > 0 ? `${waitedNote(wait)} Still running: ${still}.\n` : ''
     const reason = failed ? 'failed' : 'question'
     await decide(ledger, home, task.id, attemptId, reason, note + text.slice(-QUESTION_LIMIT))
     return null
@@ -1602,16 +1603,25 @@ export async function closeFinished(
   return closed
 }
 
-// When the task began to wait on background work: the end of the first of its finished turns that
-// waited, in a row up to the last one; null when its last finished turn did not wait.
-function waitingSince(ledger: Ledger, taskId: number): number | null {
-  const ended = ledger.attempts(taskId).filter((a) => a.finishedAt !== null && !noTurn(a))
-  const first = ended[ended.findLastIndex((a) => a.outcome !== 'waiting') + 1]
-  return first?.finishedAt ? Date.parse(first.finishedAt) : null
+// How long the task has waited on background work, in ms: for each of its finished turns that
+// waited, in a row up to the last one, the time from its end to the start of the next turn (or now).
+// The time a turn ran between two waits is not waiting: counted from the first wait's end, a turn
+// that ran for days after two short waits came out as days of waiting. Null when its last finished
+// turn did not wait.
+function waited(ledger: Ledger, taskId: number, now: number): number | null {
+  const turns = ledger.attempts(taskId).filter((a) => !noTurn(a))
+  const ended = turns.filter((a) => a.finishedAt !== null)
+  const waits = ended.slice(ended.findLastIndex((a) => a.outcome !== 'waiting') + 1)
+  if (waits.length === 0) return null
+  return waits.reduce((sum, a) => {
+    const next = turns.find((b) => b.id > a.id)
+    const until = next ? Date.parse(next.startedAt) : now
+    return sum + Math.max(0, until - Date.parse(a.finishedAt ?? ''))
+  }, 0)
 }
 
-const waitedNote = (since: number, now = Date.now()): string =>
-  `It has waited on background work it started for ${Math.round((now - since) / 60_000)} minutes, past nod's limit of ${WAIT_LIMIT_MS / 60_000}.`
+const waitedNote = (ms: number): string =>
+  `It has waited on background work it started for ${Math.round(ms / 60_000)} minutes, past nod's limit of ${WAIT_LIMIT_MS / 60_000}.`
 
 // Asks the person what a task last asked once it has waited on background work past WAIT_LIMIT_MS
 // with no turn since: work that never ends (a server left running), or that went with its Claude
@@ -1626,9 +1636,9 @@ export async function overdueWaits(ledger: Ledger, home: string, now: Date): Pro
     // of that: the work it waits on still runs or is gone.
     const turns = ledger.attempts(t.id)
     const last = turns.findLast((a) => !noTurn(a)) ?? null
-    const since = waitingSince(ledger, t.id)
-    if (last === null || last.outcome !== 'waiting' || since === null) continue
-    if (now.getTime() - since < WAIT_LIMIT_MS) continue
+    const wait = waited(ledger, t.id, now.getTime())
+    if (last === null || last.outcome !== 'waiting' || wait === null) continue
+    if (wait < WAIT_LIMIT_MS) continue
     const report = last.report ?? ''
     const failed = parseReport(report)?.status === 'failed'
     // Taken first, in one statement: of two ticks at once one asks, and a turn that started since
@@ -1637,7 +1647,7 @@ export async function overdueWaits(ledger: Ledger, home: string, now: Date): Pro
     // task's next question or its success closes it.
     const past = turns.filter((a) => a.id > last.id && noTurn(a)).map((a) => a.id)
     if (!ledger.endWait(last.id, failed ? 'failed' : 'needs_decision', past)) continue
-    const note = `${waitedNote(since, now.getTime())} No turn has come since it stopped.\n`
+    const note = `${waitedNote(wait)} No turn has come since it stopped.\n`
     const reason = failed ? 'failed' : 'question'
     await decide(ledger, home, t.id, last.id, reason, note + report.slice(-QUESTION_LIMIT))
     asked.push(t.id)
