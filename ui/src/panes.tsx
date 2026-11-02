@@ -1,4 +1,4 @@
-import { type RefObject, useLayoutEffect, useRef, useState } from 'react'
+import { type RefObject, useEffect, useRef, useState } from 'react'
 
 // The panes whose width the person sets by dragging the edge beside them, or with ← → on it.
 // `grows`: the way the edge moves to widen the pane, right for the sidebar at the left, left for the
@@ -43,17 +43,15 @@ export function moved(name: Pane, from: number, by: number, box: number): number
   return clamp(from + p.grows * by, p.min, Math.min(p.max, box - p.rest))
 }
 
-// The width the person last gave the pane in this browser, or null for the default: none stored,
-// storage that cannot be read (a private window, blocked site data), or a value no width of ours is.
-export function stored(name: Pane, storage?: Pick<Storage, 'getItem'>): number | null {
-  try {
-    const raw = (storage ?? localStorage).getItem(KEY + name)
-    if (raw === null || !/^\d+$/.test(raw)) return null
-    return clamp(Number(raw), PANES[name].min, PANES[name].max)
-  } catch {
-    return null
-  }
-}
+// Sets the widths the person last gave the panes in this browser on the root element, as `show`
+// does. The page's head runs it as text (__root.tsx), so the page is drawn at them from the first
+// frame, not first at the defaults until it has loaded. Read only then: a pane made again on the page
+// (another task) keeps the width on the root, the newest, also when storing it failed. Anything not a
+// width of ours (`clamp` rounds), and storage that cannot be read (a private window, blocked site
+// data), leave the default; a width past its pane's bounds is brought within them.
+export const SHOW_STORED = `try{for(const[n,min,max]of${JSON.stringify(
+  Object.entries(PANES).map(([name, p]) => [name, p.min, p.max]),
+)}){const v=localStorage.getItem(${JSON.stringify(KEY)}+n);if(/^\\d+$/.test(v))document.documentElement.style.setProperty('--'+n+'-w',Math.max(min,Math.min(Number(v),max))+'px')}}catch{}`
 
 function save(name: Pane, width: number): void {
   try {
@@ -83,19 +81,13 @@ const show = (name: Pane, width: number) =>
 
 // The edge of a pane. Each move sets its width at once; the width is stored when the drag ends.
 // A terminal in the pane fits itself to the new width (terminal.tsx's ResizeObserver).
-// ponytail: a stored width shows once the page has loaded, after a frame or so at the default; an
-// inline script in the head would show it from the first frame.
 export function Splitter({ name }: { name: Pane }) {
   const p = PANES[name]
   const drag = useRef<Drag | null>(null)
   // Where the edge sits in the box, in percent, for assistive technology: measured when focused, and
   // as it moves.
   const [at, setAt] = useState<number>()
-  useLayoutEffect(() => {
-    const width = stored(name)
-    if (width !== null) show(name, width)
-    return () => finish(name, drag)
-  }, [name])
+  useEffect(() => () => finish(name, drag), [name])
   const measure = () => ({
     from: document.querySelector(p.pane)?.getBoundingClientRect().width ?? 0,
     box: document.querySelector(p.box)?.getBoundingClientRect().width ?? 0,

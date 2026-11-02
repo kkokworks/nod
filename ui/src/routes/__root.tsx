@@ -12,7 +12,7 @@ import { type ReactNode, type Ref, useEffect, useRef } from 'react'
 import { BUILD } from '../build'
 import { bindKeys, ignoreOnPage, KEYS } from '../keys'
 import { type Overview, overview } from '../nod.server'
-import { Splitter } from '../panes'
+import { SHOW_STORED, Splitter } from '../panes'
 import { Failed, keep, keepShown, TaskId, TaskItem, useStale } from '../parts'
 import { Search } from '../search'
 import css from '../styles.css?url'
@@ -56,9 +56,14 @@ export const Route = createRootRoute({
 
 function Shell({ children }: { children: ReactNode }) {
   return (
-    <html lang="en">
+    // The script sets the stored pane widths on <html> before React takes the page over.
+    <html lang="en" suppressHydrationWarning>
       <head>
         <HeadContent />
+        <script
+          // biome-ignore lint/security/noDangerouslySetInnerHtml: a constant of ours, run as text before the page is drawn
+          dangerouslySetInnerHTML={{ __html: SHOW_STORED }}
+        />
       </head>
       <body>
         {children}

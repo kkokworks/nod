@@ -91,6 +91,7 @@ const { Search } = await import('./search')
 const projects = await import('./routes/projects')
 const { Failed, NotFound } = await import('./parts')
 const { RETRY_MS, TERMINAL } = await import('./terminal')
+const { SHOW_STORED } = await import('./panes')
 const shell = await import('./routes/__root')
 if (before === undefined) delete process.env.NOD_HOME
 else process.env.NOD_HOME = before
@@ -403,8 +404,8 @@ test('the terminal pane opens at the width stored in the browser, and a drag or 
   try {
     localStorage.setItem(KEY, '480')
     answer = (id) => live(id as number)
-    // From a page without the pane, so the task page's pane is made anew.
-    await go('/find')
+    // As the page's head does as it loads.
+    new Function(SHOW_STORED)()
     await go('/tasks/28')
     expect(root.style.getPropertyValue('--term-w')).toBe('480px')
     const edge = document.querySelector<HTMLElement>('.splitter-term')
@@ -458,6 +459,11 @@ test('the terminal pane opens at the width stored in the browser, and a drag or 
     await go('/find')
     expect(root.classList.contains('resizing')).toBe(false)
     expect(localStorage.getItem(KEY)).toBe('550')
+    // The pane made again keeps the newest width, on the root, not one stored before (as when
+    // storing failed).
+    localStorage.setItem(KEY, '480')
+    await go('/tasks/28')
+    expect(root.style.getPropertyValue('--term-w')).toBe('550px')
   } finally {
     rects.mockRestore()
     localStorage.removeItem(KEY)

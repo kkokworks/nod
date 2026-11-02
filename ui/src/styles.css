@@ -189,13 +189,17 @@ pre {
 }
 
 .splitter:hover::after,
-.splitter:focus-visible::after,
 .splitter:active::after {
   background: color-mix(in srgb, var(--fg) 25%, transparent);
 }
 
+/* Focused from the keyboard: in the link colour, which stands out from the page by 3:1 and more. */
 .splitter:focus-visible {
   outline: none;
+}
+
+.splitter:focus-visible::after {
+  background: var(--link);
 }
 
 /* The sidebar keeps to the window, and so does its edge: from its border rightwards, off the
@@ -216,11 +220,17 @@ pre {
   height: 100dvh;
 }
 
-/* While a pane is dragged: no text selected along the way, the pointer as on the edge. */
+/* While a pane is dragged: no text selected along the way, and the pointer as on the edge over the
+   terminal and links too, which set their own. */
 .resizing {
-  cursor: col-resize;
   user-select: none;
   -webkit-user-select: none;
+}
+
+.resizing,
+.resizing * {
+  /* biome-ignore lint/complexity/noImportantStyles: over xterm.css, loaded after this file, whose cursors are as specific */
+  cursor: col-resize !important;
 }
 
 @media (max-width: 1100px) {

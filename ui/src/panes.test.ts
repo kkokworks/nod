@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test'
-import { clamp, moved, PANES, stored } from './panes'
+import { clamp, moved, PANES, SHOW_STORED } from './panes'
 
 test('a width stays between the narrowest and the widest, and the narrowest wins', () => {
   expect(clamp(300, 200, 420)).toBe(300)
@@ -23,23 +23,33 @@ test('dragging the edge widens the pane on its side and stops at the narrowest a
   expect(moved('term', 500, -100, 500)).toBe(term.min)
 })
 
-const storage = (value: string | null | Error) => ({
-  getItem: (key: string) => {
-    if (value instanceof Error) throw value
-    return key.endsWith('side') ? value : null
-  },
-})
+// The head's script, run as the page runs it, with this storage and a root element to set widths on.
+function showStored(get: (key: string) => string | null): Record<string, string> {
+  const set: Record<string, string> = {}
+  const root = { style: { setProperty: (name: string, value: string) => (set[name] = value) } }
+  new Function('localStorage', 'document', SHOW_STORED)({ getItem: get }, { documentElement: root })
+  return set
+}
 
-test('a stored width comes back within its pane’s bounds, and anything else is the default', () => {
-  expect(stored('side', storage('340'))).toBe(340)
-  expect(stored('term', storage('340'))).toBeNull()
-  expect(stored('side', storage('50'))).toBe(PANES.side.min)
-  expect(stored('side', storage('9'.repeat(400)))).toBe(PANES.side.max)
-  for (const bad of [null, '', ' 340', '340px', '-340', '3.5e2', 'NaN', 'Infinity']) {
-    expect(stored('side', storage(bad))).toBeNull()
+test('the stored widths come back within their panes’ bounds, and anything else is the default', () => {
+  const stored: Record<string, string> = {
+    'nod-pane-width-side': '340',
+    'nod-pane-width-term': '50',
+  }
+  expect(showStored((key) => stored[key] ?? null)).toEqual({
+    '--side-w': '340px',
+    '--term-w': '360px',
+  })
+  expect(showStored((key) => (key.endsWith('side') ? '9'.repeat(400) : null))).toEqual({
+    '--side-w': `${PANES.side.max}px`,
+  })
+  for (const bad of [null, '', ' 340', '340px', '-340', '3.5e2', '340.5', 'NaN', 'Infinity']) {
+    expect(showStored(() => bad)).toEqual({})
   }
   // A private window or blocked site data throws on reading.
-  expect(stored('side', storage(new DOMException('denied', 'SecurityError')))).toBeNull()
-  // No storage at all, as on the server.
-  expect(stored('side')).toBeNull()
+  expect(
+    showStored(() => {
+      throw new DOMException('denied', 'SecurityError')
+    }),
+  ).toEqual({})
 })
