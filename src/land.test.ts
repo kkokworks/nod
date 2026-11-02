@@ -775,6 +775,29 @@ test('a rebase alone after the pull request text keeps the text', async () => {
   expect(openedTitle()).toBe('Add j')
 }, 30_000)
 
+test('a rebase over a file the default branch renamed keeps the text', async () => {
+  setRepo('pr')
+  writeFileSync(join(repo, 'f.txt'), 'one\ntwo\nthree\n')
+  git(repo, 'add', '-A')
+  git(repo, 'commit', '-qm', 'add f')
+  git(repo, 'push', '-q', 'origin', 'main')
+  const id = finished('feat/rn', { 'f.txt': 'one\nTWO\nthree\n' })
+  await land(ledger, home, Tmux.of(home), { send })
+  await stops(id, 'Change f\n\nNOD: done | wrote it')
+  const other = tmp.make('nod-other-')
+  git(other, 'clone', '-q', origin, '.')
+  git(other, 'mv', 'f.txt', 'g.txt')
+  git(other, 'commit', '-qm', 'rename f')
+  git(other, 'push', '-q', 'origin', 'main')
+
+  expect((await land(ledger, home, Tmux.of(home), { send }))[0]?.did).toStartWith(
+    'pull request open',
+  )
+  expect(git(ws(id), 'show', 'HEAD:g.txt')).toBe('one\nTWO\nthree')
+  expect(handed).toHaveLength(1)
+  expect(openedTitle()).toBe('Change f')
+}, 30_000)
+
 test('a rebase that drops a change the default branch already has asks for the text again', async () => {
   setRepo('pr')
   const id = finished('feat/i', { 'i.txt': 'i\n' })

@@ -204,8 +204,9 @@ async function landTask(
     if (r.code === 0) {
       const moved = await git(ws, 'rev-parse', 'HEAD')
       // A rebase with no conflict moves the same changes, so the text written on them goes along;
-      // not when it dropped what the default branch has already (a commit it took in, say).
-      const changes = (from: string, to: string) => git(ws, 'diff', '--numstat', from, to)
+      // not when it dropped what the default branch has already (a commit it took in, say). Counts
+      // only, as a file the default branch renamed keeps its changes.
+      const changes = (from: string, to: string) => git(ws, 'diff', '--shortstat', from, to)
       const same =
         l.textHead === head && (await changes(base, head)) === (await changes(tip.commit, moved))
       const textHead = same ? moved : l.textHead

@@ -151,19 +151,22 @@ test('v25 moves each retrospective that has its outcome to the status the outcom
   expect(ledger.unsentNotices()).toEqual([])
 })
 
-test('v26 keeps the pull request text of a v25 landing, with no head it was written on', () => {
+test('v26 keeps the pull request text of a v25 landing, written on no head it knows unless nod pushed it', () => {
   const home = freshHome()
   const old = new Database(join(home, 'nod.db'), { create: true, strict: true })
   for (const sql of MIGRATIONS.slice(0, 25)) old.exec(sql)
   old.exec(`pragma user_version = 25;
-    insert into tasks (id, brief, created_at) values (1, 'x', 'at');
-    insert into landings (task_id, title, body, updated_at) values (1, 'Add a', 'Adds a.', 'at');`)
+    insert into tasks (id, brief, created_at) values (1, 'x', 'at'), (2, 'y', 'at'), (3, 'z', 'at');
+    insert into landings (task_id, title, body, pushed, pr, updated_at) values
+      (1, 'Add a', 'Adds a.', null, null, 'at'),
+      (2, 'Add b', 'Adds b.', 'b1', null, 'at'),
+      (3, 'Add c', 'Adds c.', 'c1', 'https://example.com/pull/3', 'at');`)
   old.close()
-  expect(new Ledger(home).landing(1)).toMatchObject({
-    title: 'Add a',
-    body: 'Adds a.',
-    textHead: null,
-  })
+  const ledger = new Ledger(home)
+  expect(ledger.landing(1)).toMatchObject({ title: 'Add a', body: 'Adds a.', textHead: null })
+  // Pushed, and so through the gate, with its pull request still to open.
+  expect(ledger.landing(2)).toMatchObject({ title: 'Add b', textHead: 'b1' })
+  expect(ledger.landing(3)).toMatchObject({ title: 'Add c', textHead: null })
 })
 
 test("a retrospective's task goes to the status its outcome has as it ends, and nothing later moves it off", () => {

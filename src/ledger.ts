@@ -139,8 +139,8 @@ export type RepoEdit = Partial<Pick<Repo, 'land' | 'checkCmd' | 'gateCmd'>>
 export type RepoChange = { actor: string; change: Changed; at: string }
 // How far a task's landing has got (land.ts). `base`: the commit its own work sits on, moved by
 // each rebase; `ready`: the head that passed the check on that base; `title`, `body`: the pull
-// request's text the worker wrote, on the head `textHead` (moved by nod's own rebases, so a later
-// commit asks for the text again); `pushed`: what nod last pushed to its branch; `pr`: the pull
+// request's text the worker wrote, on the head `textHead` (moved by nod's rebases that keep the
+// branch's changes, so a later commit asks for the text again); `pushed`: what nod last pushed to its branch; `pr`: the pull
 // request nod opened. `handedAt`: since when the worker has
 // landing work (a conflict, a failed check, the pull request's text) it has not finished; `busy`:
 // the process working in its worktree right now. `stopped`: why landing stopped, null while it goes
@@ -636,8 +636,14 @@ export const MIGRATIONS = [
     and retro_id in (select id from retros where outcome in ('declined', 'dropped'));
   `,
   // v26: the head of its branch a landing's pull request text was written on (land.ts). A text
-  // from before has none, so it is asked again before its pull request opens.
-  'alter table landings add column text_head text;',
+  // from before has none, so it is asked again before its pull request opens; but one nod pushed
+  // with (its pull request then failed to open) has that push's head. The gate passed it there, and
+  // a text asked again on the same head would open the pull request with no push, so no gate.
+  `
+  alter table landings add column text_head text;
+  update landings set text_head = pushed
+  where title is not null and pushed is not null and pr is null;
+  `,
 ]
 // The migration that moves <home>/rules.md into the ledger, numbered as user_version counts.
 const RULES_FILE_MIGRATION = 17
