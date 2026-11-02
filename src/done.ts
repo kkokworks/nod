@@ -2,7 +2,7 @@ import { collect, type GcReport, hasRef, landed } from './gc'
 import { FINISHED, type Ledger, type Task } from './ledger'
 import { sessionName } from './place'
 import { message, readAtOnce } from './proc'
-import { pushUrls, sameRepo } from './prs'
+import { isPullRequest, pushUrls, sameRepo } from './prs'
 import type { Terminals } from './tmux'
 import { type Left, Todos } from './todos'
 
@@ -106,7 +106,7 @@ async function signal(
       const pr = await prs(url)
       if (pr === null) continue
       if (pr.state === 'open' && !approvedSince(pr, task)) return null
-      if (mergedAfter(pr, branch) && ownPr(task, pr)) merged ??= `merged: ${url}`
+      if (mergedAfter(pr, branch.lastCommitAt) && ownPr(task, pr)) merged ??= `merged: ${url}`
     }
     return merged
   }
@@ -160,12 +160,12 @@ const ownPr = (task: Task, pr: PullRequest): boolean =>
   task.repo !== null &&
   pushUrls(task.repo).some((u) => sameRepo(pr.headRepo, u))
 
-// Whether a pull request merged after the branch's last commit, where that is known (a branch with
-// commits no remote has): a commit made since is not in it.
-const mergedAfter = (pr: PullRequest, branch: BranchState | null): boolean =>
+// Whether a pull request merged after the branch's last commit, where that is known: a commit made
+// since is not in it.
+const mergedAfter = (pr: PullRequest, lastCommitAt: string | null): boolean =>
   pr.state === 'merged' &&
   pr.mergedAt !== null &&
-  (branch?.unpushed !== true || Date.parse(branch.lastCommitAt) < Date.parse(pr.mergedAt))
+  (lastCommitAt === null || Date.parse(lastCommitAt) < Date.parse(pr.mergedAt))
 
 // Whether nod lands the task itself (land.ts) and has not merged it yet nor stopped: its repo lets
 // nod land, and it is named (`only`, or else a landing begun) or was added since the repo let nod
@@ -185,9 +185,8 @@ export function lands(ledger: Ledger, task: Task, only?: number[]): boolean {
 // changes are in the default branch, its own pull request (ownPr) merged, or nod merged it, and
 // when it made no commits of its own; waiting while that pull request is open, or nod lands it;
 // next while its commits wait on the person. `prs` null, as the hooks call it, reads no git
-// service: a task with links waits for gc or the tick to read them.
-// ponytail: a repo with no `origin/HEAD` reads as one whose tasks made no commits, as in gc; and a
-// link that is no pull request (a chat message on the todo) also waits until it is read.
+// service: a task with a pull request linked waits for gc or the tick to read it.
+// ponytail: a repo with no `origin/HEAD` reads as one whose tasks made no commits, as in gc.
 export async function workLeft(ledger: Ledger, task: Task, prs: PrLookup | null): Promise<Left> {
   const { repo } = task
   if (repo === null || task.branch === null || task.workspace === null) return { status: 'done' }
@@ -200,13 +199,25 @@ export async function workLeft(ledger: Ledger, task: Task, prs: PrLookup | null)
       ? task.head !== null && landed(repo, task.head)
       : branch.own === 0 || branch.landed
   if (inMain) return { status: 'done' }
+  // A pushed branch too may have commits made after its pull request merged.
+  let last: string | null | undefined
+  const lastCommitAt = (): string | null =>
+    (last ??=
+      branch === null
+        ? null
+        : branch.unpushed
+          ? branch.lastCommitAt
+          : commitTime(repo, `refs/heads/${task.branch}`))
   let merged = false
   for (const url of linksOf(ledger, task)) {
-    if (prs === null) return { status: 'waiting', pr: null }
+    if (prs === null) {
+      if (isPullRequest(url)) return { status: 'waiting', pr: null }
+      continue
+    }
     const pr = await prs(url)
     if (pr === null || !ownPr(task, pr)) continue
     if (pr.state === 'open') return { status: 'waiting', pr: url }
-    if (mergedAfter(pr, branch)) merged = true
+    if (pr.state === 'merged' && mergedAfter(pr, lastCommitAt())) merged = true
   }
   if (merged) return { status: 'done' }
   return lands(ledger, task) ? { status: 'waiting', pr: null } : { status: 'next' }
@@ -264,8 +275,22 @@ function branchState(task: Task): BranchState | null {
   const own = hasRef(repo, main) ? count(`${main}..${ref}`, ...notTheirs) : 0
   const merged = landed(repo, ref)
   if (notOnRemotes === 0 || merged) return { own, landed: merged, unpushed: false }
+  return { own, landed: merged, unpushed: true, lastCommitAt: commitTime(repo, ref) }
+}
+
+// The time of ref's last commit, the committer's, which a rebase sets anew.
+function commitTime(repo: string, ref: string): string {
   // log.showSignature would print the signature's check ahead of the time.
-  const last = git('log', '-1', '--no-show-signature', '--format=%cI', ref)
+  const last = Bun.spawnSync([
+    'git',
+    '-C',
+    repo,
+    'log',
+    '-1',
+    '--no-show-signature',
+    '--format=%cI',
+    ref,
+  ])
   if (last.exitCode !== 0) throw new Error(`git log in ${repo}: ${last.stderr.toString()}`)
-  return { own, landed: merged, unpushed: true, lastCommitAt: last.stdout.toString().trim() }
+  return last.stdout.toString().trim()
 }

@@ -901,13 +901,28 @@ test('a succeeded task leaves its todo done without commits of its own, waiting 
   const forked = b.handOver(true)
   b.ledger.link(forked.task, [`${PR}2`])
   b.prs[`${PR}2`] = { ...b.opened(forked.branch), headRepo: 'https://git.example.com/fork/r' }
+  // A link that is no pull request, a chat message on the todo, holds nothing back.
+  const chatted = b.handOver(true)
+  b.todos.link(chatted.todo, 'https://chat.example.com/m/1', null, 'human')
 
-  // The hooks read no git service: a task with links waits for gc to read them.
+  // The hooks read no git service: a task with a pull request linked waits for gc to read it.
   await b.hooks()
-  expect(b.statuses(none, open, alone, forked)).toEqual(['done', 'waiting', 'next', 'waiting'])
+  expect(b.statuses(none, open, alone, forked, chatted)).toEqual([
+    'done',
+    'waiting',
+    'next',
+    'waiting',
+    'next',
+  ])
   expect(b.todos.links(open.todo)).toEqual([])
   await b.gc()
-  expect(b.statuses(none, open, alone, forked)).toEqual(['done', 'waiting', 'next', 'next'])
+  expect(b.statuses(none, open, alone, forked, chatted)).toEqual([
+    'done',
+    'waiting',
+    'next',
+    'next',
+    'next',
+  ])
   // The pull request it waits on is on the todo.
   expect(b.todos.links(open.todo).map((l) => l.url)).toEqual([`${PR}1`])
   expect(b.todos.changes(open.todo).at(-1)).toMatchObject({
@@ -960,8 +975,34 @@ test('a todo nod left open is done once its commits are in the default branch, a
   const closed = b.handOver(true)
   b.ledger.link(closed.task, [`${PR}4`])
   b.prs[`${PR}4`] = { ...b.opened(closed.branch), state: 'closed' }
+  // Pushed, its pull request merged: done, unless a commit came after the merge, which is not in it.
+  const pushed = (mergedAt: string) => {
+    const t = b.handOver(true)
+    b.git(b.repo, 'update-ref', `refs/remotes/origin/${t.branch}`, t.branch)
+    const url = `${PR}${t.task + 10}`
+    b.ledger.link(t.task, [url])
+    b.prs[url] = { ...b.opened(t.branch), state: 'merged', mergedAt }
+    return t
+  }
+  const pushedMerged = pushed(LATER)
+  const pushedSince = pushed('2000-01-01T00:00:00.000Z')
   await b.gc()
-  expect(b.statuses(closed)).toEqual(['next'])
+  expect(b.statuses(closed, pushedMerged, pushedSince)).toEqual(['next', 'done', 'next'])
+}, 30_000)
+
+test('a todo handed to another task while nod read what the last one left waits on the new one', async () => {
+  const b = repoBooks()
+  const t = b.handOver(true)
+  await b.todos.followTasks(
+    'nod',
+    async () => {
+      // The person hands it over again (nod add --todo) while gc reads its pull requests.
+      b.todos.delegate(t.todo, task, 'human')
+      return { status: 'done' }
+    },
+    true,
+  )
+  expect(b.todos.get(t.todo)).toMatchObject({ status: 'waiting', followed: null })
 }, 30_000)
 
 test('in a repo nod lands, the todo waits on the landing, done once merged and next once it stops', async () => {

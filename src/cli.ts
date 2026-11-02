@@ -1067,9 +1067,11 @@ async function gc(args: string[]): Promise<void> {
     throw new Error('name tasks or give --older-than, not both')
   }
   if (positionals.length === 0 && olderThan === undefined) {
-    // As the tick: the todos first, with the same lookup.
+    // As the tick: the todos first, with the same lookup, and their failure does not stop the gc.
     const prs = pullRequests(home)
-    await followWork(ledger, SELF, prs)
+    await followWork(ledger, SELF, prs).catch((error) =>
+      console.error(`nod: could not follow the todos' tasks: ${message(error)}`),
+    )
     const { report, done, unchecked } = await sweep(ledger, home, terminals, prs, new Date())
     printGc(report)
     for (const d of done) if (report.removed.includes(d.id)) console.log(`  n${d.id}: ${d.reason}`)

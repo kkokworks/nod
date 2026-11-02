@@ -578,12 +578,15 @@ export class Todos {
       this.db
         .transaction(() => {
           // Only as it was read: `left` takes a while, and the person may have moved it meanwhile,
-          // or the task gone on.
+          // handed it to another task, or the task gone on.
           const now = this.get(todo.id)
           const same = (['status', 'statusAt', 'followed', 'waitingOn', 'watch'] as const).every(
             (k) => now[k] === todo[k],
           )
-          if (!same || this.ledger.get(last.id).finishedAt !== finishedAt) return
+          const tasksNow = this.ledger.tasksOf(todo.id)
+          const lastNow = tasksNow.at(-1)
+          if (!same || lastNow?.id !== last.id || lastNow.finishedAt !== finishedAt) return
+          if (tasksNow.some((t) => UNFINISHED.includes(t.status))) return
           const pr = to.status === 'waiting' ? to.pr : null
           this.set(todo.id, { status: to.status }, actor, pr === null ? [] : [pr])
           const open = last.status === 'succeeded' && to.status !== 'done'
