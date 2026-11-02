@@ -204,7 +204,8 @@ export async function send(m: Message): Promise<void> {
   const open = ledger.decisions(task.id).find((d) => d.answer === null)
   if (m.decisionId === null) {
     if (open !== undefined) throw new Error(`answer decision d${open.id} first`)
-    await tell(ledger, home, terminals, task.id, m.text)
+    // A person's: what it goes on past, should a question open meanwhile, is their answer.
+    await tell(ledger, home, terminals, task.id, m.text, null)
     return
   }
   if (open?.id !== m.decisionId)

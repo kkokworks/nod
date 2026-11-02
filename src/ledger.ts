@@ -244,7 +244,8 @@ export type Decision = {
 // `note` as said, with `projectId`), or what nod allowed the task's worker itself (`allowed`, in
 // `note`: a command, allow.ts, or its repo's trust, awaitStart in worker.ts), which is also the
 // ledger's record of it, or a decision a person answered or dropped elsewhere than in that session
-// (`answered`, decisions.ts's noticeAnswered; the answer is the decision's). `attemptId`: the
+// (`answered`, decisions.ts's noticeAnswered; the answer is the decision's, or `note` for one a
+// person's tell went on past). `attemptId`: the
 // task's latest turn as it happened. `sessionId` and `sentAt`: the session it went to and when; null
 // and set for one closed unsent, which had no session to go to (a task in no project, a decision's
 // opening once it was answered first).

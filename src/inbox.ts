@@ -267,8 +267,9 @@ function noticeText(ledger: Ledger, n: Notice): string {
   const task = ledger.get(n.taskId ?? 0)
   if (n.event === 'answered') {
     const d = ledger.decision(n.decisionId ?? 0)
-    // By code point, so a character outside the BMP (an emoji) is not cut in half.
-    const said = [...(d.answer ?? '').replace(/\r\n|\r|\n/g, ' ')]
+    // What the person said: the decision's answer, or the notice's own words for one they went on
+    // past (a tell). By code point, so a character outside the BMP (an emoji) is not cut in half.
+    const said = [...(n.note ?? d.answer ?? '').replace(/\r\n|\r|\n/g, ' ')]
     const cut = `${said.slice(0, ANSWER_LIMIT).join('')}${said.length > ANSWER_LIMIT ? '…' : ''}`
     return [
       `decision d${d.id} ${d.reason} answered by the person (${taskLabel(task)}): ${cut}`,

@@ -4,7 +4,7 @@ import { join, resolve } from 'node:path'
 import { parseArgs } from 'node:util'
 import { accountRule, configDir, describeRule, setAccountRule } from './account'
 import { ALLOW, onPermissionRequest, PermissionEvent } from './allow'
-import { finished, WORKER } from './decisions'
+import { finished, NO_PERSON } from './decisions'
 import { followWork, sweep } from './done'
 import { AUTOCOMPACT_PCT } from './env'
 import { collect, type GcPick, type GcReport, remotesHolding } from './gc'
@@ -358,7 +358,7 @@ switch (command) {
     }
     const id = taskRef(rest[0])
     warnUnheard([id])
-    await tell(ledger, home, terminals, id, words(rest.slice(1)))
+    await tell(ledger, home, terminals, id, words(rest.slice(1)), answerer())
     console.log('sent')
     break
   }
@@ -1042,10 +1042,10 @@ function mySession(mine: boolean | undefined): string | null {
   return session
 }
 
-// Who answers or drops a decision here, for its project's session (noticeAnswered): a nod worker,
-// or the Claude session this runs in, or null for a person's shell.
+// Who answers, drops or tells here, for the project's session (noticeAnswered): a nod worker, which
+// is no person, or the Claude session this runs in, or null for a person's shell.
 function answerer(): string | null {
-  return process.env.NOD_TASK === undefined ? sessionFromEnv() : WORKER
+  return process.env.NOD_TASK === undefined ? sessionFromEnv() : NO_PERSON
 }
 
 // Before a command sets these tasks going: a Claude session whose work no project session hears

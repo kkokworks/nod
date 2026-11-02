@@ -6,6 +6,7 @@ import {
   decide,
   goesOn,
   noticeAnswered,
+  permissionQuestion,
   WENT_ON,
 } from './decisions'
 import type { Attempt, Decision, Ledger } from './ledger'
@@ -14,15 +15,17 @@ import {
   HELD_BACK,
   heardOf,
   STOPPED_TURN,
+  toolCalls,
   transcriptLines,
   transcriptTail,
 } from './transcript'
 import { oneLine } from './view'
 
-// A worker's turns in the ledger: the turn a hook belongs to (currentTurn, openTurn), and a turn
-// that ended without its Stop hook, as the person stopped it or a hook of theirs held their message
-// back (endTurnWithoutStop, stoppedDialogs, forgetHeldBack, as its transcript shows) or as its
-// Claude Code or terminal went (cutOff), with the decisions it closes or opens (decisions.ts). What
+// A worker's turns in the ledger: the turn a hook belongs to (currentTurn, openTurn), a turn that
+// ended without its Stop hook, as the person stopped it or a hook of theirs held their message back
+// (endTurnWithoutStop, stoppedDialogs, forgetHeldBack, as its transcript shows) or as its Claude
+// Code or terminal went (cutOff), and the dialogs of a turn that did end the person refused in its
+// terminal (refusedDialogs), with the decisions they close or open (decisions.ts). What
 // goes into the worker's terminal (deliver, carryUnheard) is worker.ts's. This module takes no
 // terminal, and imports none of worker.ts, hooks.ts or land.ts.
 
@@ -35,6 +38,9 @@ export const typedHere = (text: string): boolean => text.startsWith(TYPED)
 export const CUT = '(the turn was cut off)'
 // What a permission decision gets once the person stopped its turn with Escape (stoppedDialogs).
 export const STOPPED_DIALOG = '(the person stopped its turn)'
+// What a permission decision gets once its turn ended and its transcript shows the person refused
+// the call in the worker's terminal (refusedDialogs).
+export const DENIED_HERE = '(denied in the terminal)'
 
 // Takes out of the ledger the last words a person typed into turn `open` once a hook of theirs held
 // that message back (endedWithoutStop): Claude Code never took it in, so neither the review nor the
@@ -155,6 +161,31 @@ export function stoppedDialogs(ledger: Ledger, home: string, taskId: number): De
   const closed = closeDecisions(ledger, taskId, ofTurn, STOPPED_DIALOG)
   noticeAnswered(ledger, closed)
   goesOn(ledger, taskId, closed)
+  return closed
+}
+
+// Closes the permission decisions of turn `attemptId`, which ended (its Stop), whose call the person
+// refused in the worker's terminal, as its transcript's end shows: the last call of the worker's
+// that the decision asks about (permissionQuestion) is one they refused (toolCalls). So the
+// project's session hears they answered (noticeAnswered). The others are left to close as the turn
+// ended: a dialog they let run that onToolRan did not match, or one nod cannot find a call of (a
+// subagent's, worded from the screen), which nothing tells apart from one they refused. Reads the
+// transcript only for a turn with such a decision open.
+// ponytail: the last call of the same command decides, so a refused one run again and let through
+// in the same turn reads as let through, and two dialogs of one command in a turn as one.
+export function refusedDialogs(
+  ledger: Ledger,
+  home: string,
+  taskId: number,
+  attemptId: number,
+): Decision[] {
+  const ofTurn = (d: Decision) => d.reason === 'permission' && d.attemptId === attemptId
+  if (!ledger.decisions(taskId).some((d) => d.answer === null && ofTurn(d))) return []
+  const calls = toolCalls(transcriptTail(ledger, home, ledger.attempt(attemptId)))
+  const refused = (d: Decision) =>
+    calls.findLast((c) => permissionQuestion(c.name, c.input) === d.question)?.refused === true
+  const closed = closeDecisions(ledger, taskId, (d) => ofTurn(d) && refused(d), DENIED_HERE)
+  noticeAnswered(ledger, closed)
   return closed
 }
 

@@ -8,6 +8,7 @@ import {
   ended,
   goesOn,
   noticeAnswered,
+  permissionQuestion,
   QUESTION_LIMIT,
 } from './decisions'
 import { followWork } from './done'
@@ -280,14 +281,6 @@ export async function onPermissionAsk(
     permissionQuestion(event.tool_name, event.tool_input),
   )
   await announce(home, ledger.get(taskId), turn.closed, turn.why)
-}
-
-// What a permission decision asks, from the tool and the input it would run with; the decision of
-// the dialog a tool's run answered is found by it again (onToolRan).
-function permissionQuestion(tool: string, input: Record<string, unknown>): string {
-  const { command } = input
-  const asked = typeof command === 'string' ? command : JSON.stringify(input)
-  return `Claude needs your permission to use ${tool}. Answer yes to allow; anything else denies.\n${asked.slice(0, QUESTION_LIMIT)}`
 }
 
 // Called by the PostToolUse and PostToolUseFailure hooks: a tool ran, so the dialog that asked for
