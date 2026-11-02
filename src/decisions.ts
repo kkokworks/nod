@@ -1,5 +1,6 @@
 import type { Decision, DecisionReason, Ledger, Task } from './ledger'
 import { notify, taskRef } from './notify'
+import { message } from './proc'
 import { Todos } from './todos'
 
 // The decisions a task asks the person, in the ledger: opening one (decide), closing those nothing
@@ -120,23 +121,35 @@ export function ended(ledger: Ledger, taskId: number): boolean {
 export const finished = (ledger: Ledger, taskId: number): boolean =>
   ledger.get(taskId).status === 'succeeded' || ended(ledger, taskId)
 
+// `by` for an answer a nod worker gives with nod d<n> or nod drop (NOD_TASK): no person's.
+export const WORKER = 'worker'
+
 // A person answered or dropped these, with nod d<n> or nod drop (a shell, a Claude session, the web
 // UI) or in the worker's terminal: the project's latest session hears it (inbox.ts), as it heard
 // each open, so it does not ask the person again. Not when that session answered them itself
-// (`by`, the Claude session that answered, sessionFromEnv), nor of what nod closed itself (a turn
-// that ended or went on, a newer proposal, a task dropped), which callers do not hand here.
-// Recorded right after the close, with no await between, so only a process killed outright loses it.
+// (`by`, the Claude session that answered, sessionFromEnv), nor when a worker did (WORKER), nor of
+// what nod closed itself (a turn that ended or went on, a newer proposal, a task dropped), which
+// callers do not hand here. Recorded right after the close, with no await between; one the ledger
+// cannot take (busy) only goes to stderr, as the close stands and what follows it still has to run.
 export function noticeAnswered(ledger: Ledger, closed: Decision[], by: string | null = null): void {
-  const todos = new Todos(ledger)
+  if (by === WORKER) return
   for (const d of closed) {
-    const project = todos.projectOf(ledger.get(d.taskId))
-    if (by !== null && project !== null && todos.latestSession(project)?.sessionId === by) continue
-    ledger.addNotice({
-      taskId: d.taskId,
-      decisionId: d.id,
-      attemptId: d.attemptId,
-      event: 'answered',
-    })
+    try {
+      const todos = new Todos(ledger)
+      const project = todos.projectOf(ledger.get(d.taskId))
+      if (by !== null && project !== null && todos.latestSession(project)?.sessionId === by)
+        continue
+      ledger.addNotice({
+        taskId: d.taskId,
+        decisionId: d.id,
+        attemptId: d.attemptId,
+        event: 'answered',
+      })
+    } catch (error) {
+      console.error(
+        `nod: could not record d${d.id}'s answer for the project's session: ${message(error)}`,
+      )
+    }
   }
 }
 

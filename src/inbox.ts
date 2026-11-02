@@ -17,7 +17,7 @@ import { allowedLine, firstLine, indent, oneLine, taskLabel } from './view'
 
 // A local socket takes far less; a hook waits on it.
 const SEND_TIMEOUT_MS = 5000
-// How much of a person's answer an `answered` notice shows, on one line.
+// How much of a person's answer an `answered` notice shows, on one line, with `…` after one cut.
 const ANSWER_LIMIT = 200
 
 // What a session's SessionStart and SessionEnd hooks pass on stdin; only what nod reads.
@@ -267,8 +267,10 @@ function noticeText(ledger: Ledger, n: Notice): string {
   const task = ledger.get(n.taskId ?? 0)
   if (n.event === 'answered') {
     const d = ledger.decision(n.decisionId ?? 0)
+    const said = oneLine(d.answer ?? '', Infinity)
+    const cut = said.length > ANSWER_LIMIT ? `${said.slice(0, ANSWER_LIMIT)}…` : said
     return [
-      `decision d${d.id} ${d.reason} answered by the person (${taskLabel(task)}): ${oneLine(d.answer ?? '', ANSWER_LIMIT)}`,
+      `decision d${d.id} ${d.reason} answered by the person (${taskLabel(task)}): ${cut}`,
       'next: tell the person in a line; it is closed, so answer it no more',
     ].join('\n')
   }

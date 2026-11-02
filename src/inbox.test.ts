@@ -1,6 +1,7 @@
 import { afterAll, expect, spyOn, test } from 'bun:test'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
+import { FakeTerminals } from '../test/fake-terminals'
 import { inboxServer, inboxTest } from '../test/inbox-server'
 import { socketsParent, tempDirs } from '../test/tmp'
 import { decide, WENT_ON } from './decisions'
@@ -770,14 +771,14 @@ test("a decision a person answers or drops goes to the project's latest session 
     `decision d${web} question answered by the person (task n1 t1): yes\n${next}`,
     `decision d${older} question answered by the person (task n2 t2): use main\n${next}`,
     `decision d${shell} question answered by the person (task n3 t3): (dropped)\n${next}`,
-    `decision d${long} question answered by the person (task n6 t6): ${'word '.repeat(40)}\n${next}`,
+    `decision d${long} question answered by the person (task n6 t6): ${'word '.repeat(40)}…\n${next}`,
     `decision d${land} land answered by the person (task n7 t7): not now\n${next}`,
   ])
   expect(sent.map((s) => s.session_id)).toEqual([A])
   expect(ledger.unsentNotices()).toEqual([])
 })
 
-test('nod d<n> and nod drop d<n> run in the project’s latest session leave no notice for it; run in another Claude session or a shell they do', () => {
+test('nod d<n> and nod drop d<n> run in the project’s latest session, or by a nod worker, leave no notice for it; run in another Claude session or a shell they do', () => {
   const { home, ledger, todos, p, task, turn } = setup()
   todos.addSession(p.id, B, '/work/two')
   todos.addSession(p.id, A, '/work/one')
@@ -794,6 +795,17 @@ test('nod d<n> and nod drop d<n> run in the project’s latest session leave no 
     const r = Bun.spawnSync(['bun', cli, ...args], { env: { ...shell, NOD_HOME: home, ...claude } })
     expect(r.exitCode).toBe(0)
   }
+  // A nod worker's Claude Code, as its env has it: an answer of its is no person's.
+  const worker = (...args: string[]): void => {
+    const env = {
+      ...shell,
+      NOD_HOME: home,
+      CLAUDECODE: '1',
+      CLAUDE_CODE_SESSION_ID: C,
+      NOD_TASK: '1',
+    }
+    expect(Bun.spawnSync(['bun', cli, ...args], { env }).exitCode).toBe(0)
+  }
   // Decisions left open on tasks that succeeded: an answer only closes them, and no worker runs.
   const open = (): number => {
     const id = task('Done already')
@@ -801,7 +813,9 @@ test('nod d<n> and nod drop d<n> run in the project’s latest session leave no 
     ledger.succeed(id)
     return d
   }
-  const [inLatest, droppedInLatest, inOther, droppedInOlder, inShell] = [
+  const [inLatest, droppedInLatest, inOther, droppedInOlder, inShell, byWorker, droppedByWorker] = [
+    open(),
+    open(),
     open(),
     open(),
     open(),
@@ -813,6 +827,10 @@ test('nod d<n> and nod drop d<n> run in the project’s latest session leave no 
   nod(C, `d${inOther}`, 'yes')
   nod(B, 'drop', `d${droppedInOlder}`)
   nod(null, `d${inShell}`, 'never mind')
+  worker(`d${byWorker}`, 'yes')
+  worker('drop', `d${droppedByWorker}`)
+  expect(ledger.decision(byWorker).answer).toBe('yes')
+  expect(ledger.decision(droppedByWorker).answer).toBe('(dropped)')
   expect(answeredNotices(ledger)).toEqual([inOther, droppedInOlder, inShell])
 }, 30_000)
 
@@ -851,4 +869,54 @@ test("a question the person answers by typing into the worker's terminal goes to
   expect(ledger.decision(dialog).answer).toBe(CUT)
 
   expect(answeredNotices(ledger)).toEqual([typed.d])
+})
+
+test("a drop that ends a task or stops its landing, and a no to trust, which drops, go to the project's session unless its latest session gave them", async () => {
+  const { home, ledger, todos, p, task, turn } = setup()
+  todos.addSession(p.id, B, '/work/two')
+  todos.addSession(p.id, A, '/work/one')
+  // No worker runs: no terminal is open, so closing one does nothing.
+  const terminals = FakeTerminals.of(home)
+  // An open decision on a task waiting on it; a question, so no retrospective follows the drop.
+  const waiting = (reason: 'question' | 'land' | 'trust') => {
+    const id = task(`Waits on ${reason}`)
+    return ledger.ask(id, turn(id, 'succeeded', 'asked'), reason, `${reason}?`)
+  }
+  const ended = waiting('question')
+  const landing = waiting('land')
+  const trustedNot = waiting('trust')
+  const trustedNotThere = waiting('trust')
+  expect(await drop(ledger, home, terminals, ended)).toBe('dropped')
+  expect(await drop(ledger, home, terminals, landing, B)).toBe('landing stopped')
+  // Anything but yes to trust drops the task, as the person who said it.
+  expect(await answer(ledger, home, terminals, trustedNot, 'no', 'human')).toBe(true)
+  expect(await answer(ledger, home, terminals, trustedNotThere, 'no', 'claude:aaaa1111', A)).toBe(
+    true,
+  )
+  expect(ledger.decision(trustedNotThere).answer).toBe('(dropped)')
+  expect(answeredNotices(ledger)).toEqual([ended, landing, trustedNot])
+})
+
+test('an answer the ledger cannot record for the project session still stands, and what follows it runs', async () => {
+  const { home, ledger, task, turn } = setup()
+  const id = task('Done already')
+  const d = ledger.ask(id, turn(id, 'failed', 'asked'), 'question', 'Still?')
+  ledger.succeed(id)
+  const add = ledger.addNotice.bind(ledger)
+  const busy = spyOn(ledger, 'addNotice').mockImplementation((n) => {
+    if (n.event === 'answered') throw new Error('database is locked')
+    return add(n)
+  })
+  const said = spyOn(console, 'error').mockImplementation(() => {})
+  try {
+    expect(await answer(ledger, home, FakeTerminals.of(home), d, 'yes', 'human')).toBe(false)
+    expect(said.mock.calls.map(([line]) => String(line))).toContain(
+      `nod: could not record d${d}'s answer for the project's session: database is locked`,
+    )
+  } finally {
+    busy.mockRestore()
+    said.mockRestore()
+  }
+  expect(ledger.decision(d).answer).toBe('yes')
+  expect(answeredNotices(ledger)).toEqual([])
 })
