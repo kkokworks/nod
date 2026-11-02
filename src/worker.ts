@@ -12,6 +12,7 @@ import {
   ended,
   finished,
   goesOn,
+  noticeAnswered,
   QUESTION_LIMIT,
   refuseEnded,
   WENT_ON,
@@ -286,8 +287,9 @@ export function baseOf(ledger: Ledger, task: Task): Task | null {
   return ledger.after(task.id).find((a) => task.repo !== null && a.repo === task.repo) ?? null
 }
 
-// `actor`: who answers, recorded on the rule a yes to a rule decision adds. Returns whether the task
-// took the answer; false when the decision only closed, its task having ended.
+// `actor`: who answers, recorded on the rule a yes to a rule decision adds. `by`: the Claude session
+// that answers, if one does (noticeAnswered). Returns whether the task took the answer; false when
+// the decision only closed, its task having ended.
 export async function answer(
   ledger: Ledger,
   home: string,
@@ -295,12 +297,16 @@ export async function answer(
   decisionId: number,
   text: string,
   actor: string,
+  by: string | null = null,
 ): Promise<boolean> {
   const decision = ledger.decision(decisionId)
   // Before anything acts on it, as bringing a collected task back (restore below).
   if (decision.answer !== null) throw new Error(`decision d${decisionId} is already answered`)
-  // A to-do list that mirrors open decisions can close this one.
-  const told = (): Promise<void> => announce(home, ledger.get(decision.taskId), [decision], text)
+  // The project's session hears of it, and a to-do list that mirrors open decisions can close it.
+  const told = (): Promise<void> => {
+    noticeAnswered(ledger, [decision], by)
+    return announce(home, ledger.get(decision.taskId), [decision], text)
+  }
   // One left open on a task that ended only closes: no turn starts, and the task stays as it is.
   if (finished(ledger, decision.taskId)) {
     ledger.dismiss(decisionId, text)
@@ -310,7 +316,7 @@ export async function answer(
   const yes = YES.test(text.trim())
   // Trust and rules are yes-or-nothing: anything but yes ends the task.
   if ((decision.reason === 'trust' || decision.reason === 'rule') && !yes) {
-    return (await drop(ledger, home, terminals, decisionId)) === 'dropped'
+    return (await drop(ledger, home, terminals, decisionId, by)) === 'dropped'
   }
   // A decision on landing (land.ts) waits on no turn: yes lets landing try again (the next pass, or
   // nod land now), and anything else stops landing the task. Its work stands either way.
@@ -423,17 +429,20 @@ async function waitForScreen(terminals: Terminals, name: string, text: string): 
 // landing the task, whose work stands.
 export type Dropped = 'dropped' | 'closed' | 'landing stopped'
 
+// `by`: the Claude session that drops it, if one does (noticeAnswered).
 export async function drop(
   ledger: Ledger,
   home: string,
   terminals: Terminals,
   decisionId: number,
+  by: string | null = null,
 ): Promise<Dropped> {
   const decision = ledger.decision(decisionId)
   const task = ledger.get(decision.taskId)
   // One left open on a task that ended only closes, and the task stays as it is.
   if (finished(ledger, task.id)) {
     ledger.dismiss(decisionId, '(dropped)')
+    noticeAnswered(ledger, [decision], by)
     await announce(home, task, [decision], '(dropped)')
     return 'closed'
   }
@@ -451,6 +460,7 @@ export async function drop(
         return others
       })
       .immediate()
+    noticeAnswered(ledger, [decision], by)
     await terminals.close(sessionName(task.id))
     const open = ledger.openAttempt(task.id)
     if (open !== null) ledger.failAttempt(open.id, 'its landing was stopped')
@@ -475,6 +485,7 @@ export async function drop(
       return others
     })
     .immediate()
+  noticeAnswered(ledger, [decision], by)
   await announce(home, task, closed, why)
   // The person takes back a todo whose task they ended.
   await followWork(ledger, SELF, null)

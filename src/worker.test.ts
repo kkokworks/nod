@@ -3794,10 +3794,10 @@ it('whatever ends a retrospective, its task ends as the outcome has it, and a tu
     await stopped(session, 'NOD: question | Still there?')
     expect(status(retro)).toBe(want)
     expect(ledger.decisions(retro).filter((d) => d.answer === null)).toEqual([])
-    // It ended once.
+    // It ended once. Its decisions, and the person's answers to them, are not ends.
     const notices = ledger.db
       .query<{ event: string }, [number]>(
-        "select event from notices where task_id = ? and event != 'decision'",
+        "select event from notices where task_id = ? and event not in ('decision', 'answered')",
       )
       .all(retro)
     expect(notices.map((n) => n.event)).toEqual([want])

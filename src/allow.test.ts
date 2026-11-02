@@ -284,6 +284,14 @@ function hook(home: string, stdin: string, name = 'permission'): string {
   return run.stdout.toString()
 }
 
+// The decisions a person answered that wait to go to the project's session (no session takes
+// messages here), oldest first.
+const answeredNotices = (ledger: Ledger) =>
+  ledger
+    .unsentNotices()
+    .filter((n) => n.event === 'answered')
+    .map((n) => n.decisionId)
+
 // The task's open decisions: why, on which turn, and the line of the question that names what the
 // worker asked for.
 const asked = (ledger: Ledger, id: number) =>
@@ -432,6 +440,8 @@ test("a prompt's decision whose turn the person stopped with Escape closes as th
     transcript(said([stop]), said('push to the fork'))
     await tell(ledger, home, Tmux.of(home), id, 'and tag it')
     expect(send.mock.calls.map(([, text]) => text)).toEqual(['and tag it'])
+    // The project's session hears they answered it, as it heard it open.
+    expect(answeredNotices(ledger)).toEqual(ledger.decisions(id).map((d) => d.id))
   } finally {
     alive.mockRestore()
     attached.mockRestore()
@@ -503,6 +513,8 @@ test("a tool that ran closes its dialog's decision, as allowed in the terminal, 
     [second, '(allowed in the terminal)'],
   ])
   expect(ledger.get(id).status).toBe('running')
+  // The project's session hears the person answered each, in the terminal.
+  expect(answeredNotices(ledger)).toEqual([first, second])
   // The root, a moment late, answers what it was shown: nothing reaches the worker, at work.
   const alive = spyOn(Tmux.prototype, 'alive').mockReturnValue(true)
   const keys = spyOn(Tmux.prototype, 'keys').mockImplementation(() => {})
@@ -520,6 +532,7 @@ test("a tool that ran closes its dialog's decision, as allowed in the terminal, 
     alive.mockRestore()
     keys.mockRestore()
   }
+  expect(answeredNotices(ledger)).toEqual([first, second])
 }, 15_000)
 
 test("a tool that ran leaves a dialog's decision for the same command open when nod answered one like it in the turn: the run may be the one nod allowed", async () => {

@@ -1,4 +1,13 @@
-import { ASKED, announce, asking, closeDecisions, decide, goesOn, WENT_ON } from './decisions'
+import {
+  ASKED,
+  announce,
+  asking,
+  closeDecisions,
+  decide,
+  goesOn,
+  noticeAnswered,
+  WENT_ON,
+} from './decisions'
 import type { Attempt, Decision, Ledger } from './ledger'
 import {
   endedWithoutStop,
@@ -69,6 +78,7 @@ export function currentTurn(
   const why = words.length === 0 ? WENT_ON : words.join('\n')
   const asked = (d: Decision) => ASKED.includes(d.reason) && d.attemptId !== turn.id
   const closed = closeDecisions(ledger, taskId, asked, why)
+  if (words.length > 0) noticeAnswered(ledger, closed)
   goesOn(ledger, taskId, closed)
   return { id: turn.id, closed, why }
 }
@@ -143,6 +153,7 @@ export function stoppedDialogs(ledger: Ledger, home: string, taskId: number): De
   if (endedWithoutStop(transcriptTail(ledger, home, open)) !== STOPPED_TURN) return []
   const ofTurn = (d: Decision) => d.reason === 'permission' && d.attemptId === open.id
   const closed = closeDecisions(ledger, taskId, ofTurn, STOPPED_DIALOG)
+  noticeAnswered(ledger, closed)
   goesOn(ledger, taskId, closed)
   return closed
 }

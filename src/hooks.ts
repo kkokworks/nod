@@ -7,6 +7,7 @@ import {
   decide,
   ended,
   goesOn,
+  noticeAnswered,
   QUESTION_LIMIT,
 } from './decisions'
 import { followWork } from './done'
@@ -318,6 +319,7 @@ export async function onToolRan(
   const ran = same.find((d) => d.answer === null)
   if (ran === undefined || same.some((d) => d.answeredAt !== null)) return
   const closed = closeDecisions(ledger, taskId, (d) => d.id === ran.id, ALLOWED_HERE)
+  noticeAnswered(ledger, closed)
   // A dialog another tool queued still holds the task.
   if (ledger.decisions(taskId).every((d) => d.answer !== null)) goesOn(ledger, taskId, closed)
   await announce(home, ledger.get(taskId), closed, ALLOWED_HERE)

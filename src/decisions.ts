@@ -1,9 +1,11 @@
 import type { Decision, DecisionReason, Ledger, Task } from './ledger'
 import { notify, taskRef } from './notify'
+import { Todos } from './todos'
 
 // The decisions a task asks the person, in the ledger: opening one (decide), closing those nothing
 // waits on any more (closeDecisions) and the task going on past them (goesOn), telling a to-do list
-// that mirrors them (announce), and whether the task ended, so a decision left open on it only
+// that mirrors them (announce) and the project's session what a person answered (noticeAnswered),
+// and whether the task ended, so a decision left open on it only
 // closes (ended, finished). What an answer does in the worker's terminal is worker.ts's (answer).
 // This module takes no terminal, and imports none of worker.ts, hooks.ts or land.ts.
 
@@ -117,6 +119,26 @@ export function ended(ledger: Ledger, taskId: number): boolean {
 // A task that ended, or succeeded: a decision left open on it only closes (answer, drop).
 export const finished = (ledger: Ledger, taskId: number): boolean =>
   ledger.get(taskId).status === 'succeeded' || ended(ledger, taskId)
+
+// A person answered or dropped these, with nod d<n> or nod drop (a shell, a Claude session, the web
+// UI) or in the worker's terminal: the project's latest session hears it (inbox.ts), as it heard
+// each open, so it does not ask the person again. Not when that session answered them itself
+// (`by`, the Claude session that answered, sessionFromEnv), nor of what nod closed itself (a turn
+// that ended or went on, a newer proposal, a task dropped), which callers do not hand here.
+// Recorded right after the close, with no await between, so only a process killed outright loses it.
+export function noticeAnswered(ledger: Ledger, closed: Decision[], by: string | null = null): void {
+  const todos = new Todos(ledger)
+  for (const d of closed) {
+    const project = todos.projectOf(ledger.get(d.taskId))
+    if (by !== null && project !== null && todos.latestSession(project)?.sessionId === by) continue
+    ledger.addNotice({
+      taskId: d.taskId,
+      decisionId: d.id,
+      attemptId: d.attemptId,
+      event: 'answered',
+    })
+  }
+}
 
 // Tells a to-do list that mirrors open decisions that these closed.
 export async function announce(

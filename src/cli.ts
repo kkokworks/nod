@@ -446,7 +446,8 @@ switch (command) {
       closed: 'closed; its task had ended',
       'landing stopped': 'stopped landing it; the task stays succeeded',
     }
-    console.log(said[await drop(ledger, home, terminals, parseRef(rest[0] ?? '', 'd', true))])
+    const id = parseRef(rest[0] ?? '', 'd', true)
+    console.log(said[await drop(ledger, home, terminals, id, sessionFromEnv())])
     break
   }
   case 'gc':
@@ -537,7 +538,7 @@ switch (command) {
     // finished, and no to landing again.
     const stops = reason === 'land' && !/^y(es)?$/i.test(said)
     if (answered === null && !finished(ledger, taskId) && !stops) warnUnheard([taskId])
-    const took = await answer(ledger, home, terminals, id, said, actorFromEnv())
+    const took = await answer(ledger, home, terminals, id, said, actorFromEnv(), sessionFromEnv())
     if (reason === 'land') {
       console.log(/^y(es)?$/i.test(said) ? 'landing it again' : 'stopped landing it')
       // Yes tries again now, not at the next fifth minute, unless this is a sandbox (leaveToTick).
