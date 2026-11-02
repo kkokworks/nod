@@ -3314,6 +3314,71 @@ it('a task that has waited on background work past the limit asks the person, at
   expect(ledger.decisions(back)).toEqual([])
 })
 
+it('only the time a task waited with no turn open counts toward the wait limit, not a turn that ran between waits', async () => {
+  const now = Date.now()
+  const ago = (min: number): string => new Date(now - min * 60_000).toISOString()
+  // Sets each turn's start and end, in minutes before now; an end of null leaves it open.
+  const timed = (id: number, times: [number, number | null][]): void => {
+    ledger.attempts(id).forEach((a, i) => {
+      const [start, end] = times[i] ?? [0, null]
+      ledger.db
+        .query('update attempts set started_at = $start, finished_at = $end where id = $id')
+        .run({ start: ago(start), end: end === null ? null : ago(end), id: a.id })
+    })
+  }
+  const next = (id: number, session: string): void => {
+    ledger.startAttempt({
+      taskId: id,
+      kind: 'followup',
+      decisionId: null,
+      sessionId: session,
+      prompt: 'go on',
+    })
+  }
+
+  // Two short waits, then a turn that ran for 43 hours (tests and reviews, a PC asleep) and stops
+  // with work of its own still running: 8 + 5 minutes of waiting, not the 2604 since the first.
+  const id = started('review it', 'waits-ran')
+  await stopped('waits-ran', 'NOD: question | Waiting for the review', ['review'])
+  await stopped('waits-ran', 'NOD: question | Waiting again', ['review'])
+  next(id, 'waits-ran')
+  timed(id, [
+    [2618, 2604],
+    [2596, 2589],
+    [2584, null],
+  ])
+  await stopped('waits-ran', 'NOD: question | Waiting for the second review', ['review'])
+  expect(ledger.decisions(id)).toEqual([])
+  expect(ledger.attempts(id).map((a) => a.outcome)).toEqual(['waiting', 'waiting', 'waiting'])
+  // The tick counts on from those 13 minutes: past the limit 47 minutes after this stop.
+  const minutes = (n: number): Date => new Date(Date.now() + n * 60_000)
+  expect(await overdueWaits(ledger, home, minutes(45))).toEqual([])
+  expect(await overdueWaits(ledger, home, minutes(49))).toEqual([id])
+  expect(ledger.decisions(id)[0]?.question).toContain(
+    'waited on background work it started for 62 minutes',
+  )
+
+  // Waits that add up past the limit with only short turns between still ask at the next stop.
+  const chain = started('keep waiting', 'waits-adds-up')
+  await stopped('waits-adds-up', 'NOD: question | Waiting', ['monitor'])
+  await stopped('waits-adds-up', 'NOD: question | Still waiting', ['monitor'])
+  next(chain, 'waits-adds-up')
+  timed(chain, [
+    [80, 70],
+    [40, 38],
+    [5, null],
+  ])
+  await stopped('waits-adds-up', 'NOD: question | Waiting on', ['monitor'])
+  const [asked] = ledger.decisions(chain)
+  expect(asked?.question).toContain('for 63 minutes')
+  expect(asked?.question).toContain('Still running: monitor.\nNOD: question | Waiting on')
+  expect(ledger.attempts(chain).map((a) => a.outcome)).toEqual([
+    'waiting',
+    'waiting',
+    'needs_decision',
+  ])
+})
+
 it("a worker's NOD: tell reaches another task of its session once nod takes its done, a finished task too, as a peer's", async () => {
   const fix = started('fix it', 'fixer', 'root-1')
   await stopped('fixer', 'NOD: done | fixed')
