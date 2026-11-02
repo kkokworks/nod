@@ -2,6 +2,7 @@ import { collect, type GcReport, hasRef, landed } from './gc'
 import { FINISHED, type Ledger, type Task } from './ledger'
 import { sessionName } from './place'
 import { message, readAtOnce } from './proc'
+import { originUrl, sameRepo } from './prs'
 import type { Terminals } from './tmux'
 import { Todos } from './todos'
 
@@ -19,12 +20,14 @@ import { Todos } from './todos'
 const STALE_DAYS = 7
 const DAY = 86_400_000
 
-// A linked pull request: whether it is still open, its head branch's name, when it merged, and when
-// the person approved it, if their last review that approved or asked for changes approved. A link
-// that is not a pull request reads as null.
+// A linked pull request: whether it is still open, its head branch's name, the repo that branch is
+// in (an address remoteOf in prs.ts reads, null when the service does not say), when it merged,
+// and when the person approved it, if their last review that approved or asked for changes
+// approved. A link that is not a pull request reads as null.
 export type PullRequest = {
   state: 'open' | 'merged' | 'closed'
   head: string
+  headRepo: string | null
   mergedAt: string | null
   approvedAt: string | null
 }
@@ -93,9 +96,11 @@ async function signal(
   if (branch?.unpushed) {
     if (task.status !== 'succeeded') return null
     // The branch's own pull request merged after its last commit: the work went up from elsewhere,
-    // rebased on another branch, say, so these commits are not its only copy. A commit made or
-    // rewritten since is newer than the merge, and held back. Any other link still waiting holds
-    // it back too, as it does a pushed task, though here age does not end the wait.
+    // rebased on another branch, say, so these commits are not its only copy. Its own: its head is
+    // a branch of this name in the repo of `origin`, where nod pushes; one of that name in another
+    // repo or a fork is someone else's, and one whose head repo is not known is held back too. A
+    // commit made or rewritten since is newer than the merge, and held back. Any other link still
+    // waiting holds it back too, as it does a pushed task, though here age does not end the wait.
     // ponytail: a commit made before the merge and never pushed goes from ls too; it stays on the
     // branch (dropBranch in gc.ts), and resume brings it back.
     let merged: string | null = null
@@ -104,6 +109,7 @@ async function signal(
       if (pr === null) continue
       if (pr.state === 'open' && !approvedSince(pr, task)) return null
       if (pr.state !== 'merged' || pr.head !== task.branch || pr.mergedAt === null) continue
+      if (task.repo === null || !sameRepo(pr.headRepo, originUrl(task.repo))) continue
       if (Date.parse(branch.lastCommitAt) < Date.parse(pr.mergedAt)) merged ??= `merged: ${url}`
     }
     return merged

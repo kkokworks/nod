@@ -187,9 +187,9 @@ const USAGE = `usage:
                                    dropped, taken over by a newer task on the same todo, merged
                                    into the default branch, a linked pull request merged, closed or
                                    approved by you, or finished 7+ days ago (one with commits no
-                                   remote has only once a linked pull request of its branch merged
-                                   after its last commit and no other linked one waits, and only
-                                   if it succeeded). Branches go once a remote branch holds the
+                                   remote has only once a linked pull request of its branch in
+                                   origin's repo merged after its last commit and no other linked
+                                   one waits, and only if it succeeded). Branches go once a remote branch holds the
                                    commits or the remote's default branch has the changes; ledger
                                    rows and session transcripts stay, ls stops listing the tasks,
                                    and resume or tell brings one back. The schedule runs the

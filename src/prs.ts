@@ -51,9 +51,11 @@ export function pullRequests(cwd: string): PrLookup {
         '--repo',
         repo,
         '--json',
-        'state,reviews,headRefName,mergedAt',
+        'state,reviews,headRefName,headRepository,headRepositoryOwner,mergedAt',
       ]),
     )
+    const owner = pr.headRepositoryOwner?.login
+    const name = pr.headRepository?.name
     const me = await once(logins, 'github', async () =>
       (await run(['gh', 'api', 'user', '--jq', '.login'])).trim(),
     )
@@ -65,6 +67,7 @@ export function pullRequests(cwd: string): PrLookup {
     return {
       state: GH_STATE[pr.state],
       head: pr.headRefName,
+      headRepo: owner && name ? `https://github.com/${owner}/${name}` : null,
       mergedAt: pr.mergedAt,
       approvedAt: approvedAt(reviews, me),
     }
@@ -87,6 +90,7 @@ export function pullRequests(cwd: string): PrLookup {
     return {
       state: pr.merged ? 'merged' : pr.state,
       head: pr.head.label,
+      headRepo: pr.head.repo ? `${base}/${pr.head.repo.full_name}` : null,
       mergedAt: pr.merged_at,
       approvedAt: approvedAt(standing, me),
     }
@@ -112,6 +116,9 @@ const GH_STATE = { OPEN: 'open', MERGED: 'merged', CLOSED: 'closed' } as const
 const GH_PR = z.object({
   state: z.enum(['OPEN', 'MERGED', 'CLOSED']),
   headRefName: z.string(),
+  // Null once the fork the head is in is deleted.
+  headRepository: z.object({ name: z.string() }).nullish(),
+  headRepositoryOwner: z.object({ login: z.string() }).nullish(),
   mergedAt: z.string().nullable(),
   reviews: z.array(
     z.object({
@@ -125,8 +132,12 @@ const GITEA_PR = z.object({
   state: z.enum(['open', 'closed']),
   merged: z.boolean(),
   merged_at: z.string().nullable(),
-  // The branch's name; `ref` says refs/pull/<n>/head once the branch is deleted.
-  head: z.object({ label: z.string() }),
+  // The branch's name; `ref` says refs/pull/<n>/head once the branch is deleted. `repo`: the repo
+  // the branch is in, a fork's for a pull request from a fork, null once that repo is deleted.
+  head: z.object({
+    label: z.string(),
+    repo: z.object({ full_name: z.string() }).nullish(),
+  }),
 })
 const GITEA_REVIEWS = z.array(
   z.object({
@@ -175,15 +186,33 @@ export function remoteOf(url: string): { host: string; path: string } {
   return { host: host.toLowerCase(), path }
 }
 
-// The service of the repo's `origin`, as its config names it: GitHub's gh for github.com, and tea
-// for any other host, as Gitea and Forgejo. The URL is read as written, not as `insteadOf` rewrites
-// it, since that is the address the service knows the repo by.
+// The address of the repo's `origin`, the remote nod pushes to (land.ts), as its config writes it,
+// not as `insteadOf` rewrites it: the address the service knows the repo by. Null without one.
+export function originUrl(repo: string): string | null {
+  const url = Bun.spawnSync(['git', '-C', repo, 'config', '--get', 'remote.origin.url'])
+  return url.exitCode === 0 ? url.stdout.toString() : null
+}
+
+// Whether two remote addresses name one repo, however each is written: https or ssh, with `.git`
+// or without, in any case. An address that is missing or unreadable matches none.
+export function sameRepo(a: string | null, b: string | null): boolean {
+  if (a === null || b === null) return false
+  try {
+    const [x, y] = [remoteOf(a), remoteOf(b)]
+    return x.host === y.host && x.path.toLowerCase() === y.path.toLowerCase()
+  } catch {
+    return false // one remoteOf cannot read
+  }
+}
+
+// The service of the repo's `origin` (originUrl): GitHub's gh for github.com, and tea for any other
+// host, as Gitea and Forgejo.
 // ponytail: origin only, and gh for github.com only; name the service per repo once another remote
 // or a GitHub Enterprise host lands.
 export function serviceOf(repo: string): GitService {
-  const url = Bun.spawnSync(['git', '-C', repo, 'config', '--get', 'remote.origin.url'])
-  if (url.exitCode !== 0) throw new Error(`${repo} has no remote origin`)
-  const { host, path } = remoteOf(url.stdout.toString())
+  const url = originUrl(repo)
+  if (url === null) throw new Error(`${repo} has no remote origin`)
+  const { host, path } = remoteOf(url)
   const run = async (cmd: string[], stdin?: string): Promise<string> => {
     const { code, stdout, output } = await spawn(cmd, repo, { stdin, timeoutMs: TIMEOUT_MS })
     if (code !== 0)

@@ -1,9 +1,9 @@
 import { afterAll, describe, expect, test } from 'bun:test'
-import { writeFileSync } from 'node:fs'
+import { rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { calls, clonedRepo, fakeService, git } from '../test/remote'
 import { tempDirs } from '../test/tmp'
-import { approvedAt, pullRequests, remoteOf, serviceOf } from './prs'
+import { approvedAt, pullRequests, remoteOf, sameRepo, serviceOf } from './prs'
 
 test("the approval is the person's last approval or request for changes, if it approved; comments and others' reviews do not count", () => {
   const r = (login: string, state: string, at: string) => ({ login, state, at })
@@ -28,6 +28,16 @@ test('a remote reads as its host and owner/repo however git takes it', () => {
     path: 'o/r',
   })
   expect(() => remoteOf('/srv/repos/r')).toThrow('a remote nod cannot read')
+})
+
+test('two remotes are one repo however each is written, and one missing or unreadable is none', () => {
+  expect(sameRepo('https://github.com/o/r', 'git@github.com:O/R.git\n')).toBe(true)
+  expect(sameRepo('https://git.example.com/o/r', 'ssh://git@git.example.com:2222/o/r/')).toBe(true)
+  expect(sameRepo('https://github.com/o/r', 'https://github.com/fork/r')).toBe(false)
+  expect(sameRepo('https://github.com/o/r', 'https://git.example.com/o/r')).toBe(false)
+  expect(sameRepo('https://github.com/o/r', null)).toBe(false)
+  expect(sameRepo(null, null)).toBe(false)
+  expect(sameRepo('/srv/repos/r', '/srv/repos/r')).toBe(false)
 })
 
 describe('nod opens and squash merges its pull requests through the repo service', () => {
@@ -61,9 +71,16 @@ describe('nod opens and squash merges its pull requests through the repo service
       expect(await pullRequests(repo)(pr)).toEqual({
         state: 'open',
         head: 'feat/a',
+        headRepo: url,
         mergedAt: null,
         approvedAt: null,
       })
+      // A head in a fork reads as the fork's repo; one in a fork since deleted, as none.
+      writeFileSync(join(own, 'head-repo'), 'fork/r')
+      expect((await pullRequests(repo)(pr))?.headRepo).toBe(url.replace('/o/', '/fork/'))
+      writeFileSync(join(own, 'head-repo'), '')
+      expect((await pullRequests(repo)(pr))?.headRepo).toBeNull()
+      rmSync(join(own, 'head-repo'))
 
       // A head that moved since nod checked it is not merged.
       const moved = { head: 'f'.repeat(40), title: 'Add a', body: '' }
@@ -78,6 +95,7 @@ describe('nod opens and squash merges its pull requests through the repo service
       expect(await pullRequests(repo)(pr)).toEqual({
         state: 'merged',
         head: 'feat/a',
+        headRepo: url,
         mergedAt: expect.any(String),
         approvedAt: null,
       })

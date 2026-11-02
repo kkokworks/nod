@@ -18,7 +18,14 @@ const PR = 'https://git.example.com/o/r/pulls/'
 const NOW = new Date('2026-03-10T00:00:00.000Z')
 const RECENT = '2026-03-09T00:00:00.000Z'
 const OLD = '2026-03-01T00:00:00.000Z'
-const OPEN: PullRequest = { state: 'open', head: 'feat/other', mergedAt: null, approvedAt: null }
+const HEAD_REPO = 'https://git.example.com/o/r'
+const OPEN: PullRequest = {
+  state: 'open',
+  head: 'feat/other',
+  headRepo: HEAD_REPO,
+  mergedAt: null,
+  approvedAt: null,
+}
 // Merged after any commit a test makes, so only the branch's name can hold a task back from it.
 const MERGED: PullRequest = { ...OPEN, state: 'merged', mergedAt: '2099-01-01T00:00:00Z' }
 
@@ -482,9 +489,10 @@ const BEFORE = '2026-03-08T00:00:00Z'
 const MERGE = '2026-03-09T00:00:00Z'
 const AFTER = '2026-03-09T01:00:00Z'
 
-// A repo, and `finish` to make a finished task on feat/<name> with a commit no remote has, written
-// before the merge and committed at `at`, and its pull request, merged at MERGE unless `pr` says
-// otherwise. The pull request is linked on the task, or on `todo` when given.
+// A repo whose origin is HEAD_REPO written another way, and `finish` to make a finished task on
+// feat/<name> with a commit no remote has, written before the merge and committed at `at`, and its
+// pull request, from that branch in that repo and merged at MERGE unless `pr` says otherwise. The
+// pull request is linked on the task, or on `todo` when given.
 function unpushedTasks() {
   const home = tmp.make('nod-done-')
   const claude = tmp.make('nod-done-claude-')
@@ -495,6 +503,7 @@ function unpushedTasks() {
   const git = (cwd: string, ...args: string[]): string =>
     sh(['git', '-c', 'user.email=t@t', '-c', 'user.name=t', ...args], cwd)
   git(repo, 'init', '-q', '-b', 'main')
+  git(repo, 'remote', 'add', 'origin', 'git@git.example.com:O/R.git')
   git(repo, 'commit', '-q', '--allow-empty', '-m', 'init')
   git(repo, 'update-ref', 'refs/remotes/origin/main', 'HEAD')
   git(repo, 'symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main')
@@ -563,6 +572,12 @@ test('a succeeded task with commits no remote has goes once its own pull request
   const rewritten = finish('rewritten', AFTER)
   const sameSecond = finish('same-second', MERGE)
   const otherBranch = finish('other-branch', BEFORE, { head: 'feat/someone-elses' })
+  // Its branch's name, in a fork or another repo or host: someone else's too.
+  const fork = finish('fork', BEFORE, { headRepo: 'https://git.example.com/someone/r' })
+  const otherRepo = finish('other-repo', BEFORE, { headRepo: 'https://git.example.com/o/r2' })
+  const otherHost = finish('other-host', BEFORE, { headRepo: 'https://github.com/o/r' })
+  // The service does not say where its head is, a fork since deleted, say.
+  const unknownRepo = finish('unknown-repo', BEFORE, { headRepo: null })
   const notMerged = finish('not-merged', BEFORE, { state: 'closed' })
   const stillOpen = finish('still-open', BEFORE, { state: 'open', mergedAt: null })
   const errored = finish('errored', BEFORE)
@@ -598,6 +613,9 @@ test('a succeeded task with commits no remote has goes once its own pull request
   for (const id of [rewritten, sameSecond, otherBranch, notMerged, stillOpen, errored, dropped]) {
     expect(ledger.get(id).collectedAt).toBeNull()
   }
+  for (const id of [fork, otherRepo, otherHost, unknownRepo]) {
+    expect(ledger.get(id).collectedAt).toBeNull()
+  }
   expect(ledger.get(waitedOn).collectedAt).toBeNull()
   // The only copy of the commits stays on the branch, and resume finds it there.
   const cwd = workspaceOf(home, ledger.get(pushedElsewhere))
@@ -631,6 +649,19 @@ test('such a task waits on another linked pull request as a pushed task does, un
   expect(ledger.get(open).collectedAt).toBeNull()
   expect(ledger.get(approvedBefore).collectedAt).toBeNull()
 }, 30_000)
+
+test('such a task waits while the address of origin, where nod pushes, is missing or one nod cannot read', async () => {
+  const { home, ledger, repo, git, lookup, finish } = unpushedTasks()
+  const id = finish('no-origin', BEFORE)
+  const done = async () => (await doneTasks(ledger, Tmux.of(home), lookup, NOW)).done
+
+  git(repo, 'config', 'remote.origin.url', '/srv/repos/r')
+  expect(await done()).toEqual([])
+  git(repo, 'config', '--unset', 'remote.origin.url')
+  expect(await done()).toEqual([])
+  git(repo, 'config', 'remote.origin.url', 'https://git.example.com/o/r.git')
+  expect(await done()).toEqual([{ id, reason: `merged: ${PR}${id}` }])
+})
 
 test('a signature that log.showSignature prints does not hide the last commit time', async () => {
   const { home, ledger, repo, git, lookup, finish } = unpushedTasks()
