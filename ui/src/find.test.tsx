@@ -15,9 +15,10 @@ const registry = new Map<string, Marks>()
 Object.assign(globalThis, { Highlight: Marks })
 // happy-dom makes a new CSS object each time it is asked for one.
 const CSS_CLASS = Object.getPrototypeOf(CSS)
+const UNSHOWN = '[hidden], .gone, [style*="display: none"], details:not([open]) > :not(summary)'
 Object.assign(Element.prototype, {
   checkVisibility(this: Element) {
-    return this.closest('[hidden], details:not([open]) > :not(summary)') === null
+    return this.closest(UNSHOWN) === null
   },
 })
 // As a browser computes them; happy-dom leaves them empty.
@@ -64,6 +65,10 @@ const frame = () => act(() => new Promise<void>((done) => requestAnimationFrame(
 beforeEach(async () => {
   registry.clear()
   CSS_CLASS.highlights = registry
+  // As a browser has it: happy-dom has no popovers.
+  Object.assign(HTMLElement.prototype, { showPopover() {} })
+  // In view: happy-dom lays nothing out, and text of no width is behind an ellipsis.
+  matchesAt(rect(10, 100, 50, 120))
   window.scrollTo(0, 0)
   view = createRoot(document.body.appendChild(document.createElement('div')))
   await act(async () => view.render(<App first={PAGE} />))
@@ -132,6 +137,12 @@ const matchesAt = (at: DOMRect, lines: () => DOMRect[] = () => []) => {
 }
 const boxAt = (id: string, at: DOMRect) =>
   spyOn(byId(id), 'getBoundingClientRect').mockImplementation(() => at)
+// What the page finds asking for an open menu, which happy-dom has no way to tell.
+function spyOnPopoverOpen(answer: () => Element | null) {
+  const query = document.querySelector.bind(document)
+  return spyOn(document, 'querySelector').mockImplementation(((selector: string) =>
+    selector === ':popover-open' ? answer() : query(selector)) as typeof document.querySelector)
+}
 const overBoxes = () =>
   [...document.querySelectorAll<HTMLElement>('.find-marks .find-mark')].map((b) => [
     b.className,
@@ -236,25 +247,74 @@ test('what an ellipsis or a clamp cuts off is not found, only what overflow can 
         <div id="cut" style={{ overflowX: 'hidden', overflowY: 'hidden' }}>
           apple
         </div>
+        <div id="clipped" style={{ overflowX: 'clip', overflowY: 'clip' }}>
+          apple
+        </div>
         <div id="scrolled" style={{ overflowX: 'auto', overflowY: 'auto' }}>
           apple
+        </div>
+        {/* A wide table in a todo's notes, in a list that cuts off its rounded corners. */}
+        <div id="list" style={{ overflowX: 'hidden', overflowY: 'hidden' }}>
+          <div id="table" style={{ overflowX: 'auto', overflowY: 'auto' }}>
+            <p id="cell">apple</p>
+          </div>
         </div>
       </>,
     ),
   )
-  boxAt('cut', rect(0, 0, 100, 100))
-  boxAt('scrolled', rect(0, 0, 100, 100))
-  const inCut = () =>
+  for (const id of ['cut', 'clipped', 'scrolled', 'list', 'table']) {
+    boxAt(id, rect(0, 0, 100, 100))
+  }
+  const found = () =>
     findRanges('apple')
       .map((r) => r.startContainer.parentElement?.id)
       .filter(Boolean)
   // Across its right edge, then under its bottom edge, then in it.
   matchesAt(rect(100, 10, 140, 30))
-  expect(inCut()).toEqual(['scrolled'])
+  expect(found()).toEqual(['scrolled', 'cell'])
   matchesAt(rect(10, 100, 50, 120))
-  expect(inCut()).toEqual(['scrolled'])
+  expect(found()).toEqual(['scrolled', 'cell'])
   matchesAt(rect(80, 10, 120, 30))
-  expect(inCut()).toEqual(['cut', 'scrolled'])
+  expect(found()).toEqual(['cut', 'clipped', 'scrolled', 'cell'])
+  // The window scrolls, whatever its own style says.
+  document.documentElement.style.overflowX = 'hidden'
+  document.documentElement.style.overflowY = 'hidden'
+  expect(found()).toEqual(['cut', 'clipped', 'scrolled', 'cell'])
+  // No width at all, wherever it is: as WebKit gives text wholly behind an ellipsis.
+  matchesAt(rect(50, 10, 50, 30))
+  expect(found()).toEqual([])
+})
+
+test('what comes out from behind an ellipsis as a pane or the window changes is found, and back', async () => {
+  await act(async () =>
+    setPage(
+      <div id="cut" style={{ overflowX: 'hidden', overflowY: 'hidden' }}>
+        apple
+      </div>,
+    ),
+  )
+  const cut = boxAt('cut', rect(0, 0, 100, 100))
+  matchesAt(rect(150, 10, 190, 30))
+  await callFind()
+  await type('apple')
+  // The sidebar's alone.
+  expect(count()).toBe('1 / 1')
+  // Dragging a pane's edge changes nothing but the root's style.
+  cut.mockImplementation(() => rect(0, 0, 300, 100))
+  document.documentElement.style.setProperty('--side-w', '400px')
+  await settle()
+  await frame()
+  expect(count()).toBe('1 / 2')
+  // Scrolling moves nothing out of what cuts it off, so it does not search again.
+  const marks = registry.get('nod-find')
+  window.dispatchEvent(new Event('scroll'))
+  await frame()
+  expect(registry.get('nod-find') === marks).toBe(true)
+  // Back again, by resizing the window.
+  cut.mockImplementation(() => rect(0, 0, 100, 100))
+  window.dispatchEvent(new Event('resize'))
+  await frame()
+  expect(count()).toBe('1 / 1')
 })
 
 test('it stops at the most it marks, and says so', async () => {
@@ -469,10 +529,21 @@ test('Esc from the page around the box closes it too, unless a field or a menu h
 
   // The menu goes first, then the box.
   other.focus()
-  spyOn(document, 'querySelector').mockImplementation(() => byId('menu'))
+  const open = spyOnPopoverOpen(() => byId('menu'))
   esc()
   expect(isOpen()).toBe(true)
-  mock.restore()
+  open.mockRestore()
+  esc()
+  expect(isOpen()).toBe(false)
+})
+
+test('Esc from the page closes the box in a WebKit with no popovers, which throws on their selector', async () => {
+  Reflect.deleteProperty(HTMLElement.prototype, 'showPopover')
+  spyOnPopoverOpen(() => {
+    throw new DOMException('not a valid selector', 'SyntaxError')
+  })
+  await callFind()
+  act(() => box()?.blur())
   esc()
   expect(isOpen()).toBe(false)
 })
@@ -545,6 +616,36 @@ test('⌘F with the box open selects its text and keeps what it found', async ()
   expect(focused(input)).toBe(true)
   expect([input?.selectionStart, input?.selectionEnd]).toEqual([0, 5])
   expect(count()).toBe('3 / 4')
+})
+
+test('⌘F with the box open from something else on the page: the keyboard goes back there', async () => {
+  await act(async () =>
+    setPage(
+      <>
+        <button type="button" id="before">
+          a button
+        </button>
+        <textarea id="memo" />
+      </>,
+    ),
+  )
+  const before = byId('before')
+  before.focus()
+  await callFind()
+  byId('memo').focus()
+  await callFind()
+  expect(focused(box())).toBe(true)
+  esc()
+  expect(isOpen()).toBe(false)
+  expect(focused(byId('memo'))).toBe(true)
+  // From nowhere, as after a click on the page's text, the place it first came from stays.
+  before.focus()
+  await callFind()
+  act(() => box()?.blur())
+  await callFind()
+  esc()
+  expect(isOpen()).toBe(false)
+  expect(focused(before)).toBe(true)
 })
 
 test('a refresh keeps the box, its text and the current match, and marks what is new', async () => {
@@ -641,6 +742,25 @@ test('the current match going away, as when a link moves on, starts over on what
   expect(count()).toBe('1 / 2')
   enter()
   expect(hereIn()).toBe('inside')
+})
+
+test('what a change of class, style or hidden hides or shows is seen', async () => {
+  await callFind()
+  await type('apple')
+  expect(marked()).toHaveLength(4)
+  const one = byId('one')
+  for (const [name, value] of [
+    ['hidden', ''],
+    ['class', 'gone'],
+    ['style', 'display: none'],
+  ] as const) {
+    act(() => one.setAttribute(name, value))
+    await settle()
+    expect(marked()).toHaveLength(3)
+    act(() => one.removeAttribute(name))
+    await settle()
+    expect(marked()).toHaveLength(4)
+  }
 })
 
 test('the box’s own count and the terminal changing do not search again', async () => {
@@ -781,10 +901,10 @@ test('a box over text stays within the window and what clips the text, and follo
   expect(overBoxes()).toEqual([])
   // In the document's place, with the window scrolled down it.
   line = rect(50, 10, 80, 30)
-  window.scrollTo(0, 500)
+  window.scrollTo(40, 500)
   window.dispatchEvent(new Event('scroll'))
   await frame()
-  expect(overBoxes()).toEqual([['find-mark current', '50px', '510px', '30px', '20px']])
+  expect(overBoxes()).toEqual([['find-mark current', '90px', '510px', '30px', '20px']])
 })
 
 test('a box scrolls only if the match is out of its view, and to its middle', () => {
@@ -801,7 +921,21 @@ test('a box scrolls only if the match is out of its view, and to its middle', ()
   expect(scrollBy(90, 100, 100, 200, 0)).toBe(-55)
 })
 
-test('going to a match scrolls what scrolls around it, as far as a sticky box', async () => {
+test('a match under the find box at the top of the window comes out from under it', async () => {
+  const root = document.documentElement
+  root.scrollTop = 1000
+  matchesAt(rect(10, 30, 50, 40))
+  await callFind()
+  await type('apple')
+  expect(root.scrollTop).toBe(1000 + 35 - innerHeight / 2)
+  // Just below it stays where it is.
+  root.scrollTop = 1000
+  matchesAt(rect(10, 70, 50, 80))
+  await type('one')
+  expect(root.scrollTop).toBe(1000)
+})
+
+test('going to a match scrolls what scrolls around it, as far as a sticky or fixed box', async () => {
   const root = document.documentElement
   await act(async () =>
     setPage(
@@ -814,14 +948,18 @@ test('going to a match scrolls what scrolls around it, as far as a sticky box', 
         <div id="sticky" style={{ position: 'sticky', overflowY: 'auto' }}>
           <p>apple in a sticky pane</p>
         </div>
+        <div id="fixed" style={{ position: 'fixed', overflowY: 'scroll' }}>
+          <p>apple in a fixed pane</p>
+        </div>
       </>,
     ),
   )
   matchesAt(rect(2000, 1000, 2040, 1020))
-  const everywhere = rect(0, 0, 100000, 100000)
-  boxAt('cut', everywhere)
+  // The match is half in it, and would be brought all in if this box were scrolled.
+  boxAt('cut', rect(0, 0, 2010, 1010))
   boxAt('scroller', rect(0, 100, 500, 300))
   boxAt('sticky', rect(0, 100, 500, 300))
+  boxAt('fixed', rect(0, 100, 500, 300))
   await callFind()
   await type('apple')
   expect(hereIn()).toBe('plain')
@@ -834,12 +972,15 @@ test('going to a match scrolls what scrolls around it, as far as a sticky box', 
   const cut = byId('cut')
   expect([cut.scrollTop, cut.scrollLeft]).toEqual([0, 0])
 
-  // Enter goes there too. Past a sticky box the window stays, and with it the page being read.
-  root.scrollTop = 0
-  root.scrollLeft = 0
-  enter()
-  expect(byId('sticky').scrollTop).toBe(810)
-  expect([root.scrollTop, root.scrollLeft]).toEqual([0, 0])
+  // Enter goes there too. Past a sticky or fixed box the window stays, and with it the page being
+  // read.
+  for (const id of ['sticky', 'fixed']) {
+    root.scrollTop = 0
+    root.scrollLeft = 0
+    enter()
+    expect(byId(id).scrollTop).toBe(810)
+    expect([root.scrollTop, root.scrollLeft]).toEqual([0, 0])
+  }
 })
 
 test('the app’s menu sends the event the page takes, and the help lists the key', () => {

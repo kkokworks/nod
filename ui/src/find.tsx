@@ -16,8 +16,8 @@ const CURRENT = 'nod-find-current'
 const UNSEARCHED = '.find-bar, .find-marks, .xterm, select, textarea, script, style'
 
 // ponytail: stops at this many. Each change to the DOM goes over every live range: 200 changes took
-// about 35 ms with 5000 ranges and up to 230 ms with 20000 (docs/design.md). Past it the count says
-// `5000+` and the rest are not reached.
+// about 35 ms with 5000 ranges and up to 230 ms with 20000 (docs/design.md). At it the count says
+// `5000+`, also if there happen to be just that many, and the rest are not reached.
 export const MOST = 5000
 
 // The box covers about this much of the top of the window, so a match under it counts as out of view.
@@ -111,24 +111,31 @@ function stretches(root: Element): Text[][] {
   return all
 }
 
-// The boxes around el that cut off what overflows them, by how they overflow.
-function cutBy(el: Element | null, overflow: RegExp): DOMRect[] {
-  const boxes: DOMRect[] = []
-  for (let at = el; at !== null; at = at.parentElement) {
-    const { overflowX, overflowY } = getComputedStyle(at)
-    if (at !== document.scrollingElement && overflow.test(`${overflowX} ${overflowY}`)) {
-      boxes.push(at.getBoundingClientRect())
-    }
+// The boxes around el, from the inside out and short of the window's, with how they overflow.
+function* boxesAround(el: Element | null): Generator<{ box: Element; overflow: string }> {
+  for (let box = el; box !== null && box !== document.scrollingElement; box = box.parentElement) {
+    const { overflowX, overflowY } = getComputedStyle(box)
+    yield { box, overflow: `${overflowX} ${overflowY}` }
   }
-  return boxes
 }
 
-// Past an ellipsis or a line clamp: no scrolling shows it, so going there would show nothing.
+// Past an ellipsis or a line clamp: no scrolling shows it, so going there would show nothing. WebKit
+// gives text wholly behind an ellipsis no width, at the ellipsis (docs/design.md). Past the edge of a
+// box that does not scroll it is cut off too, unless a box that scrolls lies between: that can show it
+// (reveal), whatever cuts off the box itself.
 function isCutOff(range: Range): boolean {
   const at = range.getBoundingClientRect()
-  return cutBy(range.startContainer.parentElement, /hidden|clip/).some(
-    (b) => at.right <= b.left || at.left >= b.right || at.bottom <= b.top || at.top >= b.bottom,
-  )
+  if (at.width === 0) return true
+  for (const { box, overflow } of boxesAround(range.startContainer.parentElement)) {
+    if (/auto|scroll/.test(overflow)) return false
+    if (/hidden|clip/.test(overflow)) {
+      const b = box.getBoundingClientRect()
+      if (at.right <= b.left || at.left >= b.right || at.bottom <= b.top || at.top >= b.bottom) {
+        return true
+      }
+    }
+  }
+  return false
 }
 
 export function findRanges(query: string): Range[] {
@@ -173,7 +180,9 @@ function boxesOver(range: Range, current: boolean): HTMLElement[] {
     (l) => l.right > 0 && l.left < innerWidth && l.bottom > 0 && l.top < innerHeight,
   )
   if (lines.length === 0) return []
-  const around = cutBy(range.startContainer.parentElement, /auto|scroll|hidden|clip/)
+  const around = [...boxesAround(range.startContainer.parentElement)]
+    .filter(({ overflow }) => /auto|scroll|hidden|clip/.test(overflow))
+    .map(({ box }) => box.getBoundingClientRect())
   const boxes: HTMLElement[] = []
   for (const line of lines) {
     const left = Math.max(line.left, 0, ...around.map((b) => b.left))
@@ -261,14 +270,6 @@ function finder(changed: (found: Found) => void, marks: RefObject<HTMLElement | 
     const here = found.ranges[found.index]
     marks.current?.replaceChildren(...bare.flatMap((r) => boxesOver(r, r === here)))
   }
-  let frame = 0
-  const drawSoon = () => {
-    if (frame !== 0) return
-    frame = requestAnimationFrame(() => {
-      frame = 0
-      draw()
-    })
-  }
   const show = (next: Found, scroll: boolean) => {
     if (next.ranges !== found.ranges) bare = next.ranges.filter(isBare)
     found = next
@@ -278,25 +279,46 @@ function finder(changed: (found: Found) => void, marks: RefObject<HTMLElement | 
     if (scroll && here !== undefined) reveal(here)
     draw()
   }
-  // The refreshes draw the page anew (__root.tsx) and a link moves to another: the same match stays
-  // current if it is still there, else it starts over as on a new search, in both cases where the
-  // person is reading. The box's own count and the terminal's screen change too often to matter.
-  const observer = new MutationObserver((records) => {
-    const onPage = records.some((r) => {
-      const el = r.target instanceof Element ? r.target : r.target.parentElement
-      return el?.closest(UNSEARCHED) == null
-    })
-    if (!onPage || pattern(found.query) === null) return
+  // The search again, on the page as it is now and going nowhere: the same match stays current if it
+  // is still there, else it starts over as on a new search, in both cases where the person is reading.
+  const refind = () => {
+    if (pattern(found.query) === null) return
     const was = found.ranges[found.index]
     const ranges = findRanges(found.query)
     const same = ranges.findIndex(
       (r) => r.startContainer === was?.startContainer && r.startOffset === was?.startOffset,
     )
     show({ query: found.query, ranges, index: same >= 0 ? same : firstInPage(ranges) }, false)
+  }
+  // Once a frame, however often it is asked.
+  let frame = 0
+  let relaid = false
+  const drawSoon = () => {
+    if (frame !== 0) return
+    frame = requestAnimationFrame(() => {
+      frame = 0
+      if (relaid) refind()
+      else draw()
+      relaid = false
+    })
+  }
+  const refindSoon = () => {
+    relaid = true
+    drawSoon()
+  }
+  // The refreshes draw the page anew (__root.tsx) and a link moves to another. The box's own count and
+  // the terminal's screen change too often to matter.
+  const observer = new MutationObserver((records) => {
+    const onPage = records.some((r) => {
+      const el = r.target instanceof Element ? r.target : r.target.parentElement
+      return el?.closest(UNSEARCHED) == null
+    })
+    if (onPage) refind()
   })
   // Dragging a pane's edge moves the page's text with nothing changing but the root's style
-  // (panes.tsx), which a highlight follows and a box does not.
-  const widths = new MutationObserver(drawSoon)
+  // (panes.tsx). A box does not follow that as a highlight does, and text can come out from behind an
+  // ellipsis or go behind one, as when the window is resized.
+  const widths = new MutationObserver(refindSoon)
   return {
     search(query: string) {
       if (query === found.query) return
@@ -318,12 +340,12 @@ function finder(changed: (found: Found) => void, marks: RefObject<HTMLElement | 
       })
       widths.observe(document.documentElement, { attributes: true, attributeFilter: ['style'] })
       window.addEventListener('scroll', drawSoon, { capture: true, passive: true })
-      window.addEventListener('resize', drawSoon)
+      window.addEventListener('resize', refindSoon)
       return () => {
         observer.disconnect()
         widths.disconnect()
         window.removeEventListener('scroll', drawSoon, { capture: true })
-        window.removeEventListener('resize', drawSoon)
+        window.removeEventListener('resize', refindSoon)
         cancelAnimationFrame(frame)
         frame = 0
         unpaint()
@@ -362,7 +384,9 @@ function Box({ input, close }: { input: RefObject<HTMLInputElement | null>; clos
   useEffect(() => {
     const fromPage = (e: globalThis.KeyboardEvent) => {
       if (e.key !== 'Escape' || e.defaultPrevented || ignoreOnPage(e)) return
-      if (document.querySelector(':popover-open') === null) close()
+      // WebKit without popovers (before Safari 17) has no such selector, and throws on it.
+      const menus = 'showPopover' in HTMLElement.prototype
+      if (!menus || document.querySelector(':popover-open') === null) close()
     }
     window.addEventListener('keydown', fromPage)
     return () => window.removeEventListener('keydown', fromPage)
@@ -430,6 +454,12 @@ function Box({ input, close }: { input: RefObject<HTMLInputElement | null>; clos
   )
 }
 
+// Whether the keyboard is in the box or nowhere, not on something else on the page.
+const isFree = (): boolean => {
+  const at = document.activeElement
+  return at === document.body || at?.closest('.find-bar') != null
+}
+
 // The find box of the desktop app, drawn beside the page and so kept as the page refreshes or moves.
 // Closing it takes the marks off and gives the keyboard back to where it was.
 export function FindBar() {
@@ -443,6 +473,8 @@ export function FindBar() {
         setOpen(true)
         return
       }
+      // ⌘F from something else on the page: that is where the keyboard was before it.
+      if (!isFree()) before.current = document.activeElement
       input.current.focus()
       input.current.select()
     }
@@ -457,9 +489,7 @@ export function FindBar() {
         setOpen(false)
         // Not if the person has since gone on to something else on the page. Not scrolling back to
         // it: they stay at what they found.
-        const at = document.activeElement
-        const free = at === document.body || at?.closest('.find-bar') != null
-        if (free && before.current instanceof HTMLElement) {
+        if (isFree() && before.current instanceof HTMLElement) {
           before.current.focus({ preventScroll: true })
         }
       }}
