@@ -515,7 +515,8 @@ kbd + kbd {
   white-space: nowrap;
 }
 
-.find-close {
+.find-close,
+.find-step {
   border: none;
   border-radius: 6px;
   background: none;
@@ -526,9 +527,20 @@ kbd + kbd {
   cursor: pointer;
 }
 
-.find-close:hover {
+.find-step {
+  font-size: 14px;
+}
+
+.find-close:hover,
+.find-step:hover:not(:disabled) {
   background: var(--hover);
   color: var(--fg);
+}
+
+/* Not the target of a press, which would take the keyboard from the field (find.tsx). */
+.find-step:disabled {
+  opacity: 0.35;
+  pointer-events: none;
 }
 
 /* Fixed colors with their own text color, so they read the same on light and dark. */

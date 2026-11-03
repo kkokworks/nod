@@ -206,6 +206,9 @@ function paint(ranges: Range[], index: number): void {
   const here = ranges[index]
   if (here !== undefined) current.add(here)
   current.priority = 1
+  // Off first: WebKit redraws what a highlight marks when it is deleted, and nothing when `set` puts
+  // another in its place, so the old marks would show until something else drew there (docs/design.md).
+  unpaint()
   CSS.highlights.set(MARKS, marks)
   CSS.highlights.set(CURRENT, current)
 }
@@ -360,12 +363,20 @@ const countOf = ({ query, ranges, index }: Found): string => {
   return `${index + 1} / ${ranges.length}${ranges.length === MOST ? '+' : ''}`
 }
 
+// Where a key in the box goes among the matches. With a modifier an arrow is the field's own: ⌘↑ goes
+// to its start and ⇧↑ selects.
+function stepOf(e: KeyboardEvent): 1 | -1 | null {
+  if (e.key === 'Enter') return e.shiftKey ? -1 : 1
+  if (e.shiftKey || e.altKey || e.ctrlKey || e.metaKey) return null
+  return e.key === 'ArrowDown' ? 1 : e.key === 'ArrowUp' ? -1 : null
+}
+
 function Box({ input, close }: { input: RefObject<HTMLInputElement | null>; close: () => void }) {
   const [found, setFound] = useState<Found>({ query: '', ranges: [], index: 0 })
   const marks = useRef<HTMLDivElement>(null)
   const [find] = useState(() => finder(setFound, marks))
-  // Only finished text is looked for, and the Enter or Esc that finishes a syllable does nothing
-  // else. WebKit ends a composition before that key's keydown, which then has keyCode 229 for "the
+  // Only finished text is looked for, and the key that finishes a syllable does nothing else. WebKit
+  // ends a composition before that key's keydown, which then has keyCode 229 for "the
   // input method took it", as capture.js has it. For Esc that alone does not say a syllable ended (an
   // input method may take it with nothing composed, docs/design.md), so `ended` says one just did,
   // until the next key down.
@@ -392,11 +403,34 @@ function Box({ input, close }: { input: RefObject<HTMLInputElement | null>; clos
     return () => window.removeEventListener('keydown', fromPage)
   }, [close])
   const isEscape = (e: KeyboardEvent) => e.key === 'Escape' || e.code === 'Escape'
+  const stepButton = (label: string, keys: string, glyph: string, by: 1 | -1) => (
+    <button
+      type="button"
+      className="find-step"
+      aria-label={label}
+      title={`${label} (${keys})`}
+      disabled={found.ranges.length === 0}
+      // Reached by Tab, the keyboard goes back to the field. A press does not take it (the box's
+      // onMouseDown).
+      onClick={() => {
+        if (!composing.current) find.step(by)
+        input.current?.focus()
+      }}
+    >
+      {glyph}
+    </button>
+  )
   return (
     <>
       <div className="find-marks" ref={marks} />
       <search
         className="find-bar"
+        // The keyboard stays in the field, with what is being typed there, whatever else in the box
+        // is pressed. WebKit sends a disabled button no mousedown, and then the field loses the
+        // keyboard, so such a button lets the press through to here (styles.css).
+        onMouseDown={(e) => {
+          if (e.target !== input.current) e.preventDefault()
+        }}
         onKeyDown={(e) => {
           const finishes = ended.current
           ended.current = false
@@ -407,9 +441,11 @@ function Box({ input, close }: { input: RefObject<HTMLInputElement | null>; clos
             if (tookIt && finishes) return
             e.preventDefault()
             close()
-          } else if (e.key === 'Enter' && e.target === input.current && !tookIt) {
+          } else if (e.target === input.current && !tookIt) {
+            const by = stepOf(e)
+            if (by === null) return
             e.preventDefault()
-            find.step(e.shiftKey ? -1 : 1)
+            find.step(by)
           }
         }}
         onKeyUp={(e) => {
@@ -446,6 +482,8 @@ function Box({ input, close }: { input: RefObject<HTMLInputElement | null>; clos
         <span className="find-count" role="status">
           {countOf(found)}
         </span>
+        {stepButton('Previous match', '⇧↵ or ↑', '↑', -1)}
+        {stepButton('Next match', '↵ or ↓', '↓', 1)}
         <button type="button" className="find-close" aria-label="Close find" onClick={close}>
           ×
         </button>

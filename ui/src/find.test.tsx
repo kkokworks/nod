@@ -11,7 +11,15 @@ Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 class Marks extends Set<Range> {
   priority = 0
 }
-const registry = new Map<string, Marks>()
+// What `set` puts in another's place: WebKit does not redraw what the old one marked.
+let replaced: string[] = []
+class Registry extends Map<string, Marks> {
+  override set(name: string, marks: Marks) {
+    if (this.has(name)) replaced.push(name)
+    return super.set(name, marks)
+  }
+}
+const registry = new Registry()
 Object.assign(globalThis, { Highlight: Marks })
 // happy-dom makes a new CSS object each time it is asked for one.
 const CSS_CLASS = Object.getPrototypeOf(CSS)
@@ -64,6 +72,7 @@ const frame = () => act(() => new Promise<void>((done) => requestAnimationFrame(
 
 beforeEach(async () => {
   registry.clear()
+  replaced = []
   CSS_CLASS.highlights = registry
   // As a browser has it: happy-dom has no popovers.
   Object.assign(HTMLElement.prototype, { showPopover() {} })
@@ -115,9 +124,10 @@ function key(
   init: KeyboardEventInit & { keyCode?: number },
   on: Element | null = document.activeElement,
 ) {
-  const event = new KeyboardEvent(name, { bubbles: true, ...init })
+  const event = new KeyboardEvent(name, { bubbles: true, cancelable: true, ...init })
   Object.defineProperty(event, 'keyCode', { value: init.keyCode ?? 0 })
   act(() => on?.dispatchEvent(event))
+  return event
 }
 const enter = (init: KeyboardEventInit & { keyCode?: number } = {}) =>
   key('keydown', { key: 'Enter', code: 'Enter', ...init })
@@ -382,6 +392,161 @@ test('Enter goes on, Shift+Enter back, and each comes around at the end', async 
   await type('pear')
   enter()
   expect(count()).toBe('No match')
+})
+
+const arrow = (
+  name: 'ArrowDown' | 'ArrowUp',
+  init: KeyboardEventInit & { keyCode?: number } = {},
+) => key('keydown', { key: name, code: name, ...init })
+const stepButton = (label: string) => {
+  const button = document.querySelector<HTMLButtonElement>(`.find-step[aria-label="${label}"]`)
+  if (button === null) throw new Error(`no ${label} button`)
+  return button
+}
+const previous = () => stepButton('Previous match')
+const next = () => stepButton('Next match')
+const press = (button: HTMLButtonElement) => act(() => button.click())
+
+test('↓ and ↑ go on and back as Enter does, and come around at the end', async () => {
+  await callFind()
+  await type('apple')
+  expect(count()).toBe('2 / 4')
+  expect(arrow('ArrowDown').defaultPrevented).toBe(true)
+  expect(count()).toBe('3 / 4')
+  expect(arrow('ArrowUp').defaultPrevented).toBe(true)
+  expect(count()).toBe('2 / 4')
+  arrow('ArrowUp')
+  arrow('ArrowUp')
+  expect(count()).toBe('4 / 4')
+  arrow('ArrowDown')
+  expect(count()).toBe('1 / 4')
+  // With a modifier an arrow is the field's own.
+  for (const held of [{ shiftKey: true }, { metaKey: true }, { altKey: true }, { ctrlKey: true }]) {
+    expect(arrow('ArrowDown', held).defaultPrevented).toBe(false)
+    expect(arrow('ArrowUp', held).defaultPrevented).toBe(false)
+  }
+  expect(count()).toBe('1 / 4')
+  // On the box's buttons they do nothing, and a letter is the field's.
+  key('keydown', { key: 'ArrowDown', code: 'ArrowDown' }, next())
+  expect(count()).toBe('1 / 4')
+  expect(key('keydown', { key: 'a', code: 'KeyA' }).defaultPrevented).toBe(false)
+  expect(count()).toBe('1 / 4')
+})
+
+test('the ↓ or ↑ that finishes a syllable goes nowhere, and the next one does', async () => {
+  await callFind()
+  await type('apple')
+  expect(count()).toBe('2 / 4')
+  await composition('compositionstart')
+  arrow('ArrowDown', { keyCode: 229, isComposing: true })
+  arrow('ArrowUp', { keyCode: 229, isComposing: true })
+  expect(count()).toBe('2 / 4')
+  // WebKit ends the composition before the keydown of the key that ended it.
+  await composition('compositionend')
+  arrow('ArrowDown', { keyCode: 229 })
+  expect(count()).toBe('2 / 4')
+  arrow('ArrowDown')
+  expect(count()).toBe('3 / 4')
+  // Composing, known only from the composition's own events.
+  await composition('compositionstart')
+  arrow('ArrowUp')
+  expect(count()).toBe('3 / 4')
+})
+
+test('the ↑ and ↓ buttons go back and on, and the keyboard stays in the field', async () => {
+  await callFind()
+  await type('apple')
+  expect(previous().getAttribute('aria-label')).toBe('Previous match')
+  expect(next().getAttribute('aria-label')).toBe('Next match')
+  expect(count()).toBe('2 / 4')
+  press(next())
+  expect(count()).toBe('3 / 4')
+  expect(focused(box())).toBe(true)
+  press(previous())
+  press(previous())
+  expect(count()).toBe('1 / 4')
+  press(previous())
+  expect(count()).toBe('4 / 4')
+  press(next())
+  expect(count()).toBe('1 / 4')
+  expect(focused(box())).toBe(true)
+  // One reached by Tab gives the keyboard back.
+  act(() => next().focus())
+  expect(focused(box())).toBe(false)
+  press(next())
+  expect(focused(box())).toBe(true)
+  // What was typed stays there to go on with.
+  expect(box()?.value).toBe('apple')
+})
+
+test('a press anywhere in the box but the field leaves the keyboard in the field', async () => {
+  await callFind()
+  await type('apple')
+  const pressed = (el: Element | null) => {
+    const down = new MouseEvent('mousedown', { bubbles: true, cancelable: true })
+    act(() => el?.dispatchEvent(down))
+    return down.defaultPrevented
+  }
+  const bar = document.querySelector('.find-bar')
+  expect(pressed(previous())).toBe(true)
+  expect(pressed(next())).toBe(true)
+  expect(pressed(document.querySelector('.find-close'))).toBe(true)
+  expect(pressed(document.querySelector('.find-count'))).toBe(true)
+  // A disabled button gets no mousedown from WebKit, so it lets the press through to the box.
+  expect(pressed(bar)).toBe(true)
+  const css = readFileSync(new URL('./styles.css', import.meta.url), 'utf8')
+  expect(css).toMatch(/\.find-step:disabled \{[^}]*pointer-events: none/)
+  // In the field a press is the field's, to put the caret or select.
+  expect(pressed(box())).toBe(false)
+})
+
+test('the ↑ and ↓ buttons are off with nothing found, and do nothing while a syllable is composed', async () => {
+  const off = () => [previous().disabled, next().disabled]
+  await callFind()
+  expect(off()).toEqual([true, true])
+  await type('pear')
+  expect(count()).toBe('No match')
+  expect(off()).toEqual([true, true])
+  press(next())
+  expect(count()).toBe('No match')
+  await type('One')
+  expect(off()).toEqual([false, false])
+  // A refresh takes the only match away, and brings it back.
+  await act(async () => setPage(<p>nothing here</p>))
+  await settle()
+  expect(count()).toBe('No match')
+  expect(off()).toEqual([true, true])
+  await act(async () => setPage(PAGE))
+  await settle()
+  expect(count()).toBe('1 / 1')
+  expect(off()).toEqual([false, false])
+
+  await type('apple')
+  await composition('compositionstart')
+  press(next())
+  expect(count()).toBe('2 / 4')
+  press(previous())
+  expect(count()).toBe('2 / 4')
+  expect(focused(box())).toBe(true)
+})
+
+test('old marks are taken off before new ones go on, as WebKit redraws nothing for one put in their place', async () => {
+  await callFind()
+  await type('apple')
+  await type('pear')
+  await type('')
+  await type('apple')
+  enter()
+  await act(async () => setPage(<p>an apple</p>))
+  await settle()
+  arrow('ArrowDown')
+  expect(replaced).toEqual([])
+  expect(marked()).toEqual(['apple', 'apple'])
+  // Emptied, as when the field is cleared, none are left.
+  await type('')
+  expect(marked()).toEqual([])
+  expect(here()).toEqual([])
+  expect(replaced).toEqual([])
 })
 
 test('nothing is looked for while a syllable is being composed', async () => {
@@ -989,4 +1154,6 @@ test('the app’s menu sends the event the page takes, and the help lists the ke
   expect(main).toContain('"찾기…", true, Some("CmdOrCtrl+F")')
   expect(KEYS.find.show).toEqual(['⌘F'])
   expect(KEYS.find.bind).toEqual([])
+  expect(KEYS.findNext.show).toEqual(['↵', '↓'])
+  expect(KEYS.findPrevious.show).toEqual(['⇧↵', '↑'])
 })
