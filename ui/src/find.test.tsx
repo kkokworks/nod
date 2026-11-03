@@ -189,6 +189,11 @@ test('a query is matched as written, whatever its case or the spaces the page ha
   expect(at(`a ${nfd} b`, '한글')).toEqual([[2, nfd]])
   expect(at('a 한글 b', nfd)).toEqual([[2, '한글']])
   expect(at('한글 찾기', '글 찾')).toEqual([[1, '글 찾']])
+  // A letter is not the start of another, whichever way the page has it.
+  expect(at('한글', '하')).toEqual([])
+  expect(at(nfd, '하')).toEqual([])
+  const open = '하나'.normalize('NFD')
+  expect(at(open, '하')).toEqual([[0, '하'.normalize('NFD')]])
   // Case counts for nothing outside the first plane of Unicode too, as Deseret's letters show.
   expect(at('𐐨', '𐐀')).toEqual([[0, '𐐨']])
   for (const blank of ['', ' ', ' \n\t']) expect(pattern(blank)).toBeNull()
@@ -447,10 +452,83 @@ test('the ↓ or ↑ that finishes a syllable goes nowhere, and the next one doe
   expect(count()).toBe('2 / 4')
   arrow('ArrowDown')
   expect(count()).toBe('3 / 4')
+  // Composing, known only from the key.
+  arrow('ArrowDown', { isComposing: true })
+  expect(count()).toBe('3 / 4')
   // Composing, known only from the composition's own events.
   await composition('compositionstart')
   arrow('ArrowUp')
   expect(count()).toBe('3 / 4')
+})
+
+test('↓ and ↑ with nothing found stay the field’s, to reach the ends of what was typed', async () => {
+  await callFind()
+  expect(arrow('ArrowUp').defaultPrevented).toBe(false)
+  await type('pear')
+  expect(count()).toBe('No match')
+  expect(arrow('ArrowUp').defaultPrevented).toBe(false)
+  expect(arrow('ArrowDown').defaultPrevented).toBe(false)
+  // Enter still does nothing else.
+  expect(enter().defaultPrevented).toBe(true)
+  await type('apple')
+  expect(arrow('ArrowDown').defaultPrevented).toBe(true)
+})
+
+test('a syllable that ends on the same text stays at the match', async () => {
+  await callFind()
+  await type('apple')
+  enter()
+  expect(count()).toBe('3 / 4')
+  await composition('compositionstart')
+  await composition('compositionend')
+  expect(count()).toBe('3 / 4')
+})
+
+test('closing does not scroll back to where the keyboard was', async () => {
+  const button = byId('before')
+  act(() => button.focus())
+  await callFind()
+  const focusing = spyOn(button, 'focus')
+  esc()
+  expect(focusing).toHaveBeenCalledWith({ preventScroll: true })
+})
+
+test('a menu opening or closing, which changes nothing in the DOM, looks again', async () => {
+  await act(async () =>
+    setPage(
+      <>
+        <p>an apple</p>
+        <p id="menu">apple in a menu</p>
+      </>,
+    ),
+  )
+  let shown = true
+  spyOn(byId('menu'), 'checkVisibility').mockImplementation(() => shown)
+  await callFind()
+  await type('apple')
+  expect(count()).toBe('2 / 3')
+  shown = false
+  // A toggle does not bubble.
+  act(() => byId('menu').dispatchEvent(new Event('toggle')))
+  await frame()
+  expect(marked()).toHaveLength(2)
+  shown = true
+  act(() => byId('menu').dispatchEvent(new Event('toggle')))
+  await frame()
+  expect(marked()).toHaveLength(3)
+})
+
+test('closed, nothing looks at the page any more or marks it again', async () => {
+  await callFind()
+  await type('apple')
+  // Asked for, with the frame still to come.
+  act(() => window.dispatchEvent(new Event('resize')))
+  esc()
+  await frame()
+  expect(marked()).toEqual([])
+  for (const name of ['resize', 'toggle']) act(() => window.dispatchEvent(new Event(name)))
+  await frame()
+  expect(marked()).toEqual([])
 })
 
 test('the ↑ and ↓ buttons go back and on, and the keyboard stays in the field', async () => {
@@ -821,6 +899,8 @@ test('a refresh keeps the box, its text and the current match, and marks what is
   const input = box()
   const root = document.documentElement
   const reading = root.scrollTop
+  // Out of view, where going to it would move the page.
+  matchesAt(rect(10, 5000, 50, 5020))
   await act(async () =>
     setPage(
       <>
@@ -1152,6 +1232,9 @@ test('the app’s menu sends the event the page takes, and the help lists the ke
   const main = readFileSync(new URL('../../desktop/src-tauri/src/main.rs', import.meta.url), 'utf8')
   expect(main).toContain(`new Event('${FIND_EVENT}')`)
   expect(main).toContain('"찾기…", true, Some("CmdOrCtrl+F")')
+  expect(main).toContain('"find" => open_find(app)')
+  // Only for the main window with the keyboard, so not from the capture panel.
+  expect(main).toMatch(/fn open_find[^}]*get_webview_window\("main"\)[^}]*is_focused/)
   expect(KEYS.find.show).toEqual(['⌘F'])
   expect(KEYS.find.bind).toEqual([])
   expect(KEYS.findNext.show).toEqual(['↵', '↓'])

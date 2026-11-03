@@ -27,11 +27,12 @@ const literal = (s: string) => s.replace(/[\\^$.*+?()[\]{}|/]/g, '\\$&')
 
 // A letter that also comes apart (Hangul in a macOS file name is NFD) matches both ways, spaces match
 // however the page breaks or collapses them, and case does not count. Null for nothing to look for.
+// Apart, a syllable is whole only with no vowel or final after it: 하 is not the start of 한.
 export function pattern(query: string): RegExp | null {
   if (query.trim() === '') return null
   const letter = (c: string) => {
     const apart = c.normalize('NFD')
-    return apart === c ? literal(c) : `(?:${literal(c)}|${literal(apart)})`
+    return apart === c ? literal(c) : `(?:${literal(c)}|${literal(apart)}(?![\\u1160-\\u11ff]))`
   }
   const words = query.normalize('NFC').split(/\s+/)
   return new RegExp(words.map((w) => [...w].map(letter).join('')).join('\\s+'), 'giu')
@@ -344,11 +345,15 @@ function finder(changed: (found: Found) => void, marks: RefObject<HTMLElement | 
       widths.observe(document.documentElement, { attributes: true, attributeFilter: ['style'] })
       window.addEventListener('scroll', drawSoon, { capture: true, passive: true })
       window.addEventListener('resize', refindSoon)
+      // A menu or the help opening or closing shows or hides its text with no change in the DOM, and
+      // its toggle does not bubble.
+      window.addEventListener('toggle', refindSoon, { capture: true })
       return () => {
         observer.disconnect()
         widths.disconnect()
         window.removeEventListener('scroll', drawSoon, { capture: true })
         window.removeEventListener('resize', refindSoon)
+        window.removeEventListener('toggle', refindSoon, { capture: true })
         cancelAnimationFrame(frame)
         frame = 0
         unpaint()
@@ -444,6 +449,8 @@ function Box({ input, close }: { input: RefObject<HTMLInputElement | null>; clos
           } else if (e.target === input.current && !tookIt) {
             const by = stepOf(e)
             if (by === null) return
+            // With nowhere to go an arrow stays the field's too, to reach the ends of what was typed.
+            if (e.key !== 'Enter' && found.ranges.length === 0) return
             e.preventDefault()
             find.step(by)
           }
