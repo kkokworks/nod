@@ -739,15 +739,29 @@ test('a change to the todo keeps what is being typed in the form and says so', a
 })
 
 test('a status picked in the form, or put back with Undo, moves the todo only from the status shown', async () => {
-  const todo = { ...todoItem(10, 'Reply to Kim'), status: 'done' }
+  let todo = { ...todoItem(10, 'Reply to Kim'), status: 'waiting' }
   answer = () => ({ today: '2026-10-23', todo, links: [], tasks: [], changes: [], projects: [] })
+  const pick = (value: string) => {
+    const status = document.querySelector<HTMLSelectElement>('.todo-form select')
+    if (status === null) throw new Error('no status field')
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')?.set?.call(
+        status,
+        value,
+      )
+      status.dispatchEvent(new Event('change', { bubbles: true }))
+    })
+  }
   await go('/todos/10?edit=true')
-  const status = document.querySelector<HTMLSelectElement>('.todo-form select')
-  if (status === null) throw new Error('no status field')
-  act(() => {
-    Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')?.set?.call(status, 'next')
-    status.dispatchEvent(new Event('change', { bubbles: true }))
-  })
+  pick('next')
+  // Another session closes it before Save, and the page reloads: the pick was made from waiting.
+  todo = { ...todo, status: 'done' }
+  await reload()
+  await click('Save')
+  expect(posted.splice(0)).toEqual([{ id: 10, edit: { status: 'next' }, from: 'waiting' }])
+  // Opened again, the form shows it done, and a pick reopens it from there.
+  await go('/todos/10?edit=true')
+  pick('next')
   await click('Save')
   expect(posted.splice(0)).toEqual([{ id: 10, edit: { status: 'next' }, from: 'done' }])
 

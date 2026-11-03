@@ -5,15 +5,7 @@ import { tempDirs } from '../test/tmp'
 import { followWork, type PrLookup, type PullRequest } from './done'
 import { Ledger, type NewTask, type Task } from './ledger'
 import { Tmux } from './tmux'
-import {
-  type Found,
-  OPEN,
-  parseRef,
-  StatusChanged,
-  type TodoEdit,
-  type TodoFilter,
-  Todos,
-} from './todos'
+import { type Found, OPEN, parseRef, type TodoEdit, type TodoFilter, Todos } from './todos'
 import { tick } from './triggers'
 
 const tmp = tempDirs()
@@ -336,7 +328,7 @@ test('a change goes in only from the status its caller read, and a finished todo
     ),
   )
   expect(() => todos.set(t.id, { notes: 'x' }, 'claude:stale', [], 'waiting')).toThrow(
-    StatusChanged,
+    `t${t.id} is done, not waiting`,
   )
   // Without a status read, a finished todo is not reopened either.
   expect(() => todos.set(t.id, { status: 'next' }, 'claude:stale')).toThrow(

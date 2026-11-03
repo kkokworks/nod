@@ -143,15 +143,23 @@ function EditForm({ page }: { page: TodoPage }) {
   const { busy, error, run } = useChange()
   const navigate = useNavigate()
   const done = () => navigate({ to: '/todos/$id', params: { id: String(todo.id) }, search: {} })
+  // The status the page showed when the person first picked another, which the todo must still be
+  // in for the pick to go in (nod todo set --from): a reload since does not make it agree. Leaving
+  // the form and coming back reads it again.
+  const [from, setFrom] = useState<string | null>(null)
   const set = (field: keyof typeof f) => (e: { target: { value: string } }) => {
     if (Object.keys(typed).length === 0) setBegan(page.changes.length)
+    if (field === 'status' && from === null) setFrom(held.status)
     setTyped({ ...typed, [field]: e.target.value })
   }
-  // A status chosen here moves the todo only from the status the page shows (nod todo set --from).
   const save = (edit: RawEdit) =>
     run(() =>
       changeTodo({
-        data: { id: todo.id, edit, ...(edit.status === undefined ? {} : { from: held.status }) },
+        data: {
+          id: todo.id,
+          edit,
+          ...(edit.status === undefined ? {} : { from: from ?? held.status }),
+        },
       }),
     )
   // A line added below notes being rewritten goes below what is typed too, or saving would drop it.

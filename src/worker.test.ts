@@ -788,32 +788,42 @@ test('a passing watch goes back to the task its todo names then, not when the wa
   expect(ledger.attempts(taskId)).toHaveLength(1)
 }, 30_000)
 
-test('a todo the person finishes while its task is told to carry on stays finished', async () => {
+test('a todo the person changes while its task is told to carry on stays theirs, and says why the task did not', async () => {
   const todos = new Todos(ledger)
-  const { todoId, taskId } = await didTodo(todos)
-  todos.set(todoId, { status: 'waiting', watch: 'true', backTo: taskId }, 'human', [], 'done')
-  // Collected with its transcript gone, so telling it to carry on fails.
-  ledger.collected(taskId, null)
-  const config = process.env.CLAUDE_CONFIG_DIR ?? ''
-  rmSync(projectFolder(config, workspaceOf(home, ledger.get(taskId))), {
-    recursive: true,
-    force: true,
-  })
-  // The person finishes the todo as its watch passes, before nod hears the task cannot go on.
-  const endWatch = Todos.prototype.endWatch
-  const ended = spyOn(Todos.prototype, 'endWatch').mockImplementation(function (this: Todos, ...a) {
-    const back = endWatch.apply(this, a)
-    this.finish([todoId], 'done', 'human')
-    return back
-  })
-  try {
-    expect((await tick(ledger, home, terminals, new Date(), true)).passed).toEqual([todoId])
-  } finally {
-    ended.mockRestore()
+  // The person acts as the watch passes, before nod hears the task cannot go on.
+  const passes = async (act: (todoId: number) => void) => {
+    const { todoId, taskId } = await didTodo(todos)
+    todos.set(todoId, { status: 'waiting', watch: 'true', backTo: taskId }, 'human', [], 'done')
+    // Collected with its transcript gone, so telling it to carry on fails.
+    ledger.collected(taskId, null)
+    const config = process.env.CLAUDE_CONFIG_DIR ?? ''
+    rmSync(projectFolder(config, workspaceOf(home, ledger.get(taskId))), {
+      recursive: true,
+      force: true,
+    })
+    const endWatch = Todos.prototype.endWatch
+    const ended = spyOn(Todos.prototype, 'endWatch').mockImplementation(function (
+      this: Todos,
+      ...a
+    ) {
+      const back = endWatch.apply(this, a)
+      act(todoId)
+      return back
+    })
+    try {
+      expect((await tick(ledger, home, terminals, new Date(), true)).passed).toEqual([todoId])
+    } finally {
+      ended.mockRestore()
+    }
+    return todos.get(todoId)
   }
-  const t = todos.get(todoId)
-  expect(t.status).toBe('done')
-  expect(t.notes ?? '').not.toContain('could not carry on')
+  const finished = await passes((id) => todos.finish([id], 'done', 'human'))
+  expect(finished.status).toBe('done')
+  expect(finished.notes).toContain('could not carry on')
+  // Still waiting, on someone now: the status alone would not tell.
+  const handed = await passes((id) => todos.set(id, { waitingOn: 'Kim' }, 'human'))
+  expect(handed).toMatchObject({ status: 'waiting', waitingOn: 'Kim' })
+  expect(handed.notes).toContain('could not carry on')
 }, 30_000)
 
 tmuxTest(

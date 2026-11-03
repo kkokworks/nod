@@ -982,12 +982,12 @@ export class Todos {
     const status = edit.status ?? before.status
     const was = `t${before.id} is ${before.status}`
     if (from !== undefined && from !== before.status) {
-      throw new StatusChanged(
+      throw new Error(
         `${was}, not ${from}${this.movedBy(before.id)}; nothing changed: read it again (nod todo t${before.id}) before changing it`,
       )
     }
     if (from === undefined && FINISHED.includes(before.status) && !FINISHED.includes(status)) {
-      throw new StatusChanged(
+      throw new Error(
         `${was}${this.movedBy(before.id)}; reopening it takes --from ${before.status}, so a status read before it was finished does not bring it back`,
       )
     }
@@ -1145,9 +1145,6 @@ export class Todos {
     return this.run(query)[0] ?? null
   }
 }
-
-// A change refused because the todo's status is not the one its caller expected (Todos.settle).
-export class StatusChanged extends Error {}
 
 const parsed = (r: { actor: string; change: string; at: string }): Change => ({
   ...r,
