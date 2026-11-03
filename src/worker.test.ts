@@ -169,6 +169,8 @@ const entries = (event: string): LogEntry[] =>
     ? readFileSync(log, 'utf8')
         .trim()
         .split('\n')
+        // Read as the fake has made the file and not yet written to it.
+        .filter((line) => line !== '')
         .map((line): LogEntry => JSON.parse(line))
         .filter((e) => e.event === event)
     : []
