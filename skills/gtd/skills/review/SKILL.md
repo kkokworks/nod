@@ -9,10 +9,10 @@ description: GTD 주간 리뷰를 한 단계씩 진행한다(머릿속 비우기
 
 ```sh
 nod in '주간 리뷰하기' --source review --key weekly
-nod todo set t<번호> --status next --due '<금요일> 17:00' --repeat weekly
+nod todo set t<번호> --status next --due '<금요일> 17:00' --repeat weekly --from inbox
 ```
 
-순서대로 하나씩 보여 주고, 사용자의 답을 받아 반영합니다.
+순서대로 하나씩 보여 주고, 사용자의 답을 받아 반영합니다. 단계마다 보여 준 목록의 상태를 `--from` 으로 붙여 반영하고(예: 언젠가에서 꺼내기는 `--status next --from someday`, 버리기는 `nod todo drop t<번호> --from someday`), 거절되면 다시 읽어 다시 확인받습니다(ledger.md 의 "읽은 상태로 바꾸기"). 리뷰는 길어서 그사이 다른 세션이 장부를 바꾸기 쉽습니다.
 
 1. 머릿속 비우기: 이번 주에 걸려 있는 일, 약속, 떠오른 생각을 물어 받아 적습니다. 이어서 [gtd:scan](../scan/SKILL.md) 대로 업무 도구를 훑습니다.
 2. [gtd:clarify](../clarify/SKILL.md) 대로 받은 일함을 비웁니다.
@@ -23,6 +23,6 @@ nod todo set t<번호> --status next --due '<금요일> 17:00' --repeat weekly
 7. 앞으로 2주: `nod today tomorrow --days 14` 로 일정·예정·마감을 보고, 켠 도구의 "다가오는 것"(기간 14일)과 `nod todo --all --json` 의 `start` 가 그 안인 할 일을 함께 봅니다. 준비가 필요한 일을 받아 적습니다.
 8. 언젠가: `nod todo someday` 를 훑어보고 이번 주에 꺼낼 것과 버릴 것을 묻습니다.
 9. 한 단락으로 요약합니다.
-10. "주간 리뷰하기" 할 일을 완료합니다(`nod todo done t<번호>`). 반복 할 일이라 다음 주 것이 생깁니다.
+10. "주간 리뷰하기" 할 일을 완료합니다(`nod todo done t<번호> --from next`). 반복 할 일이라 다음 주 것이 생깁니다.
 
 끝: 10단계까지 마쳤고, `nod todo check` 의 review 가 0일 전입니다.

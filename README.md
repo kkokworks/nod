@@ -231,8 +231,9 @@ nod todo set t1 --status next --project 건강 --context @전화   # 다음 행�
 nod in '견적서 회신 받기'
 nod todo set t2 --status waiting --waiting-on 민수           # 기다리는 일
 nod todo set t2 --watch 'test -f ~/Downloads/견적서.pdf'     # 생기면 다음 행동으로(5분마다 확인)
-nod todo set t3 --status waiting --watch '<답이 오면 0 으로 끝나며 받은 내용을 출력하는 명령>' --back-to t3
-                         # 통과하면 t3 을 맡았던 작업의 세션이 그 출력을 받아 이어서 처리
+nod todo set t3 --status waiting --watch '<답이 오면 0 으로 끝나며 받은 내용을 출력하는 명령>' --back-to t3 --from done
+                         # 작업이 끝낸 t3 을 다시 대기로. 통과하면 t3 을 맡았던 작업의 세션이 그 출력을 받아 이어서 처리
+nod todo set t2 --status next --from waiting                 # 아직 대기일 때만 바꾸기(아니면 아무것도 바꾸지 않음)
 nod todo                 # 받은 일함·다음 행동·대기
 nod todo next --context @전화
 nod project              # 진행 중인 프로젝트와 다음 행동 수 (없으면 알려 줌)
@@ -250,6 +251,8 @@ nod today                # 오늘: 캘린더 일정, 지난 것, 예정, 마감,
 nod today tomorrow       # 내일 준비
 nod in '진료 기록 받기' --project 건강   # 받아 적으며 프로젝트에 넣기
 ```
+
+`--from <상태>` 는 할 일을 읽었을 때의 상태입니다. 지금 상태가 그것과 다르면 nod 는 아무것도 바꾸지 않고, 지금 상태와 그 상태로 마지막에 옮긴 누가·시각을 알리며 0 이 아닌 값으로 끝납니다. 여러 세션이 같은 장부를 정리하므로, 앞서 읽은 상태로 세운 계획이 그 뒤에 다른 세션이나 사람이 바꾼 것을 덮지 않게 하려는 것입니다. `nod todo done|drop` 도 받고, 이름 붙인 할 일 가운데 하나라도 다른 상태면 하나도 바꾸지 않습니다. 끝났거나(done) 버린(dropped) 할 일은 `--from done`·`--from dropped` 를 줄 때만 다시 열립니다. 웹 화면도 화면에 보인 상태를 함께 보냅니다.
 
 `nod todo check` 는 장부를 믿어도 되는지 보여 줍니다. 받은 일함의 가장 오래된 날, 지난 것, 다음 행동이 없는 프로젝트, 오래 기록이 없는 대기, 마지막 주간 리뷰입니다. `nod todo --json` 은 할 일을 링크와 함께 JSON 한 줄씩 내보냅니다. 이 장부로 GTD 를 하는 절차(받아 적기·모으기·받은 일함 비우기·오늘 집중·내일 준비·주간 리뷰)는 gtd 스킬 묶음(`skills/gtd`, `/gtd:capture` 등)에 있고, 업무 도구 연결부는 `skills/gtd/sources/` 입니다. 켠 도구와 도구별 값은 `~/.nod/config.json` 에 둡니다.
 

@@ -12,7 +12,7 @@ import { message, runGroup } from './proc'
 import { pullRequests } from './prs'
 import { quote } from './review'
 import { homeId, type Terminals, Tmux } from './tmux'
-import { type Todo, Todos, withLine } from './todos'
+import { StatusChanged, type Todo, Todos, withLine } from './todos'
 import { oneLine } from './view'
 import {
   closeFinished,
@@ -221,9 +221,14 @@ async function checkWatches(ledger: Ledger, home: string, terminals: Terminals):
         } catch (error) {
           // The task could not carry on (its transcript gone after gc, its session failing to
           // start), so the person takes the todo, as when no task is named.
+          // Only while it still waits as endWatch left it: one the person moved meanwhile is theirs.
           const line = `${localTime(new Date())} task n${back} could not carry on: ${oneLine(message(error), 200)}`
           const notes = withLine(todos.get(t.id).notes, line)
-          todos.set(t.id, { status: 'next', notes }, SELF)
+          try {
+            todos.set(t.id, { status: 'next', notes }, SELF, [], 'waiting')
+          } catch (moved) {
+            if (!(moved instanceof StatusChanged)) throw moved
+          }
           await notifyError(ledger, home, back)(error)
         }
       }

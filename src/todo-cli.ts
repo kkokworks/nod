@@ -17,6 +17,7 @@ import {
   TODO_STATUSES,
   type Todo,
   type TodoDecision,
+  type TodoStatus,
   type Todos,
   type WatchCheck,
   withLine,
@@ -42,11 +43,16 @@ export const TODO_USAGE = `  nod in <what...> [--notes <text>] [--source <channe
   nod todo <todo>                  one todo: notes, links, the tasks it was delegated to (nod add
                                    --todo) with what they reported, and who changed what
   nod todo set <todo> [--status <s>] [--title <text>] [--notes <text> | --add-note <line>]
-                      [--project <p>]
+                      [--from <s>] [--project <p>]
                       [--context <@x>] [--waiting-on <who>] [--link <url>]...
                       [--due <day>] [--on <day>] [--start <day>] [--focus <day>]
                       [--repeat daily|weekly|monthly] [--watch <command>] [--back-to <task>]
                                    clarify and organize it; an empty value clears a field.
+                                   --from names the status it was read in: when it is in another
+                                   by now, nothing changes, and nod says who moved it and when,
+                                   so a plan made from an old read does not undo a newer change.
+                                   A done or dropped todo is reopened only with --from done or
+                                   --from dropped.
                                    Leaving waiting forgets whom it waited on and its watch.
                                    --watch gives a waiting todo a command that nod's tick runs
                                    in <home> every 5 minutes (cd to a repo in it); once it exits
@@ -75,7 +81,9 @@ export const TODO_USAGE = `  nod in <what...> [--notes <text>] [--source <channe
                                    review). --nudge prints it once a day as a Claude Code
                                    SessionStart message, and nothing when all is well; --json
                                    prints it all as JSON
-  nod todo done|drop <todo...>
+  nod todo done|drop <todo...> [--from <s>]
+                                   all of them, or none when one is missing or, with --from, in
+                                   another status
   nod project add <title...> [--outcome <what done looks like>]
   nod project [ls] [--all]         active projects with their next and waiting counts, open
                                    decisions among the next; one with no next action says so
@@ -353,6 +361,7 @@ async function setTodo(todos: Todos, home: string, args: string[]): Promise<void
     allowPositionals: true,
     options: {
       status: { type: 'string' },
+      from: { type: 'string' },
       title: { type: 'string' },
       notes: { type: 'string' },
       'add-note': { type: 'string' },
@@ -373,6 +382,7 @@ async function setTodo(todos: Todos, home: string, args: string[]): Promise<void
   if (ref === undefined || extra.length > 0) throw new Error(TODO_USAGE)
   const status =
     values.status === undefined ? undefined : oneOf('todo status', values.status, TODO_STATUSES)
+  const from = fromOf(values.from)
   const { project } = values
   const id = parseRef(ref, 't')
   const added = values['add-note']
@@ -398,12 +408,12 @@ async function setTodo(todos: Todos, home: string, args: string[]): Promise<void
       project === undefined ? undefined : project === '' ? null : todos.findProject(project).id,
   }
   // A new watch runs once, which can take a while, so only for an edit that holds.
-  if (typeof watch === 'string') todos.check(id, edit)
+  if (typeof watch === 'string') todos.check(id, edit, from)
   const tried = typeof watch === 'string' ? { watch, ...(await tryWatch(watch, home)) } : null
   // A line added below the notes, so recording why leaves what was there alone. Read after the
   // watch ran, so nothing written meanwhile is lost.
   const notes = added === undefined ? cleared(values.notes) : withLine(todos.get(id).notes, added)
-  const todo = todos.set(id, { ...edit, notes }, actorFromEnv(), values.link ?? [])
+  const todo = todos.set(id, { ...edit, notes }, actorFromEnv(), values.link ?? [], from)
   if (tried !== null) todos.recordCheck(id, tried.watch, tried.code, tried.output)
   console.log(line(todos, todo))
   if (tried === null) return
@@ -421,14 +431,24 @@ function checkText(check: WatchCheck | null): string {
 const checkedWhen = (check: WatchCheck | null): string =>
   check === null ? 'not checked yet' : `checked ${localTime(new Date(check.at))}`
 
-function finishTodos(todos: Todos, sub: 'done' | 'drop', refs: string[]): void {
+function finishTodos(todos: Todos, sub: 'done' | 'drop', args: string[]): void {
+  const { values, positionals: refs } = parseArgs({
+    args,
+    allowPositionals: true,
+    options: { from: { type: 'string' } },
+  })
   if (refs.length === 0) {
     throw new Error(`name the todos: nod todo ${sub} t<n>...; finished todos list with --all`)
   }
   const ids = refs.map((r) => parseRef(r, 't'))
-  const finished = todos.finish(ids, sub === 'done' ? 'done' : 'dropped', actorFromEnv())
+  const to = sub === 'done' ? 'done' : 'dropped'
+  const finished = todos.finish(ids, to, actorFromEnv(), fromOf(values.from))
   for (const t of finished) console.log(line(todos, t))
 }
+
+// `--from <s>`: the status the todo was read in, which it must still be in for the change to go in.
+const fromOf = (v: string | undefined): TodoStatus | undefined =>
+  v === undefined ? undefined : oneOf('todo status', v, TODO_STATUSES)
 
 function showTodo(todos: Todos, id: number): void {
   const t = todos.get(id)

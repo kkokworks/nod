@@ -147,7 +147,13 @@ function EditForm({ page }: { page: TodoPage }) {
     if (Object.keys(typed).length === 0) setBegan(page.changes.length)
     setTyped({ ...typed, [field]: e.target.value })
   }
-  const save = (edit: RawEdit) => run(() => changeTodo({ data: { id: todo.id, edit } }))
+  // A status chosen here moves the todo only from the status the page shows (nod todo set --from).
+  const save = (edit: RawEdit) =>
+    run(() =>
+      changeTodo({
+        data: { id: todo.id, edit, ...(edit.status === undefined ? {} : { from: held.status }) },
+      }),
+    )
   // A line added below notes being rewritten goes below what is typed too, or saving would drop it.
   const add = (line: string) => {
     setTyped(({ notes, ...rest }) =>

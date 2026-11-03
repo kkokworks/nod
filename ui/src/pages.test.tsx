@@ -86,7 +86,7 @@ const { createRoot } = await import('react-dom/client')
 const R = await import('@tanstack/react-router')
 const tasks = await import('./routes/tasks.$id')
 const todos = await import('./routes/todos_.$id')
-const { TodoRow } = await import('./todo-parts')
+const { TodoRow, UndoBar } = await import('./todo-parts')
 const { Search } = await import('./search')
 const projects = await import('./routes/projects')
 const { Failed, NotFound } = await import('./parts')
@@ -116,6 +116,21 @@ const rowsRoute = R.createRoute({
     ))
   },
 })
+// The same rows, with a move offered back as the real root offers it.
+const undoRoute = R.createRoute({
+  getParentRoute: () => root,
+  path: '/undo',
+  loader: () => rows,
+  component: function Undoable() {
+    return (
+      <UndoBar>
+        {(undoRoute.useLoaderData() as typeof rows).map((t) => (
+          <TodoRow key={t.id} t={t as never} today="2026-10-23" usual="next" />
+        ))}
+      </UndoBar>
+    )
+  },
+})
 // The sidebar's search box, on a page of its own.
 const findRoute = R.createRoute({ getParentRoute: () => root, path: '/find', component: Search })
 const router = R.createRouter({
@@ -137,6 +152,7 @@ const router = R.createRouter({
       getParentRoute: () => root,
     } as never),
     rowsRoute,
+    undoRoute,
   ]),
   history: R.createMemoryHistory({ initialEntries: ['/'] }),
   // As router.tsx has them.
@@ -722,6 +738,28 @@ test('a change to the todo keeps what is being typed in the form and says so', a
   ])
 })
 
+test('a status picked in the form, or put back with Undo, moves the todo only from the status shown', async () => {
+  const todo = { ...todoItem(10, 'Reply to Kim'), status: 'done' }
+  answer = () => ({ today: '2026-10-23', todo, links: [], tasks: [], changes: [], projects: [] })
+  await go('/todos/10?edit=true')
+  const status = document.querySelector<HTMLSelectElement>('.todo-form select')
+  if (status === null) throw new Error('no status field')
+  act(() => {
+    Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')?.set?.call(status, 'next')
+    status.dispatchEvent(new Event('change', { bubbles: true }))
+  })
+  await click('Save')
+  expect(posted.splice(0)).toEqual([{ id: 10, edit: { status: 'next' }, from: 'done' }])
+
+  rows = [todoItem(1, 'one')]
+  await go('/undo')
+  act(() => document.querySelector<HTMLElement>('.todo-title')?.focus())
+  await press('KeyX', 'x')
+  expect(posted.splice(0)).toEqual([{ id: 1, edit: { status: 'done' }, from: 'next' }])
+  await click('Undo')
+  expect(posted.splice(0)).toEqual([{ id: 1, edit: { status: 'next' }, from: 'done' }])
+})
+
 test("a refresh that fails keeps a todo's form as it is being typed", async () => {
   const todo = todoItem(12, 'old title')
   answer = () => ({ today: '2026-10-23', todo, links: [], tasks: [], changes: [], projects: [] })
@@ -766,11 +804,11 @@ test('a key pressed as the refresh takes its row away does not act on the next r
     rows = rows.slice(1)
   }
   await press('KeyX', 'x')
-  expect(posted.splice(0)).toEqual([{ id: 2, edit: { status: 'done' } }])
+  expect(posted.splice(0)).toEqual([{ id: 2, edit: { status: 'done' }, from: 'next' }])
   // Its own row gone, the next takes keys at once.
   expect(focused()).toBe('three')
   await press('KeyX', 'x')
-  expect(posted.splice(0)).toEqual([{ id: 3, edit: { status: 'done' } }])
+  expect(posted.splice(0)).toEqual([{ id: 3, edit: { status: 'done' }, from: 'next' }])
 
   // A change done here that the next refresh brings, the reload after it having been cut short.
   rows = [todoItem(4, 'four'), todoItem(5, 'five')]
@@ -778,12 +816,12 @@ test('a key pressed as the refresh takes its row away does not act on the next r
   act(() => [...document.querySelectorAll<HTMLElement>('.todo-title')][0]?.focus())
   onPost = () => {}
   await press('KeyX', 'x')
-  expect(posted.splice(0)).toEqual([{ id: 4, edit: { status: 'done' } }])
+  expect(posted.splice(0)).toEqual([{ id: 4, edit: { status: 'done' }, from: 'next' }])
   rows = rows.slice(1)
   await reload()
   expect(focused()).toBe('five')
   await press('KeyX', 'x')
-  expect(posted.splice(0)).toEqual([{ id: 5, edit: { status: 'done' } }])
+  expect(posted.splice(0)).toEqual([{ id: 5, edit: { status: 'done' }, from: 'next' }])
 })
 
 // What the search finds for each ref, as `Todos.find` would; a number is a task page, and no data

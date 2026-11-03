@@ -216,7 +216,7 @@ export function projectsPage(): ProjectsPage {
 export const capture = (title: string): number =>
   todos.capture({ title, notes: null, source: 'ui', sourceKey: null, url: null }, ACTOR).todo.id
 
-export function editTodo(id: number, raw: RawEdit): void {
+export function editTodo(id: number, raw: RawEdit, from?: string): void {
   // A line added below the notes leaves what was there alone, as `nod todo set --add-note`.
   const added = raw.addNote?.trim() ?? ''
   if (added !== '' && raw.notes !== undefined) throw new Error('replace the notes or add a line')
@@ -238,7 +238,8 @@ export function editTodo(id: number, raw: RawEdit): void {
           : oneOf('repeat', raw.repeat, REPEATS),
     focus: cleared(raw.focus),
   }
-  todos.set(id, edit, ACTOR)
+  const was = from === undefined ? undefined : oneOf('todo status', from, TODO_STATUSES)
+  todos.set(id, edit, ACTOR, [], was)
 }
 
 export const addProject = (title: string, outcome: string): number =>
