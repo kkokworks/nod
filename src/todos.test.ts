@@ -183,9 +183,14 @@ test('a todo waiting on its task has no watch: handing it over drops one, and no
   // Once the task has ended, the todo is the person's again and can be watched.
   ledger.succeed(first)
   await follow(todos)
-  expect(todos.set(t.id, { status: 'waiting', watch: 'test -f shipped' }, 'human').watch).toBe(
-    'test -f shipped',
+  const watched = todos.set(
+    t.id,
+    { status: 'waiting', watch: 'test -f shipped' },
+    'human',
+    [],
+    'done',
   )
+  expect(watched.watch).toBe('test -f shipped')
 })
 
 test('--back-to names the task that did the todo; a passing watch hands the todo back to it', async () => {
@@ -199,13 +204,15 @@ test('--back-to names the task that did the todo; a passing watch hands the todo
   }
   await follow(todos)
   const watch = 'test -f answered'
-  expect(() => todos.set(t.id, { status: 'waiting', backTo: did }, 'human')).toThrow(
+  // The task did it, so it is done: reopening it says so (from).
+  const reopen = (edit: TodoEdit) => todos.set(t.id, edit, 'human', [], 'done')
+  expect(() => reopen({ status: 'waiting', backTo: did })).toThrow(
     '--back-to is for when a watch passes',
   )
-  expect(() => todos.set(t.id, { status: 'waiting', watch, backTo: unrelated }, 'human')).toThrow(
+  expect(() => reopen({ status: 'waiting', watch, backTo: unrelated })).toThrow(
     `task n${unrelated} is not the latest task of t${t.id}`,
   )
-  todos.set(t.id, { status: 'waiting', waitingOn: 'Kim', watch, backTo: did }, 'human')
+  reopen({ status: 'waiting', waitingOn: 'Kim', watch, backTo: did })
   // It goes with the watch: clearing the watch, or leaving waiting, forgets it.
   expect(todos.set(t.id, { watch: null }, 'human').backTo).toBeNull()
   todos.set(t.id, { watch, backTo: did }, 'human')
@@ -240,7 +247,7 @@ test('--back-to names the task that did the todo; a passing watch hands the todo
 
   // A task gc collected comes back when told, so it can still be named.
   ledger.collected(did, null)
-  expect(todos.set(t.id, { status: 'waiting', watch, backTo: did }, 'human').backTo).toBe(did)
+  expect(reopen({ status: 'waiting', watch, backTo: did }).backTo).toBe(did)
 })
 
 test('--back-to takes only the latest task, the one whose end moves the todo', async () => {
@@ -253,15 +260,16 @@ test('--back-to takes only the latest task, the one whose end moves the todo', a
   }
   const earlier = todos.delegate(t.id, task, 'human')
   await ended(earlier)
-  todos.set(t.id, { status: 'next' }, 'human')
+  todos.set(t.id, { status: 'next' }, 'human', [], 'done')
   const latest = todos.delegate(t.id, task, 'human')
   await ended(latest)
   const watch = 'test -f answered'
+  const reopen = (edit: TodoEdit) => todos.set(t.id, edit, 'human', [], 'done')
   // followTasks goes by the latest task, so an earlier one carrying on would never move the todo.
-  expect(() => todos.set(t.id, { status: 'waiting', watch, backTo: earlier }, 'human')).toThrow(
+  expect(() => reopen({ status: 'waiting', watch, backTo: earlier })).toThrow(
     `task n${earlier} is not the latest task of t${t.id}`,
   )
-  todos.set(t.id, { status: 'waiting', watch, backTo: latest }, 'human')
+  reopen({ status: 'waiting', watch, backTo: latest })
   todos.endWatch(t.id, watch, 'passed', 'nod', true)
   await ended(latest)
   expect(todos.get(t.id).status).toBe('done')
@@ -279,7 +287,7 @@ test('a watched todo waits on its watch, not on a task told more after it began 
   await ended()
   Bun.sleepSync(2) // so it starts waiting after the task ended, on a millisecond clock
   const watch = 'test -f answered'
-  todos.set(t.id, { status: 'waiting', watch, backTo: did }, 'human')
+  todos.set(t.id, { status: 'waiting', watch, backTo: did }, 'human', [], 'done')
   Bun.sleepSync(2)
   await ended() // the person told the task something (nod tell), and it ended again
   expect(todos.get(t.id)).toMatchObject({ status: 'waiting', watch, backTo: did })
@@ -304,6 +312,46 @@ test('finishing several todos is all or nothing', () => {
   expect(() => todos.finish([a.id, 99], 'done', 'human')).toThrow('no todo t99')
   expect(todos.get(a.id).status).toBe('inbox')
   expect(todos.finish([a.id], 'done', 'human').map((t) => t.status)).toEqual(['done'])
+})
+
+test('a change goes in only from the status its caller read, and a finished todo reopens only so', () => {
+  const todos = fresh()
+  const t = captured(todos, 'Ship the fix')
+  todos.set(t.id, { status: 'waiting', waitingOn: 'Kim' }, 'human')
+  // One session reads it waiting and plans; another closes it before the first one writes.
+  todos.finish([t.id], 'done', 'claude:closer')
+  const closed = todos.get(t.id)
+  const when = '\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}'
+  expect(() => todos.set(t.id, { status: 'next' }, 'claude:stale', [], 'waiting')).toThrow(
+    new RegExp(
+      `^t${t.id} is done, not waiting \\(moved by claude:closer ${when}\\); nothing changed`,
+    ),
+  )
+  expect(() => todos.set(t.id, { notes: 'x' }, 'claude:stale', [], 'waiting')).toThrow(
+    `t${t.id} is done, not waiting`,
+  )
+  // Without a status read, a finished todo is not reopened either.
+  expect(() => todos.set(t.id, { status: 'next' }, 'claude:stale')).toThrow(
+    new RegExp(
+      `^t${t.id} is done \\(moved by claude:closer ${when}\\); reopening it takes --from done`,
+    ),
+  )
+  expect(todos.get(t.id)).toEqual(closed)
+  expect(todos.changes(t.id).map((c) => c.actor)).toEqual(['human', 'human', 'claude:closer'])
+  // A finished todo's other fields, and done to dropped, change without one.
+  expect(todos.set(t.id, { title: 'Ship the fix today' }, 'human').status).toBe('done')
+  expect(todos.set(t.id, { status: 'dropped' }, 'human').status).toBe('dropped')
+  // Read as it is, it reopens.
+  expect(todos.set(t.id, { status: 'next' }, 'human', [], 'dropped').status).toBe('next')
+
+  // Finishing several from a status is all or nothing.
+  const u = captured(todos, 'Reply to Kim')
+  expect(() => todos.finish([t.id, u.id], 'done', 'human', 'next')).toThrow(
+    `t${u.id} is inbox, not next`,
+  )
+  expect(todos.get(t.id).status).toBe('next')
+  // A todo named twice is one todo, which left `from` the first time.
+  expect(todos.finish([t.id, t.id], 'done', 'human', 'next').map((x) => x.status)).toEqual(['done'])
 })
 
 test('links are kept once each and recorded as changes', () => {
@@ -366,7 +414,7 @@ test('a closed project holds no open todo, whichever side changes', () => {
   expect(todos.setProject(p.id, { status: 'done' }, 'human').status).toBe('done')
   expect(todos.projects(['active'])).toEqual([])
   // Reopening a todo of the closed project, or moving an open one into it, is refused.
-  expect(() => todos.set(t.id, { status: 'next' }, 'human')).toThrow(`p${p.id} is done`)
+  expect(() => todos.set(t.id, { status: 'next' }, 'human', [], 'done')).toThrow(`p${p.id} is done`)
   const other = captured(todos, 'Other')
   expect(() => todos.set(other.id, { projectId: p.id }, 'human')).toThrow(`p${p.id} is done`)
   // A finished todo may still be filed under it.
@@ -750,7 +798,7 @@ test('done makes the next one of a repeating todo, once; dropped ends it', () =>
   expect(due > new Date().toLocaleDateString('sv-SE')).toBe(true)
   expect(todos.changes(next.id).map((c) => c.actor)).toEqual(['claude:abc'])
   // Reopened and done again, it makes no second one.
-  todos.set(t.id, { status: 'next' }, 'human')
+  todos.set(t.id, { status: 'next' }, 'human', [], 'done')
   todos.finish([t.id], 'done', 'human')
   expect(ids(todos.list({ ...open, statuses: ['next'] }))).toEqual([next.id])
   todos.finish([next.id], 'dropped', 'human')

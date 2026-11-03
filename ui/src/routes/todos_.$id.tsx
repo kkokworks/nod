@@ -143,11 +143,35 @@ function EditForm({ page }: { page: TodoPage }) {
   const { busy, error, run } = useChange()
   const navigate = useNavigate()
   const done = () => navigate({ to: '/todos/$id', params: { id: String(todo.id) }, search: {} })
+  // The status the page showed when the person first picked another, which the todo must still be
+  // in for the pick to go in (nod todo set --from): a reload since does not make it agree.
+  const [from, setFrom] = useState<string | null>(null)
   const set = (field: keyof typeof f) => (e: { target: { value: string } }) => {
     if (Object.keys(typed).length === 0) setBegan(page.changes.length)
+    if (field === 'status' && from === null) setFrom(held.status)
     setTyped({ ...typed, [field]: e.target.value })
   }
-  const save = (edit: RawEdit) => run(() => changeTodo({ data: { id: todo.id, edit } }))
+  const save = (edit: RawEdit) =>
+    run(() =>
+      changeTodo({
+        data: {
+          id: todo.id,
+          edit,
+          ...(edit.status === undefined || from === null ? {} : { from }),
+        },
+      }),
+    )
+  // A save refused because the todo left that status lets go of the pick alone, which could only be
+  // refused again: the form shows what the ledger holds, the rest of what is typed can still be
+  // saved, and the person picks again if they still mean it. A save that failed otherwise keeps it,
+  // as does a read that fails: the next save says.
+  const dropStalePick = async () => {
+    if (from === null) return
+    const now = await getTodo({ data: todo.id }).catch(() => null)
+    if (now === null || now.todo.status === from) return
+    setTyped(({ status: _, ...rest }) => rest)
+    setFrom(null)
+  }
   // A line added below notes being rewritten goes below what is typed too, or saving would drop it.
   const add = (line: string) => {
     setTyped(({ notes, ...rest }) =>
@@ -181,7 +205,7 @@ function EditForm({ page }: { page: TodoPage }) {
       onSubmit={(e) => {
         e.preventDefault()
         void save(changed).then((ok) => {
-          if (ok) void done()
+          void (ok ? done() : dropStalePick())
         })
       }}
     >

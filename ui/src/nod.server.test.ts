@@ -10,7 +10,7 @@ afterAll(tmp.removeAll)
 const before = process.env.NOD_HOME
 process.env.NOD_HOME = tmp.make('nod-ui-server-')
 const { detail, ledger, rules } = await import('./nod.server')
-const { todoPage } = await import('./todos.server')
+const { editTodo, todoPage } = await import('./todos.server')
 if (before === undefined) delete process.env.NOD_HOME
 else process.env.NOD_HOME = before
 
@@ -33,6 +33,23 @@ test('a number no task or todo has gets no page, which the page shows as not fou
   expect(detail(task)?.task.id).toBe(task)
   expect(todoPage(Math.max(todo, task) + 1)).toBeNull()
   expect(detail(Math.max(todo, task) + 1)).toBeNull()
+})
+
+test('a status sent from the web goes in only from the status the page showed', () => {
+  const todos = new Todos(ledger)
+  const { id } = todos.capture(
+    { title: 'x', notes: null, source: 'ui', sourceKey: null, url: null },
+    'human',
+  ).todo
+  editTodo(id, { status: 'next' }, 'inbox')
+  expect(todos.get(id).status).toBe('next')
+  todos.finish([id], 'done', 'claude:closer')
+  expect(() => editTodo(id, { status: 'waiting' }, 'next')).toThrow(`t${id} is done, not next`)
+  expect(() => editTodo(id, { status: 'next' })).toThrow('reopening it takes --from done')
+  expect(() => editTodo(id, { status: 'next' }, 'later')).toThrow('a todo status is one of')
+  expect(todos.get(id).status).toBe('done')
+  editTodo(id, { status: 'next' }, 'done')
+  expect(todos.get(id).status).toBe('next')
 })
 
 test('the Settings page lists every rule with its retrospective task, and both pages mark the same edits', () => {

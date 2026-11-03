@@ -140,6 +140,52 @@ test('a channel key is captured once, and bad input is refused without changing 
   expect(await ok('todo', '--all')).toEqual(['t1    inbox     Review the PR  · since <time>'])
 })
 
+test('--from changes a todo only while it is in the status read, and a done one reopens only with it', async () => {
+  const { ok, fails, home } = runner()
+  await ok('in', 'Ship the fix')
+  await ok('todo', 'set', 't1', '--status', 'waiting', '--waiting-on', 'Kim')
+  await ok('todo', 'done', 't1', '--from', 'waiting')
+  // Planned from a read made while it waited, the change is refused and says what happened since.
+  expect(await fails('todo', 'set', 't1', '--status', 'next', '--from', 'waiting')).toMatch(
+    /t1 is done, not waiting \(moved by human \d{4}-\d{2}-\d{2} \d{2}:\d{2}\); nothing changed: read it again before changing it/,
+  )
+  expect(await fails('todo', 'set', 't1', '--status', 'next')).toContain(
+    'reopening it takes --from done',
+  )
+  expect(await fails('todo', 'set', 't1', '--from', 'later')).toContain(
+    'a todo status is one of inbox, next, waiting',
+  )
+  // Refused before its watch runs.
+  const ran = join(home, 'ran')
+  const watch = `touch ${JSON.stringify(ran)}; exit 1`
+  expect(
+    await fails('todo', 'set', 't1', '--status', 'waiting', '--watch', watch, '--from', 'next'),
+  ).toContain('t1 is done, not next')
+  expect(existsSync(ran)).toBe(false)
+  expect(await ok('todo', 'set', 't1', '--status', 'next', '--from', 'done')).toEqual([
+    't1    next      Ship the fix',
+  ])
+
+  // done and drop take it for every todo they name, or change none.
+  await ok('in', 'Reply to Kim')
+  expect(await fails('todo', 'drop', 't1', 't2', '--from', 'next')).toContain(
+    't2 is inbox, not next',
+  )
+  expect(await ok('todo')).toEqual([
+    't2    inbox     Reply to Kim  · since <time>',
+    't1    next      Ship the fix',
+  ])
+  expect(await ok('todo', 'drop', 't1', '--from', 'next')).toEqual([
+    't1    dropped   Ship the fix  · on <time>',
+  ])
+  expect((await ok('todo', 't1')).slice(-4)).toEqual([
+    '    <time>  human  status inbox → waiting, waiting on — → Kim',
+    '    <time>  human  status waiting → done, waiting on Kim → —',
+    '    <time>  human  status done → next',
+    '    <time>  human  status next → dropped',
+  ])
+}, 15_000) // 13 runs of nod, about 1 s when idle
+
 test('a watch shows when it last ran and how, and says when nothing will run it', async () => {
   const { ok } = runner()
   await ok('in', 'Hear back on the quote')

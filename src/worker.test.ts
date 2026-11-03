@@ -700,7 +700,13 @@ test('a watch with --back-to passes into that task, brought back after gc, which
   await until(() => todos.get(todo.id).status === 'done')
   const reply = join(home, 'reply.txt')
   const watch = `cat ${JSON.stringify(reply)}`
-  todos.set(todo.id, { status: 'waiting', waitingOn: 'the author', watch, backTo: id }, 'human')
+  todos.set(
+    todo.id,
+    { status: 'waiting', waitingOn: 'the author', watch, backTo: id },
+    'human',
+    [],
+    'done',
+  )
   // gc collects it before the answer comes, keeping the transcript, so tell brings it back.
   const sessions = projectFolder(
     process.env.CLAUDE_CONFIG_DIR ?? '',
@@ -724,7 +730,7 @@ test('a watch with --back-to passes into that task, brought back after gc, which
   expect(new Set(ledger.attempts(id).map((a) => a.sessionId)).size).toBe(1)
 
   // Waiting again, with the transcript gone: the task cannot carry on, so the person takes it.
-  todos.set(todo.id, { status: 'waiting', watch, backTo: id }, 'human')
+  todos.set(todo.id, { status: 'waiting', watch, backTo: id }, 'human', [], 'done')
   ledger.collected(id, null)
   rmSync(sessions, { recursive: true })
   expect((await tick(ledger, home, terminals, new Date(), true)).passed).toEqual([todo.id])
@@ -763,7 +769,7 @@ test('a notify that cannot run changes nothing else: the task succeeds, and a pa
   writeFileSync(join(home, 'notify'), '#!/bin/sh\nexit 0\n') // not executable
   const todos = new Todos(ledger)
   const { todoId, taskId } = await didTodo(todos)
-  todos.set(todoId, { status: 'waiting', watch: 'true', backTo: taskId }, 'human')
+  todos.set(todoId, { status: 'waiting', watch: 'true', backTo: taskId }, 'human', [], 'done')
   expect((await tick(ledger, home, terminals, new Date(), true)).passed).toEqual([todoId])
   await until(() => todos.get(todoId).status === 'done')
   expect(entries('turn').at(-1)?.message).toContain('its watch `true` passed')
@@ -775,11 +781,68 @@ test('a passing watch goes back to the task its todo names then, not when the wa
   // While the watch runs, the person takes back the --back-to.
   const cli = resolve(import.meta.dir, 'cli.ts')
   const watch = `NOD_HOME=${quote(home)} ${quote(process.execPath)} ${quote(cli)} todo set t${todoId} --back-to ''`
-  todos.set(todoId, { status: 'waiting', watch, backTo: taskId }, 'human')
+  todos.set(todoId, { status: 'waiting', watch, backTo: taskId }, 'human', [], 'done')
   expect((await tick(ledger, home, terminals, new Date(), true)).passed).toEqual([todoId])
   expect(todos.get(todoId)).toMatchObject({ status: 'next', backTo: null })
   expect(todos.get(todoId).notes).not.toContain('back to task')
   expect(ledger.attempts(taskId)).toHaveLength(1)
+}, 30_000)
+
+test('a todo the person changes while its task is told to carry on stays theirs, and says why the task did not', async () => {
+  const todos = new Todos(ledger)
+  // The person acts as the watch passes, before nod hears the task cannot go on.
+  const passes = async (act: (todoId: number) => void) => {
+    const { todoId, taskId } = await didTodo(todos)
+    todos.set(todoId, { status: 'waiting', watch: 'true', backTo: taskId }, 'human', [], 'done')
+    // Collected with its transcript gone, so telling it to carry on fails.
+    ledger.collected(taskId, null)
+    const config = process.env.CLAUDE_CONFIG_DIR ?? ''
+    rmSync(projectFolder(config, workspaceOf(home, ledger.get(taskId))), {
+      recursive: true,
+      force: true,
+    })
+    const endWatch = Todos.prototype.endWatch
+    const ended = spyOn(Todos.prototype, 'endWatch').mockImplementation(function (
+      this: Todos,
+      ...a
+    ) {
+      const back = endWatch.apply(this, a)
+      act(todoId)
+      return back
+    })
+    try {
+      expect((await tick(ledger, home, terminals, new Date(), true)).passed).toEqual([todoId])
+    } finally {
+      ended.mockRestore()
+    }
+    return todos.get(todoId)
+  }
+  const finished = await passes((id) => todos.finish([id], 'done', 'human'))
+  expect(finished.status).toBe('done')
+  expect(finished.notes).toContain('could not carry on')
+  // Still waiting, on someone now: the status alone would not tell.
+  const handed = await passes((id) => todos.set(id, { waitingOn: 'Kim' }, 'human'))
+  expect(handed).toMatchObject({ status: 'waiting', waitingOn: 'Kim' })
+  expect(handed.notes).toContain('could not carry on')
+  // Handed to a new task: it waits on that one, though it looks as endWatch left it.
+  const again = await passes((id) =>
+    todos.delegate(
+      id,
+      {
+        brief: 'try again',
+        repo: null,
+        branch: null,
+        checkCmd: null,
+        model: null,
+        after: [],
+        triggerId: null,
+        issue: null,
+      },
+      'human',
+    ),
+  )
+  expect(again.status).toBe('waiting')
+  expect(again.notes).toContain('could not carry on')
 }, 30_000)
 
 tmuxTest(

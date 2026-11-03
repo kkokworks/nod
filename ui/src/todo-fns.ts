@@ -40,12 +40,14 @@ export const captureTodo = createServerFn({ method: 'POST' })
   .validator((title: string) => text(title, 'title'))
   .handler(({ data }) => capture(data))
 
+// `from`: the status the page showed, which the todo must still be in (nod todo set --from).
 export const changeTodo = createServerFn({ method: 'POST' })
-  .validator((c: { id: number; edit: RawEdit }) => {
+  .validator((c: { id: number; edit: RawEdit; from?: string }) => {
     const o = record(c, 'change')
-    return { id: int(o.id, 'todo id'), edit: rawEdit(o.edit) }
+    const from = o.from === undefined ? undefined : text(o.from, 'from')
+    return { id: int(o.id, 'todo id'), edit: rawEdit(o.edit), from }
   })
-  .handler(({ data }) => editTodo(data.id, data.edit))
+  .handler(({ data }) => editTodo(data.id, data.edit, data.from))
 
 export const newProject = createServerFn({ method: 'POST' })
   .validator((p: { title: string; outcome: string }) => {

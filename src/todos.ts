@@ -42,6 +42,7 @@ export const PROJECT_STATUSES = ['active', 'someday', 'done', 'dropped'] as cons
 export type ProjectStatus = (typeof PROJECT_STATUSES)[number]
 // Todos that still ask something of the person.
 export const OPEN: TodoStatus[] = ['inbox', 'next', 'waiting']
+const FINISHED: TodoStatus[] = ['done', 'dropped']
 const CLOSED_PROJECT: ProjectStatus[] = ['done', 'dropped']
 // A delegated todo's tasks that may still go on: one in error can be resumed.
 const UNFINISHED: TaskStatus[] = ['queued', 'running', 'needs_decision', 'error']
@@ -317,11 +318,13 @@ export class Todos {
   }
 
   // Changes what the edit names, adds the links, and records who changed what, all or nothing.
-  // Fields equal to the current value are not changes.
-  set(id: number, edit: TodoEdit, actor: string, links: string[] = []): Todo {
+  // Fields equal to the current value are not changes. With `from`, only while the todo's status is
+  // still that, the one the caller read: what it planned from may be stale (settle).
+  set(id: number, edit: TodoEdit, actor: string, links: string[] = [], from?: TodoStatus): Todo {
+    // Immediate (ledger.ts), so the status settle compares holds until this writes.
     return this.db.transaction(() => {
       const before = this.get(id)
-      const after = this.settle(before, edit)
+      const after = this.settle(before, edit, from)
       const change = diff(before, after)
       if (Object.keys(change).length > 0) {
         const at = now()
@@ -347,13 +350,16 @@ export class Todos {
   }
 
   // Refuses the edit as `set` would, changing nothing, so slow work for it can wait until it holds.
-  check(id: number, edit: TodoEdit): void {
-    this.settle(this.get(id), edit)
+  check(id: number, edit: TodoEdit, from?: TodoStatus): void {
+    this.settle(this.get(id), edit, from)
   }
 
-  // Marks every todo done or dropped, or none of them when one does not exist.
-  finish(ids: number[], status: 'done' | 'dropped', actor: string): Todo[] {
-    return this.db.transaction(() => ids.map((id) => this.set(id, { status }, actor)))()
+  // Marks every todo done or dropped, or none of them when one does not exist or, with `from`, is
+  // in another status. One named twice is one todo: it left `from` the first time.
+  finish(ids: number[], status: 'done' | 'dropped', actor: string, from?: TodoStatus): Todo[] {
+    return this.db.transaction(() =>
+      [...new Set(ids)].map((id) => this.set(id, { status }, actor, [], from)),
+    )()
   }
 
   // A todo brought from another system with its own times: when it was captured, when its status
@@ -967,13 +973,26 @@ export class Todos {
 
   // The todo as the edit leaves it, checked: a known status, a title, a project that is not
   // closed while the todo is open, a watch only while waiting. Leaving `waiting` forgets whom it
-  // waited on, unless the edit names someone, and its watch.
-  private settle(before: Todo, edit: TodoEdit): TodoEdit {
+  // waited on, unless the edit names someone, and its watch. With `from`, the status must still be
+  // that; without it, a finished todo is not reopened, since a status read before it was finished
+  // would bring it back unseen. Either refusal says who last moved it, and when.
+  private settle(before: Todo, edit: TodoEdit, from?: TodoStatus): TodoEdit {
     if (edit.status !== undefined) oneOf('todo status', edit.status, TODO_STATUSES)
     if (edit.title !== undefined) filled('title', edit.title)
     if (typeof edit.context === 'string') filled('context', edit.context)
     if (typeof edit.watch === 'string') filled('watch', edit.watch)
     const status = edit.status ?? before.status
+    const was = `t${before.id} is ${before.status}`
+    if (from !== undefined && from !== before.status) {
+      throw new Error(
+        `${was}, not ${from}${this.movedBy(before.id)}; nothing changed: read it again before changing it`,
+      )
+    }
+    if (from === undefined && FINISHED.includes(before.status) && !FINISHED.includes(status)) {
+      throw new Error(
+        `${was}${this.movedBy(before.id)}; reopening it takes --from ${before.status}, so a status read before it was finished does not bring it back`,
+      )
+    }
     if (typeof edit.watch === 'string' && status !== 'waiting') {
       throw new Error('a watch is for a waiting todo; give --status waiting with it')
     }
@@ -1093,6 +1112,14 @@ export class Todos {
       at = prev
     }
     return before
+  }
+
+  // ` (moved by <actor> <time>)`: the latest change of the todo's status, as its history has it.
+  private movedBy(id: number): string {
+    const last = this.changes(id)
+      .filter((c) => 'status' in c.change)
+      .at(-1)
+    return last === undefined ? '' : ` (moved by ${last.actor} ${localTime(new Date(last.at))})`
   }
 
   private recordTodo(id: number, actor: string, change: Change['change'], at: string): void {

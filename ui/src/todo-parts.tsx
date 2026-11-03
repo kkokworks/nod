@@ -152,13 +152,15 @@ export function useTodoActions(t: TodoItem, today: string, full: boolean) {
   const navigate = useNavigate()
   const focus = (day: string) =>
     void run(() => changeTodo({ data: { id: t.id, edit: { focus: day } } }))
+  // Each move only from the status the row showed, so one made elsewhere since is not undone.
   const move = (status: string) => {
-    const edit = (to: string) => changeTodo({ data: { id: t.id, edit: { status: to } } })
+    const edit = (to: string, from: string) =>
+      changeTodo({ data: { id: t.id, edit: { status: to }, from } })
     const was = t.status
-    void run(() => edit(status)).then((ok) => {
+    void run(() => edit(status, was)).then((ok) => {
       // ponytail: a repeating todo done has made its next one, which putting it back would leave.
       if (ok && !(status === 'done' && t.repeat !== null)) {
-        offer({ text: `${movedTo(status)}: ${t.title}`, back: () => edit(was) })
+        offer({ text: `${movedTo(status)}: ${t.title}`, back: () => edit(was, status) })
       }
     })
   }
@@ -446,7 +448,8 @@ export function TodoRow({
       down: () => focusRow(el, 1),
       up: () => focusRow(el, -1),
       done: () => {
-        if (t.status !== 'done' && !justHanded()) move('done')
+        // Not while one is going in: this row still shows the status that one moves it from.
+        if (!busy && t.status !== 'done' && !justHanded()) move('done')
       },
       // As a click on the badge does, with focus on the current status.
       status: () => {
