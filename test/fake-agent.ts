@@ -195,8 +195,10 @@ async function turn(message: string, continuing: boolean): Promise<void> {
     const said = await runHooks('UserPromptSubmit', { session_id: sessionId, prompt: message })
     if (said !== '') log({ event: 'prompt-hook-said', sessionId, message: said })
   }
-  log({ event: 'turn', sessionId, message })
+  // In this order: a test that ends it on seeing the turn expects a conversation to go on in. Without
+  // the transcript the turn never began, and nod starts anew with nothing to decide (nextRun).
   keepTranscript()
+  log({ event: 'turn', sessionId, message })
   const head = message.split('\n')[0] ?? ''
   let reply = 'NOD: done | did it'
   if (head.startsWith('compact')) await sessionStart('compact')

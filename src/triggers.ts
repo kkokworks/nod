@@ -52,9 +52,10 @@ export function parseItems(output: string): Item[] {
     })
 }
 
-// Bun 1.3.14's Bun.cron.parse reads every schedule as UTC whatever `tz` says (measured), so the
-// local wall-clock time goes in as if it were UTC and the result is shifted back by the offset at
-// the result, so a run across a daylight-saving change keeps its hour. A time that does not come
+// Bun.cron.parse reads a schedule as UTC in Bun 1.3.14 whatever `tz` says, and in the process's time
+// zone in 1.4.4 unless `tz` says another (measured), so `tz: 'UTC'` has it as UTC in both. The local
+// wall-clock time goes in as if it were UTC and the result is shifted back by the offset at the
+// result, so a run across a daylight-saving change keeps its hour. A time that does not come
 // that day (02:30 when the clock skips to 03:00) keeps the offset at `from`, as late as the clock
 // skipped (an hour in most places).
 // ponytail: each wall-clock time runs once, so an hourly or more frequent schedule skips the hour
@@ -62,7 +63,7 @@ export function parseItems(output: string): Item[] {
 export function nextRun(cron: string, from: Date): Date | null {
   const offsetAt = (t: number): number => new Date(t).getTimezoneOffset() * 60_000
   const before = offsetAt(from.getTime())
-  const next = Bun.cron.parse(cron, from.getTime() - before)
+  const next = Bun.cron.parse(cron, from.getTime() - before, { tz: 'UTC' })
   if (next === null) return null
   const guess = next.getTime() + before
   const after = next.getTime() + offsetAt(guess)
