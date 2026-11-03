@@ -65,7 +65,7 @@ export const KEYS = {
     bind: [],
     show: ['Esc'],
     does: 'Close a menu, this help or the find box',
-    where: 'Anywhere',
+    where: 'Anywhere (the find box: not from another field)',
   },
 } satisfies Record<string, Key>
 

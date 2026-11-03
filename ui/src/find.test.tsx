@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeEach, expect, spyOn, test } from 'bun:test'
+import { afterAll, afterEach, beforeEach, expect, mock, spyOn, test } from 'bun:test'
 import { readFileSync } from 'node:fs'
 import { GlobalRegistrator } from '@happy-dom/global-registrator'
 import { type Dispatch, type ReactNode, type SetStateAction, useState } from 'react'
@@ -15,7 +15,6 @@ const registry = new Map<string, Marks>()
 Object.assign(globalThis, { Highlight: Marks })
 // happy-dom makes a new CSS object each time it is asked for one.
 const CSS_CLASS = Object.getPrototypeOf(CSS)
-CSS_CLASS.highlights = registry
 Object.assign(Element.prototype, {
   checkVisibility(this: Element) {
     return this.closest('[hidden], details:not([open]) > :not(summary)') === null
@@ -60,9 +59,11 @@ const PAGE = (
 
 let view: ReturnType<typeof createRoot>
 const settle = () => act(() => new Promise((done) => setTimeout(done, 5)))
+const frame = () => act(() => new Promise<void>((done) => requestAnimationFrame(() => done())))
 
 beforeEach(async () => {
   registry.clear()
+  CSS_CLASS.highlights = registry
   window.scrollTo(0, 0)
   view = createRoot(document.body.appendChild(document.createElement('div')))
   await act(async () => view.render(<App first={PAGE} />))
@@ -70,18 +71,27 @@ beforeEach(async () => {
 afterEach(() => {
   act(() => view.unmount())
   document.body.replaceChildren()
+  document.documentElement.removeAttribute('style')
+  mock.restore()
 })
 afterAll(async () => {
   await GlobalRegistrator.unregister()
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: undefined, Highlight: undefined })
 })
 
-const bar = () => document.querySelector('.find-bar')
+// Asked as yes or no: a failing expect on an element prints all of happy-dom's tree for a long time.
+const isOpen = () => document.querySelector('.find-bar') !== null
+const focused = (el: Element | null) => document.activeElement === el
 const box = () => document.querySelector<HTMLInputElement>('.find-bar input')
 const count = () => document.querySelector('.find-count')?.textContent
 const marked = () => [...(registry.get('nod-find') ?? [])].map(String)
 const here = () => [...(registry.get('nod-find-current') ?? [])]
 const hereIn = () => here()[0]?.startContainer.parentElement?.id
+const byId = (id: string) => {
+  const el = document.getElementById(id)
+  if (el === null) throw new Error(`no ${id}`)
+  return el
+}
 
 const callFind = () => act(() => window.dispatchEvent(new Event(FIND_EVENT)))
 // As typing does: React sees the change only through the element's own setter and an input event.
@@ -108,6 +118,28 @@ const enter = (init: KeyboardEventInit & { keyCode?: number } = {}) =>
   key('keydown', { key: 'Enter', code: 'Enter', ...init })
 const esc = (init: KeyboardEventInit & { keyCode?: number } = {}) =>
   key('keydown', { key: 'Escape', code: 'Escape', ...init })
+const escUp = () => key('keyup', { key: 'Escape', code: 'Escape' })
+
+// A rectangle as the browser gives a range's or element's: happy-dom lays nothing out.
+const rect = (left: number, top: number, right: number, bottom: number) =>
+  ({ left, top, right, bottom, width: right - left, height: bottom - top }) as DOMRect
+// Where every match is taken to be, as a whole and by its lines.
+const matchesAt = (at: DOMRect, lines: () => DOMRect[] = () => []) => {
+  spyOn(Range.prototype, 'getBoundingClientRect').mockImplementation(() => at)
+  spyOn(Range.prototype, 'getClientRects').mockImplementation(
+    () => lines() as unknown as DOMRectList,
+  )
+}
+const boxAt = (id: string, at: DOMRect) =>
+  spyOn(byId(id), 'getBoundingClientRect').mockImplementation(() => at)
+const overBoxes = () =>
+  [...document.querySelectorAll<HTMLElement>('.find-marks .find-mark')].map((b) => [
+    b.className,
+    b.style.left,
+    b.style.top,
+    b.style.width,
+    b.style.height,
+  ])
 
 test('a query is matched as written, whatever its case or the spaces the page has', () => {
   const at = (text: string, query: string) => {
@@ -136,11 +168,8 @@ test('a query is matched as written, whatever its case or the spaces the page ha
   expect(at(`a ${nfd} b`, '한글')).toEqual([[2, nfd]])
   expect(at('a 한글 b', nfd)).toEqual([[2, '한글']])
   expect(at('한글 찾기', '글 찾')).toEqual([[1, '글 찾']])
-  // No letter is cut in two when a pair of UTF-16 units makes it.
-  expect(at('😀😀', '😀')).toEqual([
-    [0, '😀'],
-    [2, '😀'],
-  ])
+  // Case counts for nothing outside the first plane of Unicode too, as Deseret's letters show.
+  expect(at('𐐨', '𐐀')).toEqual([[0, '𐐨']])
   for (const blank of ['', ' ', ' \n\t']) expect(pattern(blank)).toBeNull()
 })
 
@@ -186,6 +215,8 @@ test('the page is searched as it reads: what shows, and not across a line', asyn
         <select>
           <option>option word</option>
         </select>
+        <style>{'.rule { word: 0 }'}</style>
+        <script type="text/plain">{'word'}</script>
       </>,
     ),
   )
@@ -196,6 +227,34 @@ test('the page is searched as it reads: what shows, and not across a line', asyn
   expect(found('leftright')).toEqual([])
   expect(found('word')).toEqual(['word'])
   expect(findRanges('word')[0]?.startContainer.parentElement?.tagName).toBe('SUMMARY')
+})
+
+test('what an ellipsis or a clamp cuts off is not found, only what overflow can scroll to', async () => {
+  await act(async () =>
+    setPage(
+      <>
+        <div id="cut" style={{ overflowX: 'hidden', overflowY: 'hidden' }}>
+          apple
+        </div>
+        <div id="scrolled" style={{ overflowX: 'auto', overflowY: 'auto' }}>
+          apple
+        </div>
+      </>,
+    ),
+  )
+  boxAt('cut', rect(0, 0, 100, 100))
+  boxAt('scrolled', rect(0, 0, 100, 100))
+  const inCut = () =>
+    findRanges('apple')
+      .map((r) => r.startContainer.parentElement?.id)
+      .filter(Boolean)
+  // Across its right edge, then under its bottom edge, then in it.
+  matchesAt(rect(100, 10, 140, 30))
+  expect(inCut()).toEqual(['scrolled'])
+  matchesAt(rect(10, 100, 50, 120))
+  expect(inCut()).toEqual(['scrolled'])
+  matchesAt(rect(80, 10, 120, 30))
+  expect(inCut()).toEqual(['cut', 'scrolled'])
 })
 
 test('it stops at the most it marks, and says so', async () => {
@@ -209,10 +268,10 @@ test('it stops at the most it marks, and says so', async () => {
 test('the box opens only for the app’s event, not for ⌘F itself', async () => {
   key('keydown', { key: 'f', code: 'KeyF', metaKey: true }, document.body)
   await settle()
-  expect(bar()).toBeNull()
+  expect(isOpen()).toBe(false)
   await callFind()
-  expect(bar()).not.toBeNull()
-  expect(document.activeElement).toBe(box())
+  expect(isOpen()).toBe(true)
+  expect(focused(box())).toBe(true)
 })
 
 test('typing marks every match and the first on the page is current, without touching the DOM', async () => {
@@ -255,6 +314,9 @@ test('Enter goes on, Shift+Enter back, and each comes around at the end', async 
   enter({ shiftKey: true })
   expect(count()).toBe('4 / 4')
   enter({ shiftKey: true })
+  expect(count()).toBe('3 / 4')
+  // On the box's button, Enter is the button's.
+  key('keydown', { key: 'Enter', code: 'Enter' }, document.querySelector('.find-close'))
   expect(count()).toBe('3 / 4')
   // Enter with nothing found does nothing.
   await type('pear')
@@ -302,7 +364,6 @@ test('the Enter that finishes a syllable goes nowhere, and the next one does', a
 })
 
 test('a syllable ended by something other than a key costs no later key anything', async () => {
-  // Clicking away from the box ends a composition with no key to go with it.
   await callFind()
   await type('apple')
   await composition('compositionstart')
@@ -312,21 +373,31 @@ test('a syllable ended by something other than a key costs no later key anything
   await composition('compositionstart')
   await composition('compositionend')
   esc()
-  expect(bar()).toBeNull()
+  expect(isOpen()).toBe(false)
+  // Clicking away ends it, and on coming back the input method may take an Esc with nothing composed.
+  await callFind()
+  await composition('compositionstart')
+  await composition('compositionend')
+  act(() => {
+    box()?.blur()
+    box()?.focus()
+  })
+  esc({ keyCode: 229 })
+  expect(isOpen()).toBe(false)
 })
 
 test('Esc takes the marks off, closes the box and gives the keyboard back', async () => {
-  const before = document.querySelector<HTMLElement>('#before')
-  before?.focus()
+  const before = byId('before')
+  before.focus()
   await callFind()
   await type('apple')
-  expect(document.activeElement).toBe(box())
+  expect(focused(box())).toBe(true)
   expect(marked()).toHaveLength(4)
   esc()
   await settle()
-  expect(bar()).toBeNull()
+  expect(isOpen()).toBe(false)
   expect(registry.size).toBe(0)
-  expect(document.activeElement).toBe(before)
+  expect(focused(before)).toBe(true)
   // It opens empty.
   await callFind()
   expect(box()?.value).toBe('')
@@ -337,52 +408,129 @@ test('the × does the same, and with no focus before it the keyboard is simply l
   await callFind()
   await type('apple')
   await act(async () => document.querySelector<HTMLElement>('.find-close')?.click())
-  expect(bar()).toBeNull()
+  expect(isOpen()).toBe(false)
   expect(registry.size).toBe(0)
-  expect(document.activeElement).toBe(document.body)
+  expect(focused(document.body)).toBe(true)
 })
 
 test('a focus target gone from the page does not stop the box closing', async () => {
-  document.querySelector<HTMLElement>('#before')?.focus()
+  byId('before').focus()
   await callFind()
   await act(async () => setPage(<p>an apple</p>))
   esc()
-  expect(bar()).toBeNull()
-  expect(document.activeElement).toBe(document.body)
+  expect(isOpen()).toBe(false)
+  expect(focused(document.body)).toBe(true)
+})
+
+test('Esc from the page around the box closes it too, unless a field or a menu has the key', async () => {
+  await act(async () =>
+    setPage(
+      <>
+        <button type="button" id="before">
+          a button
+        </button>
+        <button type="button" id="other">
+          another
+        </button>
+        <textarea id="field" />
+        <div className="xterm">
+          <textarea id="term" />
+        </div>
+        <div id="menu" popover="auto">
+          a menu
+        </div>
+      </>,
+    ),
+  )
+  const before = byId('before')
+  before.focus()
+  await callFind()
+  // A click on the page's text lets go of the box and of everything else.
+  act(() => box()?.blur())
+  esc()
+  expect(isOpen()).toBe(false)
+  expect(focused(before)).toBe(true)
+
+  // Gone on to something else on the page: the keyboard stays there.
+  await callFind()
+  const other = byId('other')
+  other.focus()
+  esc()
+  expect(isOpen()).toBe(false)
+  expect(focused(other)).toBe(true)
+
+  await callFind()
+  byId('field').focus()
+  esc()
+  expect(isOpen()).toBe(true)
+  byId('term').focus()
+  esc()
+  expect(isOpen()).toBe(true)
+
+  // The menu goes first, then the box.
+  other.focus()
+  spyOn(document, 'querySelector').mockImplementation(() => byId('menu'))
+  esc()
+  expect(isOpen()).toBe(true)
+  mock.restore()
+  esc()
+  expect(isOpen()).toBe(false)
 })
 
 test('the Esc that finishes a syllable leaves the box open, and the next one closes it', async () => {
   await callFind()
   await composition('compositionstart')
   await type('app')
-  esc({ isComposing: true })
-  expect(bar()).not.toBeNull()
+  esc({ keyCode: 229, isComposing: true })
+  expect(isOpen()).toBe(true)
   await composition('compositionend')
   esc({ keyCode: 229 })
-  key('keyup', { key: 'Escape', code: 'Escape' })
-  expect(bar()).not.toBeNull()
+  escUp()
+  expect(isOpen()).toBe(true)
   expect(box()?.value).toBe('app')
-  esc()
-  expect(bar()).toBeNull()
+  // The next, however it comes.
+  esc({ keyCode: 229 })
+  expect(isOpen()).toBe(false)
+})
+
+test('the Esc that finishes a syllable leaves the box open however the keys let go', async () => {
+  await callFind()
+  // The last letter's key is still down when Esc comes, and lets go first.
+  await composition('compositionstart')
+  await composition('compositionend')
+  esc({ keyCode: 229 })
+  key('keyup', { key: 'ㅎ', code: 'KeyG' })
+  escUp()
+  expect(isOpen()).toBe(true)
+  // Up, still composing, with its keydown not seen here: it is the input method's.
+  await composition('compositionstart')
+  escUp()
+  expect(isOpen()).toBe(true)
+  // Its keydown not seen, for the key that ended the syllable.
+  await composition('compositionend')
+  escUp()
+  expect(isOpen()).toBe(true)
+  escUp()
+  expect(isOpen()).toBe(false)
 })
 
 test('Esc gets through however WebKit hands it over', async () => {
   // The input method took the key, with nothing being composed.
   await callFind()
   esc({ keyCode: 229 })
-  expect(bar()).toBeNull()
+  expect(isOpen()).toBe(false)
   // Its keydown never reached the page, as in the capture window (docs/design.md).
   await callFind()
-  key('keyup', { key: 'Escape', code: 'Escape' })
-  expect(bar()).toBeNull()
+  escUp()
+  expect(isOpen()).toBe(false)
   // A key up for any other key does not close it.
   await callFind()
   key('keyup', { key: 'a', code: 'KeyA' })
-  expect(bar()).not.toBeNull()
+  expect(isOpen()).toBe(true)
   // From the box's other field too.
   document.querySelector<HTMLElement>('.find-close')?.focus()
   esc()
-  expect(bar()).toBeNull()
+  expect(isOpen()).toBe(false)
 })
 
 test('⌘F with the box open selects its text and keeps what it found', async () => {
@@ -390,23 +538,23 @@ test('⌘F with the box open selects its text and keeps what it found', async ()
   await type('apple')
   enter()
   const input = box()
-  await act(async () => document.querySelector<HTMLElement>('#before')?.focus())
-  expect(document.activeElement).not.toBe(input)
+  await act(async () => byId('before').focus())
+  expect(focused(input)).toBe(false)
   await callFind()
-  expect(box()).toBe(input)
-  expect(document.activeElement).toBe(input)
+  expect(box() === input).toBe(true)
+  expect(focused(input)).toBe(true)
   expect([input?.selectionStart, input?.selectionEnd]).toEqual([0, 5])
   expect(count()).toBe('3 / 4')
 })
 
 test('a refresh keeps the box, its text and the current match, and marks what is new', async () => {
-  const scrolled = spyOn(Range.prototype, 'getBoundingClientRect')
   await callFind()
   await type('apple')
   enter()
   expect(hereIn()).toBe('two')
   const input = box()
-  const before = scrolled.mock.calls.length
+  const root = document.documentElement
+  const reading = root.scrollTop
   await act(async () =>
     setPage(
       <>
@@ -420,17 +568,50 @@ test('a refresh keeps the box, its text and the current match, and marks what is
     ),
   )
   await settle()
-  expect(box()).toBe(input)
+  expect(box() === input).toBe(true)
   expect(input?.value).toBe('apple')
-  expect(document.activeElement).toBe(input)
+  expect(focused(input)).toBe(true)
   // React keeps the node of the second paragraph, so its match stays current.
   expect(marked()).toHaveLength(6)
   expect(count()).toBe('4 / 6')
   expect(hereIn()).toBe('two')
   expect(here()[0]?.startOffset).toBe(4)
   // Nobody asked to go anywhere, so the page stays where it is being read.
-  expect(scrolled.mock.calls.length).toBe(before)
-  scrolled.mockRestore()
+  expect(root.scrollTop).toBe(reading)
+})
+
+test('the current match stays by where it is in its text, when one text holds several', async () => {
+  await act(async () => setPage(<p id="both">apple and apple</p>))
+  await callFind()
+  await type('apple')
+  enter()
+  expect(here()[0]?.startOffset).toBe(10)
+  await act(async () =>
+    setPage(
+      <>
+        <p id="both">apple and apple</p>
+        <p>another apple</p>
+      </>,
+    ),
+  )
+  await settle()
+  expect(count()).toBe('3 / 4')
+  expect(here()[0]?.startOffset).toBe(10)
+})
+
+test('a refresh that only changes the words in a text node is seen too', async () => {
+  const words = (word: string) => <p id="words">the word {word}</p>
+  await act(async () => setPage(words('pear')))
+  const asIs = byId('words').firstChild
+  await callFind()
+  await type('apple')
+  expect(count()).toBe('1 / 1')
+  await act(async () => setPage(words('apple')))
+  await settle()
+  // React has changed the text of a node, and made none.
+  expect(byId('words').firstChild === asIs).toBe(true)
+  expect(count()).toBe('1 / 2')
+  expect(marked()).toEqual(['apple', 'apple'])
 })
 
 test('the current match going away, as when a link moves on, starts over on what is there', async () => {
@@ -454,7 +635,7 @@ test('the current match going away, as when a link moves on, starts over on what
   )
   await settle()
   expect(count()).toBe('1 / 1')
-  await act(async () => document.querySelector('#fold')?.setAttribute('open', ''))
+  await act(async () => byId('fold').setAttribute('open', ''))
   await settle()
   // The sidebar's match, the only one there was, stays current.
   expect(count()).toBe('1 / 2')
@@ -466,14 +647,23 @@ test('the box’s own count and the terminal changing do not search again', asyn
   await act(async () => setPage(<div className="xterm">rows</div>))
   await callFind()
   await type('apple')
-  const before = registry.get('nod-find')
+  let marks = registry.get('nod-find')
   document.querySelector('.xterm')?.setAttribute('class', 'xterm focus')
   await settle()
-  expect(registry.get('nod-find')).toBe(before)
-  // Its own marks stay until there is something new to mark.
+  expect(registry.get('nod-find') === marks).toBe(true)
+  // Going on changes the box's count, and that is all.
   enter()
+  marks = registry.get('nod-find')
   await settle()
-  expect(count()).toBe('1 / 1')
+  expect(registry.get('nod-find') === marks).toBe(true)
+})
+
+test('the box’s own words are not found', async () => {
+  await callFind()
+  await type('pear')
+  expect(count()).toBe('No match')
+  expect(findRanges('No match')).toEqual([])
+  expect(findRanges('×')).toEqual([])
 })
 
 test('the page’s one-letter keys stay out of what is typed in the box', async () => {
@@ -490,133 +680,111 @@ test('the page’s one-letter keys stay out of what is typed in the box', async 
 
 test('with no highlight API every match gets boxes, and it goes from match to match', async () => {
   Reflect.deleteProperty(CSS_CLASS, 'highlights')
-  const inView = spyOn(Range.prototype, 'getBoundingClientRect').mockImplementation(() =>
-    rect(10, 100, 50, 120),
-  )
-  const lines = spyOn(Range.prototype, 'getClientRects').mockImplementation(
-    () => [rect(10, 20, 50, 40)] as unknown as DOMRectList,
-  )
-  try {
-    await callFind()
-    await type('apple')
-    enter()
-    expect(count()).toBe('3 / 4')
-    expect(overBoxes().map(([name]) => name)).toEqual([
-      'find-mark',
-      'find-mark',
-      'find-mark current',
-      'find-mark',
-    ])
-    esc()
-    expect(bar()).toBeNull()
-  } finally {
-    lines.mockRestore()
-    inView.mockRestore()
-    CSS_CLASS.highlights = registry
-  }
-})
-
-// A rectangle as the browser gives a range's or element's: happy-dom lays nothing out.
-const rect = (left: number, top: number, right: number, bottom: number) =>
-  ({ left, top, right, bottom, width: right - left, height: bottom - top }) as DOMRect
-const overBoxes = () =>
-  [...document.querySelectorAll<HTMLElement>('.find-marks .find-mark')].map((b) => [
-    b.className,
-    b.style.left,
-    b.style.top,
-    b.style.width,
-    b.style.height,
+  matchesAt(rect(10, 100, 50, 120), () => [rect(10, 20, 50, 40)])
+  await callFind()
+  await type('apple')
+  enter()
+  expect(count()).toBe('3 / 4')
+  expect(overBoxes().map(([name]) => name)).toEqual([
+    'find-mark',
+    'find-mark',
+    'find-mark current',
+    'find-mark',
   ])
+  esc()
+  expect(isOpen()).toBe(false)
+})
 
 test('text a highlight cannot paint gets boxes over it, and none is left when the box closes', async () => {
-  const inView = spyOn(Range.prototype, 'getBoundingClientRect').mockImplementation(() =>
-    rect(10, 100, 50, 120),
+  matchesAt(rect(10, 100, 50, 120), () => [rect(10, 20, 50, 40)])
+  await act(async () =>
+    setPage(
+      <>
+        <button type="button">apple in a button</button>
+        <div style={{ display: 'flex' }}>apple in a flex box</div>
+        <div style={{ display: 'grid' }}>apple in a grid box</div>
+        <div id="clamped">apple in a clamped box</div>
+        <div>
+          apple beside a block<p>a block</p>
+        </div>
+        <p>
+          apple in a paragraph <b>with a bold word</b> and <a href="/x">the next page</a>
+        </p>
+      </>,
+    ),
   )
-  const lines = spyOn(Range.prototype, 'getClientRects').mockImplementation(
-    () => [rect(10, 20, 50, 40)] as unknown as DOMRectList,
+  // happy-dom drops this value from a style, so it is given as a browser computes it.
+  const computed = getComputedStyle
+  const clamped = byId('clamped')
+  spyOn(globalThis, 'getComputedStyle').mockImplementation((el) =>
+    el === clamped ? ({ display: '-webkit-box' } as CSSStyleDeclaration) : computed(el),
   )
-  try {
-    await act(async () =>
-      setPage(
-        <>
-          <button type="button">apple in a button</button>
-          <div style={{ display: 'flex' }}>apple in a flex box</div>
-          <div>
-            apple beside a block<p>a block</p>
-          </div>
-          <p>
-            apple in a paragraph <b>with a bold word</b> and <a href="/x">the next page</a>
-          </p>
-        </>,
-      ),
-    )
-    await callFind()
-    await type('apple')
-    // The sidebar's link and the paragraph are painted by the highlight, so they are left out.
-    expect(marked()).toHaveLength(5)
-    expect(count()).toBe('2 / 5')
-    const here = ['find-mark current', '10px', '20px', '40px', '20px']
-    const other = ['find-mark', '10px', '20px', '40px', '20px']
-    expect(overBoxes()).toEqual([here, other, other])
-    enter()
-    expect(overBoxes()).toEqual([other, here, other])
-    // The fourth is the paragraph: its mark is the highlight, and no box is current.
-    enter()
-    enter()
-    expect(hereIn()).toBe('')
-    expect(overBoxes()).toEqual([other, other, other])
-    esc()
-    expect(document.querySelector('.find-marks')).toBeNull()
-  } finally {
-    lines.mockRestore()
-    inView.mockRestore()
-  }
+  await callFind()
+  await type('apple')
+  // The sidebar's link and the paragraph are painted by the highlight, so they are left out.
+  expect(marked()).toHaveLength(7)
+  expect(count()).toBe('2 / 7')
+  const current = ['find-mark current', '10px', '20px', '40px', '20px']
+  const other = ['find-mark', '10px', '20px', '40px', '20px']
+  expect(overBoxes()).toEqual([current, other, other, other, other])
+  enter()
+  expect(overBoxes()).toEqual([other, current, other, other, other])
+  // On the paragraph, its mark is the highlight and no box is current.
+  enter({ shiftKey: true })
+  enter({ shiftKey: true })
+  expect(here()[0]?.startContainer.parentElement?.tagName).toBe('A')
+  enter({ shiftKey: true })
+  expect(here()[0]?.startContainer.parentElement?.tagName).toBe('P')
+  expect(overBoxes()).toEqual([other, other, other, other, other])
+  esc()
+  expect(document.querySelector('.find-marks') === null).toBe(true)
 })
 
-test('a box over text stays within the window and what clips the text, and follows scrolling', async () => {
+test('a box over text stays within the window and what clips the text, and follows the page', async () => {
   let line = rect(150, 20, 300, 40)
-  const inView = spyOn(Range.prototype, 'getBoundingClientRect').mockImplementation(() =>
-    rect(10, 100, 50, 120),
-  )
-  const lines = spyOn(Range.prototype, 'getClientRects').mockImplementation(
-    () => [line] as unknown as DOMRectList,
-  )
-  try {
-    await act(async () =>
-      setPage(
-        <div id="clip" style={{ overflowX: 'hidden', overflowY: 'hidden' }}>
+  matchesAt(rect(150, 80, 160, 90), () => [line])
+  await act(async () =>
+    setPage(
+      <div id="clip" style={{ overflowX: 'hidden', overflowY: 'hidden' }}>
+        <div id="scroller" style={{ overflowX: 'auto', overflowY: 'auto' }}>
           <button type="button">apple cut off</button>
-        </div>,
-      ),
-    )
-    const clip = document.querySelector('#clip')
-    if (clip === null) throw new Error('no clip')
-    const clipped = spyOn(clip, 'getBoundingClientRect').mockImplementation(() =>
-      rect(100, 0, 200, 100),
-    )
-    await callFind()
-    await type('apple')
-    expect(overBoxes()).toEqual([['find-mark current', '150px', '20px', '50px', '20px']])
-    // Scrolled out of what clips it: no box.
-    line = rect(250, 20, 300, 40)
-    window.dispatchEvent(new Event('scroll'))
-    await act(() => new Promise<void>((done) => requestAnimationFrame(() => done())))
-    expect(overBoxes()).toEqual([])
-    // Back, and resizing the window draws too.
-    line = rect(110, 20, 130, 40)
-    window.dispatchEvent(new Event('resize'))
-    await act(() => new Promise<void>((done) => requestAnimationFrame(() => done())))
-    expect(overBoxes()).toEqual([['find-mark current', '110px', '20px', '20px', '20px']])
-    // Outside the window.
-    clipped.mockImplementation(() => rect(0, 0, 100000, 100000))
-    line = rect(50, innerHeight + 10, 80, innerHeight + 30)
-    window.dispatchEvent(new Event('scroll'))
-    await act(() => new Promise<void>((done) => requestAnimationFrame(() => done())))
-    expect(overBoxes()).toEqual([])
-  } finally {
-    lines.mockRestore()
-    inView.mockRestore()
-  }
+        </div>
+      </div>,
+    ),
+  )
+  const clipped = boxAt('clip', rect(100, 0, 200, 100))
+  boxAt('scroller', rect(0, 0, 100000, 100000))
+  await callFind()
+  await type('apple')
+  expect(overBoxes()).toEqual([['find-mark current', '150px', '20px', '50px', '20px']])
+  // Scrolled out of what clips it: no box. A box inside the page sends no scroll up to the window.
+  line = rect(250, 20, 300, 40)
+  act(() => byId('scroller').dispatchEvent(new Event('scroll')))
+  await frame()
+  expect(overBoxes()).toEqual([])
+  // Back, and resizing the window draws too.
+  line = rect(110, 20, 130, 40)
+  window.dispatchEvent(new Event('resize'))
+  await frame()
+  expect(overBoxes()).toEqual([['find-mark current', '110px', '20px', '20px', '20px']])
+  // Dragging a pane's edge changes nothing but the root's style.
+  line = rect(120, 20, 140, 40)
+  document.documentElement.style.setProperty('--side-w', '300px')
+  await settle()
+  await frame()
+  expect(overBoxes()).toEqual([['find-mark current', '120px', '20px', '20px', '20px']])
+  // Outside the window.
+  clipped.mockImplementation(() => rect(0, 0, 100000, 100000))
+  line = rect(50, innerHeight + 10, 80, innerHeight + 30)
+  window.dispatchEvent(new Event('scroll'))
+  await frame()
+  expect(overBoxes()).toEqual([])
+  // In the document's place, with the window scrolled down it.
+  line = rect(50, 10, 80, 30)
+  window.scrollTo(0, 500)
+  window.dispatchEvent(new Event('scroll'))
+  await frame()
+  expect(overBoxes()).toEqual([['find-mark current', '50px', '510px', '30px', '20px']])
 })
 
 test('a box scrolls only if the match is out of its view, and to its middle', () => {
@@ -631,6 +799,47 @@ test('a box scrolls only if the match is out of its view, and to its middle', ()
   expect(scrollBy(150, 160, 100, 200, 0)).toBe(0)
   expect(scrollBy(190, 210, 100, 200, 0)).toBe(50)
   expect(scrollBy(90, 100, 100, 200, 0)).toBe(-55)
+})
+
+test('going to a match scrolls what scrolls around it, as far as a sticky box', async () => {
+  const root = document.documentElement
+  await act(async () =>
+    setPage(
+      <>
+        <div id="cut" style={{ overflowX: 'hidden', overflowY: 'hidden' }}>
+          <div id="scroller" style={{ overflowX: 'auto', overflowY: 'auto' }}>
+            <p id="plain">apple in a paragraph</p>
+          </div>
+        </div>
+        <div id="sticky" style={{ position: 'sticky', overflowY: 'auto' }}>
+          <p>apple in a sticky pane</p>
+        </div>
+      </>,
+    ),
+  )
+  matchesAt(rect(2000, 1000, 2040, 1020))
+  const everywhere = rect(0, 0, 100000, 100000)
+  boxAt('cut', everywhere)
+  boxAt('scroller', rect(0, 100, 500, 300))
+  boxAt('sticky', rect(0, 100, 500, 300))
+  await callFind()
+  await type('apple')
+  expect(hereIn()).toBe('plain')
+  // To the middle of the box around it, and of the window, each way.
+  const scroller = byId('scroller')
+  expect([scroller.scrollTop, scroller.scrollLeft]).toEqual([810, 1770])
+  expect(root.scrollTop).toBe(1010 - innerHeight / 2)
+  expect(root.scrollLeft).toBe(2020 - innerWidth / 2)
+  // What cuts off an ellipsis is never scrolled.
+  const cut = byId('cut')
+  expect([cut.scrollTop, cut.scrollLeft]).toEqual([0, 0])
+
+  // Enter goes there too. Past a sticky box the window stays, and with it the page being read.
+  root.scrollTop = 0
+  root.scrollLeft = 0
+  enter()
+  expect(byId('sticky').scrollTop).toBe(810)
+  expect([root.scrollTop, root.scrollLeft]).toEqual([0, 0])
 })
 
 test('the app’s menu sends the event the page takes, and the help lists the key', () => {

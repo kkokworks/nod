@@ -1,4 +1,5 @@
 import { type KeyboardEvent, type RefObject, useEffect, useRef, useState } from 'react'
+import { ignoreOnPage } from './keys'
 
 // What the app sends the page for ⌘F (its 찾기… menu item, main.rs): the box opens, or if it is open
 // its text is selected. A browser never sends it, so there ⌘F stays the browser's own.
@@ -9,9 +10,10 @@ export const FIND_EVENT = 'nod-find'
 const MARKS = 'nod-find'
 const CURRENT = 'nod-find-current'
 
-// Not searched: this box and its marks, the terminal (xterm draws on a canvas), and what a field
-// holds, whose text is no text node and which a highlight cannot mark.
-const UNSEARCHED = '.find-bar, .find-marks, .xterm, select, textarea'
+// Not searched: this box and its marks, the terminal (xterm draws on a canvas), what a field holds,
+// whose text is no text node and which a highlight cannot mark, and what is not text to read at all
+// (where WebKit has no checkVisibility to say so, before Safari 17.4).
+const UNSEARCHED = '.find-bar, .find-marks, .xterm, select, textarea, script, style'
 
 // ponytail: stops at this many. Each change to the DOM goes over every live range: 200 changes took
 // about 35 ms with 5000 ranges and up to 230 ms with 20000 (docs/design.md). Past it the count says
@@ -109,6 +111,26 @@ function stretches(root: Element): Text[][] {
   return all
 }
 
+// The boxes around el that cut off what overflows them, by how they overflow.
+function cutBy(el: Element | null, overflow: RegExp): DOMRect[] {
+  const boxes: DOMRect[] = []
+  for (let at = el; at !== null; at = at.parentElement) {
+    const { overflowX, overflowY } = getComputedStyle(at)
+    if (at !== document.scrollingElement && overflow.test(`${overflowX} ${overflowY}`)) {
+      boxes.push(at.getBoundingClientRect())
+    }
+  }
+  return boxes
+}
+
+// Past an ellipsis or a line clamp: no scrolling shows it, so going there would show nothing.
+function isCutOff(range: Range): boolean {
+  const at = range.getBoundingClientRect()
+  return cutBy(range.startContainer.parentElement, /hidden|clip/).some(
+    (b) => at.right <= b.left || at.left >= b.right || at.bottom <= b.top || at.top >= b.bottom,
+  )
+}
+
 export function findRanges(query: string): Range[] {
   const wanted = pattern(query)
   const ranges: Range[] = []
@@ -119,7 +141,7 @@ export function findRanges(query: string): Range[] {
       const range = document.createRange()
       range.setStart(...from)
       range.setEnd(...to)
-      ranges.push(range)
+      if (!isCutOff(range)) ranges.push(range)
     }
   }
   return ranges
@@ -129,15 +151,16 @@ export const stepped = (index: number, total: number, by: 1 | -1): number =>
   (index + by + total) % total
 
 // WebKit paints a highlight with the style of the box around the text, and text with no element of
-// its own in a box has none: bare text in a button, a flex or grid box, or beside blocks. So does
-// any text without the API (WebKit before Safari 17.2). These get boxes drawn over them, boxesOver.
+// its own in a box has none: bare text in a button, a flex, grid or -webkit-box box, or beside
+// blocks. So does any text without the API (WebKit before Safari 17.2). These get boxes drawn over
+// them, boxesOver.
 function isBare(range: Range): boolean {
   const el = range.startContainer.parentElement
   if (el === null) return false
   return (
     !('highlights' in CSS) ||
     el.tagName === 'BUTTON' ||
-    /flex|grid/.test(getComputedStyle(el).display) ||
+    /flex|grid|box/.test(getComputedStyle(el).display) ||
     [...el.children].some((c) => !/^(inline|contents|none)/.test(getComputedStyle(c).display))
   )
 }
@@ -150,12 +173,7 @@ function boxesOver(range: Range, current: boolean): HTMLElement[] {
     (l) => l.right > 0 && l.left < innerWidth && l.bottom > 0 && l.top < innerHeight,
   )
   if (lines.length === 0) return []
-  const around: DOMRect[] = []
-  for (let el = range.startContainer.parentElement; el !== null; el = el.parentElement) {
-    const { overflowX, overflowY } = getComputedStyle(el)
-    const clips = /auto|scroll|hidden|clip/.test(`${overflowX} ${overflowY}`)
-    if (clips && el !== document.scrollingElement) around.push(el.getBoundingClientRect())
-  }
+  const around = cutBy(range.startContainer.parentElement, /auto|scroll|hidden|clip/)
   const boxes: HTMLElement[] = []
   for (const line of lines) {
     const left = Math.max(line.left, 0, ...around.map((b) => b.left))
@@ -276,6 +294,9 @@ function finder(changed: (found: Found) => void, marks: RefObject<HTMLElement | 
     )
     show({ query: found.query, ranges, index: same >= 0 ? same : firstInPage(ranges) }, false)
   })
+  // Dragging a pane's edge moves the page's text with nothing changing but the root's style
+  // (panes.tsx), which a highlight follows and a box does not.
+  const widths = new MutationObserver(drawSoon)
   return {
     search(query: string) {
       if (query === found.query) return
@@ -295,10 +316,12 @@ function finder(changed: (found: Found) => void, marks: RefObject<HTMLElement | 
         attributes: true,
         attributeFilter: ['class', 'hidden', 'open', 'style'],
       })
+      widths.observe(document.documentElement, { attributes: true, attributeFilter: ['style'] })
       window.addEventListener('scroll', drawSoon, { capture: true, passive: true })
       window.addEventListener('resize', drawSoon)
       return () => {
         observer.disconnect()
+        widths.disconnect()
         window.removeEventListener('scroll', drawSoon, { capture: true })
         window.removeEventListener('resize', drawSoon)
         cancelAnimationFrame(frame)
@@ -322,14 +345,28 @@ function Box({ input, close }: { input: RefObject<HTMLInputElement | null>; clos
   // Only finished text is looked for, and the Enter or Esc that finishes a syllable does nothing
   // else. WebKit ends a composition before that key's keydown, which then has keyCode 229 for "the
   // input method took it", as capture.js has it. For Esc that alone does not say a syllable ended (an
-  // input method may take it with nothing composed, docs/design.md), so `ended` says so until the
-  // keyup of that key.
+  // input method may take it with nothing composed, docs/design.md), so `ended` says one just did,
+  // until the next key down.
   const composing = useRef(false)
   const ended = useRef(false)
+  // Whether the Esc now held came down here. Its keyup closes the box only if not: the input method
+  // kept its keydown from the capture window's page (docs/design.md, the desktop app, 6), and a keyup
+  // does not go by the input method.
+  const escDown = useRef(false)
   useEffect(() => {
     input.current?.focus()
     return find.watch()
   }, [find, input])
+  // Esc from the page around the box too, unless it is the key of a field (the terminal's is one) or
+  // of a menu, which the browser closes after this.
+  useEffect(() => {
+    const fromPage = (e: globalThis.KeyboardEvent) => {
+      if (e.key !== 'Escape' || e.defaultPrevented || ignoreOnPage(e)) return
+      if (document.querySelector(':popover-open') === null) close()
+    }
+    window.addEventListener('keydown', fromPage)
+    return () => window.removeEventListener('keydown', fromPage)
+  }, [close])
   const isEscape = (e: KeyboardEvent) => e.key === 'Escape' || e.code === 'Escape'
   return (
     <>
@@ -337,10 +374,13 @@ function Box({ input, close }: { input: RefObject<HTMLInputElement | null>; clos
       <search
         className="find-bar"
         onKeyDown={(e) => {
+          const finishes = ended.current
+          ended.current = false
+          if (isEscape(e)) escDown.current = true
           if (composing.current || e.nativeEvent.isComposing) return
           const tookIt = e.keyCode === 229
           if (isEscape(e)) {
-            if (tookIt && ended.current) return
+            if (tookIt && finishes) return
             e.preventDefault()
             close()
           } else if (e.key === 'Enter' && e.target === input.current && !tookIt) {
@@ -349,11 +389,11 @@ function Box({ input, close }: { input: RefObject<HTMLInputElement | null>; clos
           }
         }}
         onKeyUp={(e) => {
-          const wasEnded = ended.current
+          if (!isEscape(e)) return
+          const closes = !escDown.current && !ended.current && !composing.current
+          escDown.current = false
           ended.current = false
-          // A keydown handled by the input method did not get to the capture window's page as
-          // Escape (docs/design.md, the desktop app, 6); its keyup does not go by the input method.
-          if (isEscape(e) && !wasEnded && !composing.current) close()
+          if (closes) close()
         }}
       >
         <input
@@ -363,6 +403,10 @@ function Box({ input, close }: { input: RefObject<HTMLInputElement | null>; clos
           autoComplete="off"
           autoCorrect="off"
           spellCheck={false}
+          // A syllable ended by leaving the box, as a click does, has no key to come.
+          onFocus={() => {
+            ended.current = false
+          }}
           onChange={(e) => {
             if (!composing.current) find.search(e.target.value)
           }}
@@ -411,8 +455,13 @@ export function FindBar() {
       input={input}
       close={() => {
         setOpen(false)
-        // Not scrolling back to it: the person stays at what they found.
-        if (before.current instanceof HTMLElement) before.current.focus({ preventScroll: true })
+        // Not if the person has since gone on to something else on the page. Not scrolling back to
+        // it: they stay at what they found.
+        const at = document.activeElement
+        const free = at === document.body || at?.closest('.find-bar') != null
+        if (free && before.current instanceof HTMLElement) {
+          before.current.focus({ preventScroll: true })
+        }
       }}
     />
   )
