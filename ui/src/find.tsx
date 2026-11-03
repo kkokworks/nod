@@ -270,6 +270,9 @@ type Found = { query: string; ranges: Range[]; index: number }
 function finder(changed: (found: Found) => void, marks: RefObject<HTMLElement | null>) {
   let found: Found = { query: '', ranges: [], index: 0 }
   let bare: Range[] = []
+  // Where the current match starts, apart from its Range: a text written over takes a live Range to its
+  // start, as a refresh does to a line whose other words changed.
+  let at: [Node, number] | null = null
   const draw = () => {
     const here = found.ranges[found.index]
     marks.current?.replaceChildren(...bare.flatMap((r) => boxesOver(r, r === here)))
@@ -280,6 +283,7 @@ function finder(changed: (found: Found) => void, marks: RefObject<HTMLElement | 
     paint(next.ranges, next.index)
     changed(next)
     const here = next.ranges[next.index]
+    at = here === undefined ? null : [here.startContainer, here.startOffset]
     if (scroll && here !== undefined) reveal(here)
     draw()
   }
@@ -287,11 +291,8 @@ function finder(changed: (found: Found) => void, marks: RefObject<HTMLElement | 
   // is still there, else it starts over as on a new search, in both cases where the person is reading.
   const refind = () => {
     if (pattern(found.query) === null) return
-    const was = found.ranges[found.index]
     const ranges = findRanges(found.query)
-    const same = ranges.findIndex(
-      (r) => r.startContainer === was?.startContainer && r.startOffset === was?.startOffset,
-    )
+    const same = ranges.findIndex((r) => r.startContainer === at?.[0] && r.startOffset === at?.[1])
     show({ query: found.query, ranges, index: same >= 0 ? same : firstInPage(ranges) }, false)
   }
   // Once a frame, however often it is asked.
@@ -319,9 +320,10 @@ function finder(changed: (found: Found) => void, marks: RefObject<HTMLElement | 
     })
     if (onPage) refind()
   })
-  // Dragging a pane's edge moves the page's text with nothing changing but the root's style
+  // Dragging a pane's edge moves the page's text with nothing changing but the root's style and class
   // (panes.tsx). A box does not follow that as a highlight does, and text can come out from behind an
-  // ellipsis or go behind one, as when the window is resized.
+  // ellipsis or go behind one, as when the window is resized. The class makes the page unselectable,
+  // where WebKit shows no marks, nor those made meanwhile once it is let go, so letting go marks anew.
   const widths = new MutationObserver(refindSoon)
   return {
     search(query: string) {
@@ -342,7 +344,10 @@ function finder(changed: (found: Found) => void, marks: RefObject<HTMLElement | 
         attributes: true,
         attributeFilter: ['class', 'hidden', 'open', 'style'],
       })
-      widths.observe(document.documentElement, { attributes: true, attributeFilter: ['style'] })
+      widths.observe(document.documentElement, {
+        attributes: true,
+        attributeFilter: ['class', 'style'],
+      })
       window.addEventListener('scroll', drawSoon, { capture: true, passive: true })
       window.addEventListener('resize', refindSoon)
       // A menu or the help opening or closing shows or hides its text with no change in the DOM, and

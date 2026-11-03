@@ -527,8 +527,25 @@ test('closed, nothing looks at the page any more or marks it again', async () =>
   await frame()
   expect(marked()).toEqual([])
   for (const name of ['resize', 'toggle']) act(() => window.dispatchEvent(new Event(name)))
+  act(() => document.documentElement.classList.add('resizing'))
   await frame()
+  document.documentElement.classList.remove('resizing')
   expect(marked()).toEqual([])
+})
+
+test('letting go of a pane marks anew, as WebKit shows no marks made while one was dragged', async () => {
+  await callFind()
+  await type('apple')
+  const root = document.documentElement
+  const atStart = registry.get('nod-find')
+  act(() => root.classList.add('resizing'))
+  await frame()
+  const dragged = registry.get('nod-find')
+  expect(dragged === atStart).toBe(false)
+  act(() => root.classList.remove('resizing'))
+  await frame()
+  expect(registry.get('nod-find') === dragged).toBe(false)
+  expect(marked()).toHaveLength(4)
 })
 
 test('the ↑ and ↓ buttons go back and on, and the keyboard stays in the field', async () => {
@@ -943,6 +960,26 @@ test('the current match stays by where it is in its text, when one text holds se
   await settle()
   expect(count()).toBe('3 / 4')
   expect(here()[0]?.startOffset).toBe(10)
+})
+
+test('the current match stays when only the words after it change in its text', async () => {
+  const words = (done: number) => <p id="both">{`apple and apple, ${done}% done`}</p>
+  await act(async () => setPage(words(40)))
+  await callFind()
+  await type('apple')
+  enter()
+  expect(here()[0]?.startOffset).toBe(10)
+  expect(count()).toBe('3 / 3')
+  // A text written over takes a live Range to its start in a browser, not in happy-dom.
+  const live = here()[0]
+  const text = byId('both').firstChild
+  if (live === undefined || text === null) throw new Error('no match')
+  live.setStart(text, 0)
+  await act(async () => setPage(words(50)))
+  await settle()
+  expect(byId('both').textContent).toBe('apple and apple, 50% done')
+  expect(here()[0]?.startOffset).toBe(10)
+  expect(count()).toBe('3 / 3')
 })
 
 test('a refresh that only changes the words in a text node is seen too', async () => {
