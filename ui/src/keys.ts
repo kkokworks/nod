@@ -51,8 +51,22 @@ export const KEYS = {
     does: 'Show these shortcuts',
     where: 'Outside a field',
   },
+  // The app's menu takes ⌘F (desktop/src-tauri/src/main.rs) and the box takes the rest (find.tsx); a
+  // browser keeps ⌘F as its own find.
+  find: { bind: [], show: ['⌘F'], does: 'Find on this page', where: 'In the desktop app' },
+  findStep: {
+    bind: [],
+    show: ['↵', '⇧↵'],
+    does: 'Next or previous match',
+    where: 'In the find box',
+  },
   // Menus and the help are popovers, which the browser closes on Escape itself.
-  close: { bind: [], show: ['Esc'], does: 'Close a menu or this help', where: 'Anywhere' },
+  close: {
+    bind: [],
+    show: ['Esc'],
+    does: 'Close a menu, this help or the find box',
+    where: 'Anywhere',
+  },
 } satisfies Record<string, Key>
 
 type Name = keyof typeof KEYS

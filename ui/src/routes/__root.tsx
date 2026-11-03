@@ -10,6 +10,7 @@ import { createServerFn } from '@tanstack/react-start'
 import xtermCss from '@xterm/xterm/css/xterm.css?url'
 import { type ReactNode, type Ref, useEffect, useRef } from 'react'
 import { BUILD } from '../build'
+import { FindBar } from '../find'
 import { bindKeys, ignoreOnPage, KEYS } from '../keys'
 import { type Overview, overview } from '../nod.server'
 import { SHOW_STORED, Splitter } from '../panes'
@@ -137,6 +138,7 @@ function Layout({ data, children }: { data: Overview | null; children: ReactNode
         <UndoBar>{children}</UndoBar>
       </main>
       <KeysHelp ref={help} />
+      <FindBar />
     </div>
   )
 }
