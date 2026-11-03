@@ -137,7 +137,8 @@ test('gc collects the tasks the human names, however recent, and leaves unfinish
     removed: [named],
     clean: [gone],
     skipped: [
-      { id: locked, reason: expect.stringContaining('EACCES') },
+      // Bun 1.3.14 says EACCES, 1.4.4 ENOTEMPTY.
+      { id: locked, reason: expect.stringMatching(/EACCES|ENOTEMPTY/) },
       { id: running, reason: 'still running' },
     ],
   })

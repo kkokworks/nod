@@ -1,7 +1,8 @@
 // nod's desktop app: a window onto the UI server (ui/, which a login agent keeps up apart from
 // the app), a menu bar icon, and global shortcuts that call the window or capture a todo from any
 // app. The UI's pages call nothing here: shortcuts, menus and windows are handled on this side,
-// and pages change by the app setting the main window's address.
+// and pages change by the app setting the main window's address. All the app tells a page is ⌘F,
+// as an event that a browser never sends (open_find).
 
 use std::io::ErrorKind;
 use std::net::TcpStream;
@@ -496,10 +497,22 @@ fn reload(app: &AppHandle) {
     go(app, &shown_path(&url));
 }
 
+// Has the main window's page open its find box (ui/src/find.tsx). Only with that window in front:
+// the menu takes ⌘F in the capture window too, which has no use for it. A page without the box (the
+// offline page) ignores the event.
+fn open_find(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        if window.is_focused().unwrap_or(false) {
+            let _ = window.eval("window.dispatchEvent(new Event('nod-find'))");
+        }
+    }
+}
+
 fn on_menu(app: &AppHandle, event: MenuEvent) {
     match event.id().0.as_str() {
         "open" => show_main(app),
         "capture" => open_capture(app),
+        "find" => open_find(app),
         "close" => {
             let focused = app.webview_windows().into_values().find(|w| w.is_focused().unwrap_or(false));
             if let Some(window) = focused {
@@ -559,6 +572,8 @@ fn app_menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
                     &PredefinedMenuItem::copy(app, Some("복사하기"))?,
                     &PredefinedMenuItem::paste(app, Some("붙여넣기"))?,
                     &PredefinedMenuItem::select_all(app, Some("모두 선택"))?,
+                    &PredefinedMenuItem::separator(app)?,
+                    &MenuItem::with_id(app, "find", "찾기…", true, Some("CmdOrCtrl+F"))?,
                 ],
             )?,
             &Submenu::with_items(
