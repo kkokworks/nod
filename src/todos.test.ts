@@ -350,7 +350,8 @@ test('a change goes in only from the status its caller read, and a finished todo
     `t${u.id} is inbox, not next`,
   )
   expect(todos.get(t.id).status).toBe('next')
-  expect(todos.finish([t.id], 'done', 'human', 'next').map((x) => x.status)).toEqual(['done'])
+  // A todo named twice is one todo, which left `from` the first time.
+  expect(todos.finish([t.id, t.id], 'done', 'human', 'next').map((x) => x.status)).toEqual(['done'])
 })
 
 test('links are kept once each and recorded as changes', () => {

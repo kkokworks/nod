@@ -448,7 +448,8 @@ export function TodoRow({
       down: () => focusRow(el, 1),
       up: () => focusRow(el, -1),
       done: () => {
-        if (t.status !== 'done' && !justHanded()) move('done')
+        // Not while one is going in: this row still shows the status that one moves it from.
+        if (!busy && t.status !== 'done' && !justHanded()) move('done')
       },
       // As a click on the badge does, with focus on the current status.
       status: () => {

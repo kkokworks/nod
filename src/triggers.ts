@@ -221,13 +221,17 @@ async function checkWatches(ledger: Ledger, home: string, terminals: Terminals):
         } catch (error) {
           // The task could not carry on (its transcript gone after gc, its session failing to
           // start), so the person takes the todo, as when no task is named. Only while it still
-          // waits on nothing, as endWatch left it, in the one transaction that writes: one the
-          // person moved or set waiting on someone or a watch meanwhile is theirs, and only hears
-          // why in its notes.
+          // waits on this task alone, as endWatch left it, in the one transaction that writes: one
+          // the person moved, set waiting on someone or a watch, or handed to a new task meanwhile
+          // is theirs, and only hears why in its notes.
           const line = `${localTime(new Date())} task n${back} could not carry on: ${oneLine(message(error), 200)}`
           ledger.db.transaction(() => {
             const now = todos.get(t.id)
-            const left = now.status === 'waiting' && now.waitingOn === null && now.watch === null
+            const left =
+              now.status === 'waiting' &&
+              now.waitingOn === null &&
+              now.watch === null &&
+              ledger.tasksOf(t.id).at(-1)?.id === back
             const notes = withLine(now.notes, line)
             todos.set(t.id, left ? { status: 'next', notes } : { notes }, SELF)
           })()

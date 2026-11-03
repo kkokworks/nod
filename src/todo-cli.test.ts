@@ -147,7 +147,7 @@ test('--from changes a todo only while it is in the status read, and a done one 
   await ok('todo', 'done', 't1', '--from', 'waiting')
   // Planned from a read made while it waited, the change is refused and says what happened since.
   expect(await fails('todo', 'set', 't1', '--status', 'next', '--from', 'waiting')).toMatch(
-    /t1 is done, not waiting \(moved by human \d{4}-\d{2}-\d{2} \d{2}:\d{2}\); nothing changed: read it again \(nod todo t1\) before changing it/,
+    /t1 is done, not waiting \(moved by human \d{4}-\d{2}-\d{2} \d{2}:\d{2}\); nothing changed: read it again before changing it/,
   )
   expect(await fails('todo', 'set', 't1', '--status', 'next')).toContain(
     'reopening it takes --from done',
@@ -184,7 +184,7 @@ test('--from changes a todo only while it is in the status read, and a done one 
     '    <time>  human  status done → next',
     '    <time>  human  status next → dropped',
   ])
-}, 15_000) // 14 runs of nod, about 1 s when idle
+}, 15_000) // 13 runs of nod, about 1 s when idle
 
 test('a watch shows when it last ran and how, and says when nothing will run it', async () => {
   const { ok } = runner()

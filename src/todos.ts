@@ -355,9 +355,11 @@ export class Todos {
   }
 
   // Marks every todo done or dropped, or none of them when one does not exist or, with `from`, is
-  // in another status.
+  // in another status. One named twice is one todo: it left `from` the first time.
   finish(ids: number[], status: 'done' | 'dropped', actor: string, from?: TodoStatus): Todo[] {
-    return this.db.transaction(() => ids.map((id) => this.set(id, { status }, actor, [], from)))()
+    return this.db.transaction(() =>
+      [...new Set(ids)].map((id) => this.set(id, { status }, actor, [], from)),
+    )()
   }
 
   // A todo brought from another system with its own times: when it was captured, when its status
@@ -983,7 +985,7 @@ export class Todos {
     const was = `t${before.id} is ${before.status}`
     if (from !== undefined && from !== before.status) {
       throw new Error(
-        `${was}, not ${from}${this.movedBy(before.id)}; nothing changed: read it again (nod todo t${before.id}) before changing it`,
+        `${was}, not ${from}${this.movedBy(before.id)}; nothing changed: read it again before changing it`,
       )
     }
     if (from === undefined && FINISHED.includes(before.status) && !FINISHED.includes(status)) {

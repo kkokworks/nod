@@ -738,20 +738,23 @@ test('a change to the todo keeps what is being typed in the form and says so', a
   ])
 })
 
+const statusField = () => {
+  const status = document.querySelector<HTMLSelectElement>('.todo-form select')
+  if (status === null) throw new Error('no status field')
+  return status
+}
+// As choosing from the list does: React sees a select's change through its change event.
+const pick = (value: string) => {
+  const status = statusField()
+  act(() => {
+    Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')?.set?.call(status, value)
+    status.dispatchEvent(new Event('change', { bubbles: true }))
+  })
+}
+
 test('a status picked in the form, or put back with Undo, moves the todo only from the status shown', async () => {
   let todo = { ...todoItem(10, 'Reply to Kim'), status: 'waiting' }
   answer = () => ({ today: '2026-10-23', todo, links: [], tasks: [], changes: [], projects: [] })
-  const pick = (value: string) => {
-    const status = document.querySelector<HTMLSelectElement>('.todo-form select')
-    if (status === null) throw new Error('no status field')
-    act(() => {
-      Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')?.set?.call(
-        status,
-        value,
-      )
-      status.dispatchEvent(new Event('change', { bubbles: true }))
-    })
-  }
   await go('/todos/10?edit=true')
   pick('next')
   // Another session closes it before Save, and the page reloads: the pick was made from waiting.
@@ -772,6 +775,58 @@ test('a status picked in the form, or put back with Undo, moves the todo only fr
   expect(posted.splice(0)).toEqual([{ id: 1, edit: { status: 'done' }, from: 'next' }])
   await click('Undo')
   expect(posted.splice(0)).toEqual([{ id: 1, edit: { status: 'next' }, from: 'done' }])
+})
+
+test('a save refused because the todo moved lets go of the status picked, and of nothing else', async () => {
+  let todo = { ...todoItem(13, 'Reply to Kim'), status: 'waiting' }
+  answer = () => ({ today: '2026-10-23', todo, links: [], tasks: [], changes: [], projects: [] })
+  await go('/todos/13?edit=true')
+  pick('next')
+  type(field('.todo-form textarea'), 'a long note')
+
+  // Refused for another reason, with the todo where it was: the pick stays.
+  onPost = () => {
+    throw new Error('empty title')
+  }
+  await click('Save')
+  expect(banners().join()).toContain('empty title')
+  expect(statusField().value).toBe('next')
+  posted.length = 0
+
+  // Closed elsewhere: the pick could only be refused again, so it goes, and the note can be saved.
+  todo = { ...todo, status: 'done' }
+  await reload()
+  onPost = () => {
+    throw new Error('t13 is done, not waiting')
+  }
+  await click('Save')
+  expect(posted.splice(0)).toEqual([
+    { id: 13, edit: { status: 'next', notes: 'a long note' }, from: 'waiting' },
+  ])
+  expect(banners().join()).toContain('t13 is done, not waiting')
+  expect(statusField().value).toBe('done')
+  expect(field<HTMLTextAreaElement>('.todo-form textarea').value).toBe('a long note')
+  onPost = () => {}
+  await click('Save')
+  expect(posted.splice(0)).toEqual([{ id: 13, edit: { notes: 'a long note' } }])
+})
+
+test('a key pressed again before the move is through moves the todo once', async () => {
+  rows = [todoItem(6, 'six')]
+  await go('/rows')
+  act(() => document.querySelector<HTMLElement>('.todo-title')?.focus())
+  setSystemTime(new Date(Date.now() + 1500))
+  // Back to back: the first send is still going when the second key comes.
+  const x = () =>
+    act(() => {
+      document.activeElement?.dispatchEvent(
+        new KeyboardEvent('keydown', { code: 'KeyX', key: 'x', bubbles: true }),
+      )
+    })
+  x()
+  x()
+  await settle()
+  expect(posted.splice(0)).toEqual([{ id: 6, edit: { status: 'done' }, from: 'next' }])
 })
 
 test("a refresh that fails keeps a todo's form as it is being typed", async () => {

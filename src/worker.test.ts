@@ -824,6 +824,25 @@ test('a todo the person changes while its task is told to carry on stays theirs,
   const handed = await passes((id) => todos.set(id, { waitingOn: 'Kim' }, 'human'))
   expect(handed).toMatchObject({ status: 'waiting', waitingOn: 'Kim' })
   expect(handed.notes).toContain('could not carry on')
+  // Handed to a new task: it waits on that one, though it looks as endWatch left it.
+  const again = await passes((id) =>
+    todos.delegate(
+      id,
+      {
+        brief: 'try again',
+        repo: null,
+        branch: null,
+        checkCmd: null,
+        model: null,
+        after: [],
+        triggerId: null,
+        issue: null,
+      },
+      'human',
+    ),
+  )
+  expect(again.status).toBe('waiting')
+  expect(again.notes).toContain('could not carry on')
 }, 30_000)
 
 tmuxTest(
