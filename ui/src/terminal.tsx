@@ -172,17 +172,27 @@ async function attach(
 
 // The syllable or jamo the Korean input method may still rewrite: the last one it wrote.
 const OPEN = /[ㄱ-ㆎ가-힣]$/
-// How an input method writes the field outside a composition.
-const WRITES = /^(insertText|insertReplacementText|insertLineBreak|insertParagraph|delete)/
+// How an input method writes the field. A composition's own kinds are writes like any if no
+// composition says they are its own (`composing`, isComposing).
+const WRITES =
+  /^(insert(Text|ReplacementText|LineBreak|Paragraph|CompositionText|FromComposition)|delete)/
+const LINE_BREAK = /^insert(LineBreak|Paragraph)/
 const MODIFIERS = new Set(['Shift', 'Control', 'Alt', 'Meta', 'CapsLock', 'Fn'])
+const ARROWS: Record<string, string> = {
+  ArrowLeft: 'D',
+  ArrowUp: 'A',
+  ArrowRight: 'C',
+  ArrowDown: 'B',
+}
 
 // 두벌식 Korean in the app's WKWebView comes with no composition events (docs/design.md): for each
 // key the input method writes xterm.js's field, rewriting the syllable it is building (ㄹ, 리, 립,
 // then 리 and 뷰 for ㅠ), and the key's keydown comes with keyCode 229. xterm.js sent every write,
 // so the worker got ㄹ리립리뷰. Here the page takes those writes: the last syllable shows at the
 // cursor and waits, what is before it goes, and the one waiting goes before any key the input method
-// lets by (Enter, an arrow, Space, a shortcut), a paste, a composition, or the field losing the
-// keyboard. A composition, as Chrome sends for the same keys, stays xterm.js's.
+// lets by (Enter, an arrow, Space, a shortcut), a paste, a right click, a composition, or the field
+// losing the keyboard. A composition, as Chrome sends for the same keys, stays xterm.js's, but for
+// the key that ends one in WebKit, which writes the field before that key's keydown (`ending`).
 // ponytail: text with no key (dictation, the character viewer) that ends in Hangul waits for a key
 // too, and an input method rewriting a syllable already sent sends it again.
 function holdSyllables(term: Terminal): void {
@@ -194,8 +204,9 @@ function holdSyllables(term: Terminal): void {
   // Where it starts in the field.
   let at = 0
   let composing = false
-  // Until xterm.js has sent what a composition made, a moment after it ends.
+  // Until xterm.js has sent what a composition made, a moment after it ends, and what goes after that.
   let ending = false
+  let after = ''
   // xterm.js sends a capital or a Space from its keypress and lets the character go in the field: the
   // input that follows is its own, which it drops.
   let pressed = false
@@ -233,16 +244,29 @@ function holdSyllables(term: Terminal): void {
   root.addEventListener(
     'input',
     (e) => {
-      if (!(e instanceof InputEvent) || composing || ending || e.isComposing) return
+      if (!(e instanceof InputEvent) || composing || e.isComposing) return
       if (!WRITES.test(e.inputType)) return
-      // Hangul then is the input method's next key, come before this one's keyup.
-      if (pressed && !OPEN.test(e.data ?? '')) return
+      if (ending) {
+        // xterm.js is to send all that is in the field, and would send this now as well. A line break
+        // would go as ⌃J, not as the Enter it is.
+        e.stopImmediatePropagation()
+        if (LINE_BREAK.test(e.inputType)) {
+          field.value = field.value.replace(/\n$/, '')
+          after = '\r'
+        }
+        return
+      }
+      if (pressed) {
+        pressed = false
+        return
+      }
       e.stopImmediatePropagation()
       let tail: string
       if (held !== '') tail = field.value.slice(at)
       else {
-        // New text at the end, where the input method writes.
-        tail = e.data ?? (e.inputType.startsWith('insert') ? '\n' : '')
+        // New text at the end, where the input method writes, or a key it took with no text.
+        const erases = e.inputType === 'deleteContentBackward' ? '\x7f' : ''
+        tail = e.data || (LINE_BREAK.test(e.inputType) ? '\n' : erases)
         at = Math.max(0, field.value.length - tail.length)
       }
       held = OPEN.exec(tail)?.[0] ?? ''
@@ -255,13 +279,25 @@ function holdSyllables(term: Terminal): void {
   )
   term.attachCustomKeyEventHandler((e) => {
     pressed = e.type === 'keypress'
-    if (e.type !== 'keydown' || composing || ending) return true
+    if (e.type !== 'keydown' || composing) return true
+    if (ending) {
+      // The arrow that ended the composition in WebKit, whose 229 xterm.js takes for nothing to send.
+      // It has moved the caret, and the field is read from its end.
+      const arrow = ARROWS[e.key]
+      if (!arrow || e.keyCode !== 229 || e.shiftKey || e.altKey || e.ctrlKey || e.metaKey)
+        return true
+      field.setSelectionRange(field.value.length, field.value.length)
+      after = `\x1b${term.modes.applicationCursorKeysMode ? 'O' : '['}${arrow}`
+      return false
+    }
     // The input method's: what it does comes as a write, and xterm.js would send that again.
     if (e.keyCode === 229) return false
     if (!MODIFIERS.has(e.key)) flush()
     return true
   })
   root.addEventListener('paste', flush, true)
+  // xterm.js writes the field for a right click, under what is being built.
+  root.addEventListener('contextmenu', flush, true)
   field.addEventListener('blur', flush)
   // Before xterm.js shows the composition in the same view.
   root.addEventListener(
@@ -278,6 +314,8 @@ function holdSyllables(term: Terminal): void {
     ending = true
     setTimeout(() => {
       ending = false
+      send(after)
+      after = ''
     })
   })
 }

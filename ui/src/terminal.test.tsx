@@ -2,8 +2,9 @@ import { afterAll, afterEach, beforeEach, expect, spyOn, test } from 'bun:test'
 import { GlobalRegistrator } from '@happy-dom/global-registrator'
 
 // A worker's live screen (terminal.tsx) in a DOM, its socket connected to nothing: what reaches the
-// worker is what xterm.js and the page make of the events in xterm.js's field. The events are those
-// WebKit and Chrome send for 두벌식 Korean (docs/design.md).
+// worker is what xterm.js and the page make of the events in xterm.js's field. For 두벌식 Korean the
+// app's order and WebKit's with a composition were measured (docs/design.md); Chrome's is as it is
+// known to send them, not measured here.
 GlobalRegistrator.register()
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 
@@ -142,7 +143,10 @@ async function byApp(
   { before = '', keyFirst = false, rewrite = 'insertText' } = {},
 ) {
   if (keyFirst) key('keydown', { key: k, code, keyCode: 229 })
-  for (const w of writes) write(before + w.value, w.data, w.rewrites ? rewrite : 'insertText')
+  // A composition's inputType with no composition events is so for every write, if it ever comes.
+  const all = rewrite === 'insertCompositionText'
+  for (const w of writes)
+    write(before + w.value, w.data, all || w.rewrites ? rewrite : 'insertText')
   if (!keyFirst) key('keydown', { key: k, code, keyCode: 229 })
   key('keyup', { key: k, code, keyCode: 229 })
   await tick()
@@ -159,7 +163,7 @@ async function build(...stages: string[]) {
 }
 
 for (const keyFirst of [false, true]) {
-  for (const rewrite of ['insertText', 'insertReplacementText']) {
+  for (const rewrite of ['insertText', 'insertReplacementText', 'insertCompositionText']) {
     test(`Korean typed in the app reaches the worker once, each syllable when it is done (${keyFirst ? 'keydown' : 'input'} first, rewrites as ${rewrite})`, async () => {
       for (const k of RIBYU) await byApp(k, { keyFirst, rewrite })
       // 리 is done; 뷰 may still take a final consonant, so it shows at the cursor and waits.
@@ -226,6 +230,69 @@ test('a Space that ends a composition reaches the worker once, after the syllabl
   expect(typed()).toBe('ㅎ ')
 })
 
+// As WebKit ends a composition (docs/design.md): the key's text is written first, and its keydown
+// comes after compositionend, with keyCode 229.
+async function composedByWebKit(text: string, ends: () => void) {
+  compose('compositionstart')
+  compose('compositionupdate', text)
+  write(text, text, 'insertCompositionText', true)
+  await tick()
+  write(text, text, 'insertFromComposition', true)
+  compose('compositionend', text)
+  ends()
+  await tick()
+}
+
+test('the Enter that ends a composition in WebKit is an Enter, after the syllable', async () => {
+  await composedByWebKit('뷰', () => {
+    write('뷰\n', null, 'insertLineBreak')
+    key('keydown', { key: 'Enter', code: 'Enter', keyCode: 229 })
+    key('keyup', { key: 'Enter', code: 'Enter', keyCode: 13 })
+  })
+  expect(typed()).toBe('뷰\r')
+  expect(field().value).toBe('뷰')
+})
+
+test('an arrow that ends a composition in WebKit goes after the syllable, and the field stays in order', async () => {
+  await composedByWebKit('뷰', () => {
+    // WebKit has moved the caret by the time the keydown comes.
+    field().setSelectionRange(0, 0)
+    key('keydown', { key: 'ArrowLeft', code: 'ArrowLeft', keyCode: 229 })
+    key('keyup', { key: 'ArrowLeft', code: 'ArrowLeft', keyCode: 37 })
+  })
+  expect(typed()).toBe('뷰\x1b[D')
+  expect(field().selectionStart).toBe(1)
+})
+
+test('text written as a composition ends in WebKit goes once, after the syllable', async () => {
+  await composedByWebKit('뷰', () => {
+    write('뷰 ', ' ')
+    key('keydown', { key: ' ', code: 'Space', keyCode: 229 })
+    key('keyup', { key: ' ', code: 'Space', keyCode: 32 })
+  })
+  expect(typed()).toBe('뷰 ')
+})
+
+test('the Enter that confirms a Japanese conversion stays the input method’s', async () => {
+  await composedByWebKit('仮名', () => {
+    key('keydown', { key: 'Enter', code: 'Enter', keyCode: 229 })
+    key('keyup', { key: 'Enter', code: 'Enter', keyCode: 13 })
+  })
+  expect(typed()).toBe('仮名')
+})
+
+test('a right click, which xterm.js makes write the field, sends the syllable first', async () => {
+  await build('ㅎ', '하')
+  const menu = new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2 })
+  document.querySelector('.xterm')?.dispatchEvent(menu)
+  expect(typed()).toBe('하')
+  expect(preedit()).toBe('')
+  // The next syllable starts anew in the field as xterm.js left it.
+  await build('ㄱ', '기')
+  expect(typed()).toBe('하')
+  expect(preedit()).toBe('기')
+})
+
 test('the syllable being built shows at the cursor', async () => {
   const { searchParams } = new URL(socket.url)
   const cols = Number(searchParams.get('cols'))
@@ -273,6 +340,19 @@ test('a key the input method takes from a syllable sends nothing, and the Backsp
   expect(typed()).toBe('\x7f')
 })
 
+for (const keyFirst of [false, true]) {
+  test(`a Backspace the input method takes with nothing being built still erases (${keyFirst ? 'keydown' : 'input'} first)`, async () => {
+    const down = { key: 'Backspace', code: 'Backspace', keyCode: 229 }
+    field().value = 'x'
+    if (keyFirst) key('keydown', down)
+    write('', null, 'deleteContentBackward')
+    if (!keyFirst) key('keydown', down)
+    key('keyup', down)
+    await tick()
+    expect(typed()).toBe('\x7f')
+  })
+}
+
 test('a key the input method lets by sends the syllable first, then itself', async () => {
   await build('ㅎ', '하', '한')
   press({ key: ' ', code: 'Space', keyCode: 32 })
@@ -319,6 +399,16 @@ test('Korean typed while a Space is still held down goes on as ever', async () =
   key('keydown', { key: 'ㅋ', code: 'KeyZ', keyCode: 229 })
   expect(typed()).toBe('한 ㅋ')
   expect(preedit()).toBe('ㅋ')
+})
+
+test('what the input method writes while a Space is still held down is not lost', async () => {
+  const space = { key: ' ', code: 'Space', keyCode: 32 }
+  key('keydown', space)
+  key('keypress', space)
+  write(' ', ' ')
+  write(' .', '.')
+  key('keyup', space)
+  expect(typed()).toBe(' .')
 })
 
 test('Shift for a doubled consonant keeps the syllable open for it', async () => {
