@@ -1,4 +1,4 @@
-import type { ITerminalOptions } from '@xterm/xterm'
+import type { ITerminalOptions, Terminal } from '@xterm/xterm'
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 
 // How long a box whose connection closed waits to attach again (the UI server restarted, say): as
@@ -128,6 +128,7 @@ async function attach(
   term.loadAddon(new Unicode11Addon())
   term.unicode.activeVersion = '11'
   term.open(box)
+  holdSyllables(term)
   // Drawn with WebGL; where WebGL cannot run, or loses its context, the DOM renderer xterm.js starts
   // with draws instead.
   try {
@@ -166,5 +167,111 @@ async function attach(
   leave.addEventListener('abort', () => {
     resized.disconnect()
     ws.close()
+  })
+}
+
+// The syllable or jamo the Korean input method may still rewrite: the last one it wrote.
+const OPEN = /[ㄱ-ㆎ가-힣]$/
+// How an input method writes the field outside a composition.
+const WRITES = /^(insertText|insertReplacementText|insertLineBreak|insertParagraph|delete)/
+const MODIFIERS = new Set(['Shift', 'Control', 'Alt', 'Meta', 'CapsLock', 'Fn'])
+
+// 두벌식 Korean in the app's WKWebView comes with no composition events (docs/design.md): for each
+// key the input method writes xterm.js's field, rewriting the syllable it is building (ㄹ, 리, 립,
+// then 리 and 뷰 for ㅠ), and the key's keydown comes with keyCode 229. xterm.js sent every write,
+// so the worker got ㄹ리립리뷰. Here the page takes those writes: the last syllable shows at the
+// cursor and waits, what is before it goes, and the one waiting goes before any key the input method
+// lets by (Enter, an arrow, Space, a shortcut), a paste, a composition, or the field losing the
+// keyboard. A composition, as Chrome sends for the same keys, stays xterm.js's.
+// ponytail: text with no key (dictation, the character viewer) that ends in Hangul waits for a key
+// too, and an input method rewriting a syllable already sent sends it again.
+function holdSyllables(term: Terminal): void {
+  const { element: root, textarea: field } = term
+  const view = root?.querySelector<HTMLElement>('.composition-view')
+  const screen = root?.querySelector('.xterm-screen')
+  if (!root || !field || !view || !screen) return
+  let held = ''
+  // Where it starts in the field.
+  let at = 0
+  let composing = false
+  // Until xterm.js has sent what a composition made, a moment after it ends.
+  let ending = false
+  Object.assign(view.style, {
+    fontFamily: TERMINAL.fontFamily,
+    fontSize: `${TERMINAL.fontSize}px`,
+    fontWeight: TERMINAL.fontWeight,
+    background: TERMINAL.theme.background,
+    color: TERMINAL.theme.foreground,
+  })
+  // In xterm.js's view of a composition, over the cell at the cursor.
+  const draw = () => {
+    view.textContent = held
+    view.classList.toggle('active', held !== '')
+    if (held === '') return
+    const { width, height } = screen.getBoundingClientRect()
+    const { cursorX, cursorY } = term.buffer.active
+    view.style.left = `${(Math.min(cursorX, term.cols - 1) * width) / term.cols}px`
+    view.style.top = `${(cursorY * height) / term.rows}px`
+    view.style.height = view.style.lineHeight = `${height / term.rows}px`
+  }
+  term.onRender(() => {
+    if (held !== '') draw()
+  })
+  const send = (text: string) => {
+    if (text !== '') term.input(text.replace(/\r?\n/g, '\r'))
+  }
+  const flush = () => {
+    if (held === '') return
+    const text = held
+    held = ''
+    draw()
+    send(text)
+  }
+  root.addEventListener(
+    'input',
+    (e) => {
+      if (!(e instanceof InputEvent) || composing || ending || e.isComposing) return
+      if (!WRITES.test(e.inputType)) return
+      e.stopImmediatePropagation()
+      let tail: string
+      if (held !== '') tail = field.value.slice(at)
+      else {
+        // New text at the end, where the input method writes.
+        tail = e.data ?? (e.inputType.startsWith('insert') ? '\n' : '')
+        at = Math.max(0, field.value.length - tail.length)
+      }
+      held = OPEN.exec(tail)?.[0] ?? ''
+      const done = tail.slice(0, tail.length - held.length)
+      at += done.length
+      draw()
+      send(done)
+    },
+    true,
+  )
+  term.attachCustomKeyEventHandler((e) => {
+    if (e.type !== 'keydown' || composing || ending) return true
+    // The input method's: what it does comes as a write, and xterm.js would send that again.
+    if (e.keyCode === 229) return false
+    if (!MODIFIERS.has(e.key)) flush()
+    return true
+  })
+  root.addEventListener('paste', flush, true)
+  field.addEventListener('blur', flush)
+  // Before xterm.js shows the composition in the same view.
+  root.addEventListener(
+    'compositionstart',
+    () => {
+      flush()
+      composing = true
+    },
+    true,
+  )
+  // After xterm.js's own, so this moment ends after its send.
+  field.addEventListener('compositionend', () => {
+    composing = false
+    ending = true
+    setTimeout(() => {
+      ending = false
+    })
   })
 }
