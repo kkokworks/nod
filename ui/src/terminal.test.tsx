@@ -92,19 +92,24 @@ function key(
   field().dispatchEvent(event)
   return event
 }
-// As a browser does, a key that types a character has a keypress if its keydown was let be.
-const press = (init: KeyboardEventInit & { key: string; keyCode: number }) => {
-  const down = key('keydown', init)
-  const types = init.key.length === 1 && !init.ctrlKey && !init.metaKey && init.keyCode !== 229
-  if (types && !down.defaultPrevented) key('keypress', { ...init, keyCode: init.key.charCodeAt(0) })
-  key('keyup', init)
-}
 // The field as the input method leaves it, and its input event: a person's is composed.
 function write(value: string, data: string | null, inputType = 'insertText', isComposing = false) {
   field().value = value
   const event = new InputEvent('input', { data, inputType, bubbles: true, composed: true })
   Object.defineProperty(event, 'isComposing', { value: isComposing })
   field().dispatchEvent(event)
+}
+// As a browser does: a key that types a character has a keypress if its keydown was let be, and
+// then the character goes in the field if that was let be too. xterm.js sends a capital or a Space
+// from the keypress and lets it be (its `cancel` does nothing unless forced).
+const press = (init: KeyboardEventInit & { key: string; keyCode: number }) => {
+  const down = key('keydown', init)
+  const types = init.key.length === 1 && !init.ctrlKey && !init.metaKey && init.keyCode !== 229
+  if (types && !down.defaultPrevented) {
+    const pressed = key('keypress', { ...init, keyCode: init.key.charCodeAt(0) })
+    if (!pressed.defaultPrevented) write(field().value + init.key, init.key)
+  }
+  key('keyup', init)
 }
 // happy-dom's CompositionEvent is a plain Event, with no data.
 function compose(type: string, data = '') {
@@ -299,6 +304,23 @@ test('a Space, a stop or a line break the input method writes itself ends the sy
   expect(preedit()).toBe('')
 })
 
+test('Korean typed while a Space is still held down goes on as ever', async () => {
+  await build('ㅎ', '하', '한')
+  // The Space's keypress and its input, xterm.js's, with its key not yet up.
+  const space = { key: ' ', code: 'Space', keyCode: 32 }
+  key('keydown', space)
+  key('keypress', space)
+  write('한 ', ' ')
+  // The next key's write comes first: 'ㅋ' is the whole of a syllable that the next ㅋ would not rewrite.
+  write('한 ㅋ', 'ㅋ')
+  key('keyup', space)
+  expect(preedit()).toBe('ㅋ')
+  write('한 ㅋㅋ', 'ㅋ')
+  key('keydown', { key: 'ㅋ', code: 'KeyZ', keyCode: 229 })
+  expect(typed()).toBe('한 ㅋ')
+  expect(preedit()).toBe('ㅋ')
+})
+
 test('Shift for a doubled consonant keeps the syllable open for it', async () => {
   await build('ㄱ', '가')
   key('keydown', { key: 'Shift', code: 'ShiftLeft', keyCode: 16, shiftKey: true })
@@ -332,6 +354,9 @@ test('a paste, a composition or leaving the field sends the syllable first', asy
 
 test('letters, digits, keys and text with no key reach the worker as before', async () => {
   press({ key: 'a', code: 'KeyA', keyCode: 65 })
+  // xterm.js sends these from the keypress, and the input that follows is its to drop.
+  press({ key: 'A', code: 'KeyA', keyCode: 65, shiftKey: true })
+  press({ key: ' ', code: 'Space', keyCode: 32 })
   press({ key: '1', code: 'Digit1', keyCode: 49 })
   press({ key: 'ArrowUp', code: 'ArrowUp', keyCode: 38 })
   press({ key: 'c', code: 'KeyC', keyCode: 67, ctrlKey: true })
@@ -339,6 +364,6 @@ test('letters, digits, keys and text with no key reach the worker as before', as
   press({ key: 'Enter', code: 'Enter', keyCode: 13 })
   // As the character viewer or an emoji picker sends one.
   write('😀', '😀')
-  expect(typed()).toBe('a1\x1b[A\x03\x7f\r😀')
+  expect(typed()).toBe('aA 1\x1b[A\x03\x7f\r😀')
   expect(preedit()).toBe('')
 })

@@ -196,6 +196,9 @@ function holdSyllables(term: Terminal): void {
   let composing = false
   // Until xterm.js has sent what a composition made, a moment after it ends.
   let ending = false
+  // xterm.js sends a capital or a Space from its keypress and lets the character go in the field: the
+  // input that follows is its own, which it drops.
+  let pressed = false
   Object.assign(view.style, {
     fontFamily: TERMINAL.fontFamily,
     fontSize: `${TERMINAL.fontSize}px`,
@@ -232,6 +235,8 @@ function holdSyllables(term: Terminal): void {
     (e) => {
       if (!(e instanceof InputEvent) || composing || ending || e.isComposing) return
       if (!WRITES.test(e.inputType)) return
+      // Hangul then is the input method's next key, come before this one's keyup.
+      if (pressed && !OPEN.test(e.data ?? '')) return
       e.stopImmediatePropagation()
       let tail: string
       if (held !== '') tail = field.value.slice(at)
@@ -249,6 +254,7 @@ function holdSyllables(term: Terminal): void {
     true,
   )
   term.attachCustomKeyEventHandler((e) => {
+    pressed = e.type === 'keypress'
     if (e.type !== 'keydown' || composing || ending) return true
     // The input method's: what it does comes as a write, and xterm.js would send that again.
     if (e.keyCode === 229) return false
