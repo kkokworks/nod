@@ -94,8 +94,15 @@ function key(
   return event
 }
 // The field as the input method leaves it, and its input event: a person's is composed.
-function write(value: string, data: string | null, inputType = 'insertText', isComposing = false) {
+function write(
+  value: string,
+  data: string | null,
+  inputType = 'insertText',
+  isComposing = false,
+  caret = value.length,
+) {
   field().value = value
+  field().setSelectionRange(caret, caret)
   const event = new InputEvent('input', { data, inputType, bubbles: true, composed: true })
   Object.defineProperty(event, 'isComposing', { value: isComposing })
   field().dispatchEvent(event)
@@ -230,8 +237,8 @@ test('a Space that ends a composition reaches the worker once, after the syllabl
   expect(typed()).toBe('ㅎ ')
 })
 
-// As WebKit ends a composition (docs/design.md): the key's text is written first, and its keydown
-// comes after compositionend, with keyCode 229.
+// As WebKit ends a composition (docs/design.md): after compositionend comes the input of what the key
+// writes, then its keydown with keyCode 229.
 async function composedByWebKit(text: string, ends: () => void) {
   compose('compositionstart')
   compose('compositionupdate', text)
@@ -279,6 +286,24 @@ test('the Enter that confirms a Japanese conversion stays the input method’s',
     key('keyup', { key: 'Enter', code: 'Enter', keyCode: 13 })
   })
   expect(typed()).toBe('仮名')
+})
+
+test('Korean is read where the input method writes it, at the caret ⌘← left at the start', async () => {
+  await build('ㅇ', '아', '안')
+  await build('ㄴ', '녀', '녕')
+  // xterm.js lets ⌘← be, and WebKit moves the caret.
+  press({ key: 'ArrowLeft', code: 'ArrowLeft', keyCode: 37, metaKey: true })
+  field().setSelectionRange(0, 0)
+  write('ㅎ안녕', 'ㅎ', 'insertText', false, 1)
+  expect(preedit()).toBe('ㅎ')
+  write('한안녕', '한', 'insertText', false, 1)
+  expect(preedit()).toBe('한')
+  expect(typed()).toBe('안녕')
+  write('한ㄱ안녕', 'ㄱ', 'insertText', false, 2)
+  expect(typed()).toBe('안녕한')
+  expect(preedit()).toBe('ㄱ')
+  press({ key: 'Enter', code: 'Enter', keyCode: 13 })
+  expect(typed()).toBe('안녕한ㄱ\r')
 })
 
 test('a right click, which xterm.js makes write the field, sends the syllable first', async () => {

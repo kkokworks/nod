@@ -261,13 +261,14 @@ function holdSyllables(term: Terminal): void {
         return
       }
       e.stopImmediatePropagation()
+      // Up to the caret, where the input method writes: xterm.js lets ⌘← move it from the end.
       let tail: string
-      if (held !== '') tail = field.value.slice(at)
+      if (held !== '') tail = field.value.slice(at, field.selectionEnd)
       else {
-        // New text at the end, where the input method writes, or a key it took with no text.
+        // New text, or a key it took with no text.
         const erases = e.inputType === 'deleteContentBackward' ? '\x7f' : ''
         tail = e.data || (LINE_BREAK.test(e.inputType) ? '\n' : erases)
-        at = Math.max(0, field.value.length - tail.length)
+        at = Math.max(0, field.selectionEnd - tail.length)
       }
       held = OPEN.exec(tail)?.[0] ?? ''
       const done = tail.slice(0, tail.length - held.length)
@@ -282,7 +283,7 @@ function holdSyllables(term: Terminal): void {
     if (e.type !== 'keydown' || composing) return true
     if (ending) {
       // The arrow that ended the composition in WebKit, whose 229 xterm.js takes for nothing to send.
-      // It has moved the caret, and the field is read from its end.
+      // It has moved the caret, and xterm.js takes a composition to be at the end of the field.
       const arrow = ARROWS[e.key]
       if (!arrow || e.keyCode !== 229 || e.shiftKey || e.altKey || e.ctrlKey || e.metaKey)
         return true
