@@ -25,7 +25,7 @@ test('reopening a ledger keeps its data and does not re-run migrations', () => {
   })
   const reopened = new Ledger(home)
   expect(reopened.get(id).brief).toBe('keep me')
-  expect(reopened.db.query('pragma user_version').get()).toEqual({ user_version: 27 })
+  expect(reopened.db.query('pragma user_version').get()).toEqual({ user_version: 28 })
 })
 
 test('v18 leaves the tasks before it without a root session', () => {
@@ -39,7 +39,7 @@ test('v18 leaves the tasks before it without a root session', () => {
 
   const ledger = new Ledger(home)
   expect(ledger.get(1)).toMatchObject({ brief: 'x', rootSession: null })
-  expect(ledger.db.query('pragma user_version').get()).toEqual({ user_version: 27 })
+  expect(ledger.db.query('pragma user_version').get()).toEqual({ user_version: 28 })
 })
 
 test('v23 gives a ledger of v22 project sessions, none yet, and leaves its projects as they were', () => {
@@ -266,6 +266,67 @@ test('the messages two tasks sent each other count both ways, in turns and withi
   expect(ledger.tellsBetween(b, c)).toBe(0)
   expect(ledger.attempts(b).map((x) => x.fromTask)).toEqual([a, null])
   expect(ledger.messages(b).map((m) => m.fromTask)).toEqual([a, null])
+})
+
+test('v28 opens an older ledger with nothing kept, and a kept tell counts between its two tasks until a turn takes it, as a message of that turn', () => {
+  const home = freshHome()
+  const old = new Database(join(home, 'nod.db'), { create: true, strict: true })
+  for (const sql of MIGRATIONS.slice(0, 27)) old.exec(sql)
+  old.exec(`pragma user_version = 27;
+    insert into tasks (id, brief, created_at) values (1, 'x', 'at'), (2, 'y', 'at');`)
+  old.close()
+
+  const ledger = new Ledger(home)
+  expect(ledger.pendingTells(1)).toEqual([])
+  ledger.keepTell(1, 2, 'first')
+  ledger.keepTell(1, 2, 'second')
+  expect(ledger.tellsBetween(1, 2)).toBe(2)
+  expect(ledger.tellsBetween(2, 1)).toBe(2)
+  expect(ledger.pendingTells(2)).toEqual([])
+  const reopened = new Ledger(home)
+  const [first, second] = reopened.pendingTells(1)
+  expect([first?.text, second?.text]).toEqual(['first', 'second'])
+
+  const turn = reopened.startAttempt({
+    taskId: 1,
+    kind: 'start',
+    decisionId: null,
+    sessionId: 's',
+    prompt: 'p',
+  })
+  if (first === undefined) throw new Error('nothing kept')
+  reopened.takeTell(first, turn, 'wrapped')
+  expect(reopened.pendingTells(1).map((t) => t.text)).toEqual(['second'])
+  expect(reopened.messages(1)).toMatchObject([{ attemptId: turn, text: 'wrapped', fromTask: 2 }])
+  expect(reopened.tellsBetween(1, 2)).toBe(2)
+})
+
+test('kept tells are lost once, and only those of a task that was cancelled or collected unstarted', () => {
+  const ledger = new Ledger(freshHome())
+  const add = (brief: string): number =>
+    ledger.add({
+      brief,
+      repo: null,
+      branch: null,
+      checkCmd: null,
+      model: null,
+      after: [],
+      triggerId: null,
+      issue: null,
+    })
+  const [from, gone, collected, waiting] = [add('from'), add('gone'), add('off'), add('waiting')]
+  ledger.keepTell(gone, from, 'lost')
+  ledger.keepTell(collected, from, 'collected')
+  ledger.keepTell(waiting, from, 'kept')
+  ledger.db.query("update tasks set status = 'cancelled' where id = $id").run({ id: gone })
+  ledger.collected(collected, null)
+  expect(ledger.loseTells().map((t) => [t.taskId, t.text])).toEqual([
+    [gone, 'lost'],
+    [collected, 'collected'],
+  ])
+  expect(ledger.loseTells()).toEqual([])
+  expect(ledger.pendingTells(gone)).toMatchObject([{ lostAt: expect.any(String) }])
+  expect(ledger.pendingTells(waiting)).toMatchObject([{ lostAt: null }])
 })
 
 test('a task keeps the session that added it, and its retrospective takes it; a trigger task has none', () => {

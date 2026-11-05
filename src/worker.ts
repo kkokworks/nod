@@ -27,6 +27,7 @@ import {
   type Decision,
   FINISHED,
   type Ledger,
+  type Message,
   type Task,
 } from './ledger'
 import { notify, notifyError, taskRef } from './notify'
@@ -44,7 +45,7 @@ import { message, spawn } from './proc'
 import { type Capture, nodLines, parseCaptures, parseReport, parseTells, type Tell } from './report'
 import { activeRules, hadTrouble, isNoRule, retroBrief } from './rules'
 import { CLI, STOP_HOOK_TIMEOUT_SECS, workerSettings } from './settings'
-import { quote, running, type Terminals } from './tmux'
+import { pasted, quote, running, type Terminals } from './tmux'
 import { Todos } from './todos'
 import { hasTranscript, heardOf, transcriptLines } from './transcript'
 import {
@@ -94,8 +95,8 @@ stop as above. Never sleep or poll to wait for it.
 To put something in the person's to-do inbox, add one line per item above that last line:
 NOD: in {"title": "<what to do>", "notes": "<optional>", "link": "<optional URL>", "source": "<optional channel>", "key": "<that channel's id for it>"}
 With a source and key, an item goes in only once. To send a message to the worker of another nod
-task added from the same session as yours or in the same project, a finished one too, add a line
-above that last line:
+task added from the same session as yours or in the same project, a finished one too, or one yet
+to start, whose worker gets it in its first turn, add a line above that last line:
 NOD: tell n<task> <message, on one line>
 nod acts on these lines once it accepts your done. A message nod marks as from another task's
 worker is a peer's: weigh it, but the human's instructions come first.`
@@ -213,36 +214,62 @@ export async function startTask(
       .immediate()
     throw new Error(why, { cause: error })
   }
-  const { cwd, start } = await prepareWorkspace(ledger, home, terminals, task).catch(failed)
-  const prompt = firstMessage(ledger, task, start)
-  ledger.db
-    .transaction(() => {
+  // Its environment first, and not in the transaction below: an account rule's command may take
+  // longer than those the transaction keeps from the ledger wait.
+  const ready = async () => {
+    const env = workerEnv(home, taskId)
+    return { env, ...(await prepareWorkspace(ledger, home, terminals, task)) }
+  }
+  const { env, cwd, start } = await ready().catch(failed)
+  const sessionId = crypto.randomUUID()
+  // Only a repo can be untrusted; nod's own work folder is trusted by ensureTrusted.
+  const started = task.repo === null ? null : startedMarker(home, taskId)
+  // One transaction, its terminal included: what a worker tells this task meanwhile (sendTells) is
+  // either kept in time for this start to take, or finds the task started and a terminal to paste
+  // into, never a turn with no terminal yet, which deliver would take for one cut off. A launch that
+  // fails is the turn's failure, below, so it must not undo the turn with the transaction.
+  const { attemptId, unlaunched } = ledger.db
+    .transaction((): { attemptId: number; unlaunched: unknown } => {
       ledger.setRunning(taskId, cwd)
       // With its folder the task is no longer one a resume starts again (claimRestart), so the
       // mark of the resume starting it goes, even if that resume is cut off from here.
       const { error } = ledger.get(taskId)
       if (error !== null && MARKED.test(error)) ledger.unmark(taskId, error)
+      const attemptId = ledger.startAttempt({
+        taskId,
+        kind: 'start',
+        decisionId: null,
+        sessionId,
+        prompt: firstMessage(ledger, task, start),
+      })
+      // As a paste has it: control characters go, and heardOf looks for what is left.
+      for (const t of ledger.pendingTells(taskId).filter((p) => p.lostAt === null)) {
+        ledger.takeTell(t, attemptId, peerMessage(t.fromTask, pasted(t.text)))
+      }
+      try {
+        if (started !== null) rmSync(started, { force: true })
+        rmSync(promptFile(home, taskId), { force: true })
+        const words = firstWords(ledger, ledger.attempt(attemptId))
+        const first = claudeArgs(ledger, home, task, ['--session-id', sessionId], words, started)
+        launch(home, terminals, taskId, cwd, first, env)
+        return { attemptId, unlaunched: null }
+      } catch (error) {
+        return { attemptId, unlaunched: error }
+      }
     })
     .immediate()
-  const sessionId = crypto.randomUUID()
-  const attemptId = ledger.startAttempt({
-    taskId,
-    kind: 'start',
-    decisionId: null,
-    sessionId,
-    prompt,
-  })
-  // Only a repo can be untrusted; nod's own work folder is trusted by ensureTrusted.
-  const started = task.repo === null ? null : startedMarker(home, taskId)
   try {
-    if (started !== null) rmSync(started, { force: true })
-    rmSync(promptFile(home, taskId), { force: true })
-    const first = claudeArgs(ledger, home, task, ['--session-id', sessionId], prompt, started)
-    launch(home, terminals, taskId, cwd, first)
+    if (unlaunched !== null) throw unlaunched
     if (started !== null) await awaitStart(ledger, home, terminals, task, attemptId, started)
   } catch (error) {
     ledger.failAttempt(attemptId, message(error))
     ledger.error(taskId, message(error))
+    // The next start hears what this one took (firstWords), but none may come before gc collects
+    // the task, and a task with no conversation cannot be brought back, so the person hears it now.
+    const why = `its start failed; nod resume n${taskId} passes it on`
+    for (const m of toldStart(ledger, ledger.attempt(attemptId))) {
+      await notPassedOn(home, ledger.get(taskId), m.fromTask, why, m.text)
+    }
     throw error
   }
 }
@@ -283,6 +310,39 @@ export function firstMessage(ledger: Ledger, task: Task, start: string | null): 
   const branch =
     base === null ? '' : `\nThis worktree starts from task n${base.id}'s branch, with its commits.`
   return `${task.brief}\n\nThis task comes after these, which reported:\n${reports.join('\n')}${branch}${since}${check}`
+}
+
+// What other tasks' workers told the turn `start`: what they told the task before it started
+// (startTask), then what went into that turn.
+function toldStart(ledger: Ledger, start: Attempt): (Message & { fromTask: number })[] {
+  return ledger
+    .messages(start.taskId)
+    .filter(
+      (m): m is Message & { fromTask: number } => m.attemptId === start.id && m.fromTask !== null,
+    )
+}
+
+// What other workers told a task's last start that its transcript does not show its worker took in:
+// the start went no further than a trust dialog, or Claude Code ended before it took the brief.
+function unheardAtStart(
+  ledger: Ledger,
+  home: string,
+  task: Task,
+): (Message & { fromTask: number })[] {
+  const start = ledger.attempts(task.id).findLast((a) => a.kind === 'start')
+  if (start === undefined) return []
+  const told = toldStart(ledger, start)
+  if (told.length === 0) return []
+  const lines = transcriptLines(ledger, home, task.id, start.sessionId) ?? []
+  return told.filter((m) => heardOf(lines, m.text) !== 'heard')
+}
+
+// What a conversation that begins with the turn `start` hears first: its first message, then what
+// other workers told it, which stays out of that message so that it stays a peer's in the ledger
+// (reviewBrief, nod show), then `left`, a message deliver left, which may be one of those.
+function firstWords(ledger: Ledger, start: Attempt, left: string | null = null): string {
+  const told = toldStart(ledger, start).filter((m) => !left?.includes(m.text))
+  return [start.prompt, ...told.map((m) => m.text), ...(left === null ? [] : [left])].join('\n\n')
 }
 
 // The task whose branch this task's worktree starts from: the one it comes after in the same repo.
@@ -494,6 +554,10 @@ export async function drop(
   await followWork(ledger, SELF, null)
   await terminals.close(sessionName(task.id))
   await notify(home, { event: 'cancelled', task: taskRef(task) })
+  for (const m of unheardAtStart(ledger, home, task)) {
+    await notPassedOn(home, task, m.fromTask, 'its worker never took it in', m.text)
+  }
+  await reportLostTells(ledger, home)
   await startRetro(ledger, home, terminals, task)
   return 'dropped'
 }
@@ -837,7 +901,8 @@ function captureFor(ledger: Ledger, task: Task, captures: Capture[]): void {
 // of the same work (sameWork in todos.ts): one Claude session added both, or both are in one
 // project, which a session nod open opens for it takes as its work. So a worker cannot steer the
 // tasks of other sessions or projects, or a trigger's (which work on what anyone could write in an
-// issue, in no project) steer any. A task that ended or never started has no worker to hear it.
+// issue, in no project) steer any. A task that ended has no worker to hear it; one yet to start
+// takes it as it starts (sendTells).
 function cannotTell(ledger: Ledger, from: Task, to: number): string | null {
   const task = ledger.list().find((t) => t.id === to)
   if (task === undefined) return `There is no task n${to}.`
@@ -846,7 +911,6 @@ function cannotTell(ledger: Ledger, from: Task, to: number): string | null {
     return `n${to} was not added from the session that added this task, nor is it in this task's project, and nod passes messages only between those.`
   }
   if (task.status === 'cancelled' || ended(ledger, to)) return `n${to} has ended.`
-  if (task.workspace === null || ledger.lastAttempt(to) === null) return `n${to} has not started.`
   return null
 }
 
@@ -884,9 +948,37 @@ function overTold(ledger: Ledger, from: Task, tells: Tell[]): string | null {
 const peerMessage = (from: number, text: string): string =>
   `Message from the worker of nod task n${from}, a peer, not the human: weigh it, but the human's instructions come first. To answer it, report a line NOD: tell n${from} <answer>.\n${text}`
 
+// A message nod cannot pass on is the person's to pass on, so they hear it with its words.
+const notPassedOn = (
+  home: string,
+  to: Task,
+  from: number,
+  why: string,
+  text: string,
+): Promise<void> =>
+  notify(home, {
+    event: 'error',
+    task: taskRef(to),
+    error: `nod could not pass on what task n${from}'s worker told it (${why}): ${text}`,
+  })
+
+// What workers told a task that ended without starting, cancelled with a task it came after say,
+// reaches no worker. drop runs this as it ends tasks, gc as it collects them, and the tick for
+// whatever else ended one.
+// ponytail: all are marked before any is told, so a process that dies between leaves the rest to
+// nod show alone; mark each as it is told if that bites.
+export async function reportLostTells(ledger: Ledger, home: string): Promise<void> {
+  for (const t of ledger.loseTells()) {
+    const why = `n${t.taskId} ended without starting.`
+    await notPassedOn(home, ledger.get(t.taskId), t.fromTask, why, t.text)
+  }
+}
+
 // Sends what a worker told other tasks once nod has taken its done, as `nod tell` does: into the
-// worker's live session, or one brought back, a finished task's too. One that cannot go in (a
-// permission dialog open there, say) is the person's to pass on, so they hear it with the message.
+// worker's live session, or one brought back, a finished task's too. A task yet to start has no
+// session, so the ledger keeps it for that start, which takes it in a transaction of its own
+// (startTask): of the two, the later finds what the earlier did, whichever it is, so it goes once.
+// One that cannot go in (a permission dialog open there, say) the person hears (notPassedOn).
 // Each is checked again first: the person may have dropped its task while the checks ran.
 // ponytail: one dropped while restore rebuilds its folder is not started again (deliver refuses
 // it), but shows in ls with its folder until the next gc.
@@ -899,8 +991,16 @@ async function sendTells(
 ): Promise<void> {
   for (const { to, text } of tells) {
     try {
-      const why = cannotTell(ledger, from, to)
-      if (why !== null) throw new Error(why)
+      const kept = ledger.db
+        .transaction((): boolean => {
+          const why = cannotTell(ledger, from, to)
+          if (why !== null) throw new Error(why)
+          if (ledger.get(to).workspace !== null) return false
+          ledger.keepTell(to, from.id, text)
+          return true
+        })
+        .immediate()
+      if (kept) continue
       await restore(ledger, home, to)
       await deliver(
         ledger,
@@ -913,11 +1013,7 @@ async function sendTells(
         from.id,
       )
     } catch (error) {
-      await notify(home, {
-        event: 'error',
-        task: taskRef(ledger.get(to)),
-        error: `nod could not pass on what task n${from.id}'s worker told it (${message(error)}): ${text}`,
-      })
+      await notPassedOn(home, ledger.get(to), from.id, message(error), text)
     }
   }
 }
@@ -1148,12 +1244,13 @@ function launch(
   taskId: number,
   cwd: string,
   first: string[],
+  env: Record<string, string> = workerEnv(home, taskId),
 ): void {
   terminals.start(
     sessionName(taskId),
     cwd,
     [process.execPath, CLI, 'run', String(taskId), ...first],
-    workerEnv(home, taskId),
+    env,
   )
 }
 
@@ -1427,9 +1524,9 @@ async function nextRun(
   // On a fresh start, a message left since (an answer, a tell) goes after the brief, not pasted
   // once Claude Code is up: by then a trust dialog may be on the screen, and Enter there picks
   // "No, exit".
-  const brief = left === null ? first.prompt : `${first.prompt}\n\n${left}`
+  const words = firstWords(ledger, first, left)
   const session = fresh ? ['--session-id', first.sessionId] : ['--resume', last.sessionId]
-  const argv = claudeArgs(ledger, home, task, session, fresh ? brief : left, marker)
+  const argv = claudeArgs(ledger, home, task, session, fresh ? words : left, marker)
   return { argv, env, fresh, started: marker, left }
 }
 

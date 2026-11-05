@@ -4,6 +4,8 @@ import { join } from 'node:path'
 // Longer than an account command (account.ts, 10s), which runs synchronously, so the process that
 // keeps a worker's Claude Code running may not hear the session end until it is done.
 const EXIT_TIMEOUT_MS = 15_000
+// A start holds the ledger's write lock (startTask), and those it keeps out wait 5s (busy_timeout).
+const START_TIMEOUT_MS = 4000
 
 // Names what nod keeps per home outside it: the tmux socket and the OS scheduler job.
 export const homeId = (home: string): string => Bun.hash(home).toString(36)
@@ -59,7 +61,12 @@ export class Tmux implements Terminals {
       `rm -f -- "$0"\nexec env -i TERM="$TERM" TMUX="$TMUX" TMUX_PANE="$TMUX_PANE" ${[...vars, ...argv.map(quote)].join(' ')}\n`,
       { mode: 0o600 },
     )
-    this.tmux(['new-session', '-d', '-s', name, '-x200', '-y50', '-c', cwd, '--', 'sh', script])
+    const args = ['new-session', '-d', '-s', name, '-x200', '-y50', '-c', cwd, '--', 'sh', script]
+    const { exitCode, stderr } = this.run(args, undefined, START_TIMEOUT_MS)
+    if (exitCode !== 0) {
+      const why = stderr.toString().trim() || `no answer in ${START_TIMEOUT_MS}ms`
+      throw new Error(`tmux new-session failed: ${why}`)
+    }
   }
 
   alive(name: string): boolean {
@@ -195,10 +202,15 @@ export class Tmux implements Terminals {
     return result.stdout.toString()
   }
 
-  private run(args: string[], stdin?: string): Bun.SyncSubprocess<'pipe', 'pipe'> {
+  private run(
+    args: string[],
+    stdin?: string,
+    timeout?: number,
+  ): Bun.SyncSubprocess<'pipe', 'pipe'> {
     return Bun.spawnSync(['tmux', '-L', this.socket, ...args], {
       stdin: stdin === undefined ? 'ignore' : Buffer.from(stdin),
       env: process.env,
+      timeout,
     })
   }
 }

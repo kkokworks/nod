@@ -197,7 +197,7 @@ async function turn(message: string, continuing: boolean): Promise<void> {
   }
   // In this order: a test that ends it on seeing the turn expects a conversation to go on in. Without
   // the transcript the turn never began, and nod starts anew with nothing to decide (nextRun).
-  keepTranscript()
+  keepTranscript({ type: 'user', message: { role: 'user', content: message } })
   log({ event: 'turn', sessionId, message })
   const head = message.split('\n')[0] ?? ''
   let reply = 'NOD: done | did it'

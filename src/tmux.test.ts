@@ -1,4 +1,6 @@
-import { afterAll, expect } from 'bun:test'
+import { afterAll, expect, test } from 'bun:test'
+import { chmodSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { tempDirs } from '../test/tmp'
 import { testTmux } from '../test/tmux'
 import { tmuxTest } from '../test/tmux-server'
@@ -15,6 +17,23 @@ afterAll(() => {
   tmux.killServer()
   tmp.removeAll()
 })
+
+test('a tmux that hangs fails a start before those it keeps from the ledger give up', () => {
+  const bin = tmp.make('nod-hung-tmux-')
+  writeFileSync(join(bin, 'tmux'), '#!/bin/sh\nexec sleep 60\n')
+  chmodSync(join(bin, 'tmux'), 0o755)
+  const { PATH } = process.env
+  process.env.PATH = `${bin}:${PATH}`
+  const began = Date.now()
+  try {
+    expect(() => tmux.start('hung', home, ['/bin/sleep', '30'], {})).toThrow(
+      'tmux new-session failed: no answer in 4000ms',
+    )
+  } finally {
+    process.env.PATH = PATH
+  }
+  expect(Date.now() - began).toBeLessThan(5000)
+}, 15_000)
 
 tmuxTest(
   'the sessions come in one call with the values nod keeps on each, unset ones empty and the last one whole',
