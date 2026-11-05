@@ -228,7 +228,7 @@ export type Message = {
 
 // What `fromTask`'s worker told a task that had not started (`NOD: tell`), as it wrote it, until the
 // task's first turn takes it as a Message (startTask in worker.ts). `lostAt`: when the person heard
-// it instead, the task having ended before it started.
+// it instead, the task having ended before it started; a resume after that does not send it.
 export type PendingTell = {
   id: number
   taskId: number
@@ -1592,15 +1592,25 @@ export class Ledger {
     this.addMessage(tell.taskId, attemptId, text, tell.fromTask)
   }
 
-  // Marks lost the tells kept for tasks that ended without starting, and returns them. One statement,
-  // so of two that find them at once only one has the person hear them.
+  // Marks lost the tells kept for tasks that ended without starting: cancelled, or failed before
+  // they started and collected, which takes them off the person's list. Returns them. One
+  // statement, so of two that find them at once only one has the person hear them.
   loseTells(): PendingTell[] {
+    const ended = q
+      .selectFrom('tasks')
+      .select('id')
+      .where((eb) =>
+        eb.or([
+          eb('status', '=', 'cancelled'),
+          eb.and([eb('workspace', 'is', null), eb('collectedAt', 'is not', null)]),
+        ]),
+      )
     return this.run(
       q
         .updateTable('pendingTells')
         .set({ lostAt: now() })
         .where('lostAt', 'is', null)
-        .where('taskId', 'in', q.selectFrom('tasks').select('id').where('status', '=', 'cancelled'))
+        .where('taskId', 'in', ended)
         .returningAll(),
     )
   }

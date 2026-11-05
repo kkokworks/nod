@@ -3699,24 +3699,39 @@ it('a start keeps the ledger to itself until its terminal is up, so a message ca
   await reaches(next, 'succeeded')
 })
 
-it('what a start took goes to the next start if its terminal never came up, each message once', async () => {
-  const next = yetToStart('root-1')
-  const from = await told(next, 'see a.ts', 'told-unlaunched')
-  const said = fromPeer(from, 'see a.ts')
-  const spy = spyOn(fake, 'start').mockImplementationOnce(() => {
-    throw new Error('no terminal')
-  })
-  expect(await failure(startTask(ledger, home, terminals, next))).toBe('no terminal')
-  spy.mockRestore()
-  expect(status(next)).toBe('error')
-  expect(ledger.messages(next)).toMatchObject([{ fromTask: from, text: said }])
-  // As deliver leaves it for a start too, once a Claude Code it pasted into has gone.
-  writeFileSync(join(home, 'work', `.prompt-${next}`), said)
+it.each([
+  ['alone', false],
+  ['and left for it too', true],
+])(
+  'what a start took goes to the next start if its terminal never came up, once: %s',
+  async (_, left) => {
+    const next = yetToStart('root-1')
+    const from = await told(next, 'see a.ts', 'told-unlaunched')
+    const said = fromPeer(from, 'see a.ts')
+    const spy = spyOn(fake, 'start').mockImplementationOnce(() => {
+      throw new Error('no terminal')
+    })
+    expect(await failure(startTask(ledger, home, terminals, next))).toBe('no terminal')
+    spy.mockRestore()
+    expect(status(next)).toBe('error')
+    expect(ledger.messages(next)).toMatchObject([{ fromTask: from, text: said }])
+    // As deliver leaves it for a start too, once a Claude Code it pasted into has gone.
+    if (left) writeFileSync(join(home, 'work', `.prompt-${next}`), said)
 
-  expect(await resume(ledger, home, terminals, next)).toBe('reopened')
-  await until(() => turnsWith('see a.ts').length > 0)
-  const [turn] = turnsWith('see a.ts')
-  expect(turn?.message?.split(said)).toHaveLength(2)
+    expect(await resume(ledger, home, terminals, next)).toBe('reopened')
+    await until(() => turnsWith('see a.ts').length > 0)
+    const [turn] = turnsWith('see a.ts')
+    expect(turn?.message?.split(said)).toHaveLength(2)
+  },
+)
+
+it('a kept message loses its control characters, as a paste does, so the end of its turn finds it heard', async () => {
+  const next = yetToStart('root-1')
+  await told(next, 'see \x07a.ts', 'told-bell')
+  await startTask(ledger, home, terminals, next)
+  await reaches(next, 'succeeded')
+  expect(ledger.attempts(next)).toHaveLength(1)
+  expect(turnsWith('see a.ts')).toHaveLength(1)
 })
 
 it('what is kept for a task counts towards the messages two tasks may send each other', async () => {
@@ -3743,7 +3758,7 @@ it('a message kept for a task that ends before it starts reaches the person once
   const from = await told(next, 'see a.ts', 'told-dropped')
   await drop(ledger, home, terminals, asked)
   expect(status(next)).toBe('cancelled')
-  const line = `nod could not pass on what task n${from}'s worker told it (n${next} has ended.): see a.ts`
+  const line = `nod could not pass on what task n${from}'s worker told it (n${next} ended without starting.): see a.ts`
   expect(heard()).toEqual([[next, line]])
   expect(shown(next)).toContain(`not passed on from n${from}: see a.ts`)
 
@@ -3756,9 +3771,74 @@ it('a message kept for a task that ends before it starts reaches the person once
   expect(heard()).toHaveLength(2)
   expect(heard()).toContainEqual([
     other,
-    `nod could not pass on what task n${sender}'s worker told it (n${other} has ended.): see b.ts`,
+    `nod could not pass on what task n${sender}'s worker told it (n${other} ended without starting.): see b.ts`,
   ])
 })
+
+it('a message kept for a task that failed before it started reaches the person once gc collects it, and a resume after that does not send it', async () => {
+  const events = listen()
+  const next = yetToStart('root-1')
+  const folder = workspaceOf(home, ledger.get(next))
+  writeFileSync(folder, '')
+  await failure(startTask(ledger, home, terminals, next))
+  const from = await told(next, 'see a.ts', 'told-collected')
+  await tick(ledger, home, terminals, new Date(), false)
+  expect(events().filter((e) => e.event === 'error')).toEqual([])
+
+  ledger.collected(next, null)
+  await tick(ledger, home, terminals, new Date(), false)
+  expect(events().filter((e) => e.event === 'error')).toMatchObject([
+    {
+      task: { id: next },
+      error: `nod could not pass on what task n${from}'s worker told it (n${next} ended without starting.): see a.ts`,
+    },
+  ])
+  rmSync(folder)
+  expect(await resume(ledger, home, terminals, next)).toBe('started')
+  await reaches(next, 'succeeded')
+  expect(turnsWith('see a.ts')).toEqual([])
+  expect(shown(next)).toContain(`not passed on from n${from}: see a.ts`)
+})
+
+it('a drop tells the person what its worker never took in, as Claude Code ended before it took the brief, and not what it did', async () => {
+  const events = listen()
+  const errors = (): Heard[] => events().filter((e) => e.event === 'error')
+  writeFileSync(join(home, 'fake-exit'), '')
+  const next = yetToStart('root-1')
+  const from = await told(next, 'see a.ts', 'told-exiting')
+  await startTask(ledger, home, terminals, next)
+  const decision = await until(() => ledger.decisions(next)[0])
+  await until(() => !terminals.alive(sessionName(next)))
+  await drop(ledger, home, terminals, decision.id)
+  expect(entries('turn')).toEqual([])
+  expect(
+    errors().filter((e) => e.task?.id === next && e.error?.includes('see a.ts')),
+  ).toMatchObject([
+    {
+      error: `nod could not pass on what task n${from}'s worker told it (its worker never took it in): ${fromPeer(from, 'see a.ts')}`,
+    },
+  ])
+
+  rmSync(join(home, 'fake-exit'))
+  const heard = ledger.add({
+    brief: 'hang here',
+    repo: null,
+    branch: null,
+    checkCmd: null,
+    model: null,
+    after: [],
+    triggerId: null,
+    issue: null,
+    rootSession: 'root-1',
+  })
+  await told(heard, 'see b.ts', 'told-heard')
+  await startTask(ledger, home, terminals, heard)
+  await until(() => turnsWith('see b.ts').length > 0)
+  const turn = ledger.openAttempt(heard)
+  if (turn === null) throw new Error('no turn')
+  await drop(ledger, home, terminals, ledger.ask(heard, turn.id, 'question', 'go on?'))
+  expect(errors().filter((e) => e.error?.includes('see b.ts'))).toEqual([])
+}, 30_000)
 
 it('a message that went with a start the person turned down at its trust dialog reaches them', async () => {
   const events = listen()
@@ -3775,7 +3855,7 @@ it('a message that went with a start the person turned down at its trust dialog 
     {
       task: { id: next },
       error: expect.stringContaining(
-        `task n${from}'s worker told it (its start was turned down): ${fromPeer(from, 'see a.ts')}`,
+        `task n${from}'s worker told it (its worker never took it in): ${fromPeer(from, 'see a.ts')}`,
       ),
     },
   ])

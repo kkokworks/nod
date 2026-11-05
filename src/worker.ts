@@ -45,7 +45,7 @@ import { message, spawn } from './proc'
 import { type Capture, nodLines, parseCaptures, parseReport, parseTells, type Tell } from './report'
 import { activeRules, hadTrouble, isNoRule, retroBrief } from './rules'
 import { CLI, STOP_HOOK_TIMEOUT_SECS, workerSettings } from './settings'
-import { quote, running, type Terminals } from './tmux'
+import { pasted, quote, running, type Terminals } from './tmux'
 import { Todos } from './todos'
 import { hasTranscript, heardOf, transcriptLines } from './transcript'
 import {
@@ -236,8 +236,9 @@ export async function startTask(
         sessionId,
         prompt: firstMessage(ledger, task, start),
       })
-      for (const t of ledger.pendingTells(taskId)) {
-        ledger.takeTell(t, attemptId, peerMessage(t.fromTask, t.text))
+      // As a paste has it: control characters go, and heardOf looks for what is left.
+      for (const t of ledger.pendingTells(taskId).filter((p) => p.lostAt === null)) {
+        ledger.takeTell(t, attemptId, peerMessage(t.fromTask, pasted(t.text)))
       }
       try {
         if (started !== null) rmSync(started, { force: true })
@@ -307,6 +308,21 @@ function toldStart(ledger: Ledger, start: Attempt): (Message & { fromTask: numbe
     .filter(
       (m): m is Message & { fromTask: number } => m.attemptId === start.id && m.fromTask !== null,
     )
+}
+
+// What other workers told a task's last start that its transcript does not show its worker took in:
+// the start went no further than a trust dialog, or Claude Code ended before it took the brief.
+function unheardAtStart(
+  ledger: Ledger,
+  home: string,
+  task: Task,
+): (Message & { fromTask: number })[] {
+  const start = ledger.attempts(task.id).findLast((a) => a.kind === 'start')
+  if (start === undefined) return []
+  const told = toldStart(ledger, start)
+  if (told.length === 0) return []
+  const lines = transcriptLines(ledger, home, task.id, start.sessionId) ?? []
+  return told.filter((m) => heardOf(lines, m.text) !== 'heard')
 }
 
 // What a conversation that begins with the turn `start` hears first: its first message, then what
@@ -526,12 +542,8 @@ export async function drop(
   await followWork(ledger, SELF, null)
   await terminals.close(sessionName(task.id))
   await notify(home, { event: 'cancelled', task: taskRef(task) })
-  // Turned down at its trust dialog, the start never reached a worker, nor what it took with it.
-  const start = ledger.attempts(task.id).findLast((a) => a.kind === 'start')
-  if (decision.reason === 'trust' && start !== undefined) {
-    for (const m of toldStart(ledger, start)) {
-      await notPassedOn(home, task, m.fromTask, 'its start was turned down', m.text)
-    }
+  for (const m of unheardAtStart(ledger, home, task)) {
+    await notPassedOn(home, task, m.fromTask, 'its worker never took it in', m.text)
   }
   await reportLostTells(ledger, home)
   await startRetro(ledger, home, terminals, task)
@@ -939,10 +951,13 @@ const notPassedOn = (
   })
 
 // What workers told a task that ended without starting, cancelled with a task it came after say,
-// reaches no worker. drop runs this as it ends tasks, and the tick for whatever else ended one.
+// reaches no worker. drop runs this as it ends tasks, gc as it collects them, and the tick for
+// whatever else ended one.
+// ponytail: all are marked before any is told, so a process that dies between leaves the rest to
+// nod show alone; mark each as it is told if that bites.
 export async function reportLostTells(ledger: Ledger, home: string): Promise<void> {
   for (const t of ledger.loseTells()) {
-    const why = `n${t.taskId} has ended.`
+    const why = `n${t.taskId} ended without starting.`
     await notPassedOn(home, ledger.get(t.taskId), t.fromTask, why, t.text)
   }
 }

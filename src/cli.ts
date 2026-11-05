@@ -93,6 +93,7 @@ import {
   drop,
   keepWorker,
   type Restart,
+  reportLostTells,
   restart,
   restartDue,
   resume,
@@ -1083,9 +1084,11 @@ async function gc(args: string[]): Promise<void> {
     printGc(report)
     for (const d of done) if (report.removed.includes(d.id)) console.log(`  n${d.id}: ${d.reason}`)
     for (const u of unchecked) console.log(`unchecked n${u.id}: ${u.error}`)
+    await reportLostTells(ledger, home)
     return
   }
   printGc(await collect(ledger, home, terminals, gcPick(positionals, olderThan)))
+  await reportLostTells(ledger, home)
 }
 
 function printGc(report: GcReport): void {

@@ -301,7 +301,7 @@ test('v28 opens an older ledger with nothing kept, and a kept tell counts betwee
   expect(reopened.tellsBetween(1, 2)).toBe(2)
 })
 
-test('kept tells are lost once, and only those of a task that was cancelled', () => {
+test('kept tells are lost once, and only those of a task that was cancelled or collected unstarted', () => {
   const ledger = new Ledger(freshHome())
   const add = (brief: string): number =>
     ledger.add({
@@ -314,11 +314,16 @@ test('kept tells are lost once, and only those of a task that was cancelled', ()
       triggerId: null,
       issue: null,
     })
-  const [from, gone, waiting] = [add('from'), add('gone'), add('waiting')]
+  const [from, gone, collected, waiting] = [add('from'), add('gone'), add('off'), add('waiting')]
   ledger.keepTell(gone, from, 'lost')
+  ledger.keepTell(collected, from, 'collected')
   ledger.keepTell(waiting, from, 'kept')
   ledger.db.query("update tasks set status = 'cancelled' where id = $id").run({ id: gone })
-  expect(ledger.loseTells().map((t) => [t.taskId, t.text])).toEqual([[gone, 'lost']])
+  ledger.collected(collected, null)
+  expect(ledger.loseTells().map((t) => [t.taskId, t.text])).toEqual([
+    [gone, 'lost'],
+    [collected, 'collected'],
+  ])
   expect(ledger.loseTells()).toEqual([])
   expect(ledger.pendingTells(gone)).toMatchObject([{ lostAt: expect.any(String) }])
   expect(ledger.pendingTells(waiting)).toMatchObject([{ lostAt: null }])
