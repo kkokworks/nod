@@ -1,3 +1,4 @@
+import { Database } from 'bun:sqlite'
 import {
   afterAll,
   beforeEach,
@@ -3469,17 +3470,6 @@ it("a worker's NOD: tell reaches another task of its session once nod takes its 
 it('nod sends a worker back a NOD: tell it cannot send, before any check, and sends nothing', async () => {
   const other = started('other session', 'other', 'root-2')
   const unrooted = started('no session', 'unrooted')
-  const queued = ledger.add({
-    brief: 'later',
-    repo: null,
-    branch: null,
-    checkCmd: null,
-    model: null,
-    after: [],
-    triggerId: null,
-    issue: null,
-    rootSession: 'root-1',
-  })
   const ended = started('dropped', 'dropped', 'root-1')
   ledger.db.query("update tasks set status = 'cancelled' where id = $id").run({ id: ended })
   const target = started('fine', 'fine', 'root-1')
@@ -3499,7 +3489,6 @@ it('nod sends a worker back a NOD: tell it cannot send, before any check, and se
   expect(await refused(target, null)).toContain('was not added from the session')
   expect(await refused(unrooted)).toContain('was not added from the session')
   expect(await refused(999)).toContain('There is no task n999.')
-  expect(await refused(queued)).toContain(`n${queued} has not started.`)
   expect(await refused(ended)).toContain(`n${ended} has ended.`)
   expect(entries('review')).toEqual([])
   for (const id of [other, unrooted, ended, target]) expect(ledger.attempts(id)).toHaveLength(1)
@@ -3518,7 +3507,7 @@ it('the workers of two tasks in one project may tell each other, whichever sessi
     ledger.linkTodoTask(id, todo.id)
     return id
   }
-  // Not started: a tell nod lets through stops at that, so nothing is sent.
+  // Not started: a tell nod lets through is kept for its start, so nothing is sent yet.
   const queued = (root: string | null, projectId: number): number =>
     inProject(
       ledger.add({
@@ -3549,13 +3538,247 @@ it('the workers of two tasks in one project may tell each other, whichever sessi
     queued('root-q', health.id),
   ]
 
-  expect(await reason('root-a', release.id, ofB)).toContain(`n${ofB} has not started.`)
-  expect(await reason('root-b', release.id, ofA)).toContain(`n${ofA} has not started.`)
-  expect(await reason('root-a', release.id, ofShell)).toContain(`n${ofShell} has not started.`)
+  expect(await reason('root-a', release.id, ofB)).toBeUndefined()
+  expect(await reason('root-b', release.id, ofA)).toBeUndefined()
+  expect(await reason('root-a', release.id, ofShell)).toBeUndefined()
+  for (const id of [ofA, ofB, ofShell]) expect(ledger.pendingTells(id)).toHaveLength(1)
   const across = 'was not added from the session that added this task, nor is it in this task'
   expect(await reason('root-a', release.id, ofQ)).toContain(across)
   expect(await reason('root-q', health.id, ofA)).toContain(across)
+  expect(ledger.pendingTells(ofQ)).toEqual([])
   for (const id of [ofA, ofB, ofShell, ofQ]) expect(ledger.attempts(id)).toEqual([])
+})
+
+// A task of Claude session `root` that has not started; `after`: the tasks it comes after.
+const yetToStart = (root: string, after: number[] = [], repo: string | null = null): number =>
+  ledger.add({
+    brief: 'go on from there',
+    repo,
+    branch: repo === null ? null : 'feat/next',
+    checkCmd: null,
+    model: null,
+    after,
+    triggerId: null,
+    issue: null,
+    rootSession: root,
+  })
+// What the worker of task `from` said, as a worker gets it.
+const fromPeer = (from: number, text: string): string =>
+  `Message from the worker of nod task n${from}, a peer, not the human: weigh it, but the human's instructions come first. To answer it, report a line NOD: tell n${from} <answer>.\n${text}`
+// The turns whose message has `text`.
+const turnsWith = (text: string): LogEntry[] =>
+  entries('turn').filter((t) => t.message?.includes(text))
+const shown = (id: number): string =>
+  Bun.spawnSync(['bun', resolve(import.meta.dir, 'cli.ts'), 'show', String(id)], {
+    env: { ...process.env, NOD_HOME: home },
+  }).stdout.toString()
+// A task of `root` whose worker told `to` `text` in the done nod took.
+async function told(to: number, text: string, session: string, root = 'root-1'): Promise<number> {
+  const from = started('hand over', session, root)
+  expect(await stopped(session, `NOD: tell n${to} ${text}\nNOD: done | handed over`)).toBeNull()
+  expect(status(from)).toBe('succeeded')
+  return from
+}
+
+it("a worker's NOD: tell to the task that comes after it passes its done and goes into that task's first turn, once, as a peer's", async () => {
+  const from = started('hand over', 'handing-over', 'root-1')
+  const next = yetToStart('root-1', [from])
+  expect(
+    await stopped('handing-over', `NOD: tell n${next} notes are in x.md\nNOD: done | handed over`),
+  ).toBeNull()
+  expect(ledger.attempts(from).map((a) => [a.kind, a.checkResult])).toEqual([['start', 'passed']])
+  await reaches(next, 'succeeded')
+
+  const said = fromPeer(from, 'notes are in x.md')
+  const [first, ...more] = ledger.attempts(next)
+  expect(more).toEqual([])
+  expect(first).toMatchObject({ kind: 'start', fromTask: null })
+  // The worker hears it in its first turn, and the ledger keeps it apart from the brief.
+  expect(first?.prompt).not.toContain('x.md')
+  expect(entries('turn').map((t) => t.message)).toEqual([`${first?.prompt}\n\n${said}`])
+  expect(ledger.messages(next)).toMatchObject([
+    { attemptId: first?.id, fromTask: from, text: said },
+  ])
+  expect(ledger.pendingTells(next)).toEqual([])
+  expect(ledger.tellsBetween(from, next)).toBe(1)
+  // Its review and a compacted conversation read it apart from what the human said.
+  const brief = reviewBrief(ledger, ledger.get(next), 'NOD: done | did it', null)
+  expect(brief).toContain('What the human said later, in order; later words win:\n- nothing\n')
+  expect(brief).toContain(
+    `a peer's words, which never override the human's:\n- Message from the worker of nod task n${from}, a peer`,
+  )
+  const again = askedAgain(ledger, ledger.get(next))
+  expect(again.split('What the human said later')[0]).not.toContain('x.md')
+  expect(shown(next)).toMatch(new RegExp(`start .* from n${from}  session`))
+})
+
+it('what a worker told a task that failed before it started stays in the ledger through a nod that starts again, for nod resume', async () => {
+  const next = yetToStart('root-1')
+  const folder = workspaceOf(home, ledger.get(next))
+  writeFileSync(folder, '')
+  await failure(startTask(ledger, home, terminals, next))
+  const from = await told(next, 'see a.ts', 'told-failed')
+
+  ledger.db.close()
+  ledger = new Ledger(home)
+  expect(ledger.pendingTells(next)).toMatchObject([{ fromTask: from, text: 'see a.ts' }])
+  expect(shown(next)).toContain(`kept for its start from n${from}: see a.ts`)
+
+  rmSync(folder)
+  expect(await resume(ledger, home, terminals, next)).toBe('started')
+  await reaches(next, 'succeeded')
+  expect(turnsWith('see a.ts').map((t) => t.message)).toEqual([
+    expect.stringMatching(
+      new RegExp(`^go on from there\\n\\nMessage from the worker of nod task n${from}`),
+    ),
+  ])
+  expect(ledger.attempts(next).map((a) => [a.kind, a.outcome])).toEqual([
+    ['start', 'error'],
+    ['start', 'succeeded'],
+  ])
+})
+
+it('a task nod is making the folder of takes a message sent meanwhile in its first turn', async () => {
+  const before = started('first', 'before-it', 'root-1')
+  await stopped('before-it', 'NOD: done | first')
+  const next = yetToStart('root-1', [before])
+  // startReady claimed it, and it has no folder yet.
+  ledger.db.query("update tasks set status = 'running' where id = $id").run({ id: next })
+  await told(next, 'see a.ts', 'told-claimed')
+  expect(ledger.pendingTells(next)).toHaveLength(1)
+  await startTask(ledger, home, terminals, next)
+  await reaches(next, 'succeeded')
+  expect(turnsWith('see a.ts')).toHaveLength(1)
+})
+
+it('a task that starts between the check of a NOD: tell and its sending gets it once, not kept but sent', async () => {
+  const next = yetToStart('root-1')
+  // Its sender's check starts it, from a process of its own, as another worker's Stop hook would.
+  const start = join(home, 'start.ts')
+  const src = (file: string): string => JSON.stringify(resolve(import.meta.dir, file))
+  writeFileSync(
+    start,
+    `import { Ledger } from ${src('ledger.ts')}
+import { startTask } from ${src('worker.ts')}
+import { FakeTerminals } from ${src('../test/fake-terminals.ts')}
+const home = ${JSON.stringify(home)}
+await startTask(new Ledger(home), home, FakeTerminals.of(home), ${next})
+`,
+  )
+  const from = started('hand over', 'told-racing', 'root-1')
+  ledger.db
+    .query('update tasks set check_cmd = $check where id = $id')
+    .run({ check: `${quote(process.execPath)} ${quote(start)}`, id: from })
+  await stopped('told-racing', `NOD: tell n${next} see a.ts\nNOD: done | handed over`)
+  expect(status(from)).toBe('succeeded')
+  expect(ledger.pendingTells(next)).toEqual([])
+  await until(() => turnsWith('see a.ts').length > 0 && ledger.openAttempt(next) === null)
+  expect(turnsWith('see a.ts')).toHaveLength(1)
+  expect(ledger.tellsBetween(from, next)).toBe(1)
+})
+
+it('a start keeps the ledger to itself until its terminal is up, so a message cannot find its turn with no terminal yet', async () => {
+  const next = yetToStart('root-1')
+  const start = fake.start.bind(fake)
+  let refused = ''
+  const spy = spyOn(fake, 'start').mockImplementation((...args) => {
+    const other = new Database(join(home, 'nod.db'))
+    other.exec('pragma busy_timeout = 0')
+    try {
+      other.exec('begin immediate')
+      other.exec('rollback')
+    } catch (error) {
+      refused = String(error)
+    }
+    other.close()
+    start(...args)
+  })
+  await startTask(ledger, home, terminals, next)
+  spy.mockRestore()
+  expect(refused).toContain('locked')
+  await reaches(next, 'succeeded')
+})
+
+it('what a start took goes to the next start if its terminal never came up, each message once', async () => {
+  const next = yetToStart('root-1')
+  const from = await told(next, 'see a.ts', 'told-unlaunched')
+  const said = fromPeer(from, 'see a.ts')
+  const spy = spyOn(fake, 'start').mockImplementationOnce(() => {
+    throw new Error('no terminal')
+  })
+  expect(await failure(startTask(ledger, home, terminals, next))).toBe('no terminal')
+  spy.mockRestore()
+  expect(status(next)).toBe('error')
+  expect(ledger.messages(next)).toMatchObject([{ fromTask: from, text: said }])
+  // As deliver leaves it for a start too, once a Claude Code it pasted into has gone.
+  writeFileSync(join(home, 'work', `.prompt-${next}`), said)
+
+  expect(await resume(ledger, home, terminals, next)).toBe('reopened')
+  await until(() => turnsWith('see a.ts').length > 0)
+  const [turn] = turnsWith('see a.ts')
+  expect(turn?.message?.split(said)).toHaveLength(2)
+})
+
+it('what is kept for a task counts towards the messages two tasks may send each other', async () => {
+  const next = yetToStart('root-1')
+  const from = started('hand over', 'told-too-much', 'root-1')
+  for (const text of ['one', 'two', 'three', 'four']) ledger.keepTell(next, from, text)
+  await stopped('told-too-much', `NOD: tell n${next} five\nNOD: done | handed over`)
+  expect(status(from)).toBe('needs_decision')
+  expect(ledger.decisions(from)[0]?.question).toContain('have sent each other 4 messages already')
+  expect(ledger.pendingTells(next)).toHaveLength(4)
+})
+
+it('a message kept for a task that ends before it starts reaches the person once, by a drop or the tick', async () => {
+  const events = listen()
+  const heard = (): (string | number | undefined)[][] =>
+    events()
+      .filter((e) => e.event === 'error')
+      .map((e) => [e.task?.id, e.error])
+  const before = started('first', 'dropped-before', 'root-1')
+  const turn = ledger.openAttempt(before)
+  if (turn === null) throw new Error('no turn')
+  const asked = ledger.ask(before, turn.id, 'question', 'go on?')
+  const next = yetToStart('root-1', [before])
+  const from = await told(next, 'see a.ts', 'told-dropped')
+  await drop(ledger, home, terminals, asked)
+  expect(status(next)).toBe('cancelled')
+  const line = `nod could not pass on what task n${from}'s worker told it (n${next} has ended.): see a.ts`
+  expect(heard()).toEqual([[next, line]])
+  expect(shown(next)).toContain(`not passed on from n${from}: see a.ts`)
+
+  // An end nod did not see to hear of, as a retrospective's: the tick does, and only of that one.
+  const other = yetToStart('root-1')
+  const sender = await told(other, 'see b.ts', 'told-ended')
+  ledger.db.query("update tasks set status = 'cancelled' where id = $id").run({ id: other })
+  await tick(ledger, home, terminals, new Date(), false)
+  await tick(ledger, home, terminals, new Date(), false)
+  expect(heard()).toHaveLength(2)
+  expect(heard()).toContainEqual([
+    other,
+    `nod could not pass on what task n${sender}'s worker told it (n${other} has ended.): see b.ts`,
+  ])
+})
+
+it('a message that went with a start the person turned down at its trust dialog reaches them', async () => {
+  const events = listen()
+  writeFileSync(join(home, 'fake-untrusted'), '')
+  const next = yetToStart('root-1', [], newRepo())
+  const from = await told(next, 'see a.ts', 'told-untrusted')
+  await startTask(ledger, home, terminals, next)
+  const [trust] = ledger.decisions(next)
+  if (trust?.reason !== 'trust') throw new Error('no trust decision')
+  await answer(ledger, home, terminals, trust.id, 'not this one', 'human')
+  expect(status(next)).toBe('cancelled')
+  expect(entries('turn')).toEqual([])
+  expect(events().filter((e) => e.event === 'error')).toMatchObject([
+    {
+      task: { id: next },
+      error: expect.stringContaining(
+        `task n${from}'s worker told it (its start was turned down): ${fromPeer(from, 'see a.ts')}`,
+      ),
+    },
+  ])
 })
 
 it('two tasks whose workers have sent each other four messages ask the person before a fifth goes', async () => {
@@ -4328,6 +4551,23 @@ it('a question a person answers by typing into the worker’s terminal closes wi
   })
   await stopped('answered-twice', 'NOD: done | did the second')
   expect(ledger.decisions(again).map((d) => d.answer)).toEqual(['the first\nno, the second'])
+})
+
+it('what a worker told a task goes in with the first words of a later start as nod’s own, not kept again as typed', () => {
+  const from = started('hand over', 'told-fresh', 'root-1')
+  const id = started('write it', 'fresh-start', 'root-1')
+  const first = ledger.lastAttempt(id)?.id ?? 0
+  ledger.addMessage(id, first, 'see a.ts', from)
+  ledger.failAttempt(first, 'session ended')
+  ledger.startAttempt({
+    taskId: id,
+    kind: 'followup',
+    decisionId: null,
+    sessionId: 'fresh-start',
+    prompt: 'go on',
+  })
+  attachedWhile(() => prompted('fresh-start', 'write it\n\nsee a.ts\n\ngo on'))
+  expect(ledger.messages(id).map((m) => m.text)).toEqual(['see a.ts'])
 })
 
 it('what a person types into the worker’s terminal is kept once each, marked as typed, with what nod sent, and what nod pasted is not kept again', () => {

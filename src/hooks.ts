@@ -228,15 +228,15 @@ export async function onPrompt(
 const OWN_MESSAGE = /<(task-notification|agent-message)[\s>]/
 
 // Whether `prompt`, a message Claude Code took in, holds only what nod sent into the open turn
-// `open` (deliver, carryUnheard) or the start's first message (on a fresh start, nextRun puts a
-// message left for it after that), or `left` for a start: nod's own, come back through the prompt
-// hook. A paste of several lines comes wrapped in `<pasted_content>`, as Claude Code keeps it in its
-// transcript (heardOf).
+// `open` (deliver, carryUnheard) or the start's first words (firstWords: on a fresh start, nextRun
+// puts a message left for it after those), or `left` for a start: nod's own, come back through the
+// prompt hook. A paste of several lines comes wrapped in `<pasted_content>`, as Claude Code keeps it
+// in its transcript (heardOf).
 function pastedByNod(ledger: Ledger, open: Attempt, prompt: string, left: string[]): boolean {
   const start = ledger.attempts(open.taskId).findLast((a) => a.kind === 'start')
   const told = ledger
     .messages(open.taskId)
-    .filter((m) => m.attemptId === open.id && !typedHere(m.text))
+    .filter((m) => (m.attemptId === open.id || m.attemptId === start?.id) && !typedHere(m.text))
   const sent = [
     start?.prompt,
     typedHere(open.prompt) ? undefined : open.prompt,

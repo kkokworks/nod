@@ -19,6 +19,7 @@ import {
   cutChecks,
   lostTurns,
   overdueWaits,
+  reportLostTells,
   restartDue,
   SELF,
   startTask,
@@ -157,6 +158,9 @@ export async function tick(
         ...report.clean,
       ])
     : []
+  await reportLostTells(ledger, home).catch((error) =>
+    console.error(`nod: could not report the messages nod kept: ${message(error)}`),
+  )
   // What no notify sent yet: a session that was not running, a send that failed, an end no event
   // follows (a landing turn's).
   await sendNotices(ledger).catch((error) =>

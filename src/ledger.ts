@@ -226,6 +226,18 @@ export type Message = {
   fromTask: number | null
 }
 
+// What `fromTask`'s worker told a task that had not started (`NOD: tell`), as it wrote it, until the
+// task's first turn takes it as a Message (startTask in worker.ts). `lostAt`: when the person heard
+// it instead, the task having ended before it started.
+export type PendingTell = {
+  id: number
+  taskId: number
+  fromTask: number
+  text: string
+  createdAt: string
+  lostAt: string | null
+}
+
 export type Decision = {
   id: number
   taskId: number
@@ -657,6 +669,19 @@ export const MIGRATIONS = [
   // v27: the end of a todo's task that nod last moved it by, leaving it open on the task's work
   // (followTasks in todos.ts).
   'alter table todos add column followed text;',
+  // v28: what a worker told a task that had not started. Not in messages: a message goes into a
+  // turn, and such a task has none to name.
+  `
+  create table pending_tells (
+    id integer primary key,
+    task_id integer not null references tasks(id),
+    from_task integer not null references tasks(id),
+    text text not null,
+    created_at text not null,
+    lost_at text
+  );
+  create index pending_tells_task on pending_tells(task_id);
+  `,
 ]
 // The migration that moves <home>/rules.md into the ledger, numbered as user_version counts.
 const RULES_FILE_MIGRATION = 17
@@ -672,6 +697,7 @@ type Tables = {
   attempts: Omit<Attempt, 'id'> & { id: Generated<number>; pid: number | null }
   decisions: Omit<Decision, 'id'> & { id: Generated<number> }
   messages: Omit<Message, 'id'> & { id: Generated<number> }
+  pendingTells: Omit<PendingTell, 'id'> & { id: Generated<number> }
   retros: Omit<Retro, 'id'> & { id: Generated<number> }
   rules: Omit<Rule, 'id'> & { id: Generated<number> }
   ruleChanges: { id: Generated<number>; ruleId: number; actor: string; change: string; at: string }
@@ -765,6 +791,9 @@ const EMPTY_LANDING: Omit<Landing, 'taskId' | 'updatedAt'> = {
 }
 const count = q.fn.countAll<number>().as('n')
 
+const WAL_WAIT_MS = 5000
+const WAL_RETRY_MS = 20
+
 export const nodHome = (): string => process.env.NOD_HOME ?? join(homedir(), '.nod')
 
 export const now = (): string => new Date().toISOString()
@@ -781,6 +810,21 @@ class LedgerDatabase extends Database {
   }
 }
 
+// SQLite does not wait out every lock of the switch to WAL: with the timeout, 20 processes opening a
+// new ledger at once still failed at once in about 1 run in 150 (bun 1.4.4), so this tries again.
+function useWal(db: Database): void {
+  const deadline = Date.now() + WAL_WAIT_MS
+  for (;;) {
+    try {
+      db.exec('pragma journal_mode = wal')
+      return
+    } catch (error) {
+      if (Date.now() > deadline || (error as { code?: string }).code !== 'SQLITE_BUSY') throw error
+      Bun.sleepSync(WAL_RETRY_MS)
+    }
+  }
+}
+
 export class Ledger {
   readonly db: Database
 
@@ -789,7 +833,8 @@ export class Ledger {
     this.db = new LedgerDatabase(join(home, 'nod.db'), { create: true, strict: true })
     // busy_timeout first: switching to WAL takes a lock, and without the timeout a ledger opened
     // by several processes at once fails with `database is locked` (1 in 30 measured).
-    this.db.exec('pragma busy_timeout = 5000; pragma journal_mode = wal; pragma foreign_keys = on;')
+    this.db.exec('pragma busy_timeout = 5000; pragma foreign_keys = on;')
+    useWal(this.db)
     const version = (): number =>
       this.db.query<{ user_version: number }, []>('pragma user_version').get()?.user_version ?? 0
     for (const [i, sql] of MIGRATIONS.entries()) {
@@ -1527,8 +1572,41 @@ export class Ledger {
     this.run(q.updateTable('attempts').set({ prompt }).where('id', '=', attemptId))
   }
 
+  keepTell(taskId: number, fromTask: number, text: string): void {
+    this.run(
+      q
+        .insertInto('pendingTells')
+        .values({ taskId, fromTask, text, createdAt: now(), lostAt: null }),
+    )
+  }
+
+  pendingTells(taskId: number): PendingTell[] {
+    return this.run(
+      q.selectFrom('pendingTells').selectAll().where('taskId', '=', taskId).orderBy('id'),
+    )
+  }
+
+  // A kept tell goes into the turn `attemptId`, as `text`: from here on it is a message of that turn.
+  takeTell(tell: PendingTell, attemptId: number, text: string): void {
+    this.run(q.deleteFrom('pendingTells').where('id', '=', tell.id))
+    this.addMessage(tell.taskId, attemptId, text, tell.fromTask)
+  }
+
+  // Marks lost the tells kept for tasks that ended without starting, and returns them. One statement,
+  // so of two that find them at once only one has the person hear them.
+  loseTells(): PendingTell[] {
+    return this.run(
+      q
+        .updateTable('pendingTells')
+        .set({ lostAt: now() })
+        .where('lostAt', 'is', null)
+        .where('taskId', 'in', q.selectFrom('tasks').select('id').where('status', '=', 'cancelled'))
+        .returningAll(),
+    )
+  }
+
   // How many messages the workers of tasks `a` and `b` sent each other (`NOD: tell`), both ways:
-  // the turns they started and those that went into a turn.
+  // the turns they started, those that went into a turn, and those kept for a task yet to start.
   tellsBetween(a: number, b: number): number {
     const pair = [a, b]
     const turns = this.first(
@@ -1547,7 +1625,15 @@ export class Ledger {
         .where('fromTask', 'in', pair)
         .whereRef('taskId', '!=', 'fromTask'),
     )
-    return (turns?.n ?? 0) + (within?.n ?? 0)
+    const kept = this.first(
+      q
+        .selectFrom('pendingTells')
+        .select(count)
+        .where('taskId', 'in', pair)
+        .where('fromTask', 'in', pair)
+        .whereRef('taskId', '!=', 'fromTask'),
+    )
+    return (turns?.n ?? 0) + (within?.n ?? 0) + (kept?.n ?? 0)
   }
 
   messages(taskId: number): Message[] {

@@ -1155,6 +1155,10 @@ async function show(id: number): Promise<void> {
   }
   if (live.has(sessionName(id))) console.log(`  terminal: nod attach n${id}`)
   for (const a of ledger.attempts(id)) printAttempt(a)
+  for (const t of ledger.pendingTells(id)) {
+    const state = t.lostAt === null ? 'kept for its start' : 'not passed on'
+    console.log(`  ${state} from n${t.fromTask}: ${oneLine(t.text, 200)}`)
+  }
   for (const d of ledger.decisions(id)) {
     const answered = d.answeredAt
       ? `answered after ${secsBetween(d.createdAt, d.answeredAt)}s: ${d.answer}`
@@ -1277,7 +1281,10 @@ async function unlinkedPushes(t: Task): Promise<string[]> {
 function printAttempt(a: Attempt): void {
   const secs = a.finishedAt ? `${secsBetween(a.startedAt, a.finishedAt)}s` : 'running'
   const check = a.checkResult ? ` check ${a.checkResult}` : ''
-  const from = a.fromTask === null ? '' : ` from n${a.fromTask}`
+  // Its first turn takes what workers told a task before it started as messages, so those count.
+  const within = ledger.messages(a.taskId).filter((m) => m.attemptId === a.id)
+  const senders = new Set([a.fromTask, ...within.map((m) => m.fromTask)].filter((f) => f !== null))
+  const from = senders.size === 0 ? '' : ` from ${taskList([...senders])}`
   console.log(
     `  ${a.kind.padEnd(8)} ${(a.outcome ?? '-').padEnd(14)} ${secs}${check}${from}  session ${a.sessionId}`,
   )
