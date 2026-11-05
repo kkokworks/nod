@@ -27,7 +27,7 @@ test('a tmux that hangs fails a start before those it keeps from the ledger give
   const began = Date.now()
   try {
     expect(() => tmux.start('hung', home, ['/bin/sleep', '30'], {})).toThrow(
-      'tmux new-session failed',
+      'tmux new-session failed: no answer in 4000ms',
     )
   } finally {
     process.env.PATH = PATH

@@ -214,7 +214,13 @@ export async function startTask(
       .immediate()
     throw new Error(why, { cause: error })
   }
-  const { cwd, start } = await prepareWorkspace(ledger, home, terminals, task).catch(failed)
+  // Its environment first, and not in the transaction below: an account rule's command may take
+  // longer than those the transaction keeps from the ledger wait.
+  const ready = async () => {
+    const env = workerEnv(home, taskId)
+    return { env, ...(await prepareWorkspace(ledger, home, terminals, task)) }
+  }
+  const { env, cwd, start } = await ready().catch(failed)
   const sessionId = crypto.randomUUID()
   // Only a repo can be untrusted; nod's own work folder is trusted by ensureTrusted.
   const started = task.repo === null ? null : startedMarker(home, taskId)
@@ -245,7 +251,7 @@ export async function startTask(
         rmSync(promptFile(home, taskId), { force: true })
         const words = firstWords(ledger, ledger.attempt(attemptId))
         const first = claudeArgs(ledger, home, task, ['--session-id', sessionId], words, started)
-        launch(home, terminals, taskId, cwd, first)
+        launch(home, terminals, taskId, cwd, first, env)
         return { attemptId, unlaunched: null }
       } catch (error) {
         return { attemptId, unlaunched: error }
@@ -258,6 +264,12 @@ export async function startTask(
   } catch (error) {
     ledger.failAttempt(attemptId, message(error))
     ledger.error(taskId, message(error))
+    // The next start hears what this one took (firstWords), but none may come before gc collects
+    // the task, and a task with no conversation cannot be brought back, so the person hears it now.
+    const why = `its start failed; nod resume n${taskId} passes it on`
+    for (const m of toldStart(ledger, ledger.attempt(attemptId))) {
+      await notPassedOn(home, ledger.get(taskId), m.fromTask, why, m.text)
+    }
     throw error
   }
 }
@@ -1232,12 +1244,13 @@ function launch(
   taskId: number,
   cwd: string,
   first: string[],
+  env: Record<string, string> = workerEnv(home, taskId),
 ): void {
   terminals.start(
     sessionName(taskId),
     cwd,
     [process.execPath, CLI, 'run', String(taskId), ...first],
-    workerEnv(home, taskId),
+    env,
   )
 }
 

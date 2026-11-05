@@ -63,7 +63,10 @@ export class Tmux implements Terminals {
     )
     const args = ['new-session', '-d', '-s', name, '-x200', '-y50', '-c', cwd, '--', 'sh', script]
     const { exitCode, stderr } = this.run(args, undefined, START_TIMEOUT_MS)
-    if (exitCode !== 0) throw new Error(`tmux new-session failed: ${stderr.toString().trim()}`)
+    if (exitCode !== 0) {
+      const why = stderr.toString().trim() || `no answer in ${START_TIMEOUT_MS}ms`
+      throw new Error(`tmux new-session failed: ${why}`)
+    }
   }
 
   alive(name: string): boolean {

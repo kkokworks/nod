@@ -3568,10 +3568,11 @@ const fromPeer = (from: number, text: string): string =>
 // The turns whose message has `text`.
 const turnsWith = (text: string): LogEntry[] =>
   entries('turn').filter((t) => t.message?.includes(text))
-const shown = (id: number): string =>
-  Bun.spawnSync(['bun', resolve(import.meta.dir, 'cli.ts'), 'show', String(id)], {
+const nod = (...args: string[]): string =>
+  Bun.spawnSync(['bun', resolve(import.meta.dir, 'cli.ts'), ...args], {
     env: { ...process.env, NOD_HOME: home },
   }).stdout.toString()
+const shown = (id: number): string => nod('show', String(id))
 // A task of `root` whose worker told `to` `text` in the done nod took.
 async function told(to: number, text: string, session: string, root = 'root-1'): Promise<number> {
   const from = started('hand over', session, root)
@@ -3705,6 +3706,7 @@ it.each([
 ])(
   'what a start took goes to the next start if its terminal never came up, once: %s',
   async (_, left) => {
+    const events = listen()
     const next = yetToStart('root-1')
     const from = await told(next, 'see a.ts', 'told-unlaunched')
     const said = fromPeer(from, 'see a.ts')
@@ -3715,6 +3717,13 @@ it.each([
     spy.mockRestore()
     expect(status(next)).toBe('error')
     expect(ledger.messages(next)).toMatchObject([{ fromTask: from, text: said }])
+    // Now: gc may collect it before any start, and then nothing brings it back.
+    expect(events().filter((e) => e.event === 'error')).toMatchObject([
+      {
+        task: { id: next },
+        error: `nod could not pass on what task n${from}'s worker told it (its start failed; nod resume n${next} passes it on): ${said}`,
+      },
+    ])
     // As deliver leaves it for a start too, once a Claude Code it pasted into has gone.
     if (left) writeFileSync(join(home, 'work', `.prompt-${next}`), said)
 
@@ -3724,6 +3733,35 @@ it.each([
     expect(turn?.message?.split(said)).toHaveLength(2)
   },
 )
+
+it('a start runs an account command before its transaction, which would keep the ledger from the others that long', async () => {
+  const probed = join(home, 'probed')
+  const probe = join(home, 'probe.ts')
+  writeFileSync(
+    probe,
+    `import { Database } from 'bun:sqlite'
+import { appendFileSync } from 'node:fs'
+const db = new Database(${JSON.stringify(join(home, 'nod.db'))})
+db.exec('pragma busy_timeout = 0')
+try {
+  db.exec('begin immediate')
+  db.exec('rollback')
+  appendFileSync(${JSON.stringify(probed)}, 'free\\n')
+} catch {
+  appendFileSync(${JSON.stringify(probed)}, 'held\\n')
+}
+console.log(process.env.CLAUDE_CONFIG_DIR)
+`,
+  )
+  setAccountRule(home, { command: `${quote(process.execPath)} ${quote(probe)}` })
+  const next = yetToStart('root-1')
+  await startTask(ledger, home, terminals, next)
+  // Read at once: a hook of the worker that just started may hold the lock from here on.
+  const seen = readFileSync(probed, 'utf8').trim().split('\n')
+  expect(seen.length).toBeGreaterThan(1)
+  expect(new Set(seen)).toEqual(new Set(['free']))
+  await reaches(next, 'succeeded')
+})
 
 it('a kept message loses its control characters, as a paste does, so the end of its turn finds it heard', async () => {
   const next = yetToStart('root-1')
@@ -3785,14 +3823,16 @@ it('a message kept for a task that failed before it started reaches the person o
   await tick(ledger, home, terminals, new Date(), false)
   expect(events().filter((e) => e.event === 'error')).toEqual([])
 
-  ledger.collected(next, null)
+  // nod gc tells it itself, as the schedule may be off; the tick after it tells it no more.
+  nod('gc', `n${next}`)
+  expect(ledger.get(next).collectedAt).not.toBeNull()
+  const heard = {
+    task: { id: next },
+    error: `nod could not pass on what task n${from}'s worker told it (n${next} ended without starting.): see a.ts`,
+  }
+  expect(events().filter((e) => e.event === 'error')).toMatchObject([heard])
   await tick(ledger, home, terminals, new Date(), false)
-  expect(events().filter((e) => e.event === 'error')).toMatchObject([
-    {
-      task: { id: next },
-      error: `nod could not pass on what task n${from}'s worker told it (n${next} ended without starting.): see a.ts`,
-    },
-  ])
+  expect(events().filter((e) => e.event === 'error')).toMatchObject([heard])
   rmSync(folder)
   expect(await resume(ledger, home, terminals, next)).toBe('started')
   await reaches(next, 'succeeded')
