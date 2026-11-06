@@ -869,9 +869,7 @@ export class Todos {
       typeof orchestrator === 'string' &&
       this.latestNamed(orchestrator)?.role !== 'orchestrator'
     ) {
-      throw new Error(
-        `no orchestrator session named ${orchestrator}; nod open ${orchestrator} --role orchestrator opens its first session`,
-      )
+      throw new Error(`no orchestrator session is named ${orchestrator}`)
     }
     return this.db.transaction(() => {
       const before = this.project(id)

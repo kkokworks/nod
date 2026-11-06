@@ -327,8 +327,9 @@ export function checkTell(todos: Todos, session: string | null, projectId: numbe
   const owner = todos.orchestratorOf(projectId)
   if (mine?.role !== 'orchestrator' || owner === null || owner === mine.name) return
   const p = todos.project(projectId)
+  const charge = clean(owner)
   throw new Error(
-    `this session is the orchestrator ${mine.name}, and p${p.id} ${p.title} is the orchestrator ${owner}'s: what is for its session goes through ${owner}, or in as a todo (nod in <what...> --project p${p.id})`,
+    `this session is the orchestrator ${clean(mine.name)}, and p${p.id} ${p.title} is the orchestrator ${charge}'s: what is for its session goes through ${charge}, or in as a todo (nod in <what...> --project p${p.id})`,
   )
 }
 

@@ -172,13 +172,41 @@ test('only the name of an orchestrator session can be put in charge, and a refus
   for (const name of ['south', 'gate', 'Health', ' ']) {
     expect(
       await fails('project', 'set', 'p1', '--title', 'Teeth', '--orchestrator', name),
-    ).toContain(
-      `no orchestrator session named ${name}; nod open ${name} --role orchestrator opens its first session`,
-    )
+    ).toContain(`no orchestrator session is named ${name}`)
   }
   expect(todos.project(1).title).toBe('Health')
   expect(todos.orchestratorOf(1)).toBe('north')
   expect(todos.projectChanges(1).length).toBe(2)
+})
+
+test('what would break a terminal stays out of an orchestrator’s name, wherever it shows', async () => {
+  const { ok, home } = runner()
+  const todos = new Todos(new Ledger(home))
+  const name = 'ev\x1b[31mil\nnext'
+  const shown = 'ev [31mil next'
+  todos.addSession({ role: 'orchestrator', name }, 'key-bad', '/work/bad')
+  todos.addSession({ role: 'orchestrator', name: 'south' }, 'key-south', '/work/south')
+  await ok('project', 'add', 'Esc')
+
+  expect(await ok('project', 'set', 'p1', '--orchestrator', name)).toEqual([
+    `p1    active   Esc  · orchestrator ${shown}`,
+  ])
+  expect(await ok('project', 'ls')).toEqual([
+    `p1    active   Esc  0 next  0 waiting  · no next action  · orchestrator ${shown}`,
+  ])
+  expect(await ok('project', 'p1')).toEqual([
+    'p1    active   Esc',
+    `  orchestrator ${shown}`,
+    '  changes',
+    '    <time>  human  title — → Esc, status — → active',
+    `    <time>  human  orchestrator — → ${shown}`,
+  ])
+  expect(() => checkTell(todos, 'key-south', 1)).toThrow(
+    `is the orchestrator ${shown}'s: what is for its session goes through ${shown},`,
+  )
+  // The orchestrator's own message, from the other side of the same name.
+  todos.setProject(1, { orchestrator: 'south' }, 'human')
+  expect(() => checkTell(todos, 'key-bad', 1)).toThrow(`the orchestrator ${shown}, and p1`)
 })
 
 test('a session of no project hears how to pick a project, and an orchestrator how far its charge goes, with no skill read', () => {
