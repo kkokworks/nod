@@ -602,6 +602,20 @@ it('a Stop hook that comes once its task was cancelled runs neither the check no
   ])
 })
 
+it('a Stop hook that comes as a cancel closes its session, its turn still open, runs neither the check nor the review', async () => {
+  const id = started('write it', 'cancel-closing')
+  const checked = join(home, 'checked')
+  ledger.db
+    .query('update tasks set check_cmd = $check where id = $id')
+    .run({ check: `: > ${quote(checked)}`, id })
+  // As endTask has it once its transaction ended the task, before it closes the open turn.
+  ledger.cancel(id, 'cancelled by human')
+  expect(await stopped('cancel-closing', 'NOD: done | did it')).toBeNull()
+  expect(existsSync(checked)).toBe(false)
+  expect(entries('review')).toEqual([])
+  expect(status(id)).toBe('cancelled')
+})
+
 it('a task cancelled while nod starts it does not start, and keeps its folder for gc', async () => {
   const id = ledger.add({
     brief: 'plain',
@@ -627,11 +641,12 @@ it('a task cancelled while nod starts it does not start, and keeps its folder fo
 // `id`, from a process of its own, as `nod cancel` in their shell does.
 function cancelling(id: number): string {
   const cli = resolve(import.meta.dir, 'cli.ts')
-  const nod = `NOD_HOME=${quote(home)} NOD_ACTOR=human ${quote(process.execPath)} ${quote(cli)}`
+  // Not as the worker this test may itself run in.
+  const nod = `env -u NOD_TASK NOD_HOME=${quote(home)} NOD_ACTOR=human ${quote(process.execPath)} ${quote(cli)}`
   return `${nod} cancel n${id} >/dev/null 2>&1`
 }
 
-it('a start that fails once its task was cancelled leaves it cancelled', async () => {
+it('a start that fails once its task was cancelled leaves it cancelled, and fails nothing', async () => {
   const id = ledger.add({
     brief: 'plain',
     repo: null,
@@ -642,10 +657,12 @@ it('a start that fails once its task was cancelled leaves it cancelled', async (
     triggerId: null,
     issue: null,
   })
-  // And then the account cannot be read, which fails the start.
+  // And then the account cannot be read, which would fail the start: its cancel told the person,
+  // so neither an error (notifyError on what startTask throws) nor a start to resume follows.
   setAccountRule(home, { command: `${cancelling(id)}; exit 1` })
-  await expect(startTask(ledger, home, terminals, id)).rejects.toThrow('the account command')
+  await startTask(ledger, home, terminals, id)
   expect(ledger.get(id)).toMatchObject({ status: 'cancelled', error: 'cancelled by human' })
+  expect(ledger.attempts(id)).toEqual([])
 })
 
 it('a repo task cancelled as nod waits for its Claude Code to come up stops waiting, and stays cancelled', async () => {

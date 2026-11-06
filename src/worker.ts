@@ -233,7 +233,10 @@ export async function startTask(
     const env = workerEnv(home, taskId)
     return { env, ...(await prepareWorkspace(ledger, home, terminals, task)) }
   }
-  const { env, cwd, start } = await ready().catch(failed)
+  // One cancelled meanwhile (nod cancel) failed nothing: its cancel told the person.
+  const prepared = await ready().catch((error) => (ended(ledger, taskId) ? null : failed(error)))
+  if (prepared === null) return
+  const { env, cwd, start } = prepared
   const sessionId = crypto.randomUUID()
   // Only a repo can be untrusted; nod's own work folder is trusted by ensureTrusted.
   const started = task.repo === null ? null : startedMarker(home, taskId)

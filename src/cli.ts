@@ -125,8 +125,11 @@ const USAGE = `usage:
                                    again, and the session that hears of it is told cancelled.
                                    Who cancelled it (this session, a worker or human) and the
                                    reason stay as its error. Its folder, branch and transcript
-                                   stay for gc. One whose work succeeded and is landing only
-                                   stops landing, as drop does. A task that ended is refused
+                                   stay for gc. One whose landing work its worker has, or that
+                                   waits on a land decision, only stops landing, as drop does. A
+                                   task that ended is refused, one that succeeded and waits on
+                                   its pull request too. A worker cancels only the tasks of its
+                                   own work (its project, or the session that added it)
   nod add <brief> [--repo <path> --branch <name>] [--check <command>] [--model <model>]
           [--after <task,...>] [--issue <key>] [--todo <todo> | --project <project>]
                                    start a worker on the task now, or once the tasks it comes
@@ -508,6 +511,15 @@ switch (command) {
     })
     if (positionals.length !== 1) throw new Error(USAGE)
     const id = taskRef(positionals[0])
+    // A worker cancels only the tasks of its own work, as it tells only those (cannotTell in
+    // worker.ts): one working on what anyone could write in an issue steers no other.
+    const worker = process.env.NOD_TASK
+    if (
+      worker !== undefined &&
+      !new Todos(ledger).sameWork(ledger.get(Number(worker)), ledger.get(id))
+    ) {
+      throw new Error(`a worker cancels only the tasks of its own work, and n${id} is not one`)
+    }
     const reason = values.reason?.trim() || null
     const did = await cancel(ledger, home, terminals, id, actorFromEnv(), reason)
     console.log(did === 'cancelled' ? 'cancelled' : 'stopped landing it; the task stays succeeded')

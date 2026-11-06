@@ -1194,11 +1194,15 @@ test('a task is n<n>, a decision d<n> and a trigger c<n>, and each still takes i
 test('nod cancel ends a task as whoever runs it, with the reason given, and refuses one that ended', () => {
   const home = tmp.make('nod-cancel-')
   const ledger = new Ledger(home)
+  // Not as the worker this test may itself run in, unless `worker` says so.
+  const { NOD_TASK: _, NOD_ACTOR: __, ...env } = process.env
   const run = (actor: string, ...args: string[]) =>
+    Bun.spawnSync(['bun', cli, ...args], { env: { ...env, NOD_HOME: home, NOD_ACTOR: actor } })
+  const worker = (task: number, ...args: string[]) =>
     Bun.spawnSync(['bun', cli, ...args], {
-      env: { ...process.env, NOD_HOME: home, NOD_ACTOR: actor },
+      env: { ...env, NOD_HOME: home, NOD_TASK: String(task) },
     })
-  const queued = () =>
+  const queued = (rootSession: string | null = null) =>
     ledger.add({
       brief: 'write the notes',
       repo: null,
@@ -1208,6 +1212,7 @@ test('nod cancel ends a task as whoever runs it, with the reason given, and refu
       after: [],
       triggerId: null,
       issue: null,
+      rootSession,
     })
   const [said, unsaid] = [queued(), queued()]
   const cancelled = run('claude:aaaa1111', 'cancel', `n${said}`, '--reason', ' not needed ')
@@ -1224,6 +1229,18 @@ test('nod cancel ends a task as whoever runs it, with the reason given, and refu
   expect(again.stderr.toString()).toContain(`task n${said} has ended (cancelled)`)
   expect(ledger.get(said).error).toBe('cancelled by claude:aaaa1111: not needed')
   expect(run('human', 'cancel').exitCode).not.toBe(0)
+
+  // A worker cancels a task of its own work, one its session added, and no other.
+  const [mine, sibling, other] = [queued('root-1'), queued('root-1'), queued('root-2')]
+  const refused = worker(mine, 'cancel', `n${other}`)
+  expect(refused.exitCode).not.toBe(0)
+  expect(refused.stderr.toString()).toContain(`a worker cancels only the tasks of its own work`)
+  expect(ledger.get(other).status).toBe('queued')
+  expect(worker(mine, 'cancel', `n${sibling}`).exitCode).toBe(0)
+  expect(ledger.get(sibling)).toMatchObject({
+    status: 'cancelled',
+    error: `cancelled by worker:${mine}`,
+  })
 })
 
 test('hook stop waits on the background work Claude Code says still runs, and tick asks once that has taken an hour', () => {
