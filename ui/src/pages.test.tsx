@@ -194,6 +194,8 @@ afterAll(async () => {
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: undefined })
 })
 
+type Device = { prefersColorScheme: string }
+
 // Lets the sends and reloads a click started finish.
 const settle = () => act(() => new Promise((done) => setTimeout(done, 20)))
 const go = async (href: string) => {
@@ -1302,6 +1304,37 @@ test('/settings goes to Rules, and each page of Settings has its own address and
     expect(document.querySelector('nav.tags .active')?.textContent).toBe(page)
     // Going by the keyboard, the link followed keeps the focus.
     expect(document.activeElement).toBe(link as Element)
+  }
+})
+
+test('the link to the page of Settings open now stands out, under the real stylesheet, in either theme', async () => {
+  // Whole, as a rule further down it can outweigh the one that marks the link.
+  const css = await Bun.file(`${import.meta.dir}/styles.css`).text()
+  const sheet = document.head.appendChild(document.createElement('style'))
+  const device = (window as unknown as { happyDOM: { settings: { device: Device } } }).happyDOM
+    .settings.device
+  const theme = device.prefersColorScheme
+  try {
+    answer = () => []
+    await go('/settings/relays')
+    const look = (a: Element | undefined) => {
+      const { backgroundColor, color } = getComputedStyle(a as Element)
+      return { backgroundColor, color }
+    }
+    const [rules, , relays] = document.querySelectorAll('nav.tags a')
+    for (const [scheme, accent, bg] of [
+      ['light', '#1c1b19', '#f7f6f3'],
+      ['dark', '#ecebe8', '#191918'],
+    ] as const) {
+      device.prefersColorScheme = scheme
+      // Put in anew: happy-dom reads the media queries as a sheet comes in.
+      sheet.textContent = css
+      expect(look(relays)).toEqual({ backgroundColor: accent, color: bg })
+      expect(look(rules).backgroundColor).not.toBe(accent)
+    }
+  } finally {
+    device.prefersColorScheme = theme
+    sheet.remove()
   }
 })
 
