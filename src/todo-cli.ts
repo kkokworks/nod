@@ -95,12 +95,18 @@ export const TODO_USAGE = `  nod in <what...> [--notes <text>] [--source <channe
          [--description <what it is about>]
   nod project [ls] [--all]         active projects with their next and waiting counts, open
                                    decisions among the next; one with no next action says so
-                                   (--all: every status). A description shows on the line below,
-                                   its first ${DESCRIPTION_CUT} characters, to tell which project work is for
-  nod project <project>            one project: its whole description, its open todos and who
-                                   changed what
+                                   (--all: every status). The orchestrator in charge shows on its
+                                   line. A description shows on the line below, its first
+                                   ${DESCRIPTION_CUT} characters, to tell which project work is for
+  nod project <project>            one project: the orchestrator in charge, its whole description,
+                                   its open todos and who changed what
   nod project set <project> [--title <text>] [--outcome <text>] [--description <text>]
-         [--status <s>]            an empty --outcome or --description clears it
+         [--orchestrator <name>] [--status <s>]
+                                   an empty --outcome, --description or --orchestrator clears it.
+                                   --orchestrator puts the orchestrator session of that name in
+                                   charge of the project, whose session only it then tells among
+                                   orchestrators (nod tell p<n>); it may have many projects. A name
+                                   no orchestrator session has is refused
   nod project done <project>       only once none of its todos is open
                                    Todos are t<n>; projects are p<n> or their exact title. Each
                                    change records who made it: $NOD_ACTOR if set, else
@@ -172,9 +178,9 @@ export function capture(todos: Todos, args: string[]): void {
 // What Claude in a session of no project hears of its role, as it opens or claims it.
 const ROLE_DUTIES: Record<OpenRole, string> = {
   orchestrator:
-    "it belongs to no project, keeps the person's todos with the gtd skills, hears of the tasks it adds in no project and of those no orchestrator added, and passes a project's work to that project's session (nod tell p<n>).",
+    "it belongs to no project, keeps the person's todos with the gtd skills, hears of the tasks it adds in no project and of those no orchestrator added, and passes a project's work to that project's session (nod tell p<n>). It picks the project by the descriptions in nod project ls, which also shows each project's orchestrator: it talks, by SendMessage too, only to the sessions of projects in its charge or in no orchestrator's.",
   relay:
-    'it belongs to no project, takes messages from outside and passes each to the project session it is for (nod tell p<n>), and nod tells it of no task.',
+    "it belongs to no project, takes messages from outside, picks the project each is for by the descriptions in nod project ls, passes it to that project's session (nod tell p<n>), and nod tells it of no task.",
 }
 export const roleLine = (role: OpenRole, name: string): string =>
   `the ${role} ${name}: ${ROLE_DUTIES[role]}`
@@ -310,6 +316,19 @@ export function placeWork(
     todo === null
       ? `${mine}; p${p.id} ${p.title}'s work goes in as a todo (nod in <what...> --project p${p.id}) or is handed over in its session (nod open p${p.id})`
       : `${mine}, and t${todo.id} is in p${p.id} ${p.title}: hand it over in that project's session (nod open p${p.id})`,
+  )
+}
+
+// Refuses `nod tell p<n>` from an orchestrator session when another orchestrator is in charge of the
+// project, so a project's talk stays with one. Any session of its name is in charge. A project with
+// none takes any orchestrator's, and any other session and a shell tell as they always did.
+export function checkTell(todos: Todos, session: string | null, projectId: number): void {
+  const mine = session === null ? null : todos.session(session)
+  const owner = todos.orchestratorOf(projectId)
+  if (mine?.role !== 'orchestrator' || owner === null || owner === mine.name) return
+  const p = todos.project(projectId)
+  throw new Error(
+    `this session is the orchestrator ${mine.name}, and p${p.id} ${p.title} is the orchestrator ${owner}'s: what is for its session goes through ${owner}, or in as a todo (nod in <what...> --project p${p.id})`,
   )
 }
 
@@ -533,7 +552,7 @@ export function projectCommand(todos: Todos, args: string[]): void {
     const [ref, ...extra] = rest
     if (ref === undefined || extra.length > 0) throw new Error(TODO_USAGE)
     const p = todos.findProject(ref)
-    console.log(projectBrief(todos.setProject(p.id, { status: 'done' }, actorFromEnv())))
+    console.log(projectBrief(todos, todos.setProject(p.id, { status: 'done' }, actorFromEnv())))
   } else if (rest.length === 0) {
     showProject(todos, todos.findProject(sub))
   } else {
@@ -551,7 +570,9 @@ function addProject(todos: Todos, args: string[]): void {
   if (title === '') throw new Error(TODO_USAGE)
   const outcome = cleared(values.outcome) ?? null
   const description = cleared(values.description) ?? null
-  console.log(projectBrief(todos.addProject({ title, outcome, description }, actorFromEnv())))
+  console.log(
+    projectBrief(todos, todos.addProject({ title, outcome, description }, actorFromEnv())),
+  )
 }
 
 function listProjects(todos: Todos, args: string[]): void {
@@ -559,7 +580,7 @@ function listProjects(todos: Todos, args: string[]): void {
   for (const p of todos.projects(values.all ? [...PROJECT_STATUSES] : ['active'])) {
     const counts = `${p.next} next  ${p.waiting} waiting`
     const stuck = p.status === 'active' && p.next === 0 ? '  · no next action' : ''
-    console.log(projectBrief(p, `  ${counts}${stuck}`))
+    console.log(projectBrief(todos, p, `  ${counts}${stuck}`))
   }
 }
 
@@ -571,6 +592,7 @@ function setProject(todos: Todos, args: string[]): void {
       title: { type: 'string' },
       outcome: { type: 'string' },
       description: { type: 'string' },
+      orchestrator: { type: 'string' },
       status: { type: 'string' },
     },
   })
@@ -585,13 +607,16 @@ function setProject(todos: Todos, args: string[]): void {
     title: values.title,
     outcome: cleared(values.outcome),
     description: cleared(values.description),
+    orchestrator: cleared(values.orchestrator),
     status,
   }
-  console.log(projectBrief(todos.setProject(p.id, edit, actorFromEnv())))
+  console.log(projectBrief(todos, todos.setProject(p.id, edit, actorFromEnv())))
 }
 
 function showProject(todos: Todos, p: Project): void {
   console.log(projectLine(p))
+  const orchestrator = todos.orchestratorOf(p.id)
+  if (orchestrator !== null) console.log(`  orchestrator ${clean(orchestrator)}`)
   if (p.description !== null) {
     const lines = p.description.split('\n').map(clean).join('\n')
     console.log(`  description\n${indent(lines, 4)}`)
@@ -725,10 +750,12 @@ const projectLine = (p: Project): string => {
   return `p${String(p.id).padEnd(4)} ${p.status.padEnd(8)} ${p.title}${outcome}`
 }
 
-// A project as a list shows it: `after` on its line, and its description cut on the next, as a
-// session picks a project by it and nod project <project> has the rest.
-const projectBrief = (p: Project, after = ''): string => {
-  const head = `${projectLine(p)}${after}`
+// A project as a list shows it: `after` and its orchestrator on its line, and its description cut
+// on the next, as a session picks a project by it and nod project <project> has the rest.
+const projectBrief = (todos: Todos, p: Project, after = ''): string => {
+  const orchestrator = todos.orchestratorOf(p.id)
+  const charge = orchestrator === null ? '' : `  · orchestrator ${clean(orchestrator)}`
+  const head = `${projectLine(p)}${after}${charge}`
   if (p.description === null) return head
   return `${head}\n      ${cutLine(p.description, DESCRIPTION_CUT)}`
 }

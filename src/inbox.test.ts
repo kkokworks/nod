@@ -703,6 +703,30 @@ test("nod tell p<n> sends a person's words into the project's session, or keeps 
   await expect(tellProject(ledger, 9, 'nobody', 'human', send)).rejects.toThrow('no project p9')
 })
 
+test('nod tell p<n> from an orchestrator is refused for a project another has, and leaves nothing to send', async () => {
+  const { home, ledger, todos, p } = setup()
+  const { NOD_TASK: _, NOD_ACTOR: __, CLAUDE_CODE_MESSAGING_SOCKET: ___, ...env } = process.env
+  const tell = (session: string) => {
+    const proc = Bun.spawnSync(['bun', cli, 'tell', `p${p.id}`, 'Hello'], {
+      env: { ...env, NOD_HOME: home, CLAUDECODE: '1', CLAUDE_CODE_SESSION_ID: session },
+    })
+    return { code: proc.exitCode, out: proc.stdout.toString(), err: proc.stderr.toString() }
+  }
+  todos.addSession({ role: 'orchestrator', name: 'north' }, A, '/work/one')
+  todos.addSession({ role: 'orchestrator', name: 'south' }, B, '/work/two')
+  todos.setProject(p.id, { orchestrator: 'north' }, 'human')
+
+  const refused = tell(B)
+  expect(refused.code).not.toBe(0)
+  expect(refused.err).toContain("p1 Release is the orchestrator north's")
+  expect(ledger.unsentNotices()).toEqual([])
+
+  expect(tell(A)).toMatchObject({ code: 0, out: expect.stringContaining('not sent yet') })
+  expect(ledger.unsentNotices().map((n) => n.note)).toEqual([
+    `nod tell from claude:${A.slice(0, 8)}:\nHello`,
+  ])
+}, 15_000)
+
 test('nod open sessions report their inbox through nod hook inbox, and nod tell p<n> keeps what no session takes', async () => {
   const { home, ledger, todos, p } = setup()
   todos.addSession(p.id, A, '/work/one')

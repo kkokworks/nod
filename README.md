@@ -141,6 +141,8 @@ Claude 세션에서 `nod add` 를 하면 작업에 그 세션(루트 세션)의 
 
 오케스트레이터와 릴레이는 프로젝트의 일을 `nod add` 로 직접 맡기지 못합니다. `--project` 나 `--todo` 가 어떤 프로젝트를 가리키면 거절하고, `nod tell p<n>` 으로 그 프로젝트 세션에 넘기거나 `nod in <할 일> --project p<n>` 으로 할 일을 넣으라고 알립니다. 넘길 프로젝트는 `nod project` 에 보이는 설명(`--description`, 무슨 일의 묶음인지)으로 고릅니다. 끝났을 때의 모습인 `--outcome` 과는 다른 칸입니다. 프로젝트 없는 일은 맡길 수 있고, 그 세션이 맡긴 작업이 그 세션의 작업입니다(`--mine`). 프로젝트 없는 작업의 알림은 오케스트레이터가 맡긴 작업이면 그 세션과 이름이 같은 최신 세션으로, 셸·트리거·그 밖의 세션이 맡긴 작업이면 메시지를 받고 있는(소켓이 있는) 오케스트레이터 가운데 가장 나중에 만든 세션으로 갑니다. 모두 꺼져 있으면 가장 나중에 만든 세션을 기다립니다. 맡긴 오케스트레이터의 최신 세션이 꺼져 있으면 다른 오케스트레이터가 돌고 있어도 그 세션을 기다립니다. 릴레이는 작업 알림을 받지 않습니다.
 
+오케스트레이터가 둘 이상이면 프로젝트마다 담당을 정해 한 프로젝트의 대화가 여러 오케스트레이터로 흩어지지 않게 합니다. 한 프로젝트의 담당은 하나이고, 한 오케스트레이터는 여러 프로젝트를 맡습니다. `nod project set <프로젝트> --orchestrator <이름>` 으로 정하고, 빈 값을 주면 비웁니다. 바꾸면 이력에 남습니다. 오케스트레이터 세션 가운데 없는 이름은 거절합니다. 담당은 세션이 아니라 이름을 가리키므로 `--new` 로 세션을 새로 열어도 이어집니다. `nod project ls` 의 프로젝트 줄 끝(`· orchestrator <이름>`)과 `nod project <프로젝트>` 에 보입니다. 오케스트레이터 세션이 담당이 아닌 프로젝트에 `nod tell p<n>` 을 보내면 거절하고 담당이 누구인지 알립니다. 담당이 없는 프로젝트에는 어느 오케스트레이터든 보낼 수 있고, 릴레이·프로젝트 세션·일반 세션·셸은 담당과 상관없이 보냅니다. 작업의 알림도 담당과 상관없이 위 규칙대로 갑니다. `SendMessage` 는 nod 를 거치지 않아 코드로 막지 못하므로, 담당 프로젝트의 세션과만 주고받는다는 것을 스킬(`skills/nod/project.md`)에 규칙으로 적어 둡니다.
+
 정해진 때나 새 항목마다 할 일은 트리거로 맡깁니다. `nod schedule on` 으로 한 번 켜 두면 OS 스케줄러(macOS launchd, Linux crontab)가 매분 `nod tick` 을 돌립니다. 켠 셸의 `PATH`·`CLAUDE_CONFIG_DIR` 와, 워커가 받는 변수 가운데 비밀이 아닌 것(계정이 들지 않은 프록시·언어·`TMUX_TMPDIR` 등, 아래 「워커가 끊기지 않게」)을 `<홈>/schedule.json` 에 남겨 그 환경으로 돌기 때문에, 워커가 쓸 Claude 설정이 있는 터미널에서 켭니다(`nod account` 로 계정 규칙을 정했으면 트리거 워커는 그 규칙의 계정으로 뜹니다). 이름에 `KEY`·`TOKEN`·`SECRET`·`PASSWORD`·`HEADER` 가 든 변수와, `http://user:pass@proxy:8080`·`user:pass@proxy:8080` 처럼 주소에 계정이 든 값은 파일에 남기지 않으니, API 키와 그런 프록시·`ANTHROPIC_BASE_URL` 은 Claude Code 설정의 `env` 에 둡니다. 부팅마다 바뀌는 `SSH_AUTH_SOCK` 도 남기지 않습니다. 스케줄러의 환경에 있으면 그 값을 워커가 받습니다. 트리거 워커가 스케줄러의 것과 다른, 경로가 바뀌지 않는 SSH 에이전트를 써야 하면(Linux crontab 의 환경에는 `SSH_AUTH_SOCK` 가 아예 없습니다) 그것도 Claude Code 설정의 `env` 에 둡니다. 웹 화면(`desktop/launchd/ui.sh`)도 같습니다. 예전 버전으로 켰다면 `nod schedule on`(웹 화면은 `ui.sh install`)을 다시 해야 파일에 남은 값이 지워집니다.
 
 ```sh
@@ -245,9 +247,10 @@ nod todo set t3 --status waiting --watch '<답이 오면 0 으로 끝나며 받�
 nod todo set t2 --status next --from waiting                 # 아직 대기일 때만 바꾸기(아니면 아무것도 바꾸지 않음)
 nod todo                 # 받은 일함·다음 행동·대기
 nod todo next --context @전화
-nod project              # 진행 중인 프로젝트와 다음 행동 수 (없으면 알려 줌), 아랫줄에 설명 앞 100자
-nod project p1           # 한 프로젝트: 설명 전체, 열린 할 일과 바뀐 이력
+nod project              # 진행 중인 프로젝트와 다음 행동 수 (없으면 알려 줌), 담당, 아랫줄에 설명 앞 100자
+nod project p1           # 한 프로젝트: 담당, 설명 전체, 열린 할 일과 바뀐 이력
 nod project set p1 --description '치과, 건강 검진, 처방'   # 설명 고치기 (빈 값이면 비움)
+nod project set p1 --orchestrator north                   # 담당 오케스트레이터 정하기 (빈 값이면 비움)
 nod todo t1              # 한 개 보기: 메모·링크·누가 무엇을 바꿨는지
 nod search 3             # 번호로 찾기: t3·n3·r3·p3·d3 모두 (n3·d3 처럼 글자를 붙이면 그 종류만, 옛 #3 은 작업). 하나면 그 보기, 여럿이면 목록과 여는 명령
 nod todo done t1

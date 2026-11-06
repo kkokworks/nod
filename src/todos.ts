@@ -134,7 +134,10 @@ export type TodoEdit = Partial<
     | 'backTo'
   >
 >
-export type ProjectEdit = Partial<Pick<Project, 'title' | 'outcome' | 'description' | 'status'>>
+// `orchestrator`: the orchestrator in charge, by its session's name; null for none.
+export type ProjectEdit = Partial<Pick<Project, 'title' | 'outcome' | 'description' | 'status'>> & {
+  orchestrator?: string | null
+}
 export type TodoLink = { url: string; title: string | null }
 // A task doing a todo, with its last one-line report and where its result went.
 export type TodoTask = { task: Task; summary: string | null; links: string[] }
@@ -203,6 +206,7 @@ type Tables = {
   projectChanges: ChangeRow & { projectId: number }
   sessions: Omit<Session, 'id'> & { id: Generated<number> }
   projectSessions: { sessionId: number; projectId: number }
+  projectOrchestrators: { projectId: number; orchestrator: string }
 }
 
 const q = queryBuilder<Tables>()
@@ -856,10 +860,19 @@ export class Todos {
   }
 
   // A project is finished only once nothing in it still asks something of the person, so no open
-  // todo is left hanging under a closed project.
+  // todo is left hanging under a closed project. An orchestrator is named by a session of that role.
   setProject(id: number, edit: ProjectEdit, actor: string): Project {
     if (edit.title !== undefined) projectTitle(edit.title)
     if (edit.status !== undefined) oneOf('project status', edit.status, PROJECT_STATUSES)
+    const { orchestrator, ...fields } = edit
+    if (
+      typeof orchestrator === 'string' &&
+      this.latestNamed(orchestrator)?.role !== 'orchestrator'
+    ) {
+      throw new Error(
+        `no orchestrator session named ${orchestrator}; nod open ${orchestrator} --role orchestrator opens its first session`,
+      )
+    }
     return this.db.transaction(() => {
       const before = this.project(id)
       if (edit.status !== undefined && CLOSED_PROJECT.includes(edit.status)) {
@@ -875,16 +888,22 @@ export class Todos {
           throw new Error(`p${id} still has open todos ${ids}; finish or move them first`)
         }
       }
-      const change = diff(before, edit)
+      const change = diff({ ...before, orchestrator: this.orchestratorOf(id) }, edit)
       if (Object.keys(change).length === 0) return before
       const at = now()
       const statusAt = 'status' in change ? at : before.statusAt
       this.run(
         q
           .updateTable('projects')
-          .set({ ...edit, statusAt })
+          .set({ ...fields, statusAt })
           .where('id', '=', id),
       )
+      if (orchestrator !== undefined) {
+        this.run(q.deleteFrom('projectOrchestrators').where('projectId', '=', id))
+      }
+      if (typeof orchestrator === 'string') {
+        this.run(q.insertInto('projectOrchestrators').values({ projectId: id, orchestrator }))
+      }
       this.recordProject(id, actor, change, at)
       return this.project(id)
     })()
@@ -898,6 +917,18 @@ export class Todos {
         .where('projectId', '=', id)
         .orderBy('id'),
     ).map(parsed)
+  }
+
+  // The name of the orchestrator in charge of the project; null for none. No session need go by it
+  // still: one may have taken another name or role since.
+  orchestratorOf(projectId: number): string | null {
+    const row = this.first(
+      q
+        .selectFrom('projectOrchestrators')
+        .select('orchestrator')
+        .where('projectId', '=', projectId),
+    )
+    return row?.orchestrator ?? null
   }
 
   // ── sessions (nod open) ──

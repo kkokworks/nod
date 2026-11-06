@@ -726,6 +726,15 @@ export const MIGRATIONS = [
   // v30: what a project is about, so a session with work from outside can tell which project it
   // belongs to. Not its outcome, which says what done looks like.
   `alter table projects add column description text`,
+  // v31: the orchestrator in charge of a project, one to a project, so its talk stays with one. Only
+  // a project with one has a row, as projects keep no column that may stay empty for it. It holds
+  // the session's name, not its row: --new adds a row of that name, and the charge goes on.
+  `
+  create table project_orchestrators (
+    project_id integer primary key references projects(id),
+    orchestrator text not null
+  );
+  `,
 ]
 // The migration that moves <home>/rules.md into the ledger, numbered as user_version counts.
 const RULES_FILE_MIGRATION = 17
