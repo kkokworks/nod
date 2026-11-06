@@ -557,8 +557,9 @@ export type Cancelled = 'cancelled' | 'landing stopped'
 // `nod cancel`: ends a task that has not ended, with no decision to drop, as dropping one does:
 // queued, running (its turn and a check of one going on stop with its session), or waiting on a
 // decision. `by` (actorFromEnv) and `reason` stay with the task as its error, which `nod show`, ls,
-// watch and the project session's notice show. One whose work succeeded and is landing only stops
-// landing, as drop does.
+// watch and the project session's notice show. One whose landing work its worker has, or that waits
+// on a land decision (landingOn), only stops landing, as drop does; one that only waits on its pull
+// request or the tick has ended (succeeded) and is refused.
 export async function cancel(
   ledger: Ledger,
   home: string,
