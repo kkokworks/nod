@@ -521,7 +521,7 @@ test('a session of no project has no project_sessions row and no place, and the 
   expect(todos.session('key-q')).toBeNull()
 })
 
-test('a task in no project is heard by the latest of the orchestrator that added it, anything else by the orchestrator opened last, and none by a relay', () => {
+test('a task in no project is heard by the latest of the orchestrator that added it, anything else by the orchestrator made last of those taking messages, and none by a relay', () => {
   const { todos } = books()
   const [A, B, C, D] = ['key-a', 'key-b', 'key-c', 'key-d']
   expect(todos.listener(null, null)).toBeNull()
@@ -540,6 +540,21 @@ test('a task in no project is heard by the latest of the orchestrator that added
   const newer = todos.addSession(north, D, '/work/four')
   expect(todos.listener(null, A)).toEqual(newer)
   expect(todos.listener(null, C)).toEqual(south)
+
+  // Taking messages goes before being made last, for what no orchestrator added alone.
+  todos.setSocket(C, '/socks/c')
+  const running = { ...south, socket: '/socks/c' }
+  expect(todos.listener(null, null)).toEqual(running)
+  expect(todos.listener(null, B)).toEqual(running)
+  expect(todos.listener(null, A)).toEqual(newer)
+  todos.setSocket(A, '/socks/a')
+  expect(todos.listener(null, null)).toEqual(running)
+  // Of those taking messages, the one made last.
+  todos.setSocket(D, '/socks/d')
+  expect(todos.listener(null, null)).toEqual({ ...newer, socket: '/socks/d' })
+  // None taking messages: it waits for the one made last.
+  for (const key of [A, C, D]) todos.setSocket(key, null)
+  expect(todos.listener(null, null)).toEqual(newer)
 
   const p = project(todos, 'Release')
   expect(todos.listener(p.id, A)).toBeNull()

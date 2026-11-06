@@ -1019,21 +1019,22 @@ export class Todos {
     )
   }
 
-  // The session opened last as an orchestrator, of any name; null before there was one.
+  // The orchestrator that hears of work no orchestrator added: the one made last of those taking
+  // messages, else, while none is, the one made last, which it waits for; null before there was
+  // one.
   latestOrchestrator(): Session | null {
-    return this.first(
-      q
-        .selectFrom('sessions')
-        .selectAll()
-        .where('role', '=', 'orchestrator')
-        .orderBy('id', 'desc')
-        .limit(1),
-    )
+    const latest = q
+      .selectFrom('sessions')
+      .selectAll()
+      .where('role', '=', 'orchestrator')
+      .orderBy('id', 'desc')
+      .limit(1)
+    return this.first(latest.where('socket', 'is not', null)) ?? this.first(latest)
   }
 
   // The session nod tells of a task's work: the latest of its project; in no project, the latest of
-  // the orchestrator's name when an orchestrator added it (`rootSession`), else the orchestrator
-  // opened last. A relay hears of no task.
+  // the orchestrator's name when an orchestrator added it (`rootSession`), running or not, else
+  // latestOrchestrator. A relay hears of no task.
   listener(projectId: number | null, rootSession: string | null): Session | null {
     if (projectId !== null) return this.latestSession(projectId)
     const root = rootSession === null ? null : this.session(rootSession)

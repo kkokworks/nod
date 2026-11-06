@@ -134,7 +134,7 @@ test("a project's session hears only its own project's work; work in no project 
   expect(ledger.unsentNotices()).toEqual([])
 })
 
-test('work in no project no orchestrator added goes to the orchestrator opened last, and to no relay', async () => {
+test('work in no project no orchestrator added goes to the orchestrator made last of those taking messages, and to no relay', async () => {
   const { ledger, todos, p, task, sent, send } = setup()
   const older = todos.addSession({ role: 'orchestrator', name: 'north' }, A, '/work/one')
   todos.setSocket(A, '/socks/a')
@@ -168,7 +168,43 @@ test('work in no project no orchestrator added goes to the orchestrator opened l
   expect(latest.id).toBeGreaterThan(older.id)
 })
 
-test('orchestrators of two names each hear of the work in no project they added, the latest of the name going on for it; the rest goes to the one opened last', async () => {
+test('work no orchestrator added goes to an older orchestrator that runs while the newest is closed, waits for the newest while none runs, and an orchestrator’s own work keeps to its name', async () => {
+  const { ledger, todos, sent, send } = setup()
+  todos.addSession({ role: 'orchestrator', name: 'north' }, A, '/work/one')
+  todos.addSession({ role: 'orchestrator', name: 'south' }, B, '/work/two')
+  const ended = (rootSession: string | null, text: string): void => {
+    ledger.succeed(todos.delegateNew({ ...brief(text), rootSession }, null, 'human'))
+  }
+  const heard = () => sent.splice(0).map((s) => [s.socket, s.message.content.split('\n')[0]])
+  const notice = 'nod, tasks in no project: a notice'
+
+  // None runs: it waits, and goes to whichever takes messages first.
+  ended(null, 'From a shell')
+  await sendNotices(ledger, send)
+  expect(heard()).toEqual([])
+  expect(ledger.unsentNotices()).toHaveLength(1)
+  await onInbox(ledger, { session_id: A, hook_event_name: 'SessionStart' }, '/socks/a', send)
+  expect(heard()).toEqual([['/socks/a', notice]])
+
+  // The older runs and the newer is closed: what no orchestrator added goes to the older.
+  ended('dddd-another-session', 'From another session')
+  await sendNotices(ledger, send)
+  expect(heard()).toEqual([['/socks/a', notice]])
+  // What the closed one added waits for it, though another runs.
+  ended(B, 'Of south')
+  await sendNotices(ledger, send)
+  expect(heard()).toEqual([])
+  expect(ledger.unsentNotices()).toHaveLength(1)
+
+  // Both run: the one made last, which also hears what waited for it.
+  await onInbox(ledger, { session_id: B, hook_event_name: 'SessionStart' }, '/socks/b', send)
+  expect(heard()).toEqual([['/socks/b', notice]])
+  ended(null, 'From a shell again')
+  await sendNotices(ledger, send)
+  expect(heard()).toEqual([['/socks/b', notice]])
+})
+
+test('orchestrators of two names each hear of the work in no project they added, the latest of the name going on for it; the rest goes to the one made last that runs', async () => {
   const { ledger, todos, sent, send } = setup()
   const north = { role: 'orchestrator', name: 'north' } as const
   todos.addSession(north, A, '/work/one')
@@ -247,7 +283,7 @@ test('each notice is read for who hears it as its turn comes, so one a new sessi
     ledger.succeed(todos.delegateNew({ ...brief(text), rootSession }, null, 'human'))
   }
   ended(B, 'Of south')
-  // Both go to north as this starts: the first as the orchestrator opened last, the other its own.
+  // Both go to north as this starts: the first as the one made last that runs, the other its own.
   ended(null, 'From a shell')
   ended(A, 'Of north')
   // Another orchestrator opens as south's line goes.
