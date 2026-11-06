@@ -29,6 +29,7 @@ import {
   sendLine,
   sendNotices,
   tellProject,
+  tellSessions,
   unheardWork,
 } from './inbox'
 import { dueTasks, land } from './land'
@@ -321,7 +322,8 @@ again. One with no hooks cannot say it cleared, so what went to it after, until 
 command, is lost: once nod open opens it again, nod ls --mine and nod --mine show what it missed.
 An orchestrator hears the same way of the tasks in no project: the latest session of the name of
 the orchestrator that added each, and of those a shell, a trigger or any other session added, the
-orchestrator opened last. What comes while it is closed waits for it too. Until one has been opened
+orchestrator first opened last, whichever was reopened since. What comes while it is closed waits
+for it too. Until one has been opened
 nobody hears of those, and what comes for them goes to no session.
 
 When <home>/notify exists, nod runs it with a JSON event on stdin whenever a decision opens, a
@@ -1050,6 +1052,8 @@ async function sessionCommand([sub, ...args]: string[]): Promise<void> {
   }
   todos.claimSession(session, role, name, cwd ?? process.cwd())
   await sayInbox()
+  // Its role may be what a notice waited for, though its socket is the one nod knew.
+  await tellSessions(home)
   console.log(`this session is ${roleLine(role, name)}`)
 }
 

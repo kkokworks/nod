@@ -2,7 +2,7 @@ import { existsSync, lstatSync } from 'node:fs'
 import { z } from 'zod'
 import { Ledger, type Notice, type Task } from './ledger'
 import { message, unbroken } from './proc'
-import { type Project, Todos } from './todos'
+import { type Project, type Session, Todos } from './todos'
 import { allowedLine, firstLine, indent, oneLine, taskLabel } from './view'
 
 // nod tells a project's session, the one nod open opened for it last, what `nod watch` would print
@@ -202,30 +202,29 @@ export async function sendNotices(
   env: Record<string, string | undefined> = process.env,
 ): Promise<void> {
   const todos = new Todos(ledger)
-  // By the session they go to, which is of one project or none.
-  const waiting = new Map<
-    number,
-    { projectId: number | null; root: string | null; notices: Notice[] }
-  >()
-  for (const n of ledger.unsentNotices()) {
-    const task = n.taskId === null ? null : ledger.get(n.taskId)
-    const projectId = n.projectId ?? (task === null ? null : todos.projectOf(task))
+  let waiting: { notice: Notice; projectId: number | null; root: string | null }[] = []
+  for (const notice of ledger.unsentNotices()) {
+    const task = notice.taskId === null ? null : ledger.get(notice.taskId)
+    const projectId = notice.projectId ?? (task === null ? null : todos.projectOf(task))
     const answered =
-      n.event === 'decision' &&
-      n.decisionId !== null &&
-      ledger.decision(n.decisionId).answer !== null
+      notice.event === 'decision' &&
+      notice.decisionId !== null &&
+      ledger.decision(notice.decisionId).answer !== null
     const root = task?.rootSession ?? null
-    const session = todos.listener(projectId, root)
-    if (answered || (projectId === null && session === null)) {
-      ledger.claimNotices([n.id], null)
-    } else if (session !== null) {
-      const group = waiting.get(session.id) ?? { projectId, root, notices: [] }
-      waiting.set(session.id, { ...group, notices: [...group.notices, n] })
-    }
+    if (answered || (projectId === null && todos.listener(null, root) === null)) {
+      ledger.claimNotices([notice.id], null)
+    } else waiting.push({ notice, projectId, root })
   }
-  for (const { projectId, root, notices } of waiting.values()) {
-    // Read as it goes: the send before it may have taken a while, and a session opened since.
-    const session = todos.listener(projectId, root)
+  const hears = (w: (typeof waiting)[number]): Session | null => todos.listener(w.projectId, w.root)
+  // Session by session, each read as its turn comes, for each notice: the send before may have taken
+  // a while, and a session opened since. A session is of one project or none.
+  // ponytail: reads who hears each notice once per session sent to; what waits is a few dozen rows.
+  for (let [first] = waiting; first !== undefined; [first] = waiting) {
+    const { projectId } = first
+    const session = hears(first)
+    const mine = waiting.filter((w) => hears(w)?.id === session?.id)
+    waiting = waiting.filter((w) => !mine.includes(w))
+    const notices = mine.map((w) => w.notice)
     const socket = session?.socket ?? null
     if (session === null || socket === null) continue
     await unbroken(async () => {
