@@ -117,6 +117,23 @@ test('a list cuts a description past 100 characters and marks the cut, and one p
   ])
 })
 
+test('what would break a terminal stays out of a description, wherever it shows', async () => {
+  const { ok } = runner()
+  await ok('project', 'add', 'Esc', '--description', 'plain\x1b[2Khidden\nnext\tline')
+  expect(await ok('project')).toEqual([
+    'p1    active   Esc  0 next  0 waiting  · no next action',
+    '      plain [2Khidden next line',
+  ])
+  expect(await ok('project', 'p1')).toEqual([
+    'p1    active   Esc',
+    '  description',
+    '    plain [2Khidden',
+    '    next line',
+    '  changes',
+    '    <time>  human  title — → Esc, description — → plain [2Khidden next line, status — → active',
+  ])
+})
+
 test('capture, clarify into a project, finish, and read back who changed what', async () => {
   const { ok } = runner()
   expect(await ok('in', 'Call', 'the', 'dentist')).toEqual([

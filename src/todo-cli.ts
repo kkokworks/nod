@@ -28,7 +28,7 @@ import {
 } from './todos'
 import { SCHEDULE_OFF, scheduleEnv, tryWatch } from './triggers'
 import { nudgeLine, STALE_DAYS, type Trust } from './trust'
-import { changeText, cutLine, indent, oneLine } from './view'
+import { changeText, clean, cutLine, indent, oneLine } from './view'
 
 // How much of a description a list shows: a sentence or two, enough to pick a project by.
 const DESCRIPTION_CUT = 100
@@ -592,7 +592,10 @@ function setProject(todos: Todos, args: string[]): void {
 
 function showProject(todos: Todos, p: Project): void {
   console.log(projectLine(p))
-  if (p.description !== null) console.log(`  description\n${indent(p.description, 4)}`)
+  if (p.description !== null) {
+    const lines = p.description.split('\n').map(clean).join('\n')
+    console.log(`  description\n${indent(lines, 4)}`)
+  }
   const open = {
     statuses: OPEN,
     context: null,

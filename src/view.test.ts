@@ -13,8 +13,10 @@ test('cutLine marks only a real cut, and keeps a line to one clean line', () => 
   expect(cutLine('xxxxx', 5)).toBe('xxxxx')
   expect(cutLine('xxxxxx', 5)).toBe('xxxxx…')
   expect(cutLine('xxxxx\n', 5)).toBe('xxxxx')
-  expect(cutLine('first\r\nsecond\tthird fourth\x1b[2K', 40)).toBe('first  second third fourth [2K')
+  expect(cutLine(' \nxxxxx', 5)).toBe('xxxxx')
+  expect(cutLine('a\r\nb\tc\u2028d\x1b[2K', 20)).toBe('a  b c d [2K')
 })
+
 const minsAgo = (mins: number): string => new Date(now.getTime() - mins * 60_000).toISOString()
 const task = (o: Partial<LsTask> & { id: number }): LsTask => ({
   todoId: null,

@@ -317,7 +317,7 @@ function shortLink(url: string): string {
 // Bun.stringWidth counts otherwise than a terminal draws them. Emoji keep the joiner and tags
 // (Emoji_Component) they are built from. A lookahead with the u flag, not a v-flag set difference:
 // Bun 1.3's nested v class matched half of a character beyond U+FFFF and left a lone surrogate.
-const clean = (s: string): string =>
+export const clean = (s: string): string =>
   s.replace(/(?!\p{Emoji_Component})[\p{Cc}\p{Zl}\p{Zp}\p{Cf}]/gu, ' ')
 export const firstLine = (s: string): string => clean(s.trim().split('\n')[0] ?? '')
 
@@ -353,7 +353,7 @@ const FIELD: Record<string, string> = {
 const shown = (field: string, v: unknown): string => {
   if (v === null) return '—'
   if (field === 'projectId') return `p${String(v)}`
-  return field === 'backTo' ? `n${String(v)}` : oneLine(String(v), 40)
+  return field === 'backTo' ? `n${String(v)}` : oneLine(clean(String(v)), 40)
 }
 
 // A cut through a character beyond U+FFFF would leave half of it, which prints as U+FFFD.
