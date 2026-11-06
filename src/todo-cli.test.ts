@@ -207,6 +207,12 @@ test('what would break a terminal stays out of an orchestrator’s name, whereve
   // The orchestrator's own message, from the other side of the same name.
   todos.setProject(1, { orchestrator: 'south' }, 'human')
   expect(() => checkTell(todos, 'key-bad', 1)).toThrow(`the orchestrator ${shown}, and p1`)
+  // The refusal keeps the project's title clean too.
+  const titled = todos.addProject({ title: 'Ti\x1b[31mtle', outcome: null }, 'human')
+  todos.setProject(titled.id, { orchestrator: 'south' }, 'human')
+  expect(() => checkTell(todos, 'key-bad', titled.id)).toThrow(
+    `p${titled.id} Ti [31mtle is the orchestrator south's`,
+  )
 })
 
 test('a session of no project hears how to pick a project, and an orchestrator how far its charge goes, with no skill read', () => {
