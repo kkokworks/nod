@@ -52,6 +52,7 @@ import { Todos } from './todos'
 import { addTrigger, tick } from './triggers'
 import {
   answer,
+  type Cancelled,
   cancel,
   claudeArgs,
   closeFinished,
@@ -423,6 +424,24 @@ test('dropping a decision cancels the task and closes its session', async () => 
   expect(terminals.alive(sessionName(id))).toBe(false)
 })
 
+test('dropping a decision of a turn still running closes that turn with the session', async () => {
+  const id = await add('hang')
+  await until(() => entries('turn').length === 1)
+  const turn = ledger.openAttempt(id)
+  if (turn === null) throw new Error('no turn')
+  // As a permission dialog the turn waits on (onPermissionAsk).
+  await drop(
+    ledger,
+    home,
+    terminals,
+    ledger.ask(id, turn.id, 'permission', 'Claude needs your permission'),
+  )
+  expect(status(id)).toBe('cancelled')
+  expect(ledger.attempts(id).map((a) => [a.kind, a.outcome, a.error])).toEqual([
+    ['start', 'error', 'the task was cancelled'],
+  ])
+})
+
 // The ends of a task its project's session hears (setStatus), as the ledger keeps them.
 const endNotices = (id: number) =>
   ledger.db
@@ -577,6 +596,10 @@ it('a Stop hook that comes once its task was cancelled runs neither the check no
   expect(entries('review')).toEqual([])
   expect(status(id)).toBe('cancelled')
   expect(ledger.get(id).error).toBe('cancelled by human')
+  // Nor does it go in as a turn typed into the terminal after the cancel.
+  expect(ledger.attempts(id).map((a) => [a.kind, a.outcome, a.error])).toEqual([
+    ['start', 'error', 'the task was cancelled'],
+  ])
 })
 
 it('a task cancelled while nod starts it does not start, and keeps its folder for gc', async () => {
@@ -590,18 +613,76 @@ it('a task cancelled while nod starts it does not start, and keeps its folder fo
     triggerId: null,
     issue: null,
   })
-  // The account command runs as the start begins, before its transaction: there the person cancels
-  // the task, from a process of its own, as `nod cancel` in their shell does.
-  const cli = resolve(import.meta.dir, 'cli.ts')
-  const nod = `NOD_HOME=${quote(home)} NOD_ACTOR=human ${quote(process.execPath)} ${quote(cli)}`
   const config = process.env.CLAUDE_CONFIG_DIR ?? ''
-  setAccountRule(home, { command: `${nod} cancel n${id} >/dev/null 2>&1; echo ${quote(config)}` })
+  setAccountRule(home, { command: `${cancelling(id)}; echo ${quote(config)}` })
   await startTask(ledger, home, terminals, id)
   expect(ledger.get(id)).toMatchObject({ status: 'cancelled', error: 'cancelled by human' })
   expect(ledger.attempts(id)).toEqual([])
   expect(terminals.alive(sessionName(id))).toBe(false)
   const folder = ledger.get(id).workspace
   expect(folder === null ? false : existsSync(folder)).toBe(true)
+})
+
+// The account command runs as a start begins, before its transaction: there the person cancels task
+// `id`, from a process of its own, as `nod cancel` in their shell does.
+function cancelling(id: number): string {
+  const cli = resolve(import.meta.dir, 'cli.ts')
+  const nod = `NOD_HOME=${quote(home)} NOD_ACTOR=human ${quote(process.execPath)} ${quote(cli)}`
+  return `${nod} cancel n${id} >/dev/null 2>&1`
+}
+
+it('a start that fails once its task was cancelled leaves it cancelled', async () => {
+  const id = ledger.add({
+    brief: 'plain',
+    repo: null,
+    branch: null,
+    checkCmd: null,
+    model: null,
+    after: [],
+    triggerId: null,
+    issue: null,
+  })
+  // And then the account cannot be read, which fails the start.
+  setAccountRule(home, { command: `${cancelling(id)}; exit 1` })
+  await expect(startTask(ledger, home, terminals, id)).rejects.toThrow('the account command')
+  expect(ledger.get(id)).toMatchObject({ status: 'cancelled', error: 'cancelled by human' })
+})
+
+it('a repo task cancelled as nod waits for its Claude Code to come up stops waiting, and stays cancelled', async () => {
+  // Its Claude Code never gets past its start, so nod keeps looking at its screen (awaitStart).
+  writeFileSync(join(home, 'fake-slow-start'), '')
+  const screen = fake.screen.bind(fake)
+  // The person cancels it as nod first looks, and that look finds its terminal there (`shown`) or
+  // already gone.
+  for (const shown of [true, false]) {
+    const id = ledger.add({
+      brief: 'work here',
+      repo: newRepo(),
+      branch: 'feat/here',
+      checkCmd: null,
+      model: null,
+      after: [],
+      triggerId: null,
+      issue: null,
+    })
+    let cancelled: Promise<Cancelled> | undefined
+    fake.screen = (name: string): string => {
+      cancelled ??= cancel(ledger, home, terminals, id, 'human')
+      if (!shown) throw new Error(`can't find session: ${name}`)
+      return screen(name)
+    }
+    await startTask(ledger, home, terminals, id)
+    expect(await cancelled).toBe('cancelled')
+    expect(ledger.get(id)).toMatchObject({ status: 'cancelled', error: 'cancelled by human' })
+    expect(terminals.alive(sessionName(id))).toBe(false)
+    // One it found there it stops waiting for at once, rather than failing its start on a look at
+    // the terminal gone.
+    if (shown) {
+      expect(ledger.attempts(id).map((a) => [a.kind, a.outcome, a.error])).toEqual([
+        ['start', 'error', 'the task was cancelled'],
+      ])
+    }
+  }
 })
 
 it('nod cancel on a task whose landing goes on stops only its landing, as a drop does', async () => {

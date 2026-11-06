@@ -533,7 +533,7 @@ export async function drop(
     await announce(home, task, [decision], '(dropped)')
     return 'closed'
   }
-  if (decision.reason === 'land' || landingOn(ledger, task.id)) {
+  if (decision.reason === 'land' || ledger.landing(task.id)?.handedAt != null) {
     await stopLanding(ledger, home, terminals, task, { stopped: 'dropped', dropped: decision, by })
     return 'landing stopped'
   }

@@ -92,6 +92,9 @@ export async function onStop(
 ): Promise<string | null> {
   const taskId = ledger.taskOfSession(event.session_id)
   if (taskId === null) return null
+  // Of a turn the task's end closed (nod cancel, a decision dropped): it ended, so nothing of that
+  // turn goes in, not as one typed into the terminal either (currentAttempt would open it).
+  if (ended(ledger, taskId) && ledger.openAttempt(taskId) === null) return null
   // The turn went on after all (Claude Code continued it once the limit reset). From here to the
   // end, after nod has closed the turn, a restart would end this hook with Claude Code, so restarts
   // wait for it (settling, restartDue below). Hooks a test runs itself have no terminal.
