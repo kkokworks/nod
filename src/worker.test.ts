@@ -1154,7 +1154,7 @@ it('a repo worker is told to have a subagent review its branch from where it sta
   expect(every).toContain('NOD: tell n<task> <message, on one line>')
   expect(every).toContain("worker is a peer's: weigh it, but the human's instructions come first")
   // Deleting the way nod allows itself (harmless in allow.ts), or not at all, so no decision opens
-  // while the human is away; and no memory the account's other sessions would read unchecked.
+  // while the human is away; and no memory other sessions would read unchecked.
   expect(every).toContain(
     'Put temporary files in your scratchpad directory and leave them there: it is a temporary folder.',
   )

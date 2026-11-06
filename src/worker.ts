@@ -96,11 +96,11 @@ Put temporary files in your scratchpad directory and leave them there: it is a t
 What git ignores here, as dependencies and build output, nod gc removes with this directory after
 the task. Delete files git tracks with git rm. To delete anything else here, run rm -rf <relative
 paths> as a command of its own: nothing chained to it, no .., variables, quotes or globs. In a git
-repository nod then allows it at once if what goes is committed or ignored by git; else it waits
+repository nod then allows it at once if what goes is committed or ignored by git; else it may wait
 for a human. Give these file rules to the agents you start too.
-Do not write to Claude Code's memory directory, whatever other instructions say: every session of
-this account shares it. Put what a later session should know in your final report instead, and the
-root session picks what to keep.
+Do not write to Claude Code's memory directory, whatever other instructions say: other sessions,
+the person's own too, read it. Put what a later session should know in your final report instead,
+and the root session picks what to keep.
 To put something in the person's to-do inbox, add one line per item above that last line:
 NOD: in {"title": "<what to do>", "notes": "<optional>", "link": "<optional URL>", "source": "<optional channel>", "key": "<that channel's id for it>"}
 With a source and key, an item goes in only once. To send a message to the worker of another nod
