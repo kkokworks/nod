@@ -2,7 +2,7 @@ import { createFileRoute } from '@tanstack/react-router'
 import { createServerFn } from '@tanstack/react-start'
 import { orchestrators } from '../nod.server'
 import { keep } from '../parts'
-import { SessionRows } from '../session-rows'
+import { SessionRows } from '../settings-parts'
 
 const getOrchestrators = createServerFn({ method: 'GET' }).handler(() => orchestrators())
 

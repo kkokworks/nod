@@ -2,7 +2,7 @@ import { createFileRoute } from '@tanstack/react-router'
 import { createServerFn } from '@tanstack/react-start'
 import { relays } from '../nod.server'
 import { keep } from '../parts'
-import { SessionRows } from '../session-rows'
+import { SessionRows } from '../settings-parts'
 
 const getRelays = createServerFn({ method: 'GET' }).handler(() => relays())
 

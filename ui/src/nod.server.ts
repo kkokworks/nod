@@ -202,7 +202,7 @@ export function rules(): RuleRow[] {
 // charge, for an orchestrator.
 export type SessionRow = Pick<Session, 'name' | 'cwd' | 'createdAt'> & {
   on: boolean
-  projects?: Project[]
+  projects?: Pick<Project, 'id' | 'title' | 'status'>[]
 }
 
 const sessionRow = (s: Session): SessionRow => ({
@@ -214,9 +214,12 @@ const sessionRow = (s: Session): SessionRow => ({
 
 export function orchestrators(): SessionRow[] {
   const todos = new Todos(ledger)
-  return todos
-    .namedSessions('orchestrator')
-    .map((s) => ({ ...sessionRow(s), projects: todos.projectsInCharge(s.name) }))
+  return todos.namedSessions('orchestrator').map((s) => ({
+    ...sessionRow(s),
+    projects: todos
+      .projectsInCharge(s.name)
+      .map(({ id, title, status }) => ({ id, title, status })),
+  }))
 }
 
 export const relays = (): SessionRow[] => new Todos(ledger).namedSessions('relay').map(sessionRow)

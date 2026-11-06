@@ -2,6 +2,7 @@ import { createFileRoute, Link } from '@tanstack/react-router'
 import { createServerFn } from '@tanstack/react-start'
 import { rules } from '../nod.server'
 import { keep, localTime } from '../parts'
+import { SettingsPage } from '../settings-parts'
 import { Section } from '../todo-parts'
 
 const getRules = createServerFn({ method: 'GET' }).handler(() => rules())
@@ -15,7 +16,7 @@ export const Route = createFileRoute('/settings/rules')({
 function RulesPage() {
   const rules = Route.useLoaderData()
   return (
-    <>
+    <SettingsPage>
       <p className="subtitle">
         Every worker gets the rules that are on, after nod's built-in ones. To change them, use{' '}
         <code>nod rule</code>.
@@ -48,6 +49,6 @@ function RulesPage() {
           ))
         )}
       </Section>
-    </>
+    </SettingsPage>
   )
 }

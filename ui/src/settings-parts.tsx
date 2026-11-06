@@ -4,6 +4,28 @@ import type { SessionRow } from './nod.server'
 import { localTime } from './parts'
 import { Section } from './todo-parts'
 
+// What nod is set to, a page for each kind, with the links between them. Shown only: nod's commands
+// change it.
+export function SettingsPage({ children }: { children: ReactNode }) {
+  return (
+    <div className="page">
+      <h1 className="title">Settings</h1>
+      <nav className="tags">
+        <Link to="/settings/rules" className="tag">
+          Rules
+        </Link>
+        <Link to="/settings/orchestrators" className="tag">
+          Orchestrators
+        </Link>
+        <Link to="/settings/relays" className="tag">
+          Relays
+        </Link>
+      </nav>
+      {children}
+    </div>
+  )
+}
+
 // A role's Settings page: what it shows (`children`), then a row for each name. `of`: the role.
 export function SessionRows({
   of: role,
@@ -17,7 +39,7 @@ export function SessionRows({
   children: ReactNode
 }) {
   return (
-    <>
+    <SettingsPage>
       <p className="subtitle">{children}</p>
       <Section title={title} count={rows.length} bare={rows.length === 0}>
         {rows.length === 0 ? (
@@ -30,7 +52,7 @@ export function SessionRows({
           rows.map((s) => <Row key={s.name} s={s} />)
         )}
       </Section>
-    </>
+    </SettingsPage>
   )
 }
 
@@ -51,7 +73,7 @@ function Row({ s }: { s: SessionRow }) {
             <span>no projects</span>
           ) : (
             s.projects.map((p) => (
-              <Link key={p.id} to="/projects" hash={`p${p.id}`}>
+              <Link key={p.id} to="/projects" hash={`p${p.id}`} className="tag">
                 p{p.id} {p.title}
                 {p.status !== 'active' && ` (${p.status})`}
               </Link>
