@@ -723,6 +723,9 @@ export const MIGRATIONS = [
   update notices set session_id = (select s.id from sessions s where s.session_key = notices.session_key);
   alter table notices drop column session_key;
   `,
+  // v30: what a project is about, so a session with work from outside can tell which project it
+  // belongs to. Not its outcome, which says what done looks like.
+  `alter table projects add column description text`,
 ]
 // The migration that moves <home>/rules.md into the ledger, numbered as user_version counts.
 const RULES_FILE_MIGRATION = 17

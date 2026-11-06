@@ -25,7 +25,7 @@ test('reopening a ledger keeps its data and does not re-run migrations', () => {
   })
   const reopened = new Ledger(home)
   expect(reopened.get(id).brief).toBe('keep me')
-  expect(reopened.db.query('pragma user_version').get()).toEqual({ user_version: 29 })
+  expect(reopened.db.query('pragma user_version').get()).toEqual({ user_version: 30 })
 })
 
 test('v18 leaves the tasks before it without a root session', () => {
@@ -39,7 +39,7 @@ test('v18 leaves the tasks before it without a root session', () => {
 
   const ledger = new Ledger(home)
   expect(ledger.get(1)).toMatchObject({ brief: 'x', rootSession: null })
-  expect(ledger.db.query('pragma user_version').get()).toEqual({ user_version: 29 })
+  expect(ledger.db.query('pragma user_version').get()).toEqual({ user_version: 30 })
 })
 
 test('v23 gives a ledger of v22 project sessions, none yet, and leaves its projects as they were', () => {
@@ -79,7 +79,7 @@ test('v29 moves the project sessions of a v28 ledger to sessions under their ids
 
   const ledger = new Ledger(home)
   const todos = new Todos(ledger)
-  expect(ledger.db.query('pragma user_version').get()).toEqual({ user_version: 29 })
+  expect(ledger.db.query('pragma user_version').get()).toEqual({ user_version: 30 })
   expect(ledger.db.query('pragma foreign_key_check').all()).toEqual([])
   expect(todos.latestSession(1)).toEqual({
     id: 9,
@@ -114,6 +114,30 @@ test('v29 moves the project sessions of a v28 ledger to sessions under their ids
   // A notice's session is a row of sessions now.
   expect(() => ledger.claimNotices([4], 99)).toThrow('FOREIGN KEY constraint failed')
   expect(ledger.claimNotices([4], 9).ids).toEqual([4])
+})
+
+test('v30 leaves the description of a v29 ledger’s projects empty and all else as it was', () => {
+  const home = freshHome()
+  const old = new Database(join(home, 'nod.db'), { create: true, strict: true })
+  for (const sql of MIGRATIONS.slice(0, 29)) old.exec(sql)
+  old.exec(`pragma user_version = 29;
+    insert into projects (id, title, outcome, status, created_at, status_at)
+      values (1, 'Release', 'Shipped', 'someday', 'made', 'moved');`)
+  old.close()
+
+  const ledger = new Ledger(home)
+  const todos = new Todos(ledger)
+  expect(ledger.db.query('pragma user_version').get()).toEqual({ user_version: 30 })
+  expect(todos.project(1)).toEqual({
+    id: 1,
+    title: 'Release',
+    outcome: 'Shipped',
+    description: null,
+    status: 'someday',
+    createdAt: 'made',
+    statusAt: 'moved',
+  })
+  expect(todos.setProject(1, { description: 'What ships' }, 'human').description).toBe('What ships')
 })
 
 test('sessions take the roles SESSION_ROLES names and refuse any other', () => {

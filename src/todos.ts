@@ -108,6 +108,8 @@ export type Project = {
   title: string
   // What done looks like, so whoever proposes the next action knows what it is for.
   outcome: string | null
+  // What it is about, so a session with work from outside can tell the work is this project's.
+  description: string | null
   status: ProjectStatus
   createdAt: string
   statusAt: string
@@ -132,7 +134,7 @@ export type TodoEdit = Partial<
     | 'backTo'
   >
 >
-export type ProjectEdit = Partial<Pick<Project, 'title' | 'outcome' | 'status'>>
+export type ProjectEdit = Partial<Pick<Project, 'title' | 'outcome' | 'description' | 'status'>>
 export type TodoLink = { url: string; title: string | null }
 // A task doing a todo, with its last one-line report and where its result went.
 export type TodoTask = { task: Task; summary: string | null; links: string[] }
@@ -780,7 +782,10 @@ export class Todos {
 
   // ── projects ──
 
-  addProject(p: { title: string; outcome: string | null }, actor: string): Project {
+  addProject(
+    p: { title: string; outcome: string | null; description?: string | null },
+    actor: string,
+  ): Project {
     projectTitle(p.title)
     return this.db.transaction(() => {
       const at = now()
