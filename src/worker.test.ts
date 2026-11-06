@@ -1509,6 +1509,37 @@ test('a task resume started again goes on in the conversation of that start, not
   expect(new Set(entries('launch').map((l) => l.sessionId))).toEqual(new Set([started]))
 }, 30_000)
 
+test('a compacted conversation of a task resume started again hears the first message its worker got, not the start that failed', async () => {
+  const id = ledger.add({
+    brief: 'first',
+    repo: null,
+    branch: null,
+    checkCmd: 'true',
+    model: null,
+    after: [],
+    triggerId: null,
+    issue: null,
+  })
+  const folder = workspaceOf(home, ledger.get(id))
+  writeFileSync(folder, '')
+  await failure(startTask(ledger, home, terminals, id))
+  rmSync(folder)
+  expect(await resume(ledger, home, terminals, id)).toBe('started')
+  await reaches(id, 'succeeded')
+
+  const [got = ''] = entries('turn').map((t) => t.message ?? '')
+  expect(got).toContain('acceptance check in this directory')
+  const again = askedAgain(ledger, ledger.get(id))
+  const quoted = got
+    .split('\n')
+    .map((line) => `> ${line}`)
+    .join('\n')
+  expect(again).toContain(`Your first message:\n${quoted}\n\n`)
+  expect(again).not.toContain('not sent')
+  // The reviewer reads the brief itself, never a start's message.
+  expect(reviewBrief(ledger, ledger.get(id), 'NOD: done | did it', null)).not.toContain('not sent')
+}, 30_000)
+
 function newRepo(): string {
   const repo = tmp.make('nod-repo-')
   git(repo, 'init', '-q')
