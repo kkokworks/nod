@@ -135,8 +135,8 @@ export function permissionQuestion(tool: string, input: Record<string, unknown>)
 export const NO_PERSON = 'no person'
 
 // A person answered or dropped these, with nod d<n> or nod drop (a shell, a Claude session, the web
-// UI), in the worker's terminal, or went on past them with nod tell: the project's latest session
-// hears it (inbox.ts), as it heard each open, so it does not ask the person again. Not when that
+// UI), in the worker's terminal, or went on past them with nod tell: the session that heard each
+// open (Todos.listener) hears it (inbox.ts), so it does not ask the person again. Not when that
 // session did it itself (`by`, the Claude session that did, sessionFromEnv), nor when no person did
 // (NO_PERSON), nor of what nod closed itself (a turn that ended or went on, a newer proposal, a task
 // dropped), which callers do not hand here. `note`: what the line shows in place of the answer the
@@ -153,9 +153,9 @@ export function noticeAnswered(
   for (const d of closed) {
     try {
       const todos = new Todos(ledger)
-      const project = todos.projectOf(ledger.get(d.taskId))
-      if (by !== null && project !== null && todos.latestSession(project)?.sessionId === by)
-        continue
+      const task = ledger.get(d.taskId)
+      const hears = todos.listener(todos.projectOf(task), task.rootSession)
+      if (by !== null && hears?.sessionKey === by) continue
       ledger.addNotice({
         taskId: d.taskId,
         decisionId: d.id,

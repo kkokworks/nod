@@ -5,7 +5,15 @@ import { tempDirs } from '../test/tmp'
 import { followWork, type PrLookup, type PullRequest } from './done'
 import { Ledger, type NewTask, type Task } from './ledger'
 import { Tmux } from './tmux'
-import { type Found, OPEN, parseRef, type TodoEdit, type TodoFilter, Todos } from './todos'
+import {
+  type Found,
+  OPEN,
+  OPEN_ROLES,
+  parseRef,
+  type TodoEdit,
+  type TodoFilter,
+  Todos,
+} from './todos'
 import { tick } from './triggers'
 
 const tmp = tempDirs()
@@ -470,7 +478,143 @@ test("a project's latest session is its session, and each session knows its proj
   expect(todos.sessionPlace('dddd4444-0000-4000-8000-00000000000d')).toBeNull()
   expect(() => todos.addSession(99, 'eeee', '/work')).toThrow('no project p99')
   expect(() => todos.addSession(q.id, A, '/work')).toThrow()
+  expect(todos.session('eeee')).toBeNull()
 })
+
+test('a session of no project has no project_sessions row and no place, and the latest of its name stands for it', () => {
+  const { ledger, todos } = books()
+  const [A, B, C, D] = ['key-a', 'key-b', 'key-c', 'key-d']
+  const north = { role: 'orchestrator', name: 'north' } as const
+  expect(todos.latestNamed('north')).toBeNull()
+  expect(todos.latestOrchestrator()).toBeNull()
+  const first = todos.addSession(north, A, '/work/one')
+  const gate = todos.addSession({ role: 'relay', name: 'gate' }, B, '/work/two')
+  const south = todos.addSession({ role: 'orchestrator', name: 'south' }, C, '/work/three')
+  // --new: another row of the same name, which stands for it from now on.
+  const again = todos.addSession(north, D, '/work/four')
+
+  expect(again).toMatchObject({ role: 'orchestrator', name: 'north' })
+  expect(todos.latestNamed('north')).toEqual(again)
+  expect(todos.latestNamed('south')).toEqual(south)
+  expect(todos.latestNamed('gate')).toEqual(gate)
+  expect(todos.latestOrchestrator()).toEqual(again)
+  for (const key of [A, B, C, D]) expect(todos.sessionPlace(key)).toBeNull()
+  expect(todos.session(B)).toEqual(gate)
+  const rows = (): unknown => ledger.db.query('select count(*) n from project_sessions').get()
+  expect(rows()).toEqual({ n: 0 })
+
+  // A socket goes by the session, whatever its role, and is one session's.
+  todos.setSocket(A, '/socks/x')
+  expect(todos.sessionAt('/socks/x')).toEqual({ ...first, socket: '/socks/x' })
+  todos.setSocket(B, '/socks/x')
+  expect(todos.sessionAt('/socks/x')).toEqual({ ...gate, socket: '/socks/x' })
+  expect(todos.session(A)?.socket).toBeNull()
+
+  // A project session has its row and its project's name, which no role's name reads as.
+  const p = project(todos, 'Release')
+  const session = todos.addSession(p.id, 'key-p', '/work/p')
+  expect(session).toMatchObject({ role: 'project', name: 'Release' })
+  expect(rows()).toEqual({ n: 1 })
+  expect(todos.latestNamed('Release')).toBeNull()
+  // Nothing is left of one that could not go in.
+  expect(() => todos.addSession(99, 'key-q', '/work/q')).toThrow('no project p99')
+  expect(todos.session('key-q')).toBeNull()
+})
+
+test('a task in no project is heard by the latest of the orchestrator that added it, anything else by the orchestrator opened last, and none by a relay', () => {
+  const { todos } = books()
+  const [A, B, C, D] = ['key-a', 'key-b', 'key-c', 'key-d']
+  expect(todos.listener(null, null)).toBeNull()
+  expect(todos.listener(null, A)).toBeNull()
+  const north = { role: 'orchestrator', name: 'north' } as const
+  const opened = todos.addSession(north, A, '/work/one')
+  todos.addSession({ role: 'relay', name: 'gate' }, B, '/work/two')
+  // No orchestrator opened since, the relay after it included.
+  expect(todos.listener(null, null)).toEqual(opened)
+  const south = todos.addSession({ role: 'orchestrator', name: 'south' }, C, '/work/three')
+  expect(todos.listener(null, A)).toEqual(opened)
+  expect(todos.listener(null, C)).toEqual(south)
+  expect(todos.listener(null, B)).toEqual(south)
+  expect(todos.listener(null, null)).toEqual(south)
+  expect(todos.listener(null, 'key-unknown')).toEqual(south)
+  const newer = todos.addSession(north, D, '/work/four')
+  expect(todos.listener(null, A)).toEqual(newer)
+  expect(todos.listener(null, C)).toEqual(south)
+
+  const p = project(todos, 'Release')
+  expect(todos.listener(p.id, A)).toBeNull()
+  const session = todos.addSession(p.id, 'key-p', '/work/p')
+  expect(todos.listener(p.id, A)).toEqual(session)
+})
+
+test('claiming a role puts in a session nod does not know, takes a project session out of its project, and refuses a name it cannot tell apart', () => {
+  const { ledger, todos } = books()
+  const [A, B, C, D] = ['key-a', 'key-b', 'key-c', 'key-d']
+  const made = todos.claimSession(A, 'orchestrator', 'north', '/work/one')
+  expect(made).toMatchObject({
+    role: 'orchestrator',
+    name: 'north',
+    cwd: '/work/one',
+    socket: null,
+  })
+  expect(todos.session(A)).toEqual(made)
+
+  const p = project(todos, 'Release')
+  const older = todos.addSession(p.id, C, '/work/three')
+  const had = todos.addSession(p.id, B, '/work/two')
+  todos.setSocket(B, '/socks/b')
+  // A folder only goes in for a new row: this one keeps where nod open opened it.
+  const claimed = todos.claimSession(B, 'relay', 'gate', '/somewhere/else')
+  expect(claimed).toEqual({ ...had, role: 'relay', name: 'gate', socket: null })
+  expect(todos.session(B)).toEqual(claimed)
+  expect(todos.sessionPlace(B)).toBeNull()
+  expect(todos.latestSession(p.id)).toEqual(older)
+  const rows = ledger.db.query('select session_id from project_sessions').all()
+  expect(rows).toEqual([{ session_id: older.id }])
+
+  // Another role's name, a project's title or what reads as a project go in nowhere.
+  const refused = (name: string, error: string): void => {
+    expect(() => todos.claimSession(D, 'relay', name, '/x')).toThrow(error)
+    expect(todos.session(D)).toBeNull()
+  }
+  refused('north', 'the name north is taken by role orchestrator')
+  refused('Release', 'Release names a project')
+  refused('p7', 'p7 names a project')
+  refused(' ', 'empty name')
+  // A session may give up its own name for another role, and take a name its role has.
+  expect(todos.claimSession(B, 'orchestrator', 'gate', '/x').role).toBe('orchestrator')
+  expect(todos.claimSession(D, 'orchestrator', 'gate', '/x').name).toBe('gate')
+})
+
+for (const role of OPEN_ROLES) {
+  test(`a ${role} session's work is what it added, as any session's, and it is nobody's root place`, () => {
+    const { ledger, todos } = books()
+    const [A, B] = ['key-a', 'key-b']
+    todos.addSession({ role, name: 'north' }, A, '/work/one')
+    const task = (rootSession: string): Task =>
+      ledger.get(
+        todos.delegateNew(
+          {
+            brief: 'x',
+            repo: null,
+            branch: null,
+            checkCmd: null,
+            model: null,
+            after: [],
+            triggerId: null,
+            issue: null,
+            rootSession,
+          },
+          null,
+          'human',
+        ),
+      )
+    const [mine, theirs] = [task(A), task(B)]
+    expect(todos.isMine(A, mine)).toBe(true)
+    expect(todos.isMine(A, theirs)).toBe(false)
+    expect(todos.rootPlace(mine)).toBeNull()
+  })
+}
 
 test("a session nod open opened has all its project's tasks as its own, whoever added them; any other session, those it added", () => {
   const { ledger, todos } = books()
@@ -517,12 +661,12 @@ test("a session nod open opened has all its project's tasks as its own, whoever 
   expect(todos.sameWork(shell, loose)).toBe(false)
 
   // Its root, as shown: the project's latest session, else the session that added it.
-  expect(todos.rootPlace(ofA)?.session.sessionId).toBe(B)
-  expect(todos.rootPlace(shell)?.session.sessionId).toBe(B)
+  expect(todos.rootPlace(ofA)?.session.sessionKey).toBe(B)
+  expect(todos.rootPlace(shell)?.session.sessionKey).toBe(B)
   expect(todos.rootPlace(loose)).toBeNull()
   // A todo moved out of every project stays with the session that added it.
   todos.set(ofA.todoId ?? 0, { projectId: null }, 'human')
-  expect(todos.rootPlace(ofA)).toMatchObject({ session: { sessionId: A }, latest: false })
+  expect(todos.rootPlace(ofA)).toMatchObject({ session: { sessionKey: A }, latest: false })
   expect(todos.isMine(B, ofA)).toBe(false)
   expect(todos.isMine(A, ofA)).toBe(true)
   // One moved to a project of no session is no session's of p any more.

@@ -6,7 +6,7 @@ import { tempDirs } from '../test/tmp'
 import { Ledger } from './ledger'
 import { openSettings } from './settings'
 import { actorFromEnv, openSession, sessionFromEnv } from './todo-cli'
-import { Todos } from './todos'
+import { OPEN_ROLES, type OpenRole, Todos } from './todos'
 
 const tmp = tempDirs()
 afterAll(tmp.removeAll)
@@ -246,7 +246,7 @@ test('nod open resumes the latest session where it was opened, or starts one: wi
   const p = todos.addProject({ title: 'Release', outcome: null }, 'human')
   const open = (fresh: boolean, cwd: string, ref = `p${p.id}`) =>
     openSession(todos, ref, fresh, cwd, config)
-  const key = (): string => todos.latestSession(p.id)?.sessionId ?? ''
+  const key = (): string => todos.latestSession(p.id)?.sessionKey ?? ''
   // Claude in the session hears its project, opened anew or resumed.
   const told = [
     '--append-system-prompt',
@@ -334,6 +334,141 @@ test('nod open resumes the latest session where it was opened, or starts one: wi
     `p${long.id} Migrate every billing service to the`,
   )
   expect(() => open(false, here, 'p9')).toThrow('no project p9')
+})
+
+// A folder of its own for each test, and a way to keep a session's transcript where Claude Code does.
+function opener() {
+  const todos = new Todos(new Ledger(tmp.make('nod-open-')))
+  const config = tmp.make('nod-open-config-')
+  const [here, there] = [tmp.make('nod-open-here-'), tmp.make('nod-open-there-')]
+  const keep = (session: string, cwd: string, line: string): void => {
+    const folder = projectFolder(config, cwd)
+    mkdirSync(folder, { recursive: true })
+    writeFileSync(join(folder, `${session}.jsonl`), `${line}\n`)
+  }
+  const said = '{"type":"user","message":{"role":"user","content":"hi"}}'
+  return { todos, config, here, there, keep, said }
+}
+
+for (const role of OPEN_ROLES) {
+  test(`nod open <name> --role ${role} opens the first session of the name, and nod open <name> the latest, by the same way as a project's`, () => {
+    const { todos, config, here, there, keep, said } = opener()
+    const open = (fresh: boolean, cwd: string, r?: OpenRole) =>
+      openSession(todos, 'north', fresh, cwd, config, r)
+    const key = (): string => todos.latestNamed('north')?.sessionKey ?? ''
+    const told = [
+      '--append-system-prompt',
+      expect.stringContaining(`nod open opened this session as the ${role} north: `),
+      '--settings',
+      openSettings(),
+    ]
+
+    expect(() => open(false, here)).toThrow(
+      'no project or session named north; nod open north --role <orchestrator|relay> opens its first session',
+    )
+    const first = open(false, here, role)
+    const opened = key()
+    expect(first).toEqual({
+      argv: ['claude', '--name', 'north', '--session-id', opened, ...told],
+      cwd: here,
+    })
+    expect(todos.session(opened)).toMatchObject({ role, name: 'north', cwd: here, socket: null })
+    expect(todos.sessionPlace(opened)).toBeNull()
+    // Closed before a word was said, it starts again under its ID where it was opened.
+    expect(open(false, there)).toEqual(first)
+    expect(key()).toBe(opened)
+    // Once something is said in it, it is resumed there, with its role named or not.
+    keep(opened, here, said)
+    const resumed = { argv: ['claude', '--resume', opened, '--name', 'north', ...told], cwd: here }
+    expect(open(false, there)).toEqual(resumed)
+    expect(open(false, there, role)).toEqual(resumed)
+    // --new opens another here, under the same name, which stands for it from now on.
+    const second = open(true, there)
+    const newer = key()
+    expect(newer).not.toBe(opened)
+    expect(second).toEqual({
+      argv: ['claude', '--name', 'north', '--session-id', newer, ...told],
+      cwd: there,
+    })
+    keep(newer, there, said)
+    expect(open(false, here).argv.slice(0, 3)).toEqual(['claude', '--resume', newer])
+    // The folder it was opened in is gone.
+    rmSync(there, { recursive: true })
+    expect(() => open(false, here)).toThrow(
+      `north's session was opened in ${there}, which is gone; nod open north --new opens a new one here`,
+    )
+    // A transcript with nothing said in it opens neither way: a new session instead.
+    open(true, here)
+    const titled = key()
+    keep(titled, here, `{"type":"custom-title","customTitle":"north","sessionId":"${titled}"}`)
+    open(false, here)
+    expect(key()).not.toBe(titled)
+  })
+}
+
+test('orchestrators of two names each go back to their own session, side by side, and a new one of a name leaves the other as it is', () => {
+  const { todos, config, here, there, keep, said } = opener()
+  const open = (name: string, fresh: boolean, cwd: string) =>
+    openSession(todos, name, fresh, cwd, config, 'orchestrator')
+  open('north', false, here)
+  open('south', false, there)
+  const key = (name: string): string => todos.latestNamed(name)?.sessionKey ?? ''
+  const [north, south] = [key('north'), key('south')]
+  keep(north, here, said)
+  keep(south, there, said)
+  const back = (name: string, cwd: string) => {
+    const opened = open(name, false, cwd)
+    return [opened.cwd, ...opened.argv.slice(0, 5)]
+  }
+  expect(back('north', there)).toEqual([here, 'claude', '--resume', north, '--name', 'north'])
+  expect(back('south', here)).toEqual([there, 'claude', '--resume', south, '--name', 'south'])
+  open('north', true, here)
+  expect(key('north')).not.toBe(north)
+  expect(key('south')).toBe(south)
+})
+
+test('nod open looks for a project before a session; a name another role or a project has takes no session', () => {
+  const { todos, config, here } = opener()
+  const open = (ref: string, role?: OpenRole) => openSession(todos, ref, false, here, config, role)
+  const p = todos.addProject({ title: 'Release', outcome: null }, 'human')
+  expect(() => open('Release', 'relay')).toThrow('Release names a project')
+  expect(() => open(`p${p.id}`, 'relay')).toThrow(`p${p.id} names a project`)
+  expect(() => open('p9', 'relay')).toThrow('p9 names a project')
+  // A ref of a project stays one, with or without a project there.
+  expect(() => open('p9')).toThrow('no project p9')
+
+  open('north', 'orchestrator')
+  expect(() => open('north', 'relay')).toThrow('the name north is taken by role orchestrator')
+  const session = todos.latestNamed('north')?.sessionKey
+  // A project titled so since is what the name opens; its role still opens the session.
+  const q = todos.addProject({ title: 'north', outcome: null }, 'human')
+  expect(open('north').argv).toContain(
+    `nod open opened this session for project p${q.id} north: nod add here puts work in that project, and the project's tasks and decisions are this session's.`,
+  )
+  expect(todos.latestSession(q.id)?.name).toBe('north')
+  expect(open('north', 'orchestrator').argv).toContain(session ?? '')
+  expect(todos.latestNamed('north')?.sessionKey).toBe(session)
+})
+
+test("nod open writes the project session's name each time, so a retitled project's shows at the next open", () => {
+  const { todos, config, here, keep, said } = opener()
+  const p = todos.addProject({ title: 'Release', outcome: null }, 'human')
+  const open = () => openSession(todos, `p${p.id}`, false, here, config)
+  const name = (): string | undefined => todos.latestSession(p.id)?.name
+  open()
+  expect(name()).toBe('Release')
+  // Started again under its ID, having said nothing.
+  todos.setProject(p.id, { title: 'Ship' }, 'human')
+  expect(name()).toBe('Release')
+  expect(open().argv.slice(1, 3)).toEqual(['--name', 'Ship'])
+  expect(name()).toBe('Ship')
+  // Resumed.
+  keep(todos.latestSession(p.id)?.sessionKey ?? '', here, said)
+  todos.setProject(p.id, { title: 'Migrate every billing service to the new ledger' }, 'human')
+  const resumed = open()
+  expect(resumed.argv[1]).toBe('--resume')
+  expect(name()).toBe(`p${p.id} Migrate every billing service to the`)
+  expect(resumed.argv[4]).toBe(name())
 })
 
 test('the actor is NOD_ACTOR if set, else a worker, a Claude session, or a person', () => {

@@ -2,7 +2,7 @@
 import { existsSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { parseArgs } from 'node:util'
-import { accountRule, configDir, describeRule, setAccountRule } from './account'
+import { accountRule, configDir, describeRule, openedIn, setAccountRule } from './account'
 import { ALLOW, onPermissionRequest, PermissionEvent } from './allow'
 import { finished, NO_PERSON } from './decisions'
 import { followWork, sweep } from './done'
@@ -56,12 +56,13 @@ import {
   openSession,
   placeWork,
   projectCommand,
+  roleLine,
   sessionFromEnv,
   TODO_USAGE,
   todayCommand,
   todoCommand,
 } from './todo-cli'
-import { type Found, parseRef, Todos } from './todos'
+import { type Found, OPEN_ROLES, oneOf, parseRef, Todos } from './todos'
 import {
   addTrigger,
   nextRun,
@@ -132,7 +133,9 @@ const USAGE = `usage:
                                    in --project when given. Run in a Claude session, the task
                                    records that session as its root. In a session nod open
                                    opened, the work goes in its project, a todo with none
-                                   included, and work of another project is refused
+                                   included, and work of another project is refused. In an
+                                   orchestrator or relay session, work of any project is refused,
+                                   with where it goes instead, and work in no project goes in
   nod open <project> [--new]       Claude Code in this terminal, in the project's session, named
                                    after it each time it opens (a /rename lasts until then):
                                    the latest one nod open opened for it, resumed in the folder
@@ -143,6 +146,23 @@ const USAGE = `usage:
                                    tasks as its own (--mine), whichever session added them, and
                                    nod add there keeps to the project. nod tells it each of
                                    them that ends and each decision that opens (see below)
+  nod open <name> --role orchestrator|relay [--new]
+                                   a session of that role and no project: the first of that
+                                   name, or the same as nod open <name>. A name another role has,
+                                   or that names a project, is refused
+  nod open <name> [--new]          the latest session of that name, as a project's is opened, when
+                                   no project goes by it; a session of another name runs beside
+                                   it. Its tasks are those it added, and nod add there takes work
+                                   in no project only: a project's goes to its session with nod
+                                   tell p<n>, or in as a todo with nod in --project. An orchestrator
+                                   hears of the tasks in no project (see below); a relay passes
+                                   what comes from outside to the project session it is for, and
+                                   nod tells it of no task
+  nod session claim <name> --role orchestrator|relay
+                                   give the Claude session this runs in that role and name, its
+                                   conversation going on: nod records it if it did not know it,
+                                   with the folder its transcript says it was opened in, a project
+                                   session leaves its project, and it says where it takes messages
   nod tell <task> <message...>     send a follow-up into the task's session
   nod tell p<project> <message...> send a message into the project's session, as nod tells it of
                                    its tasks; kept until that session takes messages
@@ -298,6 +318,10 @@ brings waits unheard until nod watch runs there or nod open opens the project's 
 on under an ID nod open did not open: it hears nothing until nod open opens the project's session
 again. One with no hooks cannot say it cleared, so what went to it after, until its next nod
 command, is lost: once nod open opens it again, nod ls --mine and nod --mine show what it missed.
+An orchestrator hears the same way of the tasks in no project: the latest session of the name of
+the orchestrator that added each, and of those a shell, a trigger or any other session added, the
+orchestrator opened last. What comes while it is closed waits for it too. Until one has been opened
+nobody hears of those, and what comes for them goes to no session.
 
 When <home>/notify exists, nod runs it with a JSON event on stdin whenever a decision opens, a
 task succeeds or fails to start, a trigger fails, a watch passes or can no longer run, or a
@@ -315,16 +339,19 @@ if (command === 'hook' && rest[0] === 'tool') await toolHook()
 const ledger = new Ledger(home)
 // The projects this command told stderr nobody hears, each told once (onCommand, warnUnheard).
 const warned = new Set<number>()
-// A project session its hooks never told nod of says where it takes messages (onCommand); what
-// goes wrong only goes to stderr, as the command still runs.
-const unheard = await onCommand(
-  ledger,
-  sessionFromEnv(),
-  process.env.CLAUDE_CODE_MESSAGING_SOCKET,
-  sendLine,
-  warned,
-).catch((error) => `nod: could not record this session's inbox: ${message(error)}`)
-if (unheard !== null) console.error(unheard)
+// A session its hooks never told nod of says where it takes messages (onCommand); what goes wrong
+// only goes to stderr, as the command still runs.
+async function sayInbox(): Promise<void> {
+  const unheard = await onCommand(
+    ledger,
+    sessionFromEnv(),
+    process.env.CLAUDE_CODE_MESSAGING_SOCKET,
+    sendLine,
+    warned,
+  ).catch((error) => `nod: could not record this session's inbox: ${message(error)}`)
+  if (unheard !== null) console.error(unheard)
+}
+await sayInbox()
 const taskRef = (ref: string | undefined): number => new Todos(ledger).taskRef(ref ?? '')
 
 switch (command) {
@@ -347,6 +374,9 @@ switch (command) {
   }
   case 'add':
     await add(rest)
+    break
+  case 'session':
+    await sessionCommand(rest)
     break
   case 'tell': {
     if (/^p\d+$/.test(rest[0] ?? '')) {
@@ -969,7 +999,7 @@ function attach(taskId: number): void {
 function open(args: string[]): void {
   const { values, positionals } = parseArgs({
     args,
-    options: { new: { type: 'boolean' } },
+    options: { new: { type: 'boolean' }, role: { type: 'string' } },
     allowPositionals: true,
   })
   const [ref, ...extra] = positionals
@@ -981,11 +1011,44 @@ function open(args: string[]): void {
     values.new ?? false,
     process.cwd(),
     config,
+    values.role === undefined ? undefined : oneOf('session role', values.role, OPEN_ROLES),
   )
   const env = { ...process.env }
   env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE ||= AUTOCOMPACT_PCT
   const result = Bun.spawnSync(argv, { cwd, env, stdio: ['inherit', 'inherit', 'inherit'] })
   process.exit(result.exitCode ?? 1)
+}
+
+// `nod session claim`: the Claude session running this takes a role and a name, its conversation
+// going on. A new row's folder is where its transcript says it was opened, as Bash may stand
+// elsewhere by now and nod open resumes it from there. It then says where it takes messages, as any
+// session does at its first nod command, which sends what waited and tells it when it cannot hear.
+async function sessionCommand([sub, ...args]: string[]): Promise<void> {
+  const { values, positionals } = parseArgs({
+    args,
+    options: { role: { type: 'string' } },
+    allowPositionals: true,
+  })
+  const [name, ...extra] = positionals
+  if (sub !== 'claim' || name === undefined || extra.length > 0 || values.role === undefined) {
+    throw new Error(USAGE)
+  }
+  const role = oneOf('session role', values.role, OPEN_ROLES)
+  const session = sessionFromEnv()
+  if (session === null) {
+    throw new Error('nod session claim names the Claude session it runs in; run it in one')
+  }
+  const todos = new Todos(ledger)
+  const cwd =
+    todos.session(session)?.cwd ?? openedIn(process.env.CLAUDE_CONFIG_DIR || null, session)
+  if (cwd === null) {
+    console.error(
+      `nod: no transcript of this session says where it was opened, so nod records ${process.cwd()}, where nod open goes back to it`,
+    )
+  }
+  todos.claimSession(session, role, name, cwd ?? process.cwd())
+  await sayInbox()
+  console.log(`this session is ${roleLine(role, name)}`)
 }
 
 // What the worker shows right now, for a Claude session that cannot attach a terminal.
@@ -1116,7 +1179,7 @@ async function show(id: number): Promise<void> {
   if (place !== null) {
     const { project, session } = place
     const added =
-      task.rootSession === null || task.rootSession === session.sessionId
+      task.rootSession === null || task.rootSession === session.sessionKey
         ? ''
         : ` · added from ${task.rootSession}`
     console.log(`  root: p${project.id} ${project.title} · ${reopenCommand(place)}${added}`)

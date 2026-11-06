@@ -1,6 +1,6 @@
 import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import { z } from 'zod'
 
 // Which Claude account a worker runs as: the Claude Code config dir it gets in CLAUDE_CONFIG_DIR.
@@ -75,4 +75,21 @@ export function transcriptPath(config: string | null, sessionId: string): string
     existsSync(join(projects, f, `${sessionId}.jsonl`)),
   )
   return folder === undefined ? null : join(projects, folder, `${sessionId}.jsonl`)
+}
+
+// The folder session `sessionId` was opened in, which Claude Code resumes it from; null when its
+// transcript does not say. The folder the session's Bash stands in may have moved on, so this reads
+// the transcript: its lines say where the session stood each time, and the one its folder in
+// projects/ is named after (transcriptPath) is where it was opened.
+export function openedIn(config: string | null, sessionId: string): string | null {
+  const path = transcriptPath(config, sessionId)
+  if (path === null) return null
+  const folder = basename(dirname(path))
+  const stood = readFileSync(path, 'utf8').matchAll(/"cwd":("(?:[^"\\]|\\.)*")/g)
+  for (const [, quoted] of stood) {
+    const cwd = z.string().parse(JSON.parse(quoted ?? ''))
+    const name = cwd.replace(/[^a-zA-Z0-9]/g, '-')
+    if (name === folder || (name.length > 200 && folder.startsWith(name.slice(0, 200)))) return cwd
+  }
+  return null
 }

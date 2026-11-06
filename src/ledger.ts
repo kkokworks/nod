@@ -278,7 +278,8 @@ export type Notice = {
   event: NoticeEvent
   note: string | null
   createdAt: string
-  sessionId: string | null
+  // The session it went to (the sessions table in todos.ts); null for none.
+  sessionId: number | null
   sentAt: string | null
 }
 
@@ -681,6 +682,46 @@ export const MIGRATIONS = [
     lost_at text
   );
   create index pending_tells_task on pending_tells(task_id);
+  `,
+  // v29: the sessions nod open opened, each with a role and a name, in a table of their own, as an
+  // orchestrator or relay session has no project. A project session's name is its project's title
+  // until nod open writes it again. Ids stay, as a project's latest session is its highest id. A
+  // notice's session is that row now, not the Claude session ID. nod deletes no session, so only a
+  // ledger edited by hand has a notice sent to one no row names: it stays sent, with no session, and
+  // unmatched_notice_sessions keeps the ID it held, as no role can be told for a row in sessions.
+  `
+  create table sessions (
+    id integer primary key,
+    session_key text not null unique,
+    role text not null check (role in ('project', 'orchestrator', 'relay')),
+    name text not null,
+    cwd text not null,
+    socket text,
+    created_at text not null
+  );
+  insert into sessions (id, session_key, role, name, cwd, socket, created_at)
+    select s.id, s.session_id, 'project', p.title, s.cwd, s.socket, s.created_at
+    from project_sessions s join projects p on p.id = s.project_id;
+  alter table project_sessions rename to project_sessions_v28;
+  create table project_sessions (
+    session_id integer primary key references sessions(id),
+    project_id integer not null references projects(id)
+  );
+  insert into project_sessions (session_id, project_id)
+    select id, project_id from project_sessions_v28;
+  drop table project_sessions_v28;
+  create index project_sessions_project on project_sessions(project_id);
+  create table unmatched_notice_sessions (
+    notice_id integer primary key references notices(id),
+    session_key text not null
+  );
+  insert into unmatched_notice_sessions (notice_id, session_key)
+    select id, session_id from notices
+    where session_id is not null and session_id not in (select session_key from sessions);
+  alter table notices rename column session_id to session_key;
+  alter table notices add column session_id integer references sessions(id);
+  update notices set session_id = (select s.id from sessions s where s.session_key = notices.session_key);
+  alter table notices drop column session_key;
   `,
 ]
 // The migration that moves <home>/rules.md into the ledger, numbered as user_version counts.
@@ -1854,9 +1895,10 @@ export class Ledger {
     )
   }
 
-  // Marks sent to `sessionId` (null: to none) those of `ids` still unsent, in one statement, so of
-  // two processes sending at once only one sends each. Returns the ones this call marked, and when.
-  claimNotices(ids: number[], sessionId: string | null): { ids: number[]; at: string } {
+  // Marks sent to session `sessionId` (null: to none) those of `ids` still unsent, in one statement,
+  // so of two processes sending at once only one sends each. Returns the ones this call marked, and
+  // when.
+  claimNotices(ids: number[], sessionId: number | null): { ids: number[]; at: string } {
     const at = now()
     const claimed = this.run(
       q

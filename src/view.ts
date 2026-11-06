@@ -80,7 +80,7 @@ export function taskLabel(t: Task): string {
 // claude --resume in the folder it was opened in, where Claude Code keeps its transcript.
 export function reopenCommand({ session, project, latest }: SessionPlace): string {
   if (latest) return `nod open p${project.id}`
-  return `cd ${quote(session.cwd)} && claude --resume ${session.sessionId}`
+  return `cd ${quote(session.cwd)} && claude --resume ${session.sessionKey}`
 }
 
 // How ls and the UI name a task's state. A running task without a session lost its terminal (a
