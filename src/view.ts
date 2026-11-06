@@ -356,8 +356,18 @@ const shown = (field: string, v: unknown): string => {
   return field === 'backTo' ? `n${String(v)}` : oneLine(String(v), 40)
 }
 
+// A cut through a character beyond U+FFFF would leave half of it, which prints as U+FFFD.
 export function oneLine(s: string, max: number): string {
-  return s.replaceAll('\n', ' ').slice(0, max)
+  return s
+    .replaceAll('\n', ' ')
+    .slice(0, max)
+    .replace(/[\uD800-\uDBFF]$/, '')
+}
+
+// `s` as one clean line of at most `max`, with `…` where it is cut, so no one reads it as whole.
+export function cutLine(s: string, max: number): string {
+  const line = clean(s).trim()
+  return line.length > max ? `${oneLine(line, max)}…` : line
 }
 
 export function indent(s: string, n = 2): string {

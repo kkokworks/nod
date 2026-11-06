@@ -28,7 +28,7 @@ import {
 } from './todos'
 import { SCHEDULE_OFF, scheduleEnv, tryWatch } from './triggers'
 import { nudgeLine, STALE_DAYS, type Trust } from './trust'
-import { changeText, indent, oneLine } from './view'
+import { changeText, cutLine, indent, oneLine } from './view'
 
 // How much of a description a list shows: a sentence or two, enough to pick a project by.
 const DESCRIPTION_CUT = 100
@@ -722,13 +722,12 @@ const projectLine = (p: Project): string => {
   return `p${String(p.id).padEnd(4)} ${p.status.padEnd(8)} ${p.title}${outcome}`
 }
 
-// A project as a list shows it: `after` on its line, and its description cut on the next, marked
-// where it is cut, as a session picks a project by it and nod project <project> has the rest.
+// A project as a list shows it: `after` on its line, and its description cut on the next, as a
+// session picks a project by it and nod project <project> has the rest.
 const projectBrief = (p: Project, after = ''): string => {
   const head = `${projectLine(p)}${after}`
   if (p.description === null) return head
-  const more = p.description.length > DESCRIPTION_CUT ? '…' : ''
-  return `${head}\n      ${oneLine(p.description, DESCRIPTION_CUT)}${more}`
+  return `${head}\n      ${cutLine(p.description, DESCRIPTION_CUT)}`
 }
 
 function printChanges(changes: Change[]): void {

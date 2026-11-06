@@ -94,6 +94,8 @@ test('a description is set, changed and cleared apart from the outcome, and a li
     '    <time>  human  description Dentist and checkups → —',
   ])
   expect(await ok('project', 'add', 'Empty', '--description', '')).toEqual(['p2    active   Empty'])
+  await ok('project', 'set', 'p2', '--description', 'Nothing left')
+  expect(await ok('project', 'done', 'p2')).toEqual(['p2    done     Empty', '      Nothing left'])
 })
 
 test('a list cuts a description past 100 characters and marks the cut, and one project shows it whole', async () => {
