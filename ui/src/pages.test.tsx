@@ -9,9 +9,12 @@ import {
   spyOn,
   test,
 } from 'bun:test'
+import { writeFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { GlobalRegistrator } from '@happy-dom/global-registrator'
 import type { AnyRoute } from '@tanstack/react-router'
 import type { ITerminalAddon, Terminal as XTerm } from '@xterm/xterm'
+import { Todos } from '../../src/todos'
 import { tempDirs } from '../../test/tmp'
 
 // The real pages and rows, in a DOM, under a router; the server functions are answered here.
@@ -89,7 +92,15 @@ const todos = await import('./routes/todos_.$id')
 const { TodoRow, UndoBar } = await import('./todo-parts')
 const { Search } = await import('./search')
 const projects = await import('./routes/projects')
-const { Failed, NotFound } = await import('./parts')
+const settings = await import('./routes/settings')
+const settingsPages = [
+  [await import('./routes/settings.index'), '/'],
+  [await import('./routes/settings.rules'), '/rules'],
+  [await import('./routes/settings.orchestrators'), '/orchestrators'],
+  [await import('./routes/settings.relays'), '/relays'],
+] as const
+const { ledger, orchestrators, relays } = await import('./nod.server')
+const { Failed, localTime, NotFound } = await import('./parts')
 const { RETRY_MS, TERMINAL } = await import('./terminal')
 const { SHOW_STORED } = await import('./panes')
 const shell = await import('./routes/__root')
@@ -151,6 +162,15 @@ const router = R.createRouter({
       path: '/projects',
       getParentRoute: () => root,
     } as never),
+    settings.Route.update({
+      id: '/settings',
+      path: '/settings',
+      getParentRoute: () => root,
+    } as never).addChildren(
+      settingsPages.map(([page, path]) =>
+        page.Route.update({ id: path, path, getParentRoute: () => settings.Route } as never),
+      ),
+    ),
     rowsRoute,
     undoRoute,
   ]),
@@ -1260,5 +1280,127 @@ test('a refresh that fails, the first after the page came from the server too, k
   } finally {
     act(() => own.unmount())
     box.remove()
+  }
+})
+
+test('/settings goes to Rules, and each page of Settings has its own address and link', async () => {
+  answer = () => []
+  await go('/settings')
+  expect(router.state.location.pathname).toBe('/settings/rules')
+  expect(document.querySelector('.layout h1')?.textContent).toBe('Settings')
+  expect(document.querySelector('.muted')?.textContent).toBe('No rules yet.')
+  const links = [...document.querySelectorAll<HTMLAnchorElement>('nav.tags a')]
+  expect(links.map((a) => a.textContent)).toEqual(['Rules', 'Orchestrators', 'Relays'])
+  for (const a of [links[1], links[2], links[0]]) {
+    act(() => a?.click())
+    await settle()
+    expect(router.state.location.pathname).toBe(`/settings/${a?.textContent?.toLowerCase()}`)
+    expect(document.querySelector('nav.tags .active')?.textContent).toBe(a?.textContent)
+  }
+})
+
+test('the Rules page lists every rule, one that is off faded, with what made it', async () => {
+  const rule = { edited: false, changedAt: AT }
+  answer = () => [
+    { ...rule, id: 1, text: 'check first', state: 'on', retroId: null, retroTaskId: null },
+    { ...rule, id: 2, text: 'keep short', state: 'off', retroId: 4, retroTaskId: 9, edited: true },
+  ]
+  await go('/settings/rules')
+  const [on, off] = document.querySelectorAll('.todo-row')
+  expect(on?.textContent).toBe(`1check firstonby handchanged ${localTime(AT)}`)
+  expect(on?.className).toBe('todo-row')
+  expect(off?.textContent).toBe(`2keep shortoffr4editedchanged ${localTime(AT)}`)
+  expect(off?.className).toBe('todo-row rule-off')
+  expect(off?.querySelector('a')?.getAttribute('href')).toBe('/tasks/9')
+})
+
+// A role's page, a row at a time.
+const sessionRows = () =>
+  [...document.querySelectorAll('.todo-row')].map((row) => ({
+    name: row.querySelector('.todo-title')?.textContent,
+    on: row.querySelector('.chip')?.textContent,
+    cwd: row.querySelector('.tag')?.textContent,
+    created: row.querySelector('.todo-tags span:last-child')?.textContent,
+    links: [...row.querySelectorAll('a')].map((a) => [a.textContent, a.getAttribute('href')]),
+  }))
+
+test('Orchestrators and Relays show each name once, by its latest session, on or off, and an orchestrator its projects', async () => {
+  const todos = new Todos(ledger)
+  const home = tmp.make('nod-ui-sessions-')
+  const session = (
+    role: 'orchestrator' | 'relay',
+    name: string,
+    cwd: string,
+    socket: 'there' | 'gone' | null = null,
+  ) => {
+    const key = `${role}${cwd}`
+    const made = todos.addSession({ role, name }, key, cwd)
+    if (socket !== null) {
+      const path = join(home, key.replaceAll('/', '-'))
+      if (socket === 'there') writeFileSync(path, '')
+      todos.setSocket(key, path)
+    }
+    return made
+  }
+  // A name's older session being on does not make the name on.
+  session('orchestrator', 'north', '/work/north-old', 'there')
+  const north = session('orchestrator', 'north', '/work/north')
+  const south = session('orchestrator', 'south', '/work/south', 'there')
+  const east = session('orchestrator', 'east', '/work/east', 'gone')
+  session('relay', 'port', '/work/port-old')
+  const port = session('relay', 'port', '/work/port', 'there')
+  const dock = session('relay', 'dock', '/work/dock')
+  const [release, later, closed, other] = ['Release', 'Later', 'Closed', 'Other'].map((title) =>
+    todos.addProject({ title, outcome: null }, 'human'),
+  )
+  if (!release || !later || !closed || !other) throw new Error('no project')
+  // A project's session is on neither page.
+  todos.addSession(release.id, 'project-session', '/work/release')
+  for (const p of [release, later, closed]) {
+    todos.setProject(p.id, { orchestrator: 'north' }, 'human')
+  }
+  todos.setProject(later.id, { status: 'someday' }, 'human')
+  todos.setProject(closed.id, { status: 'done' }, 'human')
+  todos.setProject(other.id, { orchestrator: 'south' }, 'human')
+  const row = (s: typeof north, on: string, links: string[][] = []) => ({
+    name: s.name,
+    on,
+    cwd: s.cwd,
+    created: `created ${localTime(s.createdAt)}`,
+    links,
+  })
+
+  answer = () => orchestrators()
+  await go('/settings/orchestrators')
+  expect(sessionRows()).toEqual([
+    row(east, 'off'),
+    row(south, 'on', [[`p${other.id} Other`, `/projects#p${other.id}`]]),
+    row(north, 'off', [
+      [`p${release.id} Release`, `/projects#p${release.id}`],
+      [`p${later.id} Later (someday)`, `/projects#p${later.id}`],
+      [`p${closed.id} Closed (done)`, `/projects#p${closed.id}`],
+    ]),
+  ])
+  expect(document.querySelector('.count')?.textContent).toBe('3')
+  expect(document.querySelector('.todo-row')?.textContent).toContain('no projects')
+
+  answer = () => relays()
+  await go('/settings/relays')
+  expect(sessionRows()).toEqual([row(dock, 'off'), row(port, 'on')])
+  expect(document.querySelector('.page')?.textContent).not.toContain('no projects')
+})
+
+test('a role with no session says how to get one', async () => {
+  answer = () => []
+  for (const [path, role] of [
+    ['/settings/orchestrators', 'orchestrator'],
+    ['/settings/relays', 'relay'],
+  ]) {
+    await go(path as string)
+    expect(document.querySelector('.todo-row')).toBeNull()
+    expect([...document.querySelectorAll('.muted code')].map((c) => c.textContent)).toEqual([
+      `nod open <name> --role ${role}`,
+      `nod session claim <name> --role ${role}`,
+    ])
   }
 })

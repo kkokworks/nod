@@ -735,6 +735,12 @@ kbd + kbd {
   padding: 0;
 }
 
+/* The Settings page open now, among the links to them. */
+.tag.active {
+  border-color: var(--brand);
+  color: var(--fg);
+}
+
 /* A tag in a row of them can hold free text (whom a todo waits on, a check command) longer than a
    narrow window is wide. It still moves to a line of its own whole; only there does it wrap, as a
    line of text: as flex items its parts would shrink together, and since `anywhere` lets a word's

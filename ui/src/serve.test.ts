@@ -33,7 +33,7 @@ test("both the dev server and the built one take a worker's terminal", async () 
 
 // As the server renders the page the window first shows, through the dev server's handler with no
 // port open. The server's modules open the ledger at $NOD_HOME as they load.
-test('the server renders a task, a todo or an address that is not there as 404, beside the sidebar', async () => {
+async function rendered(check: (get: (path: string) => Promise<Response>) => Promise<void>) {
   const before = process.env.NOD_HOME
   process.env.NOD_HOME = tmp.make('nod-ui-serve-')
   const vite = await createServer({
@@ -46,16 +46,42 @@ test('the server renders a task, a todo or an address that is not there as 404, 
     const ssr = vite.environments.ssr
     if (!isRunnableDevEnvironment(ssr)) throw new Error('the SSR environment does not run here')
     const entry = await ssr.runner.import('@tanstack/react-start/server-entry')
-    for (const path of ['/tasks/999999', '/todos/999999', '/tasks/abc', '/nope']) {
-      const res: Response = await entry.default.fetch(new Request(`http://127.0.0.1${path}`))
-      const html = await res.text()
-      expect({ path, status: res.status }).toEqual({ path, status: 404 })
-      expect(html).toContain('class="sidebar"')
-      expect(html).toContain('>Not found</h1>')
-    }
+    await check((path) => entry.default.fetch(new Request(`http://127.0.0.1${path}`)))
   } finally {
     await vite.close()
     if (before === undefined) delete process.env.NOD_HOME
     else process.env.NOD_HOME = before
   }
+}
+
+test('the server renders a task, a todo or an address that is not there as 404, beside the sidebar', async () => {
+  await rendered(async (get) => {
+    for (const path of ['/tasks/999999', '/todos/999999', '/tasks/abc', '/nope']) {
+      const res = await get(path)
+      const html = await res.text()
+      expect({ path, status: res.status }).toEqual({ path, status: 404 })
+      expect(html).toContain('class="sidebar"')
+      expect(html).toContain('>Not found</h1>')
+    }
+  })
+}, 30_000)
+
+test('the server sends /settings to Rules, and renders each page of Settings with the sidebar link lit', async () => {
+  await rendered(async (get) => {
+    const opened = await get('/settings')
+    expect(opened.status).toBe(307)
+    expect(opened.headers.get('location')).toBe('/settings/rules')
+    for (const [path, shown] of [
+      ['/settings/rules', 'No rules yet.'],
+      ['/settings/orchestrators', 'No orchestrator sessions yet.'],
+      ['/settings/relays', 'No relay sessions yet.'],
+    ] as const) {
+      const res = await get(path)
+      const html = await res.text()
+      expect({ path, status: res.status }).toEqual({ path, status: 200 })
+      expect(html).toContain('>Settings</h1>')
+      expect(html.replaceAll('<!-- -->', '')).toContain(shown)
+      expect(html).toContain('class="side-item active" href="/settings"')
+    }
+  })
 }, 30_000)

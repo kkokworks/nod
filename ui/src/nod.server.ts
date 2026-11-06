@@ -1,5 +1,6 @@
 // What the pages show, read from the ledger, and the messages they send to workers. Server only:
 // the routes reach it through server functions, so the ledger and tmux never ship to the browser.
+import { takesMessages } from '../../src/inbox'
 import {
   type Attempt,
   type Decision,
@@ -13,7 +14,14 @@ import {
 } from '../../src/ledger'
 import { sessionName } from '../../src/place'
 import { Tmux } from '../../src/tmux'
-import { type Found, firstLineOf, type Project, type Todo, Todos } from '../../src/todos'
+import {
+  type Found,
+  firstLineOf,
+  type Project,
+  type Session,
+  type Todo,
+  Todos,
+} from '../../src/todos'
 import { reopenCommand, taskNote, taskStatus } from '../../src/view'
 import { answer, tell } from '../../src/worker'
 import { BUILD } from './build'
@@ -189,6 +197,29 @@ export function rules(): RuleRow[] {
     retroTaskId: r.retroId === null ? null : (retroTask.get(r.retroId) ?? null),
   }))
 }
+
+// A name on its role's Settings page, by the session that stands for it. `projects`: those in its
+// charge, for an orchestrator.
+export type SessionRow = Pick<Session, 'name' | 'cwd' | 'createdAt'> & {
+  on: boolean
+  projects?: Project[]
+}
+
+const sessionRow = (s: Session): SessionRow => ({
+  name: s.name,
+  cwd: s.cwd,
+  createdAt: s.createdAt,
+  on: takesMessages(s),
+})
+
+export function orchestrators(): SessionRow[] {
+  const todos = new Todos(ledger)
+  return todos
+    .namedSessions('orchestrator')
+    .map((s) => ({ ...sessionRow(s), projects: todos.projectsInCharge(s.name) }))
+}
+
+export const relays = (): SessionRow[] => new Todos(ledger).namedSessions('relay').map(sessionRow)
 
 export type Message = { taskId: number; decisionId: number | null; text: string }
 

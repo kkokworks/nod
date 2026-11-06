@@ -17,6 +17,10 @@ import { Route as ProjectsRouteImport } from './routes/projects'
 import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as SomedayRouteImport } from './routes/someday'
 import { Route as WaitingRouteImport } from './routes/waiting'
+import { Route as SettingsIndexRouteImport } from './routes/settings.index'
+import { Route as SettingsOrchestratorsRouteImport } from './routes/settings.orchestrators'
+import { Route as SettingsRelaysRouteImport } from './routes/settings.relays'
+import { Route as SettingsRulesRouteImport } from './routes/settings.rules'
 import { Route as TasksIdRouteImport } from './routes/tasks.$id'
 import { Route as TodosIdRouteImport } from './routes/todos_.$id'
 
@@ -60,6 +64,26 @@ const WaitingRoute = WaitingRouteImport.update({
   path: '/waiting',
   getParentRoute: () => rootRouteImport,
 } as any)
+const SettingsIndexRoute = SettingsIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => SettingsRoute,
+} as any)
+const SettingsOrchestratorsRoute = SettingsOrchestratorsRouteImport.update({
+  id: '/orchestrators',
+  path: '/orchestrators',
+  getParentRoute: () => SettingsRoute,
+} as any)
+const SettingsRelaysRoute = SettingsRelaysRouteImport.update({
+  id: '/relays',
+  path: '/relays',
+  getParentRoute: () => SettingsRoute,
+} as any)
+const SettingsRulesRoute = SettingsRulesRouteImport.update({
+  id: '/rules',
+  path: '/rules',
+  getParentRoute: () => SettingsRoute,
+} as any)
 const TasksIdRoute = TasksIdRouteImport.update({
   id: '/tasks/$id',
   path: '/tasks/$id',
@@ -77,11 +101,15 @@ export interface FileRoutesByFullPath {
   '/focus': typeof FocusRoute
   '/inbox': typeof InboxRoute
   '/projects': typeof ProjectsRoute
-  '/settings': typeof SettingsRoute
+  '/settings': typeof SettingsRouteWithChildren
   '/someday': typeof SomedayRoute
   '/waiting': typeof WaitingRoute
+  '/settings/orchestrators': typeof SettingsOrchestratorsRoute
+  '/settings/relays': typeof SettingsRelaysRoute
+  '/settings/rules': typeof SettingsRulesRoute
   '/tasks/$id': typeof TasksIdRoute
   '/todos/$id': typeof TodosIdRoute
+  '/settings/': typeof SettingsIndexRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -89,11 +117,14 @@ export interface FileRoutesByTo {
   '/focus': typeof FocusRoute
   '/inbox': typeof InboxRoute
   '/projects': typeof ProjectsRoute
-  '/settings': typeof SettingsRoute
   '/someday': typeof SomedayRoute
   '/waiting': typeof WaitingRoute
+  '/settings/orchestrators': typeof SettingsOrchestratorsRoute
+  '/settings/relays': typeof SettingsRelaysRoute
+  '/settings/rules': typeof SettingsRulesRoute
   '/tasks/$id': typeof TasksIdRoute
   '/todos/$id': typeof TodosIdRoute
+  '/settings': typeof SettingsIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -102,11 +133,15 @@ export interface FileRoutesById {
   '/focus': typeof FocusRoute
   '/inbox': typeof InboxRoute
   '/projects': typeof ProjectsRoute
-  '/settings': typeof SettingsRoute
+  '/settings': typeof SettingsRouteWithChildren
   '/someday': typeof SomedayRoute
   '/waiting': typeof WaitingRoute
+  '/settings/orchestrators': typeof SettingsOrchestratorsRoute
+  '/settings/relays': typeof SettingsRelaysRoute
+  '/settings/rules': typeof SettingsRulesRoute
   '/tasks/$id': typeof TasksIdRoute
   '/todos_/$id': typeof TodosIdRoute
+  '/settings/': typeof SettingsIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -119,8 +154,12 @@ export interface FileRouteTypes {
     | '/settings'
     | '/someday'
     | '/waiting'
+    | '/settings/orchestrators'
+    | '/settings/relays'
+    | '/settings/rules'
     | '/tasks/$id'
     | '/todos/$id'
+    | '/settings/'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -128,11 +167,14 @@ export interface FileRouteTypes {
     | '/focus'
     | '/inbox'
     | '/projects'
-    | '/settings'
     | '/someday'
     | '/waiting'
+    | '/settings/orchestrators'
+    | '/settings/relays'
+    | '/settings/rules'
     | '/tasks/$id'
     | '/todos/$id'
+    | '/settings'
   id:
     | '__root__'
     | '/'
@@ -143,8 +185,12 @@ export interface FileRouteTypes {
     | '/settings'
     | '/someday'
     | '/waiting'
+    | '/settings/orchestrators'
+    | '/settings/relays'
+    | '/settings/rules'
     | '/tasks/$id'
     | '/todos_/$id'
+    | '/settings/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -153,7 +199,7 @@ export interface RootRouteChildren {
   FocusRoute: typeof FocusRoute
   InboxRoute: typeof InboxRoute
   ProjectsRoute: typeof ProjectsRoute
-  SettingsRoute: typeof SettingsRoute
+  SettingsRoute: typeof SettingsRouteWithChildren
   SomedayRoute: typeof SomedayRoute
   WaitingRoute: typeof WaitingRoute
   TasksIdRoute: typeof TasksIdRoute
@@ -218,6 +264,34 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof WaitingRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/settings/': {
+      id: '/settings/'
+      path: '/'
+      fullPath: '/settings/'
+      preLoaderRoute: typeof SettingsIndexRouteImport
+      parentRoute: typeof SettingsRoute
+    }
+    '/settings/orchestrators': {
+      id: '/settings/orchestrators'
+      path: '/orchestrators'
+      fullPath: '/settings/orchestrators'
+      preLoaderRoute: typeof SettingsOrchestratorsRouteImport
+      parentRoute: typeof SettingsRoute
+    }
+    '/settings/relays': {
+      id: '/settings/relays'
+      path: '/relays'
+      fullPath: '/settings/relays'
+      preLoaderRoute: typeof SettingsRelaysRouteImport
+      parentRoute: typeof SettingsRoute
+    }
+    '/settings/rules': {
+      id: '/settings/rules'
+      path: '/rules'
+      fullPath: '/settings/rules'
+      preLoaderRoute: typeof SettingsRulesRouteImport
+      parentRoute: typeof SettingsRoute
+    }
     '/tasks/$id': {
       id: '/tasks/$id'
       path: '/tasks/$id'
@@ -235,13 +309,31 @@ declare module '@tanstack/react-router' {
   }
 }
 
+interface SettingsRouteChildren {
+  SettingsOrchestratorsRoute: typeof SettingsOrchestratorsRoute
+  SettingsRelaysRoute: typeof SettingsRelaysRoute
+  SettingsRulesRoute: typeof SettingsRulesRoute
+  SettingsIndexRoute: typeof SettingsIndexRoute
+}
+
+const SettingsRouteChildren: SettingsRouteChildren = {
+  SettingsOrchestratorsRoute: SettingsOrchestratorsRoute,
+  SettingsRelaysRoute: SettingsRelaysRoute,
+  SettingsRulesRoute: SettingsRulesRoute,
+  SettingsIndexRoute: SettingsIndexRoute,
+}
+
+const SettingsRouteWithChildren = SettingsRoute._addFileChildren(
+  SettingsRouteChildren,
+)
+
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   DoneRoute: DoneRoute,
   FocusRoute: FocusRoute,
   InboxRoute: InboxRoute,
   ProjectsRoute: ProjectsRoute,
-  SettingsRoute: SettingsRoute,
+  SettingsRoute: SettingsRouteWithChildren,
   SomedayRoute: SomedayRoute,
   WaitingRoute: WaitingRoute,
   TasksIdRoute: TasksIdRoute,

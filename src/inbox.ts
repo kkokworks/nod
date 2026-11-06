@@ -112,6 +112,11 @@ export async function onCommand(
   return told.length === 0 ? null : told.join('\n')
 }
 
+// Whether a session is on, as far as nod can tell: it said where it takes messages, and that socket
+// is there.
+export const takesMessages = (session: Session | null): boolean =>
+  session !== null && session.socket !== null && existsSync(session.socket)
+
 // What a Claude session hears as it sets a project's work going (nod add, tell, an answer, resume,
 // restart) though it is not the project's latest session, the one nod tells: a line for stderr for
 // each project of the tasks `ids` whose latest session cannot hear either (there is none, nod knows
@@ -138,7 +143,7 @@ export function unheardWork(
   for (const [projectId, tasks] of work) {
     const latest = todos.latestSession(projectId)
     if (warned.has(projectId) || latest?.sessionKey === session) continue
-    if (latest?.socket && existsSync(latest.socket)) continue
+    if (takesMessages(latest)) continue
     const p = `p${projectId}`
     const why =
       latest === null
