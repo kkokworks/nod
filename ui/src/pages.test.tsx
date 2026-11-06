@@ -92,11 +92,12 @@ const todos = await import('./routes/todos_.$id')
 const { TodoRow, UndoBar } = await import('./todo-parts')
 const { Search } = await import('./search')
 const projects = await import('./routes/projects')
+const settings = await import('./routes/settings')
 const settingsPages = [
-  [await import('./routes/settings.index'), '/settings/'],
-  [await import('./routes/settings.rules'), '/settings/rules'],
-  [await import('./routes/settings.orchestrators'), '/settings/orchestrators'],
-  [await import('./routes/settings.relays'), '/settings/relays'],
+  [await import('./routes/settings.index'), '/'],
+  [await import('./routes/settings.rules'), '/rules'],
+  [await import('./routes/settings.orchestrators'), '/orchestrators'],
+  [await import('./routes/settings.relays'), '/relays'],
 ] as const
 const { ledger, orchestrators, relays } = await import('./nod.server')
 const { Failed, localTime, NotFound } = await import('./parts')
@@ -161,8 +162,14 @@ const router = R.createRouter({
       path: '/projects',
       getParentRoute: () => root,
     } as never),
-    ...settingsPages.map(([page, path]) =>
-      page.Route.update({ id: path, path, getParentRoute: () => root } as never),
+    settings.Route.update({
+      id: '/settings',
+      path: '/settings',
+      getParentRoute: () => root,
+    } as never).addChildren(
+      settingsPages.map(([page, path]) =>
+        page.Route.update({ id: path, path, getParentRoute: () => settings.Route } as never),
+      ),
     ),
     rowsRoute,
     undoRoute,
@@ -1286,25 +1293,33 @@ test('/settings goes to Rules, and each page of Settings has its own address and
   expect(links().map((a) => a.textContent)).toEqual(['Rules', 'Orchestrators', 'Relays'])
   for (const page of ['Orchestrators', 'Relays', 'Rules']) {
     const link = links().find((a) => a.textContent === page)
-    act(() => link?.click())
+    act(() => {
+      link?.focus()
+      link?.click()
+    })
     await settle()
     expect(router.state.location.pathname).toBe(`/settings/${page.toLowerCase()}`)
     expect(document.querySelector('nav.tags .active')?.textContent).toBe(page)
+    // Going by the keyboard, the link followed keeps the focus.
+    expect(document.activeElement).toBe(link as Element)
   }
 })
 
-test('an address under Settings that is not there, or a page of it that fails as it opens, is that alone, as on any other page', async () => {
-  const alone = (title: string) => {
-    expect([...document.querySelectorAll('.layout h1')].map((h) => h.textContent)).toEqual([title])
-    expect(document.querySelectorAll('.page')).toHaveLength(1)
+test('an address under Settings that is not there, or a page of it that fails as it opens, shows under its links, which lead on', async () => {
+  const shows = (title: string) => {
+    expect([...document.querySelectorAll('.layout h1')].map((h) => h.textContent)).toEqual([
+      'Settings',
+      title,
+    ])
+    expect(document.querySelectorAll('nav.tags a')).toHaveLength(3)
   }
   await go('/settings/nope')
-  alone('Not found')
+  shows('Not found')
   answer = () => {
     throw new Error('ledger is busy')
   }
   await go('/settings/relays')
-  alone('Something went wrong')
+  shows('Something went wrong')
 })
 
 test('the Rules page lists every rule, one that is off faded, with what made it', async () => {
@@ -1330,7 +1345,8 @@ const sessionRows = () =>
     lit: row.querySelector('.chip.running') !== null,
     cwd: row.querySelector('.tag')?.textContent,
     created: row.querySelector('.todo-tags span:last-child')?.textContent,
-    links: [...row.querySelectorAll('a')].map((a) => [a.textContent, a.getAttribute('href')]),
+    // A `tag`, which wraps a long title.
+    links: [...row.querySelectorAll('a.tag')].map((a) => [a.textContent, a.getAttribute('href')]),
   }))
 
 test('Orchestrators and Relays show each name once, by its latest session, on or off, and an orchestrator its projects', async () => {

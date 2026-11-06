@@ -142,6 +142,11 @@ pre {
   min-width: 0;
 }
 
+/* An error or Not found shown inside Settings, whose page has the padding already. */
+.page .page {
+  padding: 0;
+}
+
 /* The page keeps 320px and the terminal 360px (PANES), however wide the terminal was dragged. */
 .task-layout {
   display: grid;

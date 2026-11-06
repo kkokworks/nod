@@ -648,14 +648,14 @@ nod 는 프로젝트의 알림을 그 프로젝트의 최신 세션에만 보냅
 
 세션의 역할이 장부에 들어왔지만 화면에서는 볼 수 없었습니다. 그래서 규칙 목록 하나뿐이던 `/settings` 를 Rules, Orchestrators, Relays 페이지로 나눕니다. 모두 보기만 합니다.
 
-- **라우트.** `ui/src/routes/` 의 `settings.rules.tsx`, `settings.orchestrators.tsx`, `settings.relays.tsx` 가 각자 페이지이고, 제목과 페이지 링크(`.tags`, `.tag`)는 `SettingsPage`(`ui/src/settings-parts.tsx`)가 그립니다. `settings.index.tsx` 는 `/settings` 를 Rules 로 보냅니다(서버가 그릴 때는 307). 사이드바 링크는 `/settings` 그대로이고, 아래 주소에서도 켜져 보입니다. Rules 는 옛 `settings.tsx` 의 내용을 옮긴 것입니다.
-- **틀 라우트를 두지 않은 이유.** 제목과 링크를 `settings.tsx` 틀에 두면 `/settings/nope` 나 첫 로드 실패의 `NotFound`·`Failed` 가 틀의 `.page` 안에 들어가, `h1` 이 둘이고 `.page` 가 겹쳐 패딩이 두 번 들어갑니다. 페이지마다 `SettingsPage` 를 쓰면 다른 화면처럼 그 안내만 나옵니다.
+- **라우트.** `ui/src/routes/settings.tsx` 는 제목과 페이지 링크(`.tags`, `.tag`)만 둔 틀이고, `settings.rules.tsx`, `settings.orchestrators.tsx`, `settings.relays.tsx` 가 그 안에 들어갑니다. `settings.index.tsx` 는 `/settings` 를 Rules 로 보냅니다(서버가 그릴 때는 307). 사이드바 링크는 `/settings` 그대로이고, 아래 주소에서도 켜져 보입니다. Rules 는 옛 `settings.tsx` 의 내용을 옮긴 것입니다.
+- **링크를 틀에 둔 이유.** 페이지마다 링크를 그리는 구조도 해 봤습니다. 그러면 페이지를 옮길 때 누른 링크가 새로 만들어져, 키보드로 옮겨 다니는 사람의 포커스가 `body` 로 떨어집니다. 틀에 두면 링크가 그대로 남습니다. 대신 `/settings/nope` 와 첫 로드 실패의 `NotFound`·`Failed` 는 틀 안에 나옵니다. 그래서 `h1` 이 둘이고 `.page` 가 겹칩니다. 패딩은 `.page .page` 가 없애고, 위의 링크로 다른 페이지로 갈 수 있습니다. 일상의 포커스를 드문 오류 화면의 제목 수보다 앞에 두었습니다.
 - **대표(`Todos.namedSessions`).** 역할 안에서 이름마다 `id` 가 가장 큰 세션입니다. `latestNamed` 와 같은 기준이라 `nod open <이름>` 이 다시 여는 세션과 같습니다. 줄은 가장 나중에 만든 이름부터 나옵니다.
 - **켜짐(`takesMessages`, `src/inbox.ts`).** `unheardWork` 의 판단을 꺼내 함께 씁니다. 소켓 값이 있고 그 파일이 있으면 켜진 것입니다. 대표만 보므로, 옛 세션이 켜져 있어도 대표가 꺼져 있으면 꺼짐으로 나옵니다.
 - **담당(`Todos.projectsInCharge`).** `project_orchestrators` 의 이름이 같은 프로젝트입니다. 끝난 프로젝트도 표에 남아 있어 함께 보이고, active 가 아니면 이름 뒤에 상태가 붙습니다. 링크는 `/projects#p<n>` 이라 Projects 화면이 끝난 프로젝트까지 그 카드로 엽니다.
 - **브라우저로 보내는 것.** `SessionRow` 는 이름, 켜짐, 폴더, 만든 시각, 담당의 번호·제목·상태만 담습니다. 세션 키와 소켓 경로는 보내지 않습니다.
 - **일부러 하지 않은 것.** 화면에서 바꾸는 일, 프로젝트 세션의 목록, 프로젝트 화면에 설명과 담당을 보이는 일. 줄은 세션이 있는 이름에서 만들어서, 「이름이 남는 때」 처럼 세션이 사라진 옛 이름의 담당은 이 페이지에 보이지 않습니다.
-- **시험.** `ui/src/pages.test.tsx`: `/settings` 가 Rules 로 가는지, 세 페이지의 주소와 링크, 없는 주소와 첫 로드 실패에 `h1` 과 `.page` 가 하나씩인지, 규칙 줄, 이름이 같은 세션의 대표 하나, 켜짐과 꺼짐(소켓 없음, 파일 없음), 다른 역할과 프로젝트 세션이 섞이지 않는지, 담당 프로젝트의 링크와 상태, 브라우저로 가는 칸, 빈 상태. 세션 줄은 임시 홈의 장부에 넣어 실제 `orchestrators`, `relays` 로 읽습니다. `ui/src/serve.test.ts`: 생성된 라우트 트리로 서버가 `/settings` 를 307 로 보내고, 세 페이지를 그리며, 사이드바 링크가 켜져 있는지.
+- **시험.** `ui/src/pages.test.tsx`: `/settings` 가 Rules 로 가는지, 세 페이지의 주소와 링크, 누른 링크가 포커스를 지키는지, 없는 주소와 첫 로드 실패가 링크 아래에 나오는지, 규칙 줄, 이름이 같은 세션의 대표 하나, 켜짐과 꺼짐(소켓 없음, 파일 없음), 다른 역할과 프로젝트 세션이 섞이지 않는지, 담당 프로젝트의 링크와 상태, 브라우저로 가는 칸, 빈 상태. 세션 줄은 임시 홈의 장부에 넣어 실제 `orchestrators`, `relays` 로 읽습니다. `ui/src/serve.test.ts`: 생성된 라우트 트리로 서버가 `/settings` 를 307 로 보내고, 세 페이지를 그리며, 사이드바 링크가 켜져 있는지.
 
 ## 할 일 (G1, 2026-10-20)
 

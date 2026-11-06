@@ -14,6 +14,7 @@ import { Route as DoneRouteImport } from './routes/done'
 import { Route as FocusRouteImport } from './routes/focus'
 import { Route as InboxRouteImport } from './routes/inbox'
 import { Route as ProjectsRouteImport } from './routes/projects'
+import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as SomedayRouteImport } from './routes/someday'
 import { Route as WaitingRouteImport } from './routes/waiting'
 import { Route as SettingsIndexRouteImport } from './routes/settings.index'
@@ -48,6 +49,11 @@ const ProjectsRoute = ProjectsRouteImport.update({
   path: '/projects',
   getParentRoute: () => rootRouteImport,
 } as any)
+const SettingsRoute = SettingsRouteImport.update({
+  id: '/settings',
+  path: '/settings',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const SomedayRoute = SomedayRouteImport.update({
   id: '/someday',
   path: '/someday',
@@ -59,24 +65,24 @@ const WaitingRoute = WaitingRouteImport.update({
   getParentRoute: () => rootRouteImport,
 } as any)
 const SettingsIndexRoute = SettingsIndexRouteImport.update({
-  id: '/settings/',
-  path: '/settings/',
-  getParentRoute: () => rootRouteImport,
+  id: '/',
+  path: '/',
+  getParentRoute: () => SettingsRoute,
 } as any)
 const SettingsOrchestratorsRoute = SettingsOrchestratorsRouteImport.update({
-  id: '/settings/orchestrators',
-  path: '/settings/orchestrators',
-  getParentRoute: () => rootRouteImport,
+  id: '/orchestrators',
+  path: '/orchestrators',
+  getParentRoute: () => SettingsRoute,
 } as any)
 const SettingsRelaysRoute = SettingsRelaysRouteImport.update({
-  id: '/settings/relays',
-  path: '/settings/relays',
-  getParentRoute: () => rootRouteImport,
+  id: '/relays',
+  path: '/relays',
+  getParentRoute: () => SettingsRoute,
 } as any)
 const SettingsRulesRoute = SettingsRulesRouteImport.update({
-  id: '/settings/rules',
-  path: '/settings/rules',
-  getParentRoute: () => rootRouteImport,
+  id: '/rules',
+  path: '/rules',
+  getParentRoute: () => SettingsRoute,
 } as any)
 const TasksIdRoute = TasksIdRouteImport.update({
   id: '/tasks/$id',
@@ -95,6 +101,7 @@ export interface FileRoutesByFullPath {
   '/focus': typeof FocusRoute
   '/inbox': typeof InboxRoute
   '/projects': typeof ProjectsRoute
+  '/settings': typeof SettingsRouteWithChildren
   '/someday': typeof SomedayRoute
   '/waiting': typeof WaitingRoute
   '/settings/orchestrators': typeof SettingsOrchestratorsRoute
@@ -126,6 +133,7 @@ export interface FileRoutesById {
   '/focus': typeof FocusRoute
   '/inbox': typeof InboxRoute
   '/projects': typeof ProjectsRoute
+  '/settings': typeof SettingsRouteWithChildren
   '/someday': typeof SomedayRoute
   '/waiting': typeof WaitingRoute
   '/settings/orchestrators': typeof SettingsOrchestratorsRoute
@@ -143,6 +151,7 @@ export interface FileRouteTypes {
     | '/focus'
     | '/inbox'
     | '/projects'
+    | '/settings'
     | '/someday'
     | '/waiting'
     | '/settings/orchestrators'
@@ -173,6 +182,7 @@ export interface FileRouteTypes {
     | '/focus'
     | '/inbox'
     | '/projects'
+    | '/settings'
     | '/someday'
     | '/waiting'
     | '/settings/orchestrators'
@@ -189,14 +199,11 @@ export interface RootRouteChildren {
   FocusRoute: typeof FocusRoute
   InboxRoute: typeof InboxRoute
   ProjectsRoute: typeof ProjectsRoute
+  SettingsRoute: typeof SettingsRouteWithChildren
   SomedayRoute: typeof SomedayRoute
   WaitingRoute: typeof WaitingRoute
-  SettingsOrchestratorsRoute: typeof SettingsOrchestratorsRoute
-  SettingsRelaysRoute: typeof SettingsRelaysRoute
-  SettingsRulesRoute: typeof SettingsRulesRoute
   TasksIdRoute: typeof TasksIdRoute
   TodosIdRoute: typeof TodosIdRoute
-  SettingsIndexRoute: typeof SettingsIndexRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -236,6 +243,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ProjectsRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/settings': {
+      id: '/settings'
+      path: '/settings'
+      fullPath: '/settings'
+      preLoaderRoute: typeof SettingsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/someday': {
       id: '/someday'
       path: '/someday'
@@ -252,31 +266,31 @@ declare module '@tanstack/react-router' {
     }
     '/settings/': {
       id: '/settings/'
-      path: '/settings'
+      path: '/'
       fullPath: '/settings/'
       preLoaderRoute: typeof SettingsIndexRouteImport
-      parentRoute: typeof rootRouteImport
+      parentRoute: typeof SettingsRoute
     }
     '/settings/orchestrators': {
       id: '/settings/orchestrators'
-      path: '/settings/orchestrators'
+      path: '/orchestrators'
       fullPath: '/settings/orchestrators'
       preLoaderRoute: typeof SettingsOrchestratorsRouteImport
-      parentRoute: typeof rootRouteImport
+      parentRoute: typeof SettingsRoute
     }
     '/settings/relays': {
       id: '/settings/relays'
-      path: '/settings/relays'
+      path: '/relays'
       fullPath: '/settings/relays'
       preLoaderRoute: typeof SettingsRelaysRouteImport
-      parentRoute: typeof rootRouteImport
+      parentRoute: typeof SettingsRoute
     }
     '/settings/rules': {
       id: '/settings/rules'
-      path: '/settings/rules'
+      path: '/rules'
       fullPath: '/settings/rules'
       preLoaderRoute: typeof SettingsRulesRouteImport
-      parentRoute: typeof rootRouteImport
+      parentRoute: typeof SettingsRoute
     }
     '/tasks/$id': {
       id: '/tasks/$id'
@@ -295,20 +309,35 @@ declare module '@tanstack/react-router' {
   }
 }
 
+interface SettingsRouteChildren {
+  SettingsOrchestratorsRoute: typeof SettingsOrchestratorsRoute
+  SettingsRelaysRoute: typeof SettingsRelaysRoute
+  SettingsRulesRoute: typeof SettingsRulesRoute
+  SettingsIndexRoute: typeof SettingsIndexRoute
+}
+
+const SettingsRouteChildren: SettingsRouteChildren = {
+  SettingsOrchestratorsRoute: SettingsOrchestratorsRoute,
+  SettingsRelaysRoute: SettingsRelaysRoute,
+  SettingsRulesRoute: SettingsRulesRoute,
+  SettingsIndexRoute: SettingsIndexRoute,
+}
+
+const SettingsRouteWithChildren = SettingsRoute._addFileChildren(
+  SettingsRouteChildren,
+)
+
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   DoneRoute: DoneRoute,
   FocusRoute: FocusRoute,
   InboxRoute: InboxRoute,
   ProjectsRoute: ProjectsRoute,
+  SettingsRoute: SettingsRouteWithChildren,
   SomedayRoute: SomedayRoute,
   WaitingRoute: WaitingRoute,
-  SettingsOrchestratorsRoute: SettingsOrchestratorsRoute,
-  SettingsRelaysRoute: SettingsRelaysRoute,
-  SettingsRulesRoute: SettingsRulesRoute,
   TasksIdRoute: TasksIdRoute,
   TodosIdRoute: TodosIdRoute,
-  SettingsIndexRoute: SettingsIndexRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
