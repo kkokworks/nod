@@ -2,16 +2,17 @@ import { existsSync, lstatSync } from 'node:fs'
 import { z } from 'zod'
 import { Ledger, type Notice, type Task } from './ledger'
 import { message, unbroken } from './proc'
-import { type Project, Todos } from './todos'
+import { type Project, type Session, Todos } from './todos'
 import { allowedLine, firstLine, indent, oneLine, taskLabel } from './view'
 
 // nod tells a project's session, the one nod open opened for it last, what `nod watch` would print
 // for it: each of the project's tasks that ends (once its check and review are done) and each of
 // its decisions that opens, and what a person sends it with `nod tell p<n>`; also what nod allowed
-// a worker itself, and each decision a person answered elsewhere (decisions.ts). The ledger records
-// each as a notice with the change itself (ledger.ts); sendNotices sends what is unsent into the
-// session's inbox socket, as another Claude session on this machine does (SendMessage), after each
-// notify and on each tick. What finds no session running, or a send that fails, waits for the next.
+// a worker itself, and each decision a person answered elsewhere (decisions.ts). An orchestrator
+// hears the same of the tasks in no project (Todos.listener). The ledger records each as a
+// notice with the change itself (ledger.ts); sendNotices sends what is unsent into the session's
+// inbox socket, as another Claude session on this machine does (SendMessage), after each notify and
+// on each tick. What finds no session running, or a send that fails, waits for the next.
 // ponytail: the line is Claude Code's own (2.1.310), not documented, and Claude Code answers
 // nothing: one it drops (a format it no longer reads, an id it does not know) counts as sent.
 
@@ -23,8 +24,8 @@ const ANSWER_LIMIT = 200
 // What a session's SessionStart and SessionEnd hooks pass on stdin; only what nod reads.
 export const InboxEvent = z.object({ session_id: z.string(), hook_event_name: z.string() })
 
-// The hooks nod open gives a project session (openSettings in settings.ts): as it starts, where it
-// takes messages (Claude Code exports the socket to its hooks), and what waited for it goes; once it
+// The hooks nod open gives a session (openSettings in settings.ts): as it starts, where it takes
+// messages (Claude Code exports the socket to its hooks), and what waited for it goes; once it
 // ends, none, unless the session runs on elsewhere since (nod open of the same session in another
 // terminal). A session nod open did not open records nothing, only takes its socket from any
 // session that had it (setSocket), so the conversation /clear starts under a new ID hears nothing
@@ -44,17 +45,29 @@ export async function onInbox(
   await sendNotices(ledger, send)
 }
 
-// What every nod command run in a Claude session does first (cli.ts), for a project session its
-// hooks never told nod of: one reopened with claude --resume, or opened before nod open gave it
-// hooks. Claude Code exports the socket to its Bash too, so the session says where it takes
-// messages now, or anew after it started again, and what waited for it goes. A socket is one
-// session's (setSocket), so one said here leaves the session nod told there before: one its
-// process ran until /clear or /resume with no hook to say so, whose old ID the socket drops now.
-// Returns what to tell stderr, or null: why a project's session still hears nothing (it is not the
-// project's latest, which alone hears, or nod knows no socket of it), and which project's latest
-// session lost its socket to this one. `warned` gets each project it told of, which unheardWork
-// does not tell of again in the same command. Any other session is told nothing here (unheardWork speaks
-// to it as it sets a project's work going) and changes nothing.
+// What a session nod knows hears for: `ref`, what nod open opens it by; its project, none in a role
+// of no project; and whether it is the latest of those, which alone hears. Null for any other
+// session.
+function hearing(todos: Todos, sessionKey: string) {
+  const session = todos.session(sessionKey)
+  if (session === null) return null
+  const place = todos.sessionPlace(sessionKey)
+  const ref = place === null ? session.name : `p${place.project.id}`
+  const latest = place?.latest ?? todos.latestNamed(session.name)?.id === session.id
+  return { session, projectId: place?.project.id ?? null, ref, latest }
+}
+
+// What every nod command run in a Claude session does first (cli.ts), for a session nod knows that
+// its hooks never told nod of: one reopened with claude --resume, opened before nod open gave it
+// hooks, or that claimed a role. Claude Code exports the socket to its Bash too, so the session says
+// where it takes messages now, or anew after it started again, and what waited for it goes. A
+// socket is one session's (setSocket), so one said here leaves the session nod told there before:
+// one its process ran until /clear or /resume with no hook to say so, whose old ID the socket drops.
+// Returns what to tell stderr, or null: why such a session still hears nothing (it is not the
+// latest, which alone hears, or nod knows no socket of it), and which latest session lost its socket
+// to this one. `warned` gets each project it told of, which unheardWork does not tell of again in
+// the same command. Any other session is told nothing here (unheardWork speaks to it as it sets a
+// project's work going) and changes nothing.
 // ponytail: with no SessionEnd hook such a session ends, or goes on under a new ID, without saying
 // so: its socket stays until a send finds it gone (sendNotices) or another session says it, and a
 // line sent to the old ID there meanwhile is dropped yet counts as sent.
@@ -67,31 +80,32 @@ export async function onCommand(
 ): Promise<string | null> {
   if (session === null) return null
   const todos = new Todos(ledger)
-  const place = todos.sessionPlace(session)
-  const said = socket && socket !== place?.session.socket ? socket : null
+  const me = hearing(todos, session)
+  const said = socket && socket !== me?.session.socket ? socket : null
   const had = said === null ? null : todos.sessionAt(said)
-  if (said !== null && (place !== null || had !== null)) todos.setSocket(session, said)
+  if (said !== null && (me !== null || had !== null)) todos.setSocket(session, said)
   const told: string[] = []
-  const lost = had === null ? null : todos.sessionPlace(had.sessionId)
-  if (lost?.latest && lost.project.id !== place?.project.id) {
-    const p = `p${lost.project.id}`
-    warned.add(lost.project.id)
-    told.push(
-      `nod: ${p}'s session took messages at this session's inbox socket, which runs another session now (/clear or /resume in its terminal), so it hears nothing from nod; nod open ${p} opens it again`,
+  const tell = (of: { projectId: number | null }, line: string): void => {
+    if (of.projectId !== null) warned.add(of.projectId)
+    told.push(line)
+  }
+  const lost = had === null ? null : hearing(todos, had.sessionKey)
+  if (lost?.latest && lost.ref !== me?.ref) {
+    tell(
+      lost,
+      `nod: ${lost.ref}'s session took messages at this session's inbox socket, which runs another session now (/clear or /resume in its terminal), so it hears nothing from nod; nod open ${lost.ref} opens it again`,
     )
   }
-  if (place !== null) {
-    const p = `p${place.project.id}`
-    const deaf = `nod: this session of ${p} hears nothing from nod`
-    if (!place.latest) {
-      warned.add(place.project.id)
-      told.push(`${deaf}: nod tells ${p}'s latest session, which nod open ${p} opens`)
+  if (me !== null) {
+    const deaf = `nod: this session of ${me.ref} hears nothing from nod`
+    if (!me.latest) {
+      tell(me, `${deaf}: nod tells ${me.ref}'s latest session, which nod open ${me.ref} opens`)
     } else if (said !== null) {
       await sendNotices(ledger, send)
-    } else if (!socket && place.session.socket === null) {
-      warned.add(place.project.id)
-      told.push(
-        `${deaf}: Claude Code gave it no inbox socket (CLAUDE_CODE_MESSAGING_SOCKET); nod open ${p} opens it again`,
+    } else if (!socket && me.session.socket === null) {
+      tell(
+        me,
+        `${deaf}: Claude Code gave it no inbox socket (CLAUDE_CODE_MESSAGING_SOCKET); nod open ${me.ref} opens it again`,
       )
     }
   }
@@ -123,7 +137,7 @@ export function unheardWork(
   const told: string[] = []
   for (const [projectId, tasks] of work) {
     const latest = todos.latestSession(projectId)
-    if (warned.has(projectId) || latest?.sessionId === session) continue
+    if (warned.has(projectId) || latest?.sessionKey === session) continue
     if (latest?.socket && existsSync(latest.socket)) continue
     const p = `p${projectId}`
     const why =
@@ -165,17 +179,18 @@ export async function tellSessions(home: string): Promise<void> {
     ledger = new Ledger(home)
     await sendNotices(ledger)
   } catch (error) {
-    console.error(`nod: could not tell the project sessions: ${message(error)}`)
+    console.error(`nod: could not tell the sessions: ${message(error)}`)
   } finally {
     ledger?.db.close()
   }
 }
 
-// Sends each project's unsent notices, oldest first, to its latest session, all in one message. One
-// of a task in no project, and a decision's opening once it was answered, goes to none. A project
-// with no session running keeps them. A send that fails keeps them too, and a socket that is gone
-// (the session ended without its SessionEnd hook, `ended`) is forgotten until the session says it
-// again.
+// Sends each session its unsent notices, oldest first, all in one message: each project's to its
+// latest session, and those of tasks in no project to the orchestrator that hears of them
+// (Todos.listener). One of a task in no project with no orchestrator session ever opened, and a
+// decision's opening once it was answered, goes to none. A session not running keeps them. A send
+// that fails keeps them too, and a socket that is gone (the session ended without its SessionEnd
+// hook, `ended`) is forgotten until the session says it again.
 // Notices are marked sent before the send, so the two are unbroken: a hook that nod ends by closing
 // its terminal (drop) ends once the send is done, not between the two, with the notices it marked.
 // ponytail: a process killed outright (SIGKILL) between the two still loses them; and a session
@@ -187,33 +202,44 @@ export async function sendNotices(
   env: Record<string, string | undefined> = process.env,
 ): Promise<void> {
   const todos = new Todos(ledger)
-  const waiting = new Map<number, Notice[]>()
-  for (const n of ledger.unsentNotices()) {
-    const project =
-      n.projectId ?? (n.taskId === null ? null : todos.projectOf(ledger.get(n.taskId)))
+  let waiting: { notice: Notice; projectId: number | null; root: string | null }[] = []
+  for (const notice of ledger.unsentNotices()) {
+    const task = notice.taskId === null ? null : ledger.get(notice.taskId)
+    const projectId = notice.projectId ?? (task === null ? null : todos.projectOf(task))
     const answered =
-      n.event === 'decision' &&
-      n.decisionId !== null &&
-      ledger.decision(n.decisionId).answer !== null
-    if (project === null || answered) ledger.claimNotices([n.id], null)
-    else waiting.set(project, [...(waiting.get(project) ?? []), n])
+      notice.event === 'decision' &&
+      notice.decisionId !== null &&
+      ledger.decision(notice.decisionId).answer !== null
+    const root = task?.rootSession ?? null
+    if (answered || (projectId === null && todos.listener(null, root) === null)) {
+      ledger.claimNotices([notice.id], null)
+    } else waiting.push({ notice, projectId, root })
   }
-  for (const [projectId, notices] of waiting) {
-    const session = todos.latestSession(projectId)
+  const hears = (w: (typeof waiting)[number]): Session | null => todos.listener(w.projectId, w.root)
+  // Session by session, each read as its turn comes, for each notice: the send before may have taken
+  // a while, and a session opened since. A session is of one project or none.
+  // ponytail: reads who hears each notice once per session sent to; what waits is a few dozen rows.
+  for (let [first] = waiting; first !== undefined; [first] = waiting) {
+    const { projectId } = first
+    const session = hears(first)
+    const mine = waiting.filter((w) => hears(w)?.id === session?.id)
+    waiting = waiting.filter((w) => !mine.includes(w))
+    const notices = mine.map((w) => w.notice)
     const socket = session?.socket ?? null
     if (session === null || socket === null) continue
     await unbroken(async () => {
       const claimed = ledger.claimNotices(
         notices.map((n) => n.id),
-        session.sessionId,
+        session.id,
       )
       const these = notices.filter((n) => claimed.ids.includes(n.id))
       if (these.length === 0) return
       try {
-        const content = noticesText(ledger, todos.project(projectId), these)
+        const project = projectId === null ? null : todos.project(projectId)
+        const content = noticesText(ledger, project, these)
         const said = {
           type: 'user',
-          session_id: session.sessionId,
+          session_id: session.sessionKey,
           message: { role: 'user', content },
         }
         await send(socket, `${JSON.stringify(said)}\n`)
@@ -221,9 +247,10 @@ export async function sendNotices(
         ledger.unclaimNotices(claimed.ids, claimed.at)
         const { code } = Object(error) as { code?: unknown }
         if (code !== 'ENOENT' && code !== 'ECONNREFUSED') {
-          console.error(`nod: could not tell p${projectId}'s session: ${message(error)}`)
+          const of = projectId === null ? session.name : `p${projectId}`
+          console.error(`nod: could not tell ${of}'s session: ${message(error)}`)
         } else if (ended(socket, env)) {
-          todos.setSocket(session.sessionId, null, socket)
+          todos.setSocket(session.sessionKey, null, socket)
         }
       }
     })
@@ -245,10 +272,11 @@ function ended(socket: string, env: Record<string, string | undefined>): boolean
   }
 }
 
-// One message for a project's session: which project, then each notice.
-function noticesText(ledger: Ledger, project: Project, notices: Notice[]): string {
+// One message for a session: which project, or none, then each notice.
+function noticesText(ledger: Ledger, project: Project | null, notices: Notice[]): string {
   const count = notices.length === 1 ? 'a notice' : `${notices.length} notices, oldest first`
-  const head = `nod, project p${project.id} ${project.title}: ${count}`
+  const whose = project === null ? 'tasks in no project' : `project p${project.id} ${project.title}`
+  const head = `nod, ${whose}: ${count}`
   return [head, ...notices.map((n) => noticeText(ledger, n))].join('\n\n')
 }
 

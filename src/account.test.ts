@@ -1,8 +1,8 @@
 import { afterAll, expect, test } from 'bun:test'
-import { writeFileSync } from 'node:fs'
+import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tempDirs } from '../test/tmp'
-import { accountChanged, accountRule, configDir, setAccountRule } from './account'
+import { accountChanged, accountRule, configDir, openedIn, setAccountRule } from './account'
 
 const tmp = tempDirs()
 afterAll(tmp.removeAll)
@@ -42,4 +42,33 @@ test("without a rule a worker gets the environment's config dir; a rule reads a 
     if (saved === undefined) delete process.env.CLAUDE_CONFIG_DIR
     else process.env.CLAUDE_CONFIG_DIR = saved
   }
+})
+
+test("a session's folder is the one its transcript's folder is named after, not where it stood last", () => {
+  const config = tmp.make('nod-opened-')
+  const keep = (folder: string, session: string, lines: unknown[]): void => {
+    const path = join(config, 'projects', folder)
+    mkdirSync(path, { recursive: true })
+    writeFileSync(join(path, `${session}.jsonl`), lines.map((l) => JSON.stringify(l)).join('\n'))
+  }
+  expect(openedIn(config, 'none')).toBeNull()
+  keep('-work-app', 'moved', [
+    { type: 'title' },
+    { type: 'user', cwd: '/work/app/src' },
+    { type: 'user', cwd: '/work/app' },
+    { type: 'user', cwd: '/elsewhere' },
+  ])
+  expect(openedIn(config, 'moved')).toBe('/work/app')
+  // A folder name says only what its characters were: the line says which they are.
+  keep('-work-my-app', 'dashed', [{ cwd: '/work/my.app' }])
+  expect(openedIn(config, 'dashed')).toBe('/work/my.app')
+  // A long path's folder is cut, with a hash after.
+  const long = `/${'a'.repeat(300)}`
+  keep(`-${'a'.repeat(199)}-1x2y3z`, 'long', [{ cwd: long }])
+  expect(openedIn(config, 'long')).toBe(long)
+  // A quote inside a path, and a transcript with no line of its folder.
+  keep('-a-b', 'quoted', [{ cwd: '/a"b' }])
+  expect(openedIn(config, 'quoted')).toBe('/a"b')
+  keep('-other', 'unsaid', [{ cwd: '/work/app' }, { type: 'user' }])
+  expect(openedIn(config, 'unsaid')).toBeNull()
 })

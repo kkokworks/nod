@@ -23,6 +23,7 @@ import {
 } from './ledger'
 import { readAtOnce } from './proc'
 import { REVIEW_SOURCE, type Trust, trust } from './trust'
+import { oneLine } from './view'
 
 // The person's own todos, kept the GTD way: captured into the inbox, clarified into a next action,
 // something waited on, someday, or reference, and grouped into projects. A todo is not a task: it
@@ -40,6 +41,14 @@ export const TODO_STATUSES = [
 export type TodoStatus = (typeof TODO_STATUSES)[number]
 export const PROJECT_STATUSES = ['active', 'someday', 'done', 'dropped'] as const
 export type ProjectStatus = (typeof PROJECT_STATUSES)[number]
+// What a session nod open opened is for: one project; `orchestrator`, which has none and hears of
+// the work in no project; or `relay`, which has none and passes what comes from outside to the
+// project session it is for. The table's CHECK holds the same values (v29 in ledger.ts).
+export const SESSION_ROLES = ['project', 'orchestrator', 'relay'] as const
+export type SessionRole = (typeof SESSION_ROLES)[number]
+// The roles of no project, which a session takes with a name of its own (nod open --role).
+export type OpenRole = Exclude<SessionRole, 'project'>
+export const OPEN_ROLES = SESSION_ROLES.filter((r): r is OpenRole => r !== 'project')
 // Todos that still ask something of the person.
 export const OPEN: TodoStatus[] = ['inbox', 'next', 'waiting']
 const FINISHED: TodoStatus[] = ['done', 'dropped']
@@ -160,20 +169,25 @@ const FINDS = {
 } as const
 // What a watch said when it last ran: its exit code and the end of its output.
 export type WatchCheck = { watch: string; at: string; code: number; output: string }
-// A Claude session `nod open` opened for a project, and the folder it was opened in, where Claude
-// Code keeps its transcript and so where it is reopened. `socket`: where it takes messages while it
-// runs, as its hooks last said (inbox.ts); null before they said, and once it ended.
-export type ProjectSession = {
+// A Claude session `nod open` opened or that claimed a role, by the ID Claude Code knows it by
+// (`sessionKey`), and the folder it was opened in, where Claude Code keeps its transcript and so
+// where it is reopened. `name`: what `claude --name` gets, the project's for a project session
+// (sessionTitle), and what nod open knows it by in a role of no project, where the latest of a name
+// stands for it, so sessions of other names run beside it. `socket`: where it takes messages while
+// it runs, as its hooks last said (inbox.ts); null before they said, and once it ended. A `project`
+// session has a row in project_sessions, and no other does (addSession, claimSession).
+export type Session = {
   id: number
-  sessionId: string
-  projectId: number
+  sessionKey: string
+  role: SessionRole
+  name: string
   cwd: string
-  createdAt: string
   socket: string | null
+  createdAt: string
 }
 // The project a session was opened for, and whether it is still that project's latest session,
 // the one `nod open` goes back into.
-export type SessionPlace = { session: ProjectSession; project: Project; latest: boolean }
+export type SessionPlace = { session: Session; project: Project; latest: boolean }
 // What a day holds besides its events, each todo once, in the first group it is in.
 export type DayTodos = { overdue: Todo[]; scheduled: Todo[]; due: Todo[]; focus: Todo[] }
 
@@ -185,10 +199,14 @@ type Tables = {
   todoChanges: ChangeRow & { todoId: number }
   watchChecks: { todoId: number } & WatchCheck
   projectChanges: ChangeRow & { projectId: number }
-  projectSessions: Omit<ProjectSession, 'id'> & { id: Generated<number> }
+  sessions: Omit<Session, 'id'> & { id: Generated<number> }
+  projectSessions: { sessionId: number; projectId: number }
 }
 
 const q = queryBuilder<Tables>()
+// How long a session's name (`claude --name`) may be: it shows in the prompt box and the terminal
+// title.
+const SESSION_NAME_CHARS = 40
 const ChangeJson = z.record(z.string(), z.tuple([z.unknown(), z.unknown()]))
 
 const REF_NAMES = {
@@ -795,6 +813,12 @@ export class Todos {
     return p
   }
 
+  // Whether findProject looks `ref` up as a project: `p3`, or a project's title.
+  namesProject(ref: string): boolean {
+    if (/^p?\d+$/.test(ref)) return true
+    return this.first(q.selectFrom('projects').select('id').where('title', '=', ref)) !== null
+  }
+
   // `p3`, or a project's exact title. Titles never look like `p3` or `3` (projectTitle), so a bare
   // number is refused as a ref rather than looked up as a title.
   findProject(ref: string): Project {
@@ -871,64 +895,166 @@ export class Todos {
     ).map(parsed)
   }
 
-  // ── project sessions (nod open) ──
+  // ── sessions (nod open) ──
 
-  // Records a Claude session opened for the project in `cwd`; from now on it is the project's.
-  addSession(projectId: number, sessionId: string, cwd: string): ProjectSession {
-    this.project(projectId)
-    const row = { sessionId, projectId, cwd, createdAt: now(), socket: null }
-    const id = this.insert(q.insertInto('projectSessions').values(row).returning('id'))
-    return { id, ...row }
+  // Records a Claude session opened in `cwd`, for the project or in a role of no project; from now
+  // on it is that one's. Its role and its project_sessions row go in here alone, so they agree.
+  addSession(
+    of: number | { role: OpenRole; name: string },
+    sessionKey: string,
+    cwd: string,
+  ): Session {
+    return this.db.transaction(() => {
+      const seat =
+        typeof of === 'number'
+          ? { role: 'project' as const, name: sessionTitle(this.project(of)) }
+          : of
+      const row = { sessionKey, ...seat, cwd, socket: null, createdAt: now() }
+      const id = this.insert(q.insertInto('sessions').values(row).returning('id'))
+      if (typeof of === 'number') {
+        this.run(q.insertInto('projectSessions').values({ sessionId: id, projectId: of }))
+      }
+      return { id, ...row }
+    })()
   }
 
-  // Where a project session takes messages now; null once it ended. Nothing for a session nod open
-  // did not open. With `from`, only while it is still that: one that started again since keeps the
-  // socket it has now. A socket is one Claude Code process's, so the session there now takes it
-  // from any other that had it: one that ended unheard, or went on under a new ID after /clear,
-  // whose old ID the socket drops.
-  setSocket(sessionId: string, socket: string | null, from?: string): void {
+  // Gives the Claude session running now `role` and `name`, its conversation going on: one nod does
+  // not know goes in as opened in `cwd`, and a project session leaves its project. Its id stays, so
+  // the latest of the name may still be another.
+  // ponytail: a session claiming a name another holds under a higher id does not stand for it;
+  // renumbering it would take the notices sent to it along.
+  claimSession(sessionKey: string, role: OpenRole, name: string, cwd: string): Session {
+    return this.db.transaction(() => {
+      this.checkName(name, role, sessionKey)
+      const had = this.session(sessionKey)
+      if (had === null) return this.addSession({ role, name }, sessionKey, cwd)
+      this.run(q.deleteFrom('projectSessions').where('sessionId', '=', had.id))
+      const seat = { role, name }
+      this.run(q.updateTable('sessions').set(seat).where('id', '=', had.id))
+      return { ...had, ...seat }
+    })()
+  }
+
+  // Refuses `name` for a session of `role` when nod open could not tell it apart: another role of no
+  // project has it, or it reads as a project, which nod open looks for first. A project session's
+  // own name does not count, as nod open finds those by the project: an old one goes on after a
+  // retitle. A name the role already goes by stays usable, whatever project took that title since.
+  // `sessionKey`: the session asking, which may give up the name for another role itself.
+  checkName(name: string, role: OpenRole, sessionKey = ''): void {
+    filled('name', name)
+    if (this.latestNamed(name)?.role === role) return
+    if (this.namesProject(name)) {
+      throw new Error(`${name} names a project, which nod open opens first; give another name`)
+    }
+    const taken = this.first(
+      q
+        .selectFrom('sessions')
+        .select('role')
+        .where('name', '=', name)
+        .where('role', 'not in', ['project', role])
+        .where('sessionKey', '!=', sessionKey),
+    )
+    if (taken !== null) throw new Error(`the name ${name} is taken by role ${taken.role}`)
+  }
+
+  // Writes the session's name, as nod open does each time it opens one.
+  setSessionName(id: number, name: string): void {
+    this.run(q.updateTable('sessions').set({ name }).where('id', '=', id))
+  }
+
+  // Where a session takes messages now; null once it ended. Nothing for a session nod open did not
+  // open. With `from`, only while it is still that: one that started again since keeps the socket
+  // it has now. A socket is one Claude Code process's, so the session there now takes it from any
+  // other that had it: one that ended unheard, or went on under a new ID after /clear, whose old ID
+  // the socket drops.
+  setSocket(sessionKey: string, socket: string | null, from?: string): void {
     this.db.transaction(() => {
-      const set = q
-        .updateTable('projectSessions')
-        .set({ socket })
-        .where('sessionId', '=', sessionId)
+      const set = q.updateTable('sessions').set({ socket }).where('sessionKey', '=', sessionKey)
       this.run(from === undefined ? set : set.where('socket', '=', from))
       if (socket === null) return
       this.run(
         q
-          .updateTable('projectSessions')
+          .updateTable('sessions')
           .set({ socket: null })
           .where('socket', '=', socket)
-          .where('sessionId', '!=', sessionId),
+          .where('sessionKey', '!=', sessionKey),
       )
     })()
   }
 
-  // The project session nod tells at `socket`; null for none.
-  sessionAt(socket: string): ProjectSession | null {
-    return this.first(q.selectFrom('projectSessions').selectAll().where('socket', '=', socket))
+  // The session nod tells at `socket`; null for none.
+  sessionAt(socket: string): Session | null {
+    return this.first(q.selectFrom('sessions').selectAll().where('socket', '=', socket))
+  }
+
+  // The session of that Claude ID, whatever its role; null for one nod open did not open.
+  session(sessionKey: string): Session | null {
+    return this.first(q.selectFrom('sessions').selectAll().where('sessionKey', '=', sessionKey))
   }
 
   // The project's latest session; null before nod open opened one.
-  latestSession(projectId: number): ProjectSession | null {
+  latestSession(projectId: number): Session | null {
     return this.first(
       q
-        .selectFrom('projectSessions')
+        .selectFrom('sessions')
+        .innerJoin('projectSessions', 'projectSessions.sessionId', 'sessions.id')
+        .selectAll('sessions')
+        .where('projectSessions.projectId', '=', projectId)
+        .orderBy('sessions.id', 'desc')
+        .limit(1),
+    )
+  }
+
+  // The latest session of that name in a role of no project, the one that stands for it; null
+  // before there was one. Another role cannot have the name (checkName), a project's session may.
+  latestNamed(name: string): Session | null {
+    return this.first(
+      q
+        .selectFrom('sessions')
         .selectAll()
-        .where('projectId', '=', projectId)
+        .where('name', '=', name)
+        .where('role', '!=', 'project')
         .orderBy('id', 'desc')
         .limit(1),
     )
   }
 
-  // Where a Claude session belongs; null for one nod open did not open.
-  sessionPlace(sessionId: string): SessionPlace | null {
-    const session = this.first(
-      q.selectFrom('projectSessions').selectAll().where('sessionId', '=', sessionId),
+  // The orchestrator that hears of work no orchestrator added: the one made last of those taking
+  // messages, else, while none is, the one made last, which it waits for; null before there was
+  // one.
+  latestOrchestrator(): Session | null {
+    const latest = q
+      .selectFrom('sessions')
+      .selectAll()
+      .where('role', '=', 'orchestrator')
+      .orderBy('id', 'desc')
+      .limit(1)
+    return this.first(latest.where('socket', 'is not', null)) ?? this.first(latest)
+  }
+
+  // The session nod tells of a task's work: the latest of its project; in no project, the latest of
+  // the orchestrator's name when an orchestrator added it (`rootSession`), running or not, else
+  // latestOrchestrator. A relay hears of no task.
+  listener(projectId: number | null, rootSession: string | null): Session | null {
+    if (projectId !== null) return this.latestSession(projectId)
+    const root = rootSession === null ? null : this.session(rootSession)
+    return root?.role === 'orchestrator' ? this.latestNamed(root.name) : this.latestOrchestrator()
+  }
+
+  // Where a Claude session belongs; null for any but a project session, one of no project too.
+  sessionPlace(sessionKey: string): SessionPlace | null {
+    const row = this.first(
+      q
+        .selectFrom('sessions')
+        .innerJoin('projectSessions', 'projectSessions.sessionId', 'sessions.id')
+        .selectAll('sessions')
+        .select('projectSessions.projectId')
+        .where('sessionKey', '=', sessionKey),
     )
-    if (session === null) return null
-    const latest = this.latestSession(session.projectId)
-    return { session, project: this.project(session.projectId), latest: latest?.id === session.id }
+    if (row === null) return null
+    const { projectId, ...session } = row
+    const latest = this.latestSession(projectId)
+    return { session, project: this.project(projectId), latest: latest?.id === session.id }
   }
 
   // ── whose work a task is ──
@@ -963,10 +1089,10 @@ export class Todos {
 
   // The session whose work a task is now, as nod show and the task page name its root: the latest
   // session of its project, else the session that added it while the task is still its work; null
-  // when that is no session nod open opened.
+  // when that is no project session.
   rootPlace(task: Task): SessionPlace | null {
     const project = this.projectOf(task)
-    const session = (project === null ? null : this.latestSession(project))?.sessionId
+    const session = (project === null ? null : this.latestSession(project))?.sessionKey
     const root = session ?? task.rootSession
     return root !== null && this.isMine(root, task) ? this.sessionPlace(root) : null
   }
@@ -1155,6 +1281,12 @@ const parsed = (r: { actor: string; change: string; at: string }): Change => ({
 
 function filled(what: string, value: string): void {
   if (value.trim() === '') throw new Error(`empty ${what}`)
+}
+
+// A project session's name: the project's title, or `p<n>` and the start of it when that is long.
+export function sessionTitle(p: Project): string {
+  const name = p.title.length <= SESSION_NAME_CHARS ? p.title : `p${p.id} ${p.title}`
+  return oneLine(name, SESSION_NAME_CHARS).trim()
 }
 
 // A project title that reads as a ref (`p3`) or a number could not be found by its title.

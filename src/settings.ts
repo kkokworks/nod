@@ -3,7 +3,7 @@ import { quote } from './tmux'
 import { SANDBOX } from './verify'
 
 // The Claude Code settings (`--settings`) of a worker's session, its sandbox and hooks
-// (workerSettings), and of a project session nod open starts, its hooks (openSettings), with the
+// (workerSettings), and of a session nod open starts, its hooks (openSettings), with the
 // `nod hook` command each hook runs. What nod does as each hook comes is in hooks.ts. worker.ts
 // and todo-cli.ts both start sessions with these, so they are here rather than in either.
 
@@ -61,7 +61,7 @@ export function workerSettings(started: string | null, sockets: string): string 
 // The command a Claude Code hook runs: `nod hook <event>`, by this nod.
 const hook = (event: string): string => `${quote(process.execPath)} ${quote(CLI)} hook ${event}`
 
-// What `nod open` gives a project session: hooks that tell nod where the session takes messages as
+// What `nod open` gives a session: hooks that tell nod where the session takes messages as
 // it starts (startup, resume, compact: Claude Code exports the socket to hooks before any runs), and
 // that it takes none once it ends (onInbox in inbox.ts). SessionEnd hooks share a
 // budget of 1.5 s unless one sets a longer timeout (docs), less than a busy ledger may wait for.

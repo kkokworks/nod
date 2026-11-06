@@ -154,7 +154,7 @@ export function detail(id: number): Detail | null {
   const live = terminals.sessions()
   const todos = new Todos(ledger)
   const root = todos.rootPlace(task)
-  const added = task.rootSession === root?.session.sessionId ? null : task.rootSession
+  const added = task.rootSession === root?.session.sessionKey ? null : task.rootSession
   return {
     task,
     status: taskStatus(task, live),

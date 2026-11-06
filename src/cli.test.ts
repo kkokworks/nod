@@ -9,11 +9,12 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { join, resolve } from 'node:path'
+import { projectFolder } from '../test/projects'
 import { tempDirs } from '../test/tmp'
 import { Ledger } from './ledger'
 import { workspaceOf } from './place'
 import { openSettings } from './settings'
-import { Todos } from './todos'
+import { OPEN_ROLES, Todos } from './todos'
 import { endLine, watch } from './view'
 
 const tmp = tempDirs()
@@ -398,6 +399,44 @@ test("in a session nod open opened, add hands over its project's work only, show
   // A shell adds as before, without a word.
   const fromShell = add(null, 'from the shell', '--project', 'Health')
   expect(fromShell.err).toBe('')
+
+  // A session of no project hands over work in no project, without a hint, and refuses a project's
+  // whichever way it is named, saying where it goes.
+  for (const [role, key] of [
+    ['orchestrator', 'dddd4444-0000-4000-8000-00000000000d'],
+    ['relay', 'eeee5555-0000-4000-8000-00000000000e'],
+  ] as const) {
+    todos.addSession({ role, name: `north-${role}` }, key, home)
+    const free = add(key, 'in no project')
+    expect(free.err).not.toContain('hint:')
+    expect(projectOf(added(free))).toBeNull()
+    const loose = todos.capture(
+      { title: 'loose', notes: null, source: 'cli', sourceKey: null, url: null },
+      'human',
+    ).todo
+    expect(projectOf(added(add(key, '--todo', `t${loose.id}`)))).toBeNull()
+    const count = ledger.list().length
+    const refused = `this session is the ${role} north-${role}, which hands over no project's work; p${health.id} Health's goes to its session (nod tell p${health.id} <message...>) or in as a todo (nod in <what...> --project p${health.id})`
+    const byProject = add(key, 'book it', '--project', `p${health.id}`)
+    expect(byProject.code).not.toBe(0)
+    expect(byProject.err).toContain(refused)
+    const inHealth = todos.capture(
+      {
+        title: 'in Health',
+        notes: null,
+        source: 'cli',
+        sourceKey: null,
+        url: null,
+        projectId: health.id,
+      },
+      'human',
+    ).todo
+    const byTodo = add(key, '--todo', `t${inHealth.id}`)
+    expect(byTodo.code).not.toBe(0)
+    expect(byTodo.err).toContain(refused)
+    expect(ledger.list().length).toBe(count)
+    expect(todos.get(inHealth.id).status).toBe('inbox')
+  }
   expect(projectOf(added(fromShell))).toBe(health.id)
 
   // show names a project's session by its project, with the command that reopens it.
@@ -594,7 +633,7 @@ exit 3
     })
     return { code: r.exitCode, out: r.stdout.toString(), err: r.stderr.toString() }
   }
-  const key = (): string => todos.latestSession(p.id)?.sessionId ?? ''
+  const key = (): string => todos.latestSession(p.id)?.sessionKey ?? ''
   const told = `--append-system-prompt nod open opened this session for project p1 Release: nod add here puts work in that project, and the project's tasks and decisions are this session's. --settings ${openSettings()}`
 
   const first = open(here, 'Release')
@@ -613,10 +652,124 @@ exit 3
     `${there} | --resume ${key()} --name Release ${told} | ${account}\n`,
   )
 
+  // A session of no project opens by its name, the same way, once --role gave it one.
+  for (const role of OPEN_ROLES) {
+    const name = `north-${role}`
+    const opened = open(here, name, '--role', role)
+    expect(opened.code).toBe(3)
+    const session = todos.latestNamed(name)?.sessionKey
+    expect(opened.out).toContain(`${here} | --name ${name} --session-id ${session} `)
+    expect(opened.out).toContain(`this session as the ${role} ${name}: `)
+    expect(open(there, name).out).toContain(`${here} | --resume ${session} --name ${name} `)
+    expect(open(there, name, '--new').out).toContain(`${there} | --name ${name} --session-id `)
+    expect(todos.latestNamed(name)?.sessionKey).not.toBe(session)
+  }
+  const refused = open(here, 'south', '--role', 'project')
+  expect(refused.code).not.toBe(0)
+  expect(refused.err).toContain('a session role is one of orchestrator, relay')
+
   const usage = Bun.spawnSync(['bun', cli, 'open'], { cwd: here, env })
   expect(usage.exitCode).not.toBe(0)
   expect(usage.stderr.toString()).toContain('nod open <project> [--new]')
+  expect(usage.stderr.toString()).toContain('nod open <name> --role orchestrator|relay [--new]')
 })
+
+test('nod session claim gives the Claude session it runs in a role and a name, its folder as its transcript says, and refuses anywhere else', () => {
+  const home = tmp.make('nod-claim-')
+  const account = tmp.make('nod-claim-account-')
+  const [opened, moved] = [tmp.make('nod-claim-opened-'), tmp.make('nod-claim-moved-')]
+  const ledger = new Ledger(home)
+  const todos = new Todos(ledger)
+  const p = todos.addProject({ title: 'Release', outcome: null }, 'human')
+  const {
+    CLAUDECODE: _,
+    CLAUDE_CODE_SESSION_ID: __,
+    NOD_TASK: ___,
+    NOD_ACTOR: ____,
+    CLAUDE_CODE_MESSAGING_SOCKET: _____,
+    ...shell
+  } = process.env
+  const run = (cwd: string, env: Record<string, string>, ...args: string[]) => {
+    const r = Bun.spawnSync(['bun', cli, 'session', 'claim', ...args], {
+      cwd,
+      env: { ...shell, NOD_HOME: home, CLAUDE_CONFIG_DIR: account, ...env },
+    })
+    return { code: r.exitCode, out: r.stdout.toString(), err: r.stderr.toString() }
+  }
+  const [A, B, C] = ['key-a', 'key-b', 'key-c']
+  const inSession = (session: string, socket: string) => ({
+    CLAUDECODE: '1',
+    CLAUDE_CODE_SESSION_ID: session,
+    CLAUDE_CODE_MESSAGING_SOCKET: socket,
+  })
+
+  // Anywhere but a Claude session it says so, and a worker is not one.
+  const outside = 'nod session claim names the Claude session it runs in'
+  expect(run(moved, {}, 'north', '--role', 'orchestrator').err).toContain(outside)
+  const worker = { ...inSession(A, '/socks/a'), NOD_TASK: '7' }
+  expect(run(moved, worker, 'north', '--role', 'orchestrator').err).toContain(outside)
+  expect(run(moved, inSession(A, '/socks/a'), 'north').err).toContain('usage:')
+  expect(todos.session(A)).toBeNull()
+
+  // A session nod does not know: where Claude Code keeps its transcript, not where Bash stands.
+  const folder = projectFolder(account, opened)
+  mkdirSync(folder, { recursive: true })
+  const line = (cwd: string) => `${JSON.stringify({ type: 'user', cwd })}\n`
+  writeFileSync(join(folder, `${A}.jsonl`), line(realpathSync(moved)) + line(realpathSync(opened)))
+  const claimed = run(moved, inSession(A, '/socks/a'), 'north', '--role', 'orchestrator')
+  expect(claimed).toMatchObject({ code: 0, err: '' })
+  expect(claimed.out).toContain('this session is the orchestrator north: ')
+  expect(todos.session(A)).toMatchObject({
+    role: 'orchestrator',
+    name: 'north',
+    cwd: realpathSync(opened),
+    socket: '/socks/a',
+  })
+  expect(todos.sessionPlace(A)).toBeNull()
+
+  // No transcript says: where it stands now, and it hears so.
+  const lost = run(moved, inSession(B, '/socks/b'), 'gate', '--role', 'relay')
+  expect(lost.code).toBe(0)
+  expect(lost.err).toContain('no transcript of this session says where it was opened')
+  expect(todos.session(B)).toMatchObject({ role: 'relay', cwd: realpathSync(moved) })
+
+  // A project session leaves its project, keeps its folder and takes the socket it says now.
+  const had = todos.addSession(p.id, C, '/work/release')
+  const left = run(moved, inSession(C, '/socks/c'), 'south', '--role', 'orchestrator')
+  expect(left).toMatchObject({ code: 0, err: '' })
+  expect(todos.session(C)).toEqual({
+    ...had,
+    role: 'orchestrator',
+    name: 'south',
+    socket: '/socks/c',
+  })
+  expect(todos.sessionPlace(C)).toBeNull()
+  expect(todos.latestSession(p.id)).toBeNull()
+
+  // One no longer its project's latest hears nothing of what it was until now.
+  todos.addSession(p.id, 'key-f', '/work/f')
+  todos.addSession(p.id, 'key-g', '/work/g')
+  const older = run(moved, inSession('key-f', '/socks/f'), 'east', '--role', 'relay')
+  expect(older).toMatchObject({ code: 0, err: '' })
+
+  // Run with no socket to say, it keeps the one nod knows.
+  todos.setSocket('key-g', '/socks/g')
+  const unsaid = { CLAUDECODE: '1', CLAUDE_CODE_SESSION_ID: 'key-g' }
+  expect(run(moved, unsaid, 'west', '--role', 'relay')).toMatchObject({ code: 0, err: '' })
+  expect(todos.session('key-g')).toMatchObject({ role: 'relay', socket: '/socks/g' })
+
+  // What cannot be told apart goes in nowhere.
+  const taken = run(moved, inSession('key-d', '/socks/d'), 'north', '--role', 'relay')
+  expect(taken.code).not.toBe(0)
+  expect(taken.err).toContain('the name north is taken by role orchestrator')
+  expect(todos.session('key-d')).toBeNull()
+
+  // A session behind a newer one of its name holds on to the name, and hears that it hears nothing.
+  todos.addSession({ role: 'orchestrator', name: 'south' }, 'key-e', '/work/e')
+  const behind = run(moved, inSession(A, '/socks/a'), 'south', '--role', 'orchestrator')
+  expect(behind.code).toBe(0)
+  expect(behind.err).toContain("nod tells south's latest session, which nod open south opens")
+}, 30_000)
 
 test('nod open has claude compact at 60% of its window, unless the shell says how early', () => {
   const home = tmp.make('nod-open-compact-')

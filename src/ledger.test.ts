@@ -4,7 +4,7 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tempDirs } from '../test/tmp'
 import { Ledger, MIGRATIONS, RETRO_STATUS, type RetroOutcome, type TaskStatus } from './ledger'
-import { Todos } from './todos'
+import { SESSION_ROLES, Todos } from './todos'
 
 const tmp = tempDirs()
 afterAll(tmp.removeAll)
@@ -25,7 +25,7 @@ test('reopening a ledger keeps its data and does not re-run migrations', () => {
   })
   const reopened = new Ledger(home)
   expect(reopened.get(id).brief).toBe('keep me')
-  expect(reopened.db.query('pragma user_version').get()).toEqual({ user_version: 28 })
+  expect(reopened.db.query('pragma user_version').get()).toEqual({ user_version: 29 })
 })
 
 test('v18 leaves the tasks before it without a root session', () => {
@@ -39,7 +39,7 @@ test('v18 leaves the tasks before it without a root session', () => {
 
   const ledger = new Ledger(home)
   expect(ledger.get(1)).toMatchObject({ brief: 'x', rootSession: null })
-  expect(ledger.db.query('pragma user_version').get()).toEqual({ user_version: 28 })
+  expect(ledger.db.query('pragma user_version').get()).toEqual({ user_version: 29 })
 })
 
 test('v23 gives a ledger of v22 project sessions, none yet, and leaves its projects as they were', () => {
@@ -56,6 +56,77 @@ test('v23 gives a ledger of v22 project sessions, none yet, and leaves its proje
   expect(todos.latestSession(1)).toBeNull()
   const session = todos.addSession(1, 'cccc3333-0000-4000-8000-00000000000c', '/work/release')
   expect(todos.latestSession(1)).toEqual(session)
+})
+
+test('v29 moves the project sessions of a v28 ledger to sessions under their ids, so each latest session and each notice’s session stays', () => {
+  const home = freshHome()
+  const old = new Database(join(home, 'nod.db'), { create: true, strict: true })
+  for (const sql of MIGRATIONS.slice(0, 28)) old.exec(sql)
+  old.exec(`pragma user_version = 28;
+    insert into projects (id, title, status, created_at, status_at)
+      values (1, 'Release', 'active', 'at', 'at'), (2, 'Health', 'active', 'at', 'at');
+    insert into project_sessions (id, session_id, project_id, cwd, created_at, socket)
+      values (3, 'key-a', 1, '/work/a', 'at-a', null),
+             (7, 'key-b', 2, '/work/b', 'at-b', '/socks/b'),
+             (9, 'key-c', 1, '/work/c', 'at-c', '/socks/c');
+    insert into notices (id, project_id, event, note, created_at, session_id, sent_at)
+      values (1, 1, 'tell', 'to a', 'at', 'key-a', 'sent-1'),
+             (2, 2, 'tell', 'to b', 'at', 'key-b', 'sent-2'),
+             (3, 1, 'tell', 'to none', 'at', null, 'sent-3'),
+             (4, 1, 'tell', 'unsent', 'at', null, null),
+             (5, 1, 'tell', 'to no row', 'at', 'key-gone', 'sent-5');`)
+  old.close()
+
+  const ledger = new Ledger(home)
+  const todos = new Todos(ledger)
+  expect(ledger.db.query('pragma user_version').get()).toEqual({ user_version: 29 })
+  expect(ledger.db.query('pragma foreign_key_check').all()).toEqual([])
+  expect(todos.latestSession(1)).toEqual({
+    id: 9,
+    sessionKey: 'key-c',
+    role: 'project',
+    name: 'Release',
+    cwd: '/work/c',
+    socket: '/socks/c',
+    createdAt: 'at-c',
+  })
+  expect(todos.latestSession(2)).toMatchObject({ id: 7, sessionKey: 'key-b', name: 'Health' })
+  expect(todos.sessionPlace('key-a')).toMatchObject({
+    session: { id: 3, cwd: '/work/a', socket: null, createdAt: 'at-a' },
+    project: { id: 1 },
+    latest: false,
+  })
+  expect(todos.sessionPlace('key-c')?.latest).toBe(true)
+  // Ids go on from the highest, so the next session opened is its project's latest.
+  expect(todos.addSession(2, 'key-d', '/work/d').id).toBe(10)
+  expect(todos.latestSession(2)?.sessionKey).toBe('key-d')
+
+  expect(ledger.notice(1)).toMatchObject({ sessionId: 3, sentAt: 'sent-1', note: 'to a' })
+  expect(ledger.notice(2)).toMatchObject({ sessionId: 7, sentAt: 'sent-2', note: 'to b' })
+  expect(ledger.notice(3)).toMatchObject({ sessionId: null, sentAt: 'sent-3' })
+  expect(ledger.notice(1)).not.toHaveProperty('sessionKey')
+  expect(ledger.unsentNotices()).toMatchObject([{ id: 4, sessionId: null, note: 'unsent' }])
+  // A session no row names: the notice stays sent, and the ID it held stays in the ledger.
+  expect(ledger.notice(5)).toMatchObject({ sessionId: null, sentAt: 'sent-5', note: 'to no row' })
+  expect(ledger.db.query('select * from unmatched_notice_sessions').all()).toEqual([
+    { notice_id: 5, session_key: 'key-gone' },
+  ])
+  // A notice's session is a row of sessions now.
+  expect(() => ledger.claimNotices([4], 99)).toThrow('FOREIGN KEY constraint failed')
+  expect(ledger.claimNotices([4], 9).ids).toEqual([4])
+})
+
+test('sessions take the roles SESSION_ROLES names and refuse any other', () => {
+  const { db } = new Ledger(freshHome())
+  const insert = (key: string, role: string): void => {
+    db.run(
+      "insert into sessions (session_key, role, name, cwd, created_at) values (?, ?, 'n', '/w', 'at')",
+      [key, role],
+    )
+  }
+  for (const role of SESSION_ROLES) insert(`key-${role}`, role)
+  expect(db.query('select count(*) n from sessions').get()).toEqual({ n: SESSION_ROLES.length })
+  expect(() => insert('key-gtd', 'gtd')).toThrow('CHECK constraint failed')
 })
 
 test('v24 keeps the project sessions of a v23 ledger, with no socket yet, and has no notices of what ended before it', () => {

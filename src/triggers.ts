@@ -164,7 +164,7 @@ export async function tick(
   // What no notify sent yet: a session that was not running, a send that failed, an end no event
   // follows (a landing turn's).
   await sendNotices(ledger).catch((error) =>
-    console.error(`nod: could not tell the project sessions: ${message(error)}`),
+    console.error(`nod: could not tell the sessions: ${message(error)}`),
   )
   return { added, passed, collected, lost, waited, cut, restarted, closed, landed }
 }

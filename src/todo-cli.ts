@@ -10,10 +10,14 @@ import {
   type Change,
   cleared,
   OPEN,
+  OPEN_ROLES,
+  type OpenRole,
   oneOf,
   PROJECT_STATUSES,
   type Project,
   parseRef,
+  type Session,
+  sessionTitle,
   TODO_STATUSES,
   type Todo,
   type TodoDecision,
@@ -158,14 +162,48 @@ export function capture(todos: Todos, args: string[]): void {
   console.log(created ? line(todos, todo) : `${line(todos, todo)}  (already captured)`)
 }
 
-// How long a session's name (`claude --name`) may be: it shows in the prompt box and the terminal
-// title.
-const SESSION_NAME_CHARS = 40
+// What Claude in a session of no project hears of its role, as it opens or claims it.
+const ROLE_DUTIES: Record<OpenRole, string> = {
+  orchestrator:
+    "it belongs to no project, keeps the person's todos with the gtd skills, hears of the tasks it adds in no project and of those no orchestrator added, and passes a project's work to that project's session (nod tell p<n>).",
+  relay:
+    'it belongs to no project, takes messages from outside and passes each to the project session it is for (nod tell p<n>), and nod tells it of no task.',
+}
+export const roleLine = (role: OpenRole, name: string): string =>
+  `the ${role} ${name}: ${ROLE_DUTIES[role]}`
 
-// A project session's name: the project's title, or `p<n>` and the start of it when that is long.
-function sessionTitle(p: Project): string {
-  const name = p.title.length <= SESSION_NAME_CHARS ? p.title : `p${p.id} ${p.title}`
-  return oneLine(name, SESSION_NAME_CHARS).trim()
+// All nod open tells apart by what it opens: a session of no project with `role`, or by its name
+// when no project goes by `ref`, else a project. `of`: how nod names it, `owner`: whose a new session
+// is, `name`: the session's, `line`: what Claude in it hears, `latest`: the one that stands for it.
+function opening(todos: Todos, ref: string, role: OpenRole | undefined) {
+  const named = (r: OpenRole, latest: Session | null) => ({
+    of: ref,
+    owner: { role: r, name: ref },
+    name: ref,
+    line: `nod open opened this session as ${roleLine(r, ref)}`,
+    latest,
+  })
+  if (role !== undefined) {
+    todos.checkName(ref, role)
+    return named(role, todos.latestNamed(ref))
+  }
+  if (!todos.namesProject(ref)) {
+    const latest = todos.latestNamed(ref)
+    if (latest === null) {
+      throw new Error(
+        `no project or session named ${ref}; nod open ${ref} --role <${OPEN_ROLES.join('|')}> opens its first session`,
+      )
+    }
+    return named(oneOf('session role', latest.role, OPEN_ROLES), latest)
+  }
+  const p = todos.findProject(ref)
+  return {
+    of: `p${p.id}`,
+    owner: p.id,
+    name: sessionTitle(p),
+    line: `nod open opened this session for project p${p.id} ${p.title}: nod add here puts work in that project, and the project's tasks and decisions are this session's.`,
+    latest: todos.latestSession(p.id),
+  }
 }
 
 // A transcript line of something said, by the person or by Claude.
@@ -174,45 +212,43 @@ const SAID = /"type":"(user|assistant)"/
 // What `nod open` runs, and in which folder. The project's latest session is resumed in the folder
 // it was opened in; a new one (`fresh`, or none yet) is recorded with `cwd` first and is the
 // project's from then on. Either way the session has the project's tasks and decisions as its own
-// (isMine). The account in `config` may keep no conversation of the latest: none of a session
-// closed before its first message, and none of one kept in another account's folder, as accounts
-// need not share their projects/ folder. Claude Code (2.1.310) then opens it with neither
-// `--resume` (no conversation found) nor, once a transcript file of it is there, even an empty one
-// or a title alone, `--session-id` (already in use). So a session with no transcript starts again
-// under the same ID and name, and one whose transcript holds nothing said gives way to a new one.
-// Every way, the session gets the project's name, resumed too (Claude Code 2.1.310 records it in
-// the transcript): a /rename goes back to it, and a new title shows once the project is retitled.
+// (isMine). A session of no project opens by its name the same way (opening), the latest of the
+// name standing for it; its work is what it added. The account in `config` may keep no conversation
+// of the latest: none of a session closed before its first message, and none of one kept in another
+// account's folder, as accounts need not share their projects/ folder. Claude Code (2.1.310) then
+// opens it with neither `--resume` (no conversation found) nor, once a transcript file of it is
+// there, even an empty one or a title alone, `--session-id` (already in use). So a session with no
+// transcript starts again under the same ID and name, and one whose transcript holds nothing said
+// gives way to a new one.
+// Every way, the session gets its name, resumed too (Claude Code 2.1.310 records it in the
+// transcript): a /rename goes back to it, and a new title shows once the project is retitled.
 export function openSession(
   todos: Todos,
   ref: string,
   fresh: boolean,
   cwd: string,
   config: string | null,
+  role?: OpenRole,
 ): { argv: string[]; cwd: string } {
-  const project = todos.findProject(ref)
-  // The session's name is for the person; Claude in it learns its project from this line alone.
-  // Claude Code keeps a conversation's first system prompt on resume until it compacts, so a
-  // resume passes it too. Its hooks tell nod where it takes the project's notices (inbox.ts).
-  const told = [
-    '--append-system-prompt',
-    `nod open opened this session for project p${project.id} ${project.title}: nod add here puts work in that project, and the project's tasks and decisions are this session's.`,
-    '--settings',
-    openSettings(),
-  ]
-  const last = fresh ? null : todos.latestSession(project.id)
-  const kept = last === null ? null : transcriptPath(config, last.sessionId)
+  const { of, owner, name, line, latest } = opening(todos, ref, role)
+  // The session's name is for the person; Claude in it learns its project or role from this line
+  // alone. Claude Code keeps a conversation's first system prompt on resume until it compacts, so a
+  // resume passes it too. Its hooks tell nod where it takes its notices (inbox.ts).
+  const told = ['--append-system-prompt', line, '--settings', openSettings()]
+  const last = fresh ? null : latest
+  const kept = last === null ? null : transcriptPath(config, last.sessionKey)
   // ponytail: reads the whole transcript once per open; one of 69 MB took about 50 ms.
   const said = kept !== null && SAID.test(readFileSync(kept, 'utf8'))
   const again = last !== null && (said || kept === null) ? last : null
   if (again !== null && !existsSync(again.cwd)) {
     throw new Error(
-      `p${project.id}'s session was opened in ${again.cwd}, which is gone; nod open p${project.id} --new opens a new one here`,
+      `${of}'s session was opened in ${again.cwd}, which is gone; nod open ${of} --new opens a new one here`,
     )
   }
-  const name = sessionTitle(project)
+  if (again !== null) todos.setSessionName(again.id, name)
   if (again !== null && said) {
     return {
-      argv: ['claude', '--resume', again.sessionId, '--name', name, ...told],
+      argv: ['claude', '--resume', again.sessionKey, '--name', name, ...told],
       cwd: again.cwd,
     }
   }
@@ -222,18 +258,19 @@ export function openSession(
         ? "closed before a word, or kept in another account's folder), so it starts again under that ID"
         : 'nothing said in it), which Claude Code opens neither to resume nor anew, so a new one opens here'
     console.error(
-      `nod: this Claude account has no conversation of p${project.id}'s session ${last.sessionId} (${why}`,
+      `nod: this Claude account has no conversation of ${of}'s session ${last.sessionKey} (${why}`,
     )
   }
-  const session = again ?? todos.addSession(project.id, crypto.randomUUID(), cwd)
-  const argv = ['claude', '--name', name, '--session-id', session.sessionId, ...told]
+  const session = again ?? todos.addSession(owner, crypto.randomUUID(), cwd)
+  const argv = ['claude', '--name', name, '--session-id', session.sessionKey, ...told]
   return { argv, cwd: session.cwd }
 }
 
 // The project `nod add` puts its work in, by the Claude session it runs in (`session`). One nod
-// open opened hands over its project's work only: the work goes in that project, and work of
-// another is refused with where it goes instead. Any other session, and none, puts it where it is
-// told; a Claude session also hears how to keep projects apart.
+// open opened for a project hands over its project's work only: the work goes in that project, and
+// work of another is refused with where it goes instead. One in a role of no project hands over no
+// project's work, refused the same way, and work in no project stays in none. Any other session,
+// and none, puts it where it is told; a Claude session also hears how to keep projects apart.
 export function placeWork(
   todos: Todos,
   session: string | null,
@@ -241,9 +278,17 @@ export function placeWork(
   todo: Todo | null,
 ): number | null {
   const given = project === undefined ? null : todos.findProject(project).id
+  const other = todo === null ? given : todo.projectId
   const place = session === null ? null : todos.sessionPlace(session)
   if (place === null) {
-    if (session !== null) {
+    const opened = session === null ? null : todos.session(session)
+    if (opened !== null && other !== null) {
+      const p = todos.project(other)
+      throw new Error(
+        `this session is the ${opened.role} ${opened.name}, which hands over no project's work; p${p.id} ${p.title}'s goes to its session (nod tell p${p.id} <message...>) or in as a todo (nod in <what...> --project p${p.id})`,
+      )
+    }
+    if (session !== null && opened === null) {
       console.error(
         "hint: nod open <project> opens a Claude session for a project, which keeps each project's work apart",
       )
@@ -251,7 +296,6 @@ export function placeWork(
     return given
   }
   const own = place.project
-  const other = todo === null ? given : todo.projectId
   if (other === null || other === own.id) return own.id
   const p = todos.project(other)
   const mine = `this session is for p${own.id} ${own.title}`
