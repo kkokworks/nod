@@ -30,6 +30,7 @@ const project = (id: number, next: number): Project & { next: number } => ({
   id,
   title: `project ${id}`,
   outcome: null,
+  description: null,
   status: 'active',
   createdAt: '2026-10-01T00:00:00.000Z',
   statusAt: '2026-10-01T00:00:00.000Z',

@@ -55,6 +55,85 @@ const runner = () => {
   return { ok, fails, home }
 }
 
+test('a description is set, changed and cleared apart from the outcome, and a list shows it on the next line', async () => {
+  const { ok } = runner()
+  expect(
+    await ok('project', 'add', 'Health', '--outcome', 'Teeth fixed', '--description', 'Dentist'),
+  ).toEqual(['p1    active   Health — Teeth fixed', '      Dentist'])
+  expect(await ok('project', 'ls')).toEqual([
+    'p1    active   Health — Teeth fixed  0 next  0 waiting  · no next action',
+    '      Dentist',
+  ])
+  expect(await ok('project', 'set', 'p1', '--description', 'Dentist\nand checkups')).toEqual([
+    'p1    active   Health — Teeth fixed',
+    '      Dentist and checkups',
+  ])
+  // Each option leaves the other alone, and the whole description keeps its lines.
+  await ok('project', 'set', 'p1', '--outcome', '')
+  expect(await ok('project', 'p1')).toEqual([
+    'p1    active   Health',
+    '  description',
+    '    Dentist',
+    '    and checkups',
+    '  changes',
+    '    <time>  human  title — → Health, outcome — → Teeth fixed, description — → Dentist, status — → active',
+    '    <time>  human  description Dentist → Dentist and checkups',
+    '    <time>  human  outcome Teeth fixed → —',
+  ])
+
+  expect(await ok('project', 'set', 'p1', '--description', '')).toEqual(['p1    active   Health'])
+  expect(await ok('project')).toEqual([
+    'p1    active   Health  0 next  0 waiting  · no next action',
+  ])
+  expect(await ok('project', 'p1')).toEqual([
+    'p1    active   Health',
+    '  changes',
+    '    <time>  human  title — → Health, outcome — → Teeth fixed, description — → Dentist, status — → active',
+    '    <time>  human  description Dentist → Dentist and checkups',
+    '    <time>  human  outcome Teeth fixed → —',
+    '    <time>  human  description Dentist and checkups → —',
+  ])
+  expect(await ok('project', 'add', 'Empty', '--description', '')).toEqual(['p2    active   Empty'])
+  await ok('project', 'set', 'p2', '--description', 'Nothing left')
+  expect(await ok('project', 'done', 'p2')).toEqual(['p2    done     Empty', '      Nothing left'])
+})
+
+test('a list cuts a description past 100 characters and marks the cut, and one project shows it whole', async () => {
+  const { ok } = runner()
+  const fits = '가'.repeat(100)
+  const over = `${fits}나`
+  await ok('project', 'add', 'Fits', '--description', fits)
+  await ok('project', 'add', 'Over', '--description', over)
+  expect(await ok('project')).toEqual([
+    'p1    active   Fits  0 next  0 waiting  · no next action',
+    `      ${fits}`,
+    'p2    active   Over  0 next  0 waiting  · no next action',
+    `      ${fits}…`,
+  ])
+  expect((await ok('project', 'p2')).slice(0, 3)).toEqual([
+    'p2    active   Over',
+    '  description',
+    `    ${over}`,
+  ])
+})
+
+test('what would break a terminal stays out of a description, wherever it shows', async () => {
+  const { ok } = runner()
+  await ok('project', 'add', 'Esc', '--description', 'plain\x1b[2Khidden\nnext\tline')
+  expect(await ok('project')).toEqual([
+    'p1    active   Esc  0 next  0 waiting  · no next action',
+    '      plain [2Khidden next line',
+  ])
+  expect(await ok('project', 'p1')).toEqual([
+    'p1    active   Esc',
+    '  description',
+    '    plain [2Khidden',
+    '    next line',
+    '  changes',
+    '    <time>  human  title — → Esc, description — → plain [2Khidden next line, status — → active',
+  ])
+})
+
 test('capture, clarify into a project, finish, and read back who changed what', async () => {
   const { ok } = runner()
   expect(await ok('in', 'Call', 'the', 'dentist')).toEqual([

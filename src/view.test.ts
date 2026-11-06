@@ -1,7 +1,22 @@
 import { expect, test } from 'bun:test'
-import { ago, type LsTask, lsGroups, lsLine, lsMode, lsTable } from './view'
+import { ago, cutLine, type LsTask, lsGroups, lsLine, lsMode, lsTable, oneLine } from './view'
 
 const now = new Date('2026-10-26T12:00:00Z')
+
+test('oneLine and cutLine cut beside a character beyond U+FFFF, not through it', () => {
+  expect(oneLine('xxxx😀tail', 5)).toBe('xxxx')
+  expect(oneLine('xxx😀tail', 5)).toBe('xxx😀')
+  expect(cutLine('xxxx😀tail', 5)).toBe('xxxx…')
+})
+
+test('cutLine marks only a real cut, and keeps a line to one clean line', () => {
+  expect(cutLine('xxxxx', 5)).toBe('xxxxx')
+  expect(cutLine('xxxxxx', 5)).toBe('xxxxx…')
+  expect(cutLine('xxxxx\n', 5)).toBe('xxxxx')
+  expect(cutLine(' \nxxxxx', 5)).toBe('xxxxx')
+  expect(cutLine('a\r\nb\tc\u2028d\x1b[2K', 20)).toBe('a  b c d [2K')
+})
+
 const minsAgo = (mins: number): string => new Date(now.getTime() - mins * 60_000).toISOString()
 const task = (o: Partial<LsTask> & { id: number }): LsTask => ({
   todoId: null,

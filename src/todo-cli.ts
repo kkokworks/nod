@@ -28,7 +28,10 @@ import {
 } from './todos'
 import { SCHEDULE_OFF, scheduleEnv, tryWatch } from './triggers'
 import { nudgeLine, STALE_DAYS, type Trust } from './trust'
-import { changeText, indent, oneLine } from './view'
+import { changeText, clean, cutLine, indent, oneLine } from './view'
+
+// How much of a description a list shows: a sentence or two, enough to pick a project by.
+const DESCRIPTION_CUT = 100
 
 export const TODO_USAGE = `  nod in <what...> [--notes <text>] [--source <channel> --key <id>] [--link <url>]
          [--project <p>]
@@ -89,11 +92,15 @@ export const TODO_USAGE = `  nod in <what...> [--notes <text>] [--source <channe
                                    all of them, or none when one is missing or, with --from, in
                                    another status
   nod project add <title...> [--outcome <what done looks like>]
+         [--description <what it is about>]
   nod project [ls] [--all]         active projects with their next and waiting counts, open
                                    decisions among the next; one with no next action says so
-                                   (--all: every status)
-  nod project <project>            one project: its open todos and who changed what
-  nod project set <project> [--title <text>] [--outcome <text>] [--status <s>]
+                                   (--all: every status). A description shows on the line below,
+                                   its first ${DESCRIPTION_CUT} characters, to tell which project work is for
+  nod project <project>            one project: its whole description, its open todos and who
+                                   changed what
+  nod project set <project> [--title <text>] [--outcome <text>] [--description <text>]
+         [--status <s>]            an empty --outcome or --description clears it
   nod project done <project>       only once none of its todos is open
                                    Todos are t<n>; projects are p<n> or their exact title. Each
                                    change records who made it: $NOD_ACTOR if set, else
@@ -526,7 +533,7 @@ export function projectCommand(todos: Todos, args: string[]): void {
     const [ref, ...extra] = rest
     if (ref === undefined || extra.length > 0) throw new Error(TODO_USAGE)
     const p = todos.findProject(ref)
-    console.log(projectLine(todos.setProject(p.id, { status: 'done' }, actorFromEnv())))
+    console.log(projectBrief(todos.setProject(p.id, { status: 'done' }, actorFromEnv())))
   } else if (rest.length === 0) {
     showProject(todos, todos.findProject(sub))
   } else {
@@ -538,12 +545,13 @@ function addProject(todos: Todos, args: string[]): void {
   const { values, positionals } = parseArgs({
     args,
     allowPositionals: true,
-    options: { outcome: { type: 'string' } },
+    options: { outcome: { type: 'string' }, description: { type: 'string' } },
   })
   const title = positionals.join(' ').trim()
   if (title === '') throw new Error(TODO_USAGE)
   const outcome = cleared(values.outcome) ?? null
-  console.log(projectLine(todos.addProject({ title, outcome }, actorFromEnv())))
+  const description = cleared(values.description) ?? null
+  console.log(projectBrief(todos.addProject({ title, outcome, description }, actorFromEnv())))
 }
 
 function listProjects(todos: Todos, args: string[]): void {
@@ -551,7 +559,7 @@ function listProjects(todos: Todos, args: string[]): void {
   for (const p of todos.projects(values.all ? [...PROJECT_STATUSES] : ['active'])) {
     const counts = `${p.next} next  ${p.waiting} waiting`
     const stuck = p.status === 'active' && p.next === 0 ? '  · no next action' : ''
-    console.log(`${projectLine(p)}  ${counts}${stuck}`)
+    console.log(projectBrief(p, `  ${counts}${stuck}`))
   }
 }
 
@@ -562,6 +570,7 @@ function setProject(todos: Todos, args: string[]): void {
     options: {
       title: { type: 'string' },
       outcome: { type: 'string' },
+      description: { type: 'string' },
       status: { type: 'string' },
     },
   })
@@ -572,12 +581,21 @@ function setProject(todos: Todos, args: string[]): void {
       ? undefined
       : oneOf('project status', values.status, PROJECT_STATUSES)
   const p = todos.findProject(ref)
-  const edit = { title: values.title, outcome: cleared(values.outcome), status }
-  console.log(projectLine(todos.setProject(p.id, edit, actorFromEnv())))
+  const edit = {
+    title: values.title,
+    outcome: cleared(values.outcome),
+    description: cleared(values.description),
+    status,
+  }
+  console.log(projectBrief(todos.setProject(p.id, edit, actorFromEnv())))
 }
 
 function showProject(todos: Todos, p: Project): void {
   console.log(projectLine(p))
+  if (p.description !== null) {
+    const lines = p.description.split('\n').map(clean).join('\n')
+    console.log(`  description\n${indent(lines, 4)}`)
+  }
   const open = {
     statuses: OPEN,
     context: null,
@@ -705,6 +723,14 @@ function tags(todos: Todos, t: Todo): string[] {
 const projectLine = (p: Project): string => {
   const outcome = p.outcome === null ? '' : ` — ${oneLine(p.outcome, 60)}`
   return `p${String(p.id).padEnd(4)} ${p.status.padEnd(8)} ${p.title}${outcome}`
+}
+
+// A project as a list shows it: `after` on its line, and its description cut on the next, as a
+// session picks a project by it and nod project <project> has the rest.
+const projectBrief = (p: Project, after = ''): string => {
+  const head = `${projectLine(p)}${after}`
+  if (p.description === null) return head
+  return `${head}\n      ${cutLine(p.description, DESCRIPTION_CUT)}`
 }
 
 function printChanges(changes: Change[]): void {

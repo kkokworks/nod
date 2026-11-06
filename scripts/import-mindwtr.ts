@@ -222,6 +222,7 @@ export function mapMindwtr(rawTasks: unknown, rawProjects: unknown, tools: Tools
       row: {
         title: p.title,
         outcome: null,
+        description: null,
         status: statusOfProject(p),
         createdAt: p.createdAt,
         statusAt: p.archivedAt ?? p.updatedAt,
