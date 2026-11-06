@@ -1161,7 +1161,7 @@ it('a repo worker is told to have a subagent review its branch from where it sta
   expect(every).toContain('nod gc removes with this directory after the task')
   expect(every).toContain('Delete files git tracks with git rm.')
   expect(every).toContain(
-    'run rm -rf <relative paths> as a command of its own: nothing chained to it, no .., variables, quotes or globs.',
+    'run rm -rf <relative paths> as a command of its own: nothing chained to it, no .., and only ASCII letters, digits and . _ / @ - in the paths, so no variables, quotes or globs.',
   )
   expect(every).toContain(
     'In a git repository nod then allows it at once if what goes is committed or ignored by git',

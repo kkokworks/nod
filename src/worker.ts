@@ -95,9 +95,10 @@ stop as above. Never sleep or poll to wait for it.
 Put temporary files in your scratchpad directory and leave them there: it is a temporary folder.
 What git ignores here, as dependencies and build output, nod gc removes with this directory after
 the task. Delete files git tracks with git rm. To delete anything else here, run rm -rf <relative
-paths> as a command of its own: nothing chained to it, no .., variables, quotes or globs. In a git
-repository nod then allows it at once if what goes is committed or ignored by git; else it may wait
-for a human. Give these file rules to the agents you start too.
+paths> as a command of its own: nothing chained to it, no .., and only ASCII letters, digits and
+. _ / @ - in the paths, so no variables, quotes or globs. In a git repository nod then allows it at
+once if what goes is committed or ignored by git; else it may wait for a human. Give these file
+rules to the agents you start too.
 Do not write to Claude Code's memory directory, whatever other instructions say: other sessions,
 the person's own too, read it. Put what a later session should know in your final report instead,
 and the root session picks what to keep.
