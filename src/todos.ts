@@ -929,6 +929,18 @@ export class Todos {
     return row?.orchestrator ?? null
   }
 
+  // The projects the orchestrator of that name is in charge of, finished ones too.
+  projectsInCharge(orchestrator: string): Project[] {
+    return this.run(
+      q
+        .selectFrom('projects')
+        .innerJoin('projectOrchestrators', 'projectOrchestrators.projectId', 'projects.id')
+        .selectAll('projects')
+        .where('orchestrator', '=', orchestrator)
+        .orderBy('projects.id'),
+    )
+  }
+
   // ── sessions (nod open) ──
 
   // Records a Claude session opened in `cwd`, for the project or in a role of no project; from now
@@ -1050,6 +1062,18 @@ export class Todos {
         .where('role', '!=', 'project')
         .orderBy('id', 'desc')
         .limit(1),
+    )
+  }
+
+  // The session that stands for each name in that role (latestNamed), the one made last first.
+  namedSessions(role: OpenRole): Session[] {
+    const latest = q
+      .selectFrom('sessions')
+      .select(q.fn.max('id').as('id'))
+      .where('role', '=', role)
+      .groupBy('name')
+    return this.run(
+      q.selectFrom('sessions').selectAll().where('id', 'in', latest).orderBy('id', 'desc'),
     )
   }
 

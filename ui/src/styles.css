@@ -142,6 +142,11 @@ pre {
   min-width: 0;
 }
 
+/* An error or Not found shown inside Settings, whose page has the padding already. */
+.page .page {
+  padding: 0;
+}
+
 /* The page keeps 320px and the terminal 360px (PANES), however wide the terminal was dragged. */
 .task-layout {
   display: grid;
@@ -2018,6 +2023,14 @@ a.task-line:hover {
   border: 0;
   background: var(--chip);
   color: var(--fg);
+}
+
+/* The Settings page open now, among the links to them, marked as a filter that is on. It takes a
+   class more than the rule above: `:is` counts as its most specific argument, so `.tag.active`
+   only ties with it, and a tie goes to the later rule. */
+.tags .tag.active {
+  background: var(--accent);
+  color: var(--bg);
 }
 
 /* An unfolded todo keeps its actions on its title's line. */
