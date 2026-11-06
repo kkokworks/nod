@@ -93,6 +93,7 @@ import {
 } from './view'
 import {
   answer,
+  cancel,
   drop,
   keepWorker,
   type Restart,
@@ -116,6 +117,16 @@ const USAGE = `usage:
                                    --mine: only those of this Claude session's tasks)
   nod <decision> <answer...>       answer a decision; the worker gets it in its own session
   nod drop <decision>              end the task instead of answering
+  nod cancel <task> [--reason <text>]
+                                   end a task that has not ended (queued, running, or waiting on
+                                   a decision) as drop does: its turn and any check or review of
+                                   one stop with its session, its decisions close, the tasks
+                                   after it are cancelled with it, its todo is a next action
+                                   again, and the session that hears of it is told cancelled.
+                                   Who cancelled it (this session, a worker or human) and the
+                                   reason stay as its error. Its folder, branch and transcript
+                                   stay for gc. One whose work succeeded and is landing only
+                                   stops landing, as drop does. A task that ended is refused
   nod add <brief> [--repo <path> --branch <name>] [--check <command>] [--model <model>]
           [--after <task,...>] [--issue <key>] [--todo <todo> | --project <project>]
                                    start a worker on the task now, or once the tasks it comes
@@ -487,6 +498,19 @@ switch (command) {
     }
     const id = parseRef(rest[0] ?? '', 'd', true)
     console.log(said[await drop(ledger, home, terminals, id, answerer())])
+    break
+  }
+  case 'cancel': {
+    const { values, positionals } = parseArgs({
+      args: rest,
+      options: { reason: { type: 'string' } },
+      allowPositionals: true,
+    })
+    if (positionals.length !== 1) throw new Error(USAGE)
+    const id = taskRef(positionals[0])
+    const reason = values.reason?.trim() || null
+    const did = await cancel(ledger, home, terminals, id, actorFromEnv(), reason)
+    console.log(did === 'cancelled' ? 'cancelled' : 'stopped landing it; the task stays succeeded')
     break
   }
   case 'gc':

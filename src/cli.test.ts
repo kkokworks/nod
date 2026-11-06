@@ -1191,6 +1191,41 @@ test('a task is n<n>, a decision d<n> and a trigger c<n>, and each still takes i
   // About 20 nod commands, each a bun process: about a second alone, longer on a loaded machine.
 }, 20_000)
 
+test('nod cancel ends a task as whoever runs it, with the reason given, and refuses one that ended', () => {
+  const home = tmp.make('nod-cancel-')
+  const ledger = new Ledger(home)
+  const run = (actor: string, ...args: string[]) =>
+    Bun.spawnSync(['bun', cli, ...args], {
+      env: { ...process.env, NOD_HOME: home, NOD_ACTOR: actor },
+    })
+  const queued = () =>
+    ledger.add({
+      brief: 'write the notes',
+      repo: null,
+      branch: null,
+      checkCmd: null,
+      model: null,
+      after: [],
+      triggerId: null,
+      issue: null,
+    })
+  const [said, unsaid] = [queued(), queued()]
+  const cancelled = run('claude:aaaa1111', 'cancel', `n${said}`, '--reason', ' not needed ')
+  expect([cancelled.exitCode, cancelled.stdout.toString()]).toEqual([0, 'cancelled\n'])
+  expect(ledger.get(said)).toMatchObject({
+    status: 'cancelled',
+    error: 'cancelled by claude:aaaa1111: not needed',
+  })
+  // A blank reason is none.
+  expect(run('human', 'cancel', String(unsaid), '--reason', ' ').exitCode).toBe(0)
+  expect(ledger.get(unsaid).error).toBe('cancelled by human')
+  const again = run('human', 'cancel', `n${said}`)
+  expect(again.exitCode).not.toBe(0)
+  expect(again.stderr.toString()).toContain(`task n${said} has ended (cancelled)`)
+  expect(ledger.get(said).error).toBe('cancelled by claude:aaaa1111: not needed')
+  expect(run('human', 'cancel').exitCode).not.toBe(0)
+})
+
 test('hook stop waits on the background work Claude Code says still runs, and tick asks once that has taken an hour', () => {
   const home = tmp.make('nod-wait-')
   const ledger = new Ledger(home)

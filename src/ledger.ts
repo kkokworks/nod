@@ -1008,6 +1008,11 @@ export class Ledger {
     return this.run(q.selectFrom('tasks').select(TASK).orderBy('id'))
   }
 
+  // A task cancelled while its folder was made keeps the folder, for gc, and its status.
+  setWorkspace(id: number, workspace: string): void {
+    this.run(q.updateTable('tasks').set({ workspace }).where('id', '=', id))
+  }
+
   // Not a retrospective that has its outcome (RETRO_STATUS).
   setRunning(id: number, workspace: string): void {
     if (this.retroStatus(id) !== null) return
@@ -1794,6 +1799,12 @@ export class Ledger {
   // The human ends the task instead of answering, so nothing counts it a success.
   drop(decisionId: number): void {
     this.close(decisionId, '(dropped)', 'cancelled', now())
+  }
+
+  // The person ends the task with no decision to drop (nod cancel); `why`, who did and why, is its
+  // error, as the tasks cancelled with it have theirs.
+  cancel(id: number, why: string): void {
+    this.setStatus(id, 'cancelled', why)
   }
 
   // The person answers or drops a decision on landing the task (land.ts), which leaves it `status`:

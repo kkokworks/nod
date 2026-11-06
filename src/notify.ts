@@ -20,7 +20,8 @@ export type NotifyEvent =
       decision: { id: number; reason: DecisionReason; answer: string }
     }
   | { event: 'succeeded'; task: TaskRef; summary: string }
-  | { event: 'cancelled'; task: TaskRef }
+  // `by` and `reason`: who cancelled it with nod cancel, and why if they said; a drop has neither.
+  | { event: 'cancelled'; task: TaskRef; by?: string; reason?: string }
   | { event: 'error'; task: TaskRef; error: string }
   // A worker's Claude Code is due to start again, but a person is attached to its terminal.
   | { event: 'restart_held'; task: TaskRef; reason: string }
