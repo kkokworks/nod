@@ -182,8 +182,9 @@ const USAGE = `usage:
                                    that runs again and ends again is printed again. --issue:
                                    only decisions, ends and workers of tasks on these issues;
                                    --mine: only those of this Claude session's tasks, so
-                                   several root sessions can each watch their own. A session nod
-                                   open opened needs no watch: nod tells it (see below)
+                                   several root sessions can each watch their own. A project's
+                                   session or an orchestrator needs no watch: nod tells it (see
+                                   below)
   nod link <task> <url...>         record where the task's result went (a pull request, a posted
                                    review), so ls and show list it next to the task. Until then
                                    they list the remote branches that hold the task's branch
@@ -351,7 +352,8 @@ async function sayInbox(): Promise<void> {
   ).catch((error) => `nod: could not record this session's inbox: ${message(error)}`)
   if (unheard !== null) console.error(unheard)
 }
-await sayInbox()
+// nod session claim says it once the session has its role, which may change what it hears.
+if (command !== 'session') await sayInbox()
 const taskRef = (ref: string | undefined): number => new Todos(ledger).taskRef(ref ?? '')
 
 switch (command) {

@@ -919,9 +919,8 @@ export class Todos {
   }
 
   // Gives the Claude session running now `role` and `name`, its conversation going on: one nod does
-  // not know goes in as opened in `cwd`, and a project session leaves its project. Its socket goes,
-  // for the command to say (onCommand), as only that command knows it. Its id stays, so the latest
-  // of the name may still be another.
+  // not know goes in as opened in `cwd`, and a project session leaves its project. Its id stays, so
+  // the latest of the name may still be another.
   // ponytail: a session claiming a name another holds under a higher id does not stand for it;
   // renumbering it would take the notices sent to it along.
   claimSession(sessionKey: string, role: OpenRole, name: string, cwd: string): Session {
@@ -930,16 +929,17 @@ export class Todos {
       const had = this.session(sessionKey)
       if (had === null) return this.addSession({ role, name }, sessionKey, cwd)
       this.run(q.deleteFrom('projectSessions').where('sessionId', '=', had.id))
-      const seat = { role, name, socket: null }
+      const seat = { role, name }
       this.run(q.updateTable('sessions').set(seat).where('id', '=', had.id))
       return { ...had, ...seat }
     })()
   }
 
-  // Refuses `name` for a session of `role` when nod open could not tell it apart: another role has
-  // it, or it reads as a project, which nod open looks for first. A name the role already goes by
-  // stays usable, whatever project took that title since. `sessionKey`: the session asking, which
-  // may give up the name for another role itself.
+  // Refuses `name` for a session of `role` when nod open could not tell it apart: another role of no
+  // project has it, or it reads as a project, which nod open looks for first. A project session's
+  // own name does not count, as nod open finds those by the project: an old one goes on after a
+  // retitle. A name the role already goes by stays usable, whatever project took that title since.
+  // `sessionKey`: the session asking, which may give up the name for another role itself.
   checkName(name: string, role: OpenRole, sessionKey = ''): void {
     filled('name', name)
     if (this.latestNamed(name)?.role === role) return
@@ -951,7 +951,7 @@ export class Todos {
         .selectFrom('sessions')
         .select('role')
         .where('name', '=', name)
-        .where('role', '!=', role)
+        .where('role', 'not in', ['project', role])
         .where('sessionKey', '!=', sessionKey),
     )
     if (taken !== null) throw new Error(`the name ${name} is taken by role ${taken.role}`)

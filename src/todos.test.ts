@@ -565,7 +565,7 @@ test('claiming a role puts in a session nod does not know, takes a project sessi
   todos.setSocket(B, '/socks/b')
   // A folder only goes in for a new row: this one keeps where nod open opened it.
   const claimed = todos.claimSession(B, 'relay', 'gate', '/somewhere/else')
-  expect(claimed).toEqual({ ...had, role: 'relay', name: 'gate', socket: null })
+  expect(claimed).toEqual({ ...had, role: 'relay', name: 'gate', socket: '/socks/b' })
   expect(todos.session(B)).toEqual(claimed)
   expect(todos.sessionPlace(B)).toBeNull()
   expect(todos.latestSession(p.id)).toEqual(older)

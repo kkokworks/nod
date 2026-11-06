@@ -471,6 +471,22 @@ test("nod open writes the project session's name each time, so a retitled projec
   expect(resumed.argv[4]).toBe(name())
 })
 
+test('a name an older session of a retitled project still has is free for a role, as nod open finds no project session by it', () => {
+  const { todos, config, here } = opener()
+  const p = todos.addProject({ title: 'Release', outcome: null }, 'human')
+  const open = (ref: string, fresh: boolean, role?: OpenRole) =>
+    openSession(todos, ref, fresh, here, config, role)
+  open(`p${p.id}`, false)
+  open(`p${p.id}`, true)
+  todos.setProject(p.id, { title: 'Ship' }, 'human')
+  open(`p${p.id}`, false)
+  // The older of the two keeps the old title.
+  expect(todos.latestNamed('Release')).toBeNull()
+  expect(todos.latestSession(p.id)?.name).toBe('Ship')
+  open('Release', false, 'relay')
+  expect(todos.latestNamed('Release')).toMatchObject({ role: 'relay', name: 'Release' })
+})
+
 test('the actor is NOD_ACTOR if set, else a worker, a Claude session, or a person', () => {
   expect(actorFromEnv({ NOD_ACTOR: 'human:ui', NOD_TASK: '7' })).toBe('human:ui')
   expect(actorFromEnv({ NOD_TASK: '7', CLAUDECODE: '1' })).toBe('worker:7')

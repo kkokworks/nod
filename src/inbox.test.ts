@@ -211,6 +211,32 @@ test('orchestrators of two names each hear of the work in no project they added,
   expect(ledger.unsentNotices()).toHaveLength(1)
 })
 
+test('a session opened while an earlier send took its time hears what was on its way to the one before', async () => {
+  const { ledger, todos, sent, send } = setup()
+  const north = { role: 'orchestrator', name: 'north' } as const
+  todos.addSession({ role: 'orchestrator', name: 'south' }, B, '/work/two')
+  todos.setSocket(B, '/socks/b')
+  todos.addSession(north, A, '/work/one')
+  todos.setSocket(A, '/socks/a')
+  const ended = (rootSession: string, text: string): void => {
+    ledger.succeed(todos.delegateNew({ ...brief(text), rootSession }, null, 'human'))
+  }
+  ended(B, 'Of south')
+  ended(A, 'Of north')
+  // north's --new comes as south's line goes.
+  await sendNotices(ledger, async (socket, line) => {
+    if (socket === '/socks/b') {
+      todos.addSession(north, C, '/work/three')
+      todos.setSocket(C, '/socks/c')
+    }
+    await send(socket, line)
+  })
+  expect(sent.map((s) => [s.socket, s.session_id])).toEqual([
+    ['/socks/b', B],
+    ['/socks/c', C],
+  ])
+})
+
 test('work in no project waits while the orchestrator session is closed, and goes once it takes messages; a decision answered by then does not', async () => {
   const { ledger, todos, task, turn, sent, send } = setup()
   todos.addSession({ role: 'orchestrator', name: 'north' }, A, '/work/one')

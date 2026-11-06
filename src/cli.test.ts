@@ -746,6 +746,18 @@ test('nod session claim gives the Claude session it runs in a role and a name, i
   expect(todos.sessionPlace(C)).toBeNull()
   expect(todos.latestSession(p.id)).toBeNull()
 
+  // One no longer its project's latest hears nothing of what it was until now.
+  todos.addSession(p.id, 'key-f', '/work/f')
+  todos.addSession(p.id, 'key-g', '/work/g')
+  const older = run(moved, inSession('key-f', '/socks/f'), 'east', '--role', 'relay')
+  expect(older).toMatchObject({ code: 0, err: '' })
+
+  // Run with no socket to say, it keeps the one nod knows.
+  todos.setSocket('key-g', '/socks/g')
+  const unsaid = { CLAUDECODE: '1', CLAUDE_CODE_SESSION_ID: 'key-g' }
+  expect(run(moved, unsaid, 'west', '--role', 'relay')).toMatchObject({ code: 0, err: '' })
+  expect(todos.session('key-g')).toMatchObject({ role: 'relay', socket: '/socks/g' })
+
   // What cannot be told apart goes in nowhere.
   const taken = run(moved, inSession('key-d', '/socks/d'), 'north', '--role', 'relay')
   expect(taken.code).not.toBe(0)
