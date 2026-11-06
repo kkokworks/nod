@@ -47,9 +47,10 @@ export function reviewBrief(
 // asked, which compaction turns into a summary, word for word as the reviewer reads it. Its first
 // message, not the bare brief: that also has the commit its branch starts at and the check. Claude
 // Code cuts a hook's output over 10,000 characters to a preview and the file it saved all of it in
-// (2.1.310), so what to do then comes first.
+// (2.1.310), so what to do then comes first. The first message of its last start, as nextRun reads
+// it: the starts before it failed before a worker started (startTask), and sent none.
 export function askedAgain(ledger: Ledger, task: Task): string {
-  const first = ledger.attempts(task.id)[0]?.prompt ?? task.brief
+  const first = ledger.attempts(task.id).findLast((a) => a.kind === 'start')?.prompt ?? task.brief
   return [
     'Claude Code compacted this conversation, so what came before is now a summary. Here again, word for word, is what you were asked: your first message, then what came later. Your work, and the review of it, go by these words, not by the summary. If this is cut short and saved to a file, read all of that file before you go on.',
     '',
