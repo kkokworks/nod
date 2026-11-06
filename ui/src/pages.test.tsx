@@ -1307,7 +1307,7 @@ test('/settings goes to Rules, and each page of Settings has its own address and
   }
 })
 
-test('the link to the page of Settings open now stands out, under the real stylesheet, in either theme', async () => {
+test('under the real stylesheet, the link to the page of Settings open now stands out in either theme, and a Not found inside Settings adds no padding', async () => {
   // Whole, as a rule further down it can outweigh the one that marks the link.
   const css = await Bun.file(`${import.meta.dir}/styles.css`).text()
   const sheet = document.head.appendChild(document.createElement('style'))
@@ -1332,6 +1332,9 @@ test('the link to the page of Settings open now stands out, under the real style
       expect(look(relays)).toEqual({ backgroundColor: accent, color: bg })
       expect(look(rules).backgroundColor).not.toBe(accent)
     }
+    await go('/settings/nope')
+    const pages = [...document.querySelectorAll('.page')]
+    expect(pages.map((p) => getComputedStyle(p).paddingTop)).toEqual(['40px', '0px'])
   } finally {
     device.prefersColorScheme = theme
     sheet.remove()
