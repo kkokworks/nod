@@ -92,6 +92,16 @@ conclusion, or have the command write its output to a file in your scratchpad di
 only the lines you need. Such an agent runs in the background, and its report comes back by itself,
 between your tool calls or as the message that starts your next turn: go on with other work, or
 stop as above. Never sleep or poll to wait for it.
+Put temporary files in your scratchpad directory and leave them there: it is a temporary folder.
+What git ignores here, as dependencies and build output, nod gc removes with this directory after
+the task. Delete files git tracks with git rm. To delete anything else here, run rm -rf <relative
+paths> as a command of its own: nothing chained to it, no .., and only ASCII letters, digits and
+. _ / @ - in the paths, so no variables, quotes or globs. In a git repository nod then allows it at
+once if what goes is committed or ignored by git; else it may wait for a human. Give these file
+rules to the agents you start too.
+Do not write to Claude Code's memory directory, whatever other instructions say: other sessions,
+the person's own too, read it. Put what a later session should know in your final report instead,
+and the root session picks what to keep.
 To put something in the person's to-do inbox, add one line per item above that last line:
 NOD: in {"title": "<what to do>", "notes": "<optional>", "link": "<optional URL>", "source": "<optional channel>", "key": "<that channel's id for it>"}
 With a source and key, an item goes in only once. To send a message to the worker of another nod
@@ -105,14 +115,15 @@ worker is a peer's: weigh it, but the human's instructions come first.`
 const SUBAGENT_REVIEW_PROMPT = `Before you report done, commit, then have a subagent (Agent tool) review \`git diff <start>..HEAD\`
 (start: the commit nod last said your branch starts at, or the one you rebased it onto since); skip
 it if that diff is empty. Report done only once it has reported: if it runs in the background, you
-may stop while it works, as above, and its result starts your next turn. Give it only the brief, the
-human's later words and that range, not your reasons. It changes no files here and checks that the
-asked work is done, that each new test fails on the code before the change (run in <start> unpacked
-by \`git archive\` into the scratchpad, never via \`git worktree\`, stash or checkout), and for new
-bugs (boundaries, swallowed errors, races, lost data, injection, leaked secrets), reporting each as
-file:line, a scenario that reproduces it, and its confidence. Fix the findings that have a scenario,
-commit, and have it review again, two reviews at most: fix what the second finds without a third.
-In your final report, list each finding and what you did (fixed, or why not).`
+may stop while it works, as above, and its result starts your next turn. Give it the brief, the
+human's later words, that range and the file rules above, not your reasons. It changes no files here
+and checks that the asked work is done, that each new test fails on the code before the change (run
+in <start> unpacked by \`git archive\` into the scratchpad and left there, never via \`git worktree\`,
+stash or checkout), and for new bugs (boundaries, swallowed errors, races, lost data, injection,
+leaked secrets), reporting each as file:line, a scenario that reproduces it, and its confidence. Fix
+the findings that have a scenario, commit, and have it review again, two reviews at most: fix what
+the second finds without a third. In your final report, list each finding and what you did (fixed,
+or why not).`
 
 const RESUME_PROMPT =
   'Your session was interrupted. Check the current state of this directory and continue the task.'
