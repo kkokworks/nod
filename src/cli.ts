@@ -54,6 +54,7 @@ import { type Terminals, Tmux } from './tmux'
 import {
   actorFromEnv,
   capture,
+  checkTell,
   openSession,
   placeWork,
   projectCommand,
@@ -166,7 +167,9 @@ const USAGE = `usage:
                                    session leaves its project, and it says where it takes messages
   nod tell <task> <message...>     send a follow-up into the task's session
   nod tell p<project> <message...> send a message into the project's session, as nod tells it of
-                                   its tasks; kept until that session takes messages
+                                   its tasks; kept until that session takes messages. From an
+                                   orchestrator session it is refused when another orchestrator
+                                   is in charge of the project (nod project set --orchestrator)
   nod resume <task>                reopen a task whose session ended, from its transcript; one that
                                    failed before its worker started starts again under the same
                                    number and branch, once you fixed what stopped it
@@ -385,6 +388,7 @@ switch (command) {
   case 'tell': {
     if (/^p\d+$/.test(rest[0] ?? '')) {
       const p = parseRef(rest[0] ?? '', 'p')
+      checkTell(new Todos(ledger), sessionFromEnv(), p)
       const sent = await tellProject(ledger, p, words(rest.slice(1)), actorFromEnv())
       console.log(
         sent ? 'sent' : `not sent yet: p${p} has no session taking messages; it goes once one does`,

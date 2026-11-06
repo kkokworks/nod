@@ -5,7 +5,7 @@ import { projectFolder } from '../test/projects'
 import { tempDirs } from '../test/tmp'
 import { Ledger } from './ledger'
 import { openSettings } from './settings'
-import { actorFromEnv, openSession, sessionFromEnv } from './todo-cli'
+import { actorFromEnv, checkTell, openSession, roleLine, sessionFromEnv } from './todo-cli'
 import { OPEN_ROLES, type OpenRole, Todos } from './todos'
 
 const tmp = tempDirs()
@@ -96,6 +96,157 @@ test('a description is set, changed and cleared apart from the outcome, and a li
   expect(await ok('project', 'add', 'Empty', '--description', '')).toEqual(['p2    active   Empty'])
   await ok('project', 'set', 'p2', '--description', 'Nothing left')
   expect(await ok('project', 'done', 'p2')).toEqual(['p2    done     Empty', '      Nothing left'])
+})
+
+test('an orchestrator is put in charge, changed and cleared like an outcome, and may have many projects', async () => {
+  const { ok, home } = runner()
+  const todos = new Todos(new Ledger(home))
+  todos.addSession({ role: 'orchestrator', name: 'north' }, 'key-north', '/work/north')
+  todos.addSession({ role: 'orchestrator', name: 'south' }, 'key-south', '/work/south')
+  await ok('project', 'add', 'Health', '--outcome', 'Teeth fixed', '--description', 'Dentist')
+  await ok('project', 'add', 'Release')
+
+  expect(await ok('project', 'set', 'p1', '--orchestrator', 'north')).toEqual([
+    'p1    active   Health — Teeth fixed  · orchestrator north',
+    '      Dentist',
+  ])
+  await ok('project', 'set', 'Release', '--orchestrator', 'north')
+  expect(await ok('project', 'ls')).toEqual([
+    'p1    active   Health — Teeth fixed  0 next  0 waiting  · no next action  · orchestrator north',
+    '      Dentist',
+    'p2    active   Release  0 next  0 waiting  · no next action  · orchestrator north',
+  ])
+  expect(todos.orchestratorOf(1)).toBe('north')
+  expect(todos.orchestratorOf(2)).toBe('north')
+
+  // Changing one leaves its other fields and the other project alone, and the same name changes
+  // nothing.
+  await ok('project', 'set', 'p1', '--orchestrator', 'south')
+  await ok('project', 'set', 'p1', '--orchestrator', 'south')
+  expect(await ok('project', 'p1')).toEqual([
+    'p1    active   Health — Teeth fixed',
+    '  orchestrator south',
+    '  description',
+    '    Dentist',
+    '  changes',
+    '    <time>  human  title — → Health, outcome — → Teeth fixed, description — → Dentist, status — → active',
+    '    <time>  human  orchestrator — → north',
+    '    <time>  human  orchestrator north → south',
+  ])
+  expect(todos.orchestratorOf(2)).toBe('north')
+
+  expect(await ok('project', 'set', 'p1', '--orchestrator', '')).toEqual([
+    'p1    active   Health — Teeth fixed',
+    '      Dentist',
+  ])
+  expect(await ok('project', 'p1')).toEqual([
+    'p1    active   Health — Teeth fixed',
+    '  description',
+    '    Dentist',
+    '  changes',
+    '    <time>  human  title — → Health, outcome — → Teeth fixed, description — → Dentist, status — → active',
+    '    <time>  human  orchestrator — → north',
+    '    <time>  human  orchestrator north → south',
+    '    <time>  human  orchestrator south → —',
+  ])
+  // Clearing what is clear is no change, and a project of none shows as before.
+  await ok('project', 'set', 'p1', '--orchestrator', '')
+  expect(todos.projectChanges(1).length).toBe(4)
+  expect(todos.orchestratorOf(1)).toBeNull()
+
+  // A project ending keeps its orchestrator on the line that says so.
+  expect(await ok('project', 'done', 'p2')).toEqual([
+    'p2    done     Release  · orchestrator north',
+  ])
+})
+
+test('only the name of an orchestrator session can be put in charge, and a refusal changes nothing', async () => {
+  const { ok, fails, home } = runner()
+  const todos = new Todos(new Ledger(home))
+  todos.addSession({ role: 'orchestrator', name: 'north' }, 'key-north', '/work/north')
+  todos.addSession({ role: 'relay', name: 'gate' }, 'key-gate', '/work/gate')
+  await ok('project', 'add', 'Health')
+  todos.addSession(1, 'key-health', '/work/health')
+  await ok('project', 'set', 'p1', '--orchestrator', 'north')
+
+  for (const name of ['south', 'gate', 'Health', ' ']) {
+    expect(
+      await fails('project', 'set', 'p1', '--title', 'Teeth', '--orchestrator', name),
+    ).toContain(`no orchestrator session is named ${name}`)
+  }
+  expect(todos.project(1).title).toBe('Health')
+  expect(todos.orchestratorOf(1)).toBe('north')
+  expect(todos.projectChanges(1).length).toBe(2)
+})
+
+test('what would break a terminal stays out of an orchestrator’s name, wherever it shows', async () => {
+  const { ok, home } = runner()
+  const todos = new Todos(new Ledger(home))
+  const name = 'ev\x1b[31mil\nnext'
+  const shown = 'ev [31mil next'
+  todos.addSession({ role: 'orchestrator', name }, 'key-bad', '/work/bad')
+  todos.addSession({ role: 'orchestrator', name: 'south' }, 'key-south', '/work/south')
+  await ok('project', 'add', 'Esc')
+
+  expect(await ok('project', 'set', 'p1', '--orchestrator', name)).toEqual([
+    `p1    active   Esc  · orchestrator ${shown}`,
+  ])
+  expect(await ok('project', 'ls')).toEqual([
+    `p1    active   Esc  0 next  0 waiting  · no next action  · orchestrator ${shown}`,
+  ])
+  expect(await ok('project', 'p1')).toEqual([
+    'p1    active   Esc',
+    `  orchestrator ${shown}`,
+    '  changes',
+    '    <time>  human  title — → Esc, status — → active',
+    `    <time>  human  orchestrator — → ${shown}`,
+  ])
+  expect(() => checkTell(todos, 'key-south', 1)).toThrow(
+    `is the orchestrator ${shown}'s: what is for its session goes through ${shown},`,
+  )
+  // The orchestrator's own message, from the other side of the same name.
+  todos.setProject(1, { orchestrator: 'south' }, 'human')
+  expect(() => checkTell(todos, 'key-bad', 1)).toThrow(`the orchestrator ${shown}, and p1`)
+  // The refusal keeps the project's title clean too.
+  const titled = todos.addProject({ title: 'Ti\x1b[31mtle', outcome: null }, 'human')
+  todos.setProject(titled.id, { orchestrator: 'south' }, 'human')
+  expect(() => checkTell(todos, 'key-bad', titled.id)).toThrow(
+    `p${titled.id} Ti [31mtle is the orchestrator south's`,
+  )
+})
+
+test('a session of no project hears how to pick a project, and an orchestrator how far its charge goes, with no skill read', () => {
+  for (const role of OPEN_ROLES) {
+    expect(roleLine(role, 'north')).toContain('by the descriptions in nod project ls')
+  }
+  expect(roleLine('orchestrator', 'north')).toContain(
+    "only to the sessions of projects in its charge or in no orchestrator's",
+  )
+  expect(roleLine('relay', 'north')).not.toContain('charge')
+})
+
+test('an orchestrator tells only a project it has or none has, and no other session is held to it', () => {
+  const todos = new Todos(new Ledger(tmp.make('nod-tell-')))
+  const release = todos.addProject({ title: 'Release', outcome: null }, 'human')
+  const free = todos.addProject({ title: 'Free', outcome: null }, 'human')
+  const north = { role: 'orchestrator', name: 'north' } as const
+  todos.addSession(north, 'north-1', '/work/north')
+  todos.addSession({ role: 'orchestrator', name: 'south' }, 'south', '/work/south')
+  todos.addSession({ role: 'relay', name: 'gate' }, 'gate', '/work/gate')
+  todos.addSession(free.id, 'free', '/work/free')
+  todos.setProject(release.id, { orchestrator: 'north' }, 'human')
+
+  expect(() => checkTell(todos, 'south', release.id)).toThrow(
+    `this session is the orchestrator south, and p${release.id} Release is the orchestrator north's: what is for its session goes through north, or in as a todo (nod in <what...> --project p${release.id})`,
+  )
+  // In charge by the name, so a new session of it is too, and an old one stays.
+  todos.addSession(north, 'north-2', '/work/north')
+  const others = ['gate', 'free', 'a session nod does not know', null]
+  for (const session of ['north-1', 'north-2', ...others]) checkTell(todos, session, release.id)
+  for (const session of ['north-1', 'south', ...others]) checkTell(todos, session, free.id)
+
+  todos.setProject(release.id, { orchestrator: null }, 'human')
+  checkTell(todos, 'south', release.id)
 })
 
 test('a list cuts a description past 100 characters and marks the cut, and one project shows it whole', async () => {
