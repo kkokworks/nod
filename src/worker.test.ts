@@ -49,7 +49,7 @@ import { askedAgain, reviewBrief } from './review'
 import { retroBrief } from './rules'
 import { quote, type Terminals, Tmux } from './tmux'
 import { Todos } from './todos'
-import { addTrigger, tick } from './triggers'
+import { tick } from './triggers'
 import {
   answer,
   cancel,
@@ -246,7 +246,6 @@ async function add(brief: string, check: string | null = null): Promise<number> 
     checkCmd: check,
     model: null,
     after: [],
-    triggerId: null,
     issue: null,
   })
   await startTask(ledger, home, terminals, id)
@@ -394,7 +393,6 @@ test('a prompt nod is sure of it allows itself, with no decision, and records it
     checkCmd: null,
     model: null,
     after: [],
-    triggerId: null,
     issue: null,
   })
   await startTask(ledger, home, terminals, clean)
@@ -530,7 +528,6 @@ test('nod cancel refuses a task that has ended, and leaves it as it ended', asyn
       checkCmd: null,
       model: null,
       after: [],
-      triggerId: null,
       issue: null,
     })
   const failed = queued()
@@ -621,7 +618,6 @@ it('a task cancelled while nod starts it does not start, and keeps its folder fo
     checkCmd: null,
     model: null,
     after: [],
-    triggerId: null,
     issue: null,
   })
   const config = process.env.CLAUDE_CONFIG_DIR ?? ''
@@ -651,7 +647,6 @@ it('a start that fails once its task was cancelled leaves it cancelled, and fail
     checkCmd: null,
     model: null,
     after: [],
-    triggerId: null,
     issue: null,
   })
   // And then the account cannot be read, which would fail the start: its cancel told the person,
@@ -676,7 +671,6 @@ it('a repo task cancelled as nod waits for its Claude Code to come up stops wait
       checkCmd: null,
       model: null,
       after: [],
-      triggerId: null,
       issue: null,
     })
     let cancelled: Promise<void> | undefined
@@ -713,7 +707,6 @@ it('nod cancel refuses a task that is landing, says to drop its decision or let 
     checkCmd: null,
     model: null,
     after: [asking],
-    triggerId: null,
     issue: null,
   })
   const asked = ledger.ask(
@@ -1016,7 +1009,6 @@ test('a watch with --back-to passes into that task, brought back after gc, which
       checkCmd: null,
       model: null,
       after: [],
-      triggerId: null,
       issue: null,
     },
     'human',
@@ -1080,7 +1072,6 @@ async function didTodo(todos: Todos): Promise<{ todoId: number; taskId: number }
       checkCmd: null,
       model: null,
       after: [],
-      triggerId: null,
       issue: null,
     },
     'human',
@@ -1161,7 +1152,6 @@ test('a todo the person changes while its task is told to carry on stays theirs,
         checkCmd: null,
         model: null,
         after: [],
-        triggerId: null,
         issue: null,
       },
       'human',
@@ -1211,7 +1201,6 @@ test('a task that comes after another starts once that one succeeds, and hears i
     checkCmd: null,
     model: null,
     after: [first],
-    triggerId: null,
     issue: null,
   })
   expect(await startReady(ledger, home, terminals)).toEqual([])
@@ -1232,7 +1221,6 @@ test('in a repo, done needs the work committed, and the next task starts from th
     checkCmd: 'test -f ok.txt',
     model: null,
     after: [],
-    triggerId: null,
     issue: null,
   })
   await startTask(ledger, home, terminals, first)
@@ -1258,7 +1246,6 @@ test('in a repo, done needs the work committed, and the next task starts from th
     checkCmd: null,
     model: null,
     after: [first],
-    triggerId: null,
     issue: null,
   })
   expect(await startReady(ledger, home, terminals)).toEqual([next])
@@ -1300,7 +1287,6 @@ function startedInRepo(
     checkCmd: null,
     model: null,
     after: [],
-    triggerId: null,
     issue: null,
   })
   const cwd = workspaceOf(home, ledger.get(id))
@@ -1433,7 +1419,6 @@ it('a repo worker is told to have a subagent review its branch from where it sta
         checkCmd: null,
         model: null,
         after: [],
-        triggerId: null,
         issue: null,
       }),
     )
@@ -1512,7 +1497,6 @@ test('a repo task gets its submodules filled from the repo checkout, and gc stil
     checkCmd: 'test -f lib/a.txt',
     model: null,
     after: [],
-    triggerId: null,
     issue: null,
   })
   await startTask(ledger, home, terminals, id)
@@ -1540,7 +1524,6 @@ function unfilledLib(check: string | null = null): { repo: string; id: number } 
     checkCmd: check,
     model: null,
     after: [],
-    triggerId: null,
     issue: null,
   })
   return { repo, id }
@@ -1586,7 +1569,6 @@ test('a repo task whose folder is taken leaves no branch of its own behind, and 
       checkCmd: null,
       model: null,
       after: [],
-      triggerId: null,
       issue: null,
     })
   const branches = (): string =>
@@ -1619,7 +1601,6 @@ async function blocked(after: number[] = []): Promise<number> {
     checkCmd: null,
     model: null,
     after,
-    triggerId: null,
     issue: null,
   })
   writeFileSync(workspaceOf(home, ledger.get(id)), '')
@@ -1727,7 +1708,6 @@ test('a resume that takes over a cut-off start keeps a worktree at the task’s 
     checkCmd: null,
     model: null,
     after: [],
-    triggerId: null,
     issue: null,
   })
   // A worktree on the task's branch at its path, as a cut-off start leaves it, once `change` is done
@@ -1777,7 +1757,6 @@ test('resume starts a task that failed before it started again only once the tas
     checkCmd: null,
     model: null,
     after: [],
-    triggerId: null,
     issue: null,
   })
   ledger.succeed(before)
@@ -1830,7 +1809,6 @@ test('a task resume started again goes on in the conversation of that start, not
     checkCmd: null,
     model: null,
     after: [],
-    triggerId: null,
     issue: null,
   })
   const folder = workspaceOf(home, ledger.get(id))
@@ -1862,7 +1840,6 @@ test('a compacted conversation of a task resume started again hears the first me
     checkCmd: 'true',
     model: null,
     after: [],
-    triggerId: null,
     issue: null,
   })
   const folder = workspaceOf(home, ledger.get(id))
@@ -1902,7 +1879,6 @@ test('a repo Claude Code does not trust yet becomes a decision: yes trusts and s
       checkCmd: null,
       model: null,
       after: [],
-      triggerId: null,
       issue: null,
     })
   const trusted = addIn(newRepo())
@@ -1934,7 +1910,6 @@ test('a repo the person trusted for an earlier task is trusted again without a d
       checkCmd: null,
       model: null,
       after: [],
-      triggerId: null,
       issue: null,
     })
   const [trusted, refused] = [newRepo(), newRepo()]
@@ -1979,7 +1954,6 @@ function askTrust(repo: string): number {
     checkCmd: null,
     model: null,
     after: [],
-    triggerId: null,
     issue: null,
   })
   const attemptId = ledger.startAttempt({
@@ -2037,7 +2011,6 @@ test('an answer for a repo worker whose first start waits on trust goes with the
     checkCmd: null,
     model: null,
     after: [],
-    triggerId: null,
     issue: null,
   })
   await startTask(ledger, home, terminals, id)
@@ -2073,11 +2046,10 @@ test("tasks that start at once trust nod's work folder once, together", async ()
       checkCmd: null,
       model: null,
       after: [],
-      triggerId: null,
       issue: null,
     }),
   )
-  // As a tick starts the tasks its triggers added.
+  // As two nod adds at once start theirs.
   await Promise.all(ids.map((id) => startTask(ledger, home, terminals, id)))
   for (const id of ids) await reaches(id, 'succeeded')
   // The fake gives a session nod starts without an ID (the trust check's) the ID `missing`.
@@ -2122,30 +2094,16 @@ function listen(): () => Heard[] {
       .map((f): Heard => JSON.parse(readFileSync(join(events, f), 'utf8')))
 }
 
-test('due triggers add tasks, a source only for lines it has not printed before, and notify hears every turn of a task', async () => {
+test('notify hears every turn of a task', async () => {
   const events = listen()
-  const items = join(home, 'items.txt')
-  writeFileSync(items, 'a\told item\n')
-  const base = { cron: '* * * * *', repo: null, branch: null, checkCmd: null, model: null }
-  const source = `cat ${JSON.stringify(items)}`
-  await addTrigger(ledger, home, { ...base, brief: 'triage', source })
-  await addTrigger(ledger, home, { ...base, brief: 'ask-first', source: null })
-  writeFileSync(items, 'a\told item\nb\tnew item\n')
+  const done = await add('triage')
+  const scheduled = await add('ask-first')
 
-  const now = new Date(Date.now() + 120_000)
-  const {
-    added: [fromSource, scheduled],
-  } = await tick(ledger, home, terminals, now, false)
-  expect((await tick(ledger, home, terminals, now, false)).added).toEqual([]) // both ran this minute already
-  if (fromSource === undefined || scheduled === undefined) throw new Error('triggers added no task')
-  expect(ledger.get(fromSource).brief).toContain('> new item')
-  expect(ledger.get(scheduled).triggerId).not.toBeNull()
-
-  await reaches(fromSource, 'succeeded')
+  await reaches(done, 'succeeded')
   await reaches(scheduled, 'needs_decision')
   const heard = (): [string, number | undefined][] => events().map((e) => [e.event, e.task?.id])
   await until(() => heard().length === 2)
-  expect(heard()).toContainEqual(['succeeded', fromSource])
+  expect(heard()).toContainEqual(['succeeded', done])
   expect(heard()).toContainEqual(['decision', scheduled])
 
   // Answers and drops are heard too, so a to-do list that mirrors nod can close what is done.
@@ -2272,7 +2230,6 @@ it('a retrospective that finds no general rule just succeeds', async () => {
     checkCmd: null,
     model: null,
     after: [],
-    triggerId: null,
     issue: null,
   })
   const retro = ledger.addRetro(ledger.get(of), 'look back')
@@ -2305,7 +2262,6 @@ it('yes to a rule closes its decision only as the rule goes in', async () => {
     checkCmd: null,
     model: null,
     after: [],
-    triggerId: null,
     issue: null,
   })
   const retro = ledger.addRetro(ledger.get(of), 'look back')
@@ -2359,7 +2315,6 @@ it('a retrospective hears the repo and check of its task, that the check runs ou
         checkCmd,
         model: null,
         after: [],
-        triggerId: null,
         issue: null,
       }),
     )
@@ -2408,7 +2363,6 @@ it('a retrospective that sends its fix to the inbox ends as todo, and one that a
       checkCmd: null,
       model: null,
       after: [],
-      triggerId: null,
       issue: null,
     })
     const retro = ledger.addRetro(ledger.get(of), 'look back')
@@ -2479,7 +2433,6 @@ it("a worker's Claude Code runs nod's tool hook after each tool, failing or not,
     checkCmd: null,
     model: null,
     after: [],
-    triggerId: null,
     issue: null,
   })
   const argv = claudeArgs(ledger, home, ledger.get(id), ['--session-id', 's'], null, null)
@@ -2501,7 +2454,6 @@ it("a worker's sandbox lets it keep Unix sockets in its own folder alone, which 
     checkCmd: null,
     model: null,
     after: [],
-    triggerId: null,
     issue: null,
   })
   const argv = claudeArgs(ledger, home, ledger.get(id), ['--session-id', 's'], null, null)
@@ -2577,7 +2529,6 @@ test("once Claude Code has compacted a worker's conversation, the hook gives bac
     checkCmd: 'true',
     model: null,
     after: [],
-    triggerId: null,
     issue: null,
   })
   const turn = (kind: 'start' | 'followup', prompt: string): number =>
@@ -2948,7 +2899,6 @@ test('a repo worker started again as another account says yes to trusting the re
     checkCmd: null,
     model: null,
     after: [],
-    triggerId: null,
     issue: null,
   })
   await startTask(ledger, home, terminals, id)
@@ -3069,7 +3019,6 @@ function delegated(
       checkCmd: null,
       model: null,
       after,
-      triggerId: null,
       issue: null,
     },
     'human',
@@ -3163,7 +3112,6 @@ function started(brief: string, session: string, root: string | null = null): nu
     checkCmd: null,
     model: null,
     after: [],
-    triggerId: null,
     issue: null,
     rootSession: root,
   })
@@ -3901,7 +3849,6 @@ it('the workers of two tasks in one project may tell each other, whichever sessi
         checkCmd: null,
         model: null,
         after: [],
-        triggerId: null,
         issue: null,
         rootSession: root,
       }),
@@ -3942,7 +3889,6 @@ const yetToStart = (root: string, after: number[] = [], repo: string | null = nu
     checkCmd: null,
     model: null,
     after,
-    triggerId: null,
     issue: null,
     rootSession: root,
   })
@@ -4251,7 +4197,6 @@ it('a drop tells the person what its worker never took in, as Claude Code ended 
     checkCmd: null,
     model: null,
     after: [],
-    triggerId: null,
     issue: null,
     rootSession: 'root-1',
   })
@@ -4356,7 +4301,6 @@ test('a review tells the fixer its findings, and the fixer tells it back once fi
       checkCmd: null,
       model: null,
       after: [],
-      triggerId: null,
       issue: null,
       rootSession: 'root-1',
     })
@@ -4529,7 +4473,6 @@ it('a dropped retrospective ends before what it closes is heard of, so no messag
     checkCmd: null,
     model: null,
     after: [],
-    triggerId: null,
     issue: null,
   })
   const retro = ledger.addRetro(ledger.get(of), 'look back')
@@ -4563,7 +4506,6 @@ it('an answer whose retrospective is dropped before it goes in leaves the task a
     checkCmd: null,
     model: null,
     after: [],
-    triggerId: null,
     issue: null,
   })
   const retro = ledger.addRetro(ledger.get(of), 'look back')
@@ -4638,7 +4580,6 @@ it('whatever ends a retrospective, its task ends as the outcome has it, and a tu
       checkCmd: null,
       model: null,
       after: [],
-      triggerId: null,
       issue: null,
     })
     const retro = ledger.addRetro(ledger.get(of), 'look back')
@@ -4694,7 +4635,6 @@ it('a retrospective that proposes again replaces its open rule decision', async 
     checkCmd: null,
     model: null,
     after: [],
-    triggerId: null,
     issue: null,
   })
   const retro = ledger.addRetro(ledger.get(of), 'look back')
@@ -4730,7 +4670,6 @@ it('a yes to a rule decision adds the rule that decision proposed, and one left 
     checkCmd: null,
     model: null,
     after: [],
-    triggerId: null,
     issue: null,
   })
   const retro = ledger.addRetro(ledger.get(of), 'look back')
@@ -4848,7 +4787,6 @@ it('a turn that ends after its retrospective did changes nothing of what became 
       checkCmd: null,
       model: null,
       after: [],
-      triggerId: null,
       issue: null,
     })
     const retro = ledger.addRetro(ledger.get(of), 'look back')
@@ -4909,7 +4847,6 @@ it('a rule decision takes no yes while its retrospective proposes again, and a y
     checkCmd: null,
     model: null,
     after: [],
-    triggerId: null,
     issue: null,
   })
   const retro = ledger.addRetro(ledger.get(of), 'look back')
@@ -5005,7 +4942,6 @@ it('the review hears what the human told the worker in the middle of a turn, in 
     checkCmd: null,
     model: null,
     after: [],
-    triggerId: null,
     issue: null,
   })
   const turn = (kind: 'start' | 'followup', prompt: string): number =>
@@ -5437,7 +5373,6 @@ test('a message for a worker waiting on its trust decision waits for that decisi
     checkCmd: null,
     model: null,
     after: [],
-    triggerId: null,
     issue: null,
   })
   await startTask(ledger, home, terminals, id)
@@ -5462,7 +5397,6 @@ test('a message for a worker whose trust dialog is up waits for that decision, e
     checkCmd: null,
     model: null,
     after: [],
-    triggerId: null,
     issue: null,
   })
   await startTask(ledger, home, terminals, id)

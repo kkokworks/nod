@@ -1007,9 +1007,9 @@ function captureFor(ledger: Ledger, task: Task, captures: Capture[]): void {
 // Why nod cannot send what `from`'s worker tells task `to`; null when it can. Only to another task
 // of the same work (sameWork in todos.ts): one Claude session added both, or both are in one
 // project, which a session nod open opens for it takes as its work. So a worker cannot steer the
-// tasks of other sessions or projects, or a trigger's (which work on what anyone could write in an
-// issue, in no project) steer any. A task that ended has no worker to hear it; one yet to start
-// takes it as it starts (sendTells).
+// tasks of other sessions or projects, or one added outside a Claude session and any project (by
+// cron, say, often on what anyone could write in an issue) steer any. A task that ended has no
+// worker to hear it; one yet to start takes it as it starts (sendTells).
 function cannotTell(ledger: Ledger, from: Task, to: number): string | null {
   const task = ledger.list().find((t) => t.id === to)
   if (task === undefined) return `There is no task n${to}.`

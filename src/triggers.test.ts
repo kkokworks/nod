@@ -5,93 +5,11 @@ import { tempDirs } from '../test/tmp'
 import { Ledger } from './ledger'
 import { Tmux } from './tmux'
 import { Todos } from './todos'
-import { addTrigger, nextRun, parseItems, scheduleEnv, scheduleOn, shell, tick } from './triggers'
+import { scheduleEnv, scheduleOn, shell, tick } from './triggers'
 
-// Only what runs without workers; the tick's triggers start tasks, so they are tested with the
-// fake agent in worker.test.ts. Its watches start none and are tested here.
+// Only what runs without workers: the watches start none.
 const tmp = tempDirs()
 afterAll(tmp.removeAll)
-
-test('a source line is one item, keyed by what comes before a tab, which is also its issue', () => {
-  expect(parseItems('12\tFix login\n\nplain line\n')).toEqual([
-    { key: '12', issue: '12', text: 'Fix login' },
-    { key: 'plain line', issue: null, text: 'plain line' },
-  ])
-})
-
-test('schedules are read in local time', () => {
-  const at = (day: number, hour: number): Date => new Date(2026, 9, day, hour, 0)
-  expect(nextRun('0 9 * * *', at(6, 8))).toEqual(at(6, 9))
-  expect(nextRun('0 9 * * *', at(6, 10))).toEqual(at(7, 9))
-  expect(nextRun('0 9 * * MON-FRI', at(9, 10))).toEqual(at(12, 9)) // Friday to Monday
-  expect(() => nextRun('every day', at(6, 8))).toThrow('Invalid cron expression')
-})
-
-test('a daily schedule runs once a day at its hour across a daylight-saving change', () => {
-  const tz = process.env.TZ
-  process.env.TZ = 'America/New_York'
-  try {
-    // Each run from `from` until `until`, as the ticks would run them.
-    const runs = (cron: string, from: string, until: string): string[] => {
-      const out: string[] = []
-      let next = nextRun(cron, new Date(from))
-      while (next !== null && next < new Date(until)) {
-        out.push(next.toISOString())
-        next = nextRun(cron, next)
-      }
-      return out
-    }
-    // Daylight saving ends on 2026-11-01: 09:00 is 13:00Z before, 14:00Z after.
-    expect(runs('0 9 * * *', '2026-10-31T13:00:00Z', '2026-11-03T00:00:00Z')).toEqual([
-      '2026-11-01T14:00:00.000Z',
-      '2026-11-02T14:00:00.000Z',
-    ])
-    // 01:30 comes twice that day, and runs once.
-    expect(runs('30 1 * * *', '2026-10-31T05:30:00Z', '2026-11-03T00:00:00Z')).toEqual([
-      '2026-11-01T05:30:00.000Z',
-      '2026-11-02T06:30:00.000Z',
-    ])
-    // So does each hour, so an hourly schedule skips the second 01:00.
-    expect(runs('0 * * * *', '2026-11-01T04:00:00Z', '2026-11-01T08:00:00Z')).toEqual([
-      '2026-11-01T05:00:00.000Z',
-      '2026-11-01T07:00:00.000Z',
-    ])
-    // It starts on 2026-03-08: 09:00 is 14:00Z before, 13:00Z after.
-    expect(runs('0 9 * * *', '2026-03-07T14:00:00Z', '2026-03-10T00:00:00Z')).toEqual([
-      '2026-03-08T13:00:00.000Z',
-      '2026-03-09T13:00:00.000Z',
-    ])
-    // 02:30 does not come that day, so it runs once, at 03:30.
-    expect(runs('30 2 * * *', '2026-03-07T07:30:00Z', '2026-03-10T00:00:00Z')).toEqual([
-      '2026-03-08T07:30:00.000Z',
-      '2026-03-09T06:30:00.000Z',
-    ])
-  } finally {
-    if (tz === undefined) delete process.env.TZ
-    else process.env.TZ = tz
-  }
-})
-
-test('adding a trigger with a source records what it lists now, and a failing source adds none', async () => {
-  const home = tmp.make('nod-triggers-')
-  const ledger = new Ledger(home)
-  const items = join(home, 'items.txt')
-  writeFileSync(items, 'a\tfirst\nb\tsecond\n')
-  const base = {
-    cron: '*/5 * * * *',
-    brief: 'look',
-    repo: null,
-    branch: null,
-    checkCmd: null,
-    model: null,
-  }
-  const added = await addTrigger(ledger, home, { ...base, source: `cat ${JSON.stringify(items)}` })
-  expect(added.seen).toBe(2)
-  expect(ledger.addItemTask(ledger.trigger(added.id), 'a', 'a', 'look')).toBeNull()
-
-  await expect(addTrigger(ledger, home, { ...base, source: 'exit 3' })).rejects.toThrow('exited 3')
-  expect(ledger.triggers().map((t) => t.id)).toEqual([added.id])
-})
 
 test('a tick with watches brings back the todo whose watch exits 0, or can no longer run', async () => {
   const home = tmp.make('nod-watches-')

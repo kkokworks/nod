@@ -1,6 +1,6 @@
 import { Database } from 'bun:sqlite'
 import { afterAll, expect, test } from 'bun:test'
-import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tempDirs } from '../test/tmp'
 import { Ledger, MIGRATIONS, RETRO_STATUS, type RetroOutcome, type TaskStatus } from './ledger'
@@ -20,12 +20,11 @@ test('reopening a ledger keeps its data and does not re-run migrations', () => {
     checkCmd: null,
     model: null,
     after: [],
-    triggerId: null,
     issue: null,
   })
   const reopened = new Ledger(home)
   expect(reopened.get(id).brief).toBe('keep me')
-  expect(reopened.db.query('pragma user_version').get()).toEqual({ user_version: 31 })
+  expect(reopened.db.query('pragma user_version').get()).toEqual({ user_version: 32 })
 })
 
 test('v18 leaves the tasks before it without a root session', () => {
@@ -39,7 +38,7 @@ test('v18 leaves the tasks before it without a root session', () => {
 
   const ledger = new Ledger(home)
   expect(ledger.get(1)).toMatchObject({ brief: 'x', rootSession: null })
-  expect(ledger.db.query('pragma user_version').get()).toEqual({ user_version: 31 })
+  expect(ledger.db.query('pragma user_version').get()).toEqual({ user_version: 32 })
 })
 
 test('v23 gives a ledger of v22 project sessions, none yet, and leaves its projects as they were', () => {
@@ -79,7 +78,7 @@ test('v29 moves the project sessions of a v28 ledger to sessions under their ids
 
   const ledger = new Ledger(home)
   const todos = new Todos(ledger)
-  expect(ledger.db.query('pragma user_version').get()).toEqual({ user_version: 31 })
+  expect(ledger.db.query('pragma user_version').get()).toEqual({ user_version: 32 })
   expect(ledger.db.query('pragma foreign_key_check').all()).toEqual([])
   expect(todos.latestSession(1)).toEqual({
     id: 9,
@@ -127,7 +126,7 @@ test('v30 leaves the description of a v29 ledger’s projects empty and all else
 
   const ledger = new Ledger(home)
   const todos = new Todos(ledger)
-  expect(ledger.db.query('pragma user_version').get()).toEqual({ user_version: 31 })
+  expect(ledger.db.query('pragma user_version').get()).toEqual({ user_version: 32 })
   expect(todos.project(1)).toEqual({
     id: 1,
     title: 'Release',
@@ -153,7 +152,7 @@ test('v31 leaves a v30 ledger’s projects as they were, with no orchestrator, a
 
   const ledger = new Ledger(home)
   const todos = new Todos(ledger)
-  expect(ledger.db.query('pragma user_version').get()).toEqual({ user_version: 31 })
+  expect(ledger.db.query('pragma user_version').get()).toEqual({ user_version: 32 })
   expect(ledger.db.query('select * from project_orchestrators').all()).toEqual([])
   expect(todos.project(1)).toEqual({
     id: 1,
@@ -174,6 +173,177 @@ test('v31 leaves a v30 ledger’s projects as they were, with no orchestrator, a
     ledger.db.exec(`insert into project_orchestrators values (${id}, 'north')`)
   expect(() => add(1)).toThrow('UNIQUE constraint failed')
   expect(() => add(9)).toThrow('FOREIGN KEY constraint failed')
+})
+
+// A ledger as v31 left it, with tasks 1 and 2, a todo and a rule, and what `rows` inserts.
+function v31Home(rows: string): string {
+  const home = freshHome()
+  const old = new Database(join(home, 'nod.db'), { create: true, strict: true })
+  for (const sql of MIGRATIONS.slice(0, 31)) old.exec(sql)
+  old.exec(`pragma user_version = 31;
+    insert into tasks (id, brief, created_at) values (1, 'first', 'at'), (2, 'second', 'at');
+    insert into todos (id, title, source, created_at, status_at) values (1, 'Mine', 'cli', 'at', 'at');
+    insert into rules (id, text, state, created_at, changed_at) values (1, 'be brief', 'on', 'at', 'at');
+    ${rows}`)
+  old.close()
+  return home
+}
+
+// What the v32 ledger holds besides the triggers: the tables, each with its row count, and the
+// columns of tasks.
+function shape(ledger: Ledger): { tables: Record<string, number>; taskColumns: string[] } {
+  const names = ledger.db
+    .query<{ name: string }, []>(
+      "select name from sqlite_schema where type = 'table' and name not like 'sqlite_%' order by name",
+    )
+    .all()
+    .map((t) => t.name)
+  const count = (name: string): number =>
+    ledger.db.query<{ n: number }, []>(`select count(*) n from ${name}`).get()?.n ?? -1
+  const taskColumns = ledger.db
+    .query<{ name: string }, [string]>('select name from pragma_table_info(?)')
+    .all('tasks')
+    .map((c) => c.name)
+  return { tables: Object.fromEntries(names.map((n) => [n, count(n)])), taskColumns }
+}
+
+test('v32 drops the triggers of a v31 ledger that had none, and keeps every other row', () => {
+  const home = v31Home('')
+  const before = new Database(join(home, 'nod.db'), { readonly: true })
+  const tables = Object.fromEntries(
+    before
+      .query<{ name: string }, []>(
+        "select name from sqlite_schema where type = 'table' and name not like 'sqlite_%'",
+      )
+      .all()
+      .filter((t) => !['triggers', 'trigger_items'].includes(t.name))
+      .map((t) => [
+        t.name,
+        before.query<{ n: number }, []>(`select count(*) n from ${t.name}`).get()?.n ?? -1,
+      ]),
+  )
+  before.close()
+
+  const ledger = new Ledger(home)
+  expect(ledger.db.query('pragma user_version').get()).toEqual({ user_version: 32 })
+  const after = shape(ledger)
+  expect(after.tables).toEqual(tables)
+  expect(after.taskColumns).not.toContain('trigger_id')
+  expect(ledger.get(1).brief).toBe('first')
+  expect(existsSync(join(home, 'triggers.json'))).toBe(false)
+  expect(ledger.db.query('pragma foreign_key_check').all()).toEqual([])
+})
+
+test('v32 keeps what a v31 ledger held of triggers in triggers.json, and puts those not removed in the inbox', () => {
+  const home = v31Home(`
+    insert into triggers (id, cron, brief, repo, branch, check_cmd, model, source, last_run_at, created_at)
+      values (1, '0 9 * * MON-FRI', 'triage the new issues', '/repo', 'chore/triage', 'make check',
+        'opus', 'list-issues', 'ran', 'made');
+    insert into triggers (id, cron, brief, source, created_at, removed_at)
+      values (2, '0 18 * * *', 'old digest', null, 'made', 'gone');
+    insert into triggers (id, cron, brief, created_at) values (3, '*/5 * * * *', 'tidy up', 'made');
+    insert into trigger_items (trigger_id, key, task_id, seen_at) values (1, 'PROJ-1', 1, 'seen'),
+      (1, 'PROJ-2', null, 'seen');
+    update tasks set trigger_id = 1 where id = 1;
+    update tasks set trigger_id = 2 where id = 2;`)
+  const ledger = new Ledger(home)
+  const todos = new Todos(ledger)
+  expect(shape(ledger).taskColumns).not.toContain('trigger_id')
+  expect(ledger.list().map((t) => t.brief)).toEqual(['first', 'second'])
+  expect(ledger.rules().map((r) => r.text)).toEqual(['be brief'])
+
+  const path = join(home, 'triggers.json')
+  expect(statSync(path).mode & 0o777).toBe(0o600) // a source command may hold a token
+  const saved = JSON.parse(readFileSync(path, 'utf8'))
+  expect(saved.triggers.map((t: { id: number }) => t.id)).toEqual([1, 2, 3])
+  expect(saved.triggers[0]).toEqual({
+    id: 1,
+    cron: '0 9 * * MON-FRI',
+    brief: 'triage the new issues',
+    repo: '/repo',
+    check_cmd: 'make check',
+    model: 'opus',
+    source: 'list-issues',
+    last_run_at: 'ran',
+    last_error: null,
+    created_at: 'made',
+    removed_at: null,
+    branch: 'chore/triage',
+  })
+  expect(saved.items).toEqual([
+    { trigger_id: 1, key: 'PROJ-1', task_id: 1, seen_at: 'seen' },
+    { trigger_id: 1, key: 'PROJ-2', task_id: null, seen_at: 'seen' },
+  ])
+  expect(saved.tasks).toEqual([
+    { id: 1, trigger_id: 1 },
+    { id: 2, trigger_id: 2 },
+  ])
+
+  // One todo for the two that ran until now; the one removed before is only in the file.
+  const inbox = todos.list({
+    statuses: ['inbox'],
+    context: null,
+    projectId: null,
+    hideSomedayProjects: false,
+    day: null,
+  })
+  expect(inbox.map((t) => t.title)).toEqual([
+    'Mine',
+    'Move 2 trigger(s) to cron or launchd: nod no longer runs them',
+  ])
+  const todo = inbox[1]
+  if (todo === undefined) throw new Error('no todo')
+  expect(todo.source).toBe('nod')
+  expect(todo.notes).toBe(
+    [
+      'nod no longer runs triggers. These ran until now:',
+      'c1 `0 9 * * MON-FRI`: triage the new issues',
+      '  source: list-issues',
+      '  repo: /repo',
+      '  branch prefix: chore/triage',
+      '  check: make check',
+      '  model: opus',
+      'c3 `*/5 * * * *`: tidy up',
+      'Instead: at a set time, run nod add from cron or launchd; to take each item a command' +
+        ' lists once, nod in --source <name> --key <key>.',
+      `Every trigger row, the items their sources listed and the tasks they added: ${path}`,
+    ].join('\n'),
+  )
+  expect(todos.changes(todo.id)).toEqual([
+    {
+      actor: 'nod',
+      change: {
+        title: [null, todo.title],
+        notes: [null, todo.notes],
+        status: [null, 'inbox'],
+        source: [null, 'nod'],
+      },
+      at: todo.createdAt,
+    },
+  ])
+})
+
+test('v32 keeps the triggers of a v31 ledger that were all removed in triggers.json only', () => {
+  const home = v31Home(`
+    insert into triggers (id, cron, brief, created_at, removed_at) values (1, '0 9 * * *', 'b', 'made', 'gone');`)
+  const ledger = new Ledger(home)
+  expect(JSON.parse(readFileSync(join(home, 'triggers.json'), 'utf8')).triggers).toHaveLength(1)
+  expect(new Todos(ledger).get(1).title).toBe('Mine')
+  expect(ledger.db.query('select count(*) n from todos').get()).toEqual({ n: 1 })
+})
+
+test('v32 leaves a v31 ledger as it was when triggers.json cannot be written', () => {
+  const home = v31Home(`
+    insert into triggers (id, cron, brief, created_at) values (1, '0 9 * * *', 'b', 'made');`)
+  mkdirSync(join(home, 'triggers.json')) // a folder where the file goes
+  expect(() => new Ledger(home)).toThrow(
+    `v32 keeps the triggers in ${join(home, 'triggers.json')} before it drops them, and could not: `,
+  )
+  const old = new Database(join(home, 'nod.db'), { readonly: true })
+  expect(old.query('pragma user_version').get()).toEqual({ user_version: 31 })
+  expect(old.query('select count(*) n from triggers').get()).toEqual({ n: 1 })
+  expect(old.query('select count(*) n from todos').get()).toEqual({ n: 1 })
+  old.close()
 })
 
 test('sessions take the roles SESSION_ROLES names and refuse any other', () => {
@@ -310,7 +480,6 @@ test("a retrospective's task goes to the status its outcome has as it ends, and 
       checkCmd: null,
       model: null,
       after: [],
-      triggerId: null,
       issue: null,
     })
     const retro = ledger.addRetro(ledger.get(of), 'look back')
@@ -372,7 +541,6 @@ test('the messages two tasks sent each other count both ways, in turns and withi
       checkCmd: null,
       model: null,
       after: [],
-      triggerId: null,
       issue: null,
     }),
   ) as [number, number, number]
@@ -442,7 +610,6 @@ test('kept tells are lost once, and only those of a task that was cancelled or c
       checkCmd: null,
       model: null,
       after: [],
-      triggerId: null,
       issue: null,
     })
   const [from, gone, collected, waiting] = [add('from'), add('gone'), add('off'), add('waiting')]
@@ -460,7 +627,7 @@ test('kept tells are lost once, and only those of a task that was cancelled or c
   expect(ledger.pendingTells(waiting)).toMatchObject([{ lostAt: null }])
 })
 
-test('a task keeps the session that added it, and its retrospective takes it; a trigger task has none', () => {
+test('a task keeps the session that added it, and its retrospective takes it', () => {
   const ledger = new Ledger(freshHome())
   const task = (rootSession?: string | null) =>
     ledger.add({
@@ -470,7 +637,6 @@ test('a task keeps the session that added it, and its retrospective takes it; a 
       checkCmd: null,
       model: null,
       after: [],
-      triggerId: null,
       issue: null,
       rootSession,
     })
@@ -479,19 +645,6 @@ test('a task keeps the session that added it, and its retrospective takes it; a 
   expect(ledger.get(ledger.addRetro(ledger.get(id), 'look back')).rootSession).toBe('root-a')
   expect(ledger.get(task(null)).rootSession).toBeNull()
   expect(ledger.get(task()).rootSession).toBeNull()
-
-  const triggerId = ledger.addTrigger({
-    cron: '* * * * *',
-    brief: 'look',
-    repo: null,
-    branch: null,
-    checkCmd: null,
-    model: null,
-    source: null,
-    seen: [],
-  })
-  const fromTrigger = ledger.addTriggerTask(ledger.trigger(triggerId), null, 'look')
-  expect(ledger.get(fromTrigger).rootSession).toBeNull()
 })
 
 // A ledger as v16 left it, with retrospectives (id, rule, outcome) of tasks of the same id.
@@ -576,7 +729,6 @@ test("a rule is edited once its words differ from its retrospective's proposal; 
     checkCmd: null,
     model: null,
     after: [],
-    triggerId: null,
     issue: null,
   })
   const retroId = ledger.get(ledger.addRetro(ledger.get(of), 'look back')).retroId ?? 0
@@ -690,7 +842,6 @@ test('links are kept once each, and only for a task that exists', () => {
     checkCmd: null,
     model: null,
     after: [],
-    triggerId: null,
     issue: null,
   })
   ledger.link(id, ['https://example.com/pr/1'])
@@ -699,7 +850,7 @@ test('links are kept once each, and only for a task that exists', () => {
   expect(() => ledger.link(id + 1, ['https://example.com/pr/3'])).toThrow('not found')
 })
 
-test('a task keeps its issue, and its retrospective and source items carry one', () => {
+test('a task keeps its issue, and its retrospective carries it', () => {
   const ledger = new Ledger(freshHome())
   const id = ledger.add({
     brief: 't',
@@ -708,24 +859,10 @@ test('a task keeps its issue, and its retrospective and source items carry one',
     checkCmd: null,
     model: null,
     after: [],
-    triggerId: null,
     issue: 'PROJ-1',
   })
   expect(ledger.get(id).issue).toBe('PROJ-1')
   expect(ledger.get(ledger.addRetro(ledger.get(id), 'look back')).issue).toBe('PROJ-1')
-
-  const triggerId = ledger.addTrigger({
-    cron: '* * * * *',
-    brief: 'look',
-    repo: null,
-    branch: null,
-    checkCmd: null,
-    model: null,
-    source: 'true',
-    seen: [],
-  })
-  const fromItem = ledger.addItemTask(ledger.trigger(triggerId), 'PROJ-2', 'PROJ-2', 'look')
-  expect(fromItem === null ? null : ledger.get(fromItem).issue).toBe('PROJ-2')
 })
 
 test('a decision can be answered once, and answering puts the task back to running', () => {
@@ -737,7 +874,6 @@ test('a decision can be answered once, and answering puts the task back to runni
     checkCmd: null,
     model: null,
     after: [],
-    triggerId: null,
     issue: null,
   })
   const attemptId = ledger.startAttempt({
@@ -766,7 +902,6 @@ test('median decision wait uses answered decisions only', () => {
     checkCmd: null,
     model: null,
     after: [],
-    triggerId: null,
     issue: null,
   })
   const attemptId = ledger.startAttempt({
@@ -797,7 +932,6 @@ const task = (ledger: Ledger, t: { repo?: string; after?: number[] } = {}): numb
     checkCmd: null,
     model: null,
     after: t.after ?? [],
-    triggerId: null,
     issue: null,
   })
 
@@ -875,47 +1009,4 @@ test('a transaction that reads before it writes waits while another process writ
   expect(await writer.exited).toBe(0)
   expect(ledger.after(b).map((t) => t.id)).toEqual([a])
   expect(ledger.get(a).brief).toBe('edited')
-})
-
-test('a trigger run is claimed once, a source item adds a task once, and removal hides it', () => {
-  const ledger = new Ledger(freshHome())
-  const id = ledger.addTrigger({
-    cron: '* * * * *',
-    brief: 'b',
-    repo: null,
-    branch: null,
-    checkCmd: null,
-    model: null,
-    source: 'x',
-    seen: ['old'],
-  })
-  expect(ledger.claimRun(id, null, '2026-10-06T00:01:00.000Z')).toBe(true)
-  expect(ledger.claimRun(id, null, '2026-10-06T00:01:00.000Z')).toBe(false) // another tick won
-
-  const trigger = ledger.trigger(id)
-  expect(ledger.addItemTask(trigger, 'old', null, 'b')).toBeNull()
-  const taskId = ledger.addItemTask(trigger, 'new', null, 'b')
-  if (taskId === null) throw new Error('a new item added no task')
-  expect(ledger.addItemTask(trigger, 'new', null, 'b')).toBeNull()
-  expect(ledger.get(taskId).triggerId).toBe(id)
-
-  ledger.removeTrigger(id)
-  expect(ledger.triggers()).toEqual([])
-  expect(() => ledger.removeTrigger(id)).toThrow(`trigger c${id} not found`)
-})
-
-test("a trigger's task in a repo works on the trigger's branch prefix and its own id", () => {
-  const ledger = new Ledger(freshHome())
-  const triggerId = ledger.addTrigger({
-    cron: '* * * * *',
-    brief: 'sweep',
-    repo: '/repo',
-    branch: 'chore/sweep',
-    checkCmd: null,
-    model: null,
-    source: null,
-    seen: [],
-  })
-  const id = ledger.addTriggerTask(ledger.trigger(triggerId), null, 'sweep')
-  expect(ledger.get(id).branch).toBe(`chore/sweep/${id}`)
 })

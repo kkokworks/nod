@@ -10,7 +10,6 @@ import {
   type RuleNow,
   type Stats,
   type Task,
-  type Trigger,
 } from '../../src/ledger'
 import { sessionName } from '../../src/place'
 import { Tmux } from '../../src/tmux'
@@ -70,7 +69,6 @@ export type Overview = {
   groups: { project: Project | null; tasks: TaskRow[] }[]
   // What gc collected, which `nod ls` lists only with --all.
   collected: Shown<TaskRow>
-  triggers: Trigger[]
   stats: Stats
   // For the sidebar's link to the todos.
   inbox: number
@@ -120,7 +118,6 @@ export function overview(): Overview {
           (a.project?.id ?? 0) - (b.project?.id ?? 0),
       ),
     collected: latestCollected(todos, tasks, SIDE_COLLECTED, live),
-    triggers: ledger.triggers(),
     stats: ledger.stats(),
     inbox: todos.list({
       statuses: ['inbox'],

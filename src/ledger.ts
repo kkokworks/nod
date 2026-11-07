@@ -1,5 +1,5 @@
 import { Database, type SQLQueryBindings } from 'bun:sqlite'
-import { existsSync, mkdirSync, readFileSync, renameSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -46,14 +46,12 @@ export type Task = {
   id: number
   brief: string
   repo: string | null
-  // The branch a repo task works on, named at `nod add`; a trigger's task gets
-  // `<trigger branch>/<task id>`. Null without a repo.
+  // The branch a repo task works on, named at `nod add`. Null without a repo.
   branch: string | null
   checkCmd: string | null
   model: string | null
-  triggerId: number | null
   // The issue the task works on, such as `PROJ-12`, so tasks and their decisions can be seen by
-  // issue. From `--issue`, or the key of the source item that added it.
+  // issue. From `--issue`.
   issue: string | null
   // Set on the task a retrospective runs in: the retrospective (r<n>), which names the task whose
   // trouble it looks back on.
@@ -163,8 +161,6 @@ export type Landing = {
 }
 export type LandingEdit = Partial<Omit<Landing, 'taskId' | 'updatedAt'>>
 
-// Adds tasks on a schedule. With a source command, each line it prints that the trigger has not
-// seen before becomes a task.
 // What `nod add` gives a new task.
 export type NewTask = {
   brief: string
@@ -173,25 +169,9 @@ export type NewTask = {
   checkCmd: string | null
   model: string | null
   after: number[]
-  triggerId: number | null
   issue: string | null
-  // Left out by the tasks nod adds on its own (triggers).
+  // Left out by a task added outside a Claude session.
   rootSession?: string | null
-}
-
-export type Trigger = {
-  id: number
-  cron: string
-  brief: string
-  repo: string | null
-  // With a repo: the prefix of its tasks' branches.
-  branch: string | null
-  checkCmd: string | null
-  model: string | null
-  source: string | null
-  lastRunAt: string | null
-  lastError: string | null
-  createdAt: string
 }
 
 export type Attempt = {
@@ -479,8 +459,8 @@ export const MIGRATIONS = [
   // proposed and what became of it; the task a retrospective runs in points at it, as a delegated
   // task points at its todo. The retrospectives so far move over, each with its latest rule
   // decision: answering one with anything but yes and then resuming the task makes another. Yes is
-  // what answer() takes for it, as typed. tasks.retro_of stays, unused: SQLite cannot drop a column a
-  // foreign key is on.
+  // what answer() takes for it, as typed. tasks.retro_of stays, unused: SQLite was thought unable to
+  // drop a column with a foreign key, though it can (v32 drops tasks.trigger_id, which has one).
   `
   create table retros (
     id integer primary key,
@@ -735,9 +715,18 @@ export const MIGRATIONS = [
     orchestrator text not null
   );
   `,
+  // v32: no triggers. The OS scheduler runs `nod add` at a set time instead, and `nod in --source
+  // --key` takes each item of a list once. saveTriggers keeps what a ledger held of them first.
+  `
+  alter table tasks drop column trigger_id;
+  drop table trigger_items;
+  drop table triggers;
+  `,
 ]
 // The migration that moves <home>/rules.md into the ledger, numbered as user_version counts.
 const RULES_FILE_MIGRATION = 17
+// The migration that drops the triggers, before which saveTriggers runs.
+const TRIGGERS_MIGRATION = 32
 
 // The tables as the migrations leave them, in camelCase; CamelCasePlugin maps names to snake_case.
 // The todo tables (v10) are typed in todos.ts.
@@ -745,8 +734,6 @@ type Tables = {
   tasks: Omit<Task, 'id' | 'status'> & { id: Generated<number>; status: Generated<TaskStatus> }
   taskDeps: { taskId: number; afterId: number }
   links: { taskId: number; url: string; createdAt: string }
-  triggers: Omit<Trigger, 'id'> & { id: Generated<number>; removedAt: string | null }
-  triggerItems: { triggerId: number; key: string; taskId: number | null; seenAt: string }
   attempts: Omit<Attempt, 'id'> & { id: Generated<number>; pid: number | null }
   decisions: Omit<Decision, 'id'> & { id: Generated<number> }
   messages: Omit<Message, 'id'> & { id: Generated<number> }
@@ -774,7 +761,7 @@ export const queryBuilder = <T>(): Kysely<T> =>
   })
 const q = queryBuilder<Tables>()
 
-// Task, Trigger and Attempt leave out a column their table has.
+// Task and Attempt leave out a column their table has.
 const TASK = [
   'id',
   'brief',
@@ -782,7 +769,6 @@ const TASK = [
   'branch',
   'checkCmd',
   'model',
-  'triggerId',
   'issue',
   'retroId',
   'todoId',
@@ -795,19 +781,6 @@ const TASK = [
   'error',
   'createdAt',
   'finishedAt',
-] as const
-const TRIGGER = [
-  'id',
-  'cron',
-  'brief',
-  'repo',
-  'branch',
-  'checkCmd',
-  'model',
-  'source',
-  'lastRunAt',
-  'lastError',
-  'createdAt',
 ] as const
 const ATTEMPT = [
   'id',
@@ -897,6 +870,7 @@ export class Ledger {
       this.db
         .transaction(() => {
           if (i < version()) return
+          if (i + 1 === TRIGGERS_MIGRATION) this.saveTriggers(home)
           // One statement at a time: exec of several goes on past one that fails, without throwing
           // (bun 1.3.14), which would leave a migration half run. ponytail: split on `;`, as no
           // statement here has one inside it.
@@ -933,7 +907,6 @@ export class Ledger {
             branch: t.branch,
             checkCmd: t.checkCmd,
             model: t.model,
-            triggerId: t.triggerId,
             issue: t.issue,
             rootSession: t.rootSession ?? null,
             createdAt: now(),
@@ -1116,131 +1089,9 @@ export class Ledger {
     ).map((r) => r.url)
   }
 
-  // ── triggers ──
-
-  // `seen`: keys the source lists already, which never become tasks.
-  addTrigger(
-    t: Omit<Trigger, 'id' | 'lastRunAt' | 'lastError' | 'createdAt'> & { seen: string[] },
-  ): number {
-    return this.db.transaction(() => {
-      const id = this.insert(
-        q
-          .insertInto('triggers')
-          .values({
-            cron: t.cron,
-            brief: t.brief,
-            repo: t.repo,
-            branch: t.branch,
-            checkCmd: t.checkCmd,
-            model: t.model,
-            source: t.source,
-            createdAt: now(),
-          })
-          .returning('id'),
-      )
-      for (const key of t.seen) {
-        this.run(
-          q.insertInto('triggerItems').orIgnore().values({ triggerId: id, key, seenAt: now() }),
-        )
-      }
-      return id
-    })()
-  }
-
-  triggers(): Trigger[] {
-    return this.run(
-      q.selectFrom('triggers').select(TRIGGER).where('removedAt', 'is', null).orderBy('id'),
-    )
-  }
-
-  trigger(id: number): Trigger {
-    const t = this.first(q.selectFrom('triggers').select(TRIGGER).where('id', '=', id))
-    if (!t) throw new Error(`trigger c${id} not found`)
-    return t
-  }
-
-  removeTrigger(id: number): void {
-    const removed = this.first(
-      q
-        .updateTable('triggers')
-        .set({ removedAt: now() })
-        .where('id', '=', id)
-        .where('removedAt', 'is', null)
-        .returning('id'),
-    )
-    if (!removed) throw new Error(`trigger c${id} not found`)
-  }
-
-  // Records a run at `at` unless another tick has recorded one since `last`, so a run happens once
-  // even if two ticks overlap. Returns whether this caller got the run.
-  claimRun(id: number, last: string | null, at: string): boolean {
-    const row = this.first(
-      q
-        .updateTable('triggers')
-        .set({ lastRunAt: at })
-        .where('id', '=', id)
-        .where('lastRunAt', 'is', last)
-        .returning('id'),
-    )
-    return row !== null
-  }
-
-  recordRunError(id: number, error: string | null): void {
-    this.run(q.updateTable('triggers').set({ lastError: error }).where('id', '=', id))
-  }
-
-  // Adds a task for a source item the trigger has not seen, in one transaction with marking it
-  // seen. Returns null for an item seen before.
-  addItemTask(trigger: Trigger, key: string, issue: string | null, brief: string): number | null {
-    return this.db.transaction(() => {
-      const fresh = this.first(
-        q
-          .insertInto('triggerItems')
-          .orIgnore()
-          .values({ triggerId: trigger.id, key, seenAt: now() })
-          .returning('key'),
-      )
-      if (!fresh) return null
-      const taskId = this.addTriggerTask(trigger, issue, brief)
-      this.run(
-        q
-          .updateTable('triggerItems')
-          .set({ taskId })
-          .where('triggerId', '=', trigger.id)
-          .where('key', '=', key),
-      )
-      return taskId
-    })()
-  }
-
-  // A trigger's task. No human names its branch, so it is the trigger's prefix and the task id.
-  addTriggerTask(trigger: Trigger, issue: string | null, brief: string): number {
-    return this.db.transaction(() => {
-      const id = this.add({
-        brief,
-        repo: trigger.repo,
-        branch: null,
-        checkCmd: trigger.checkCmd,
-        model: trigger.model,
-        after: [],
-        triggerId: trigger.id,
-        issue,
-      })
-      if (trigger.branch !== null) {
-        this.run(
-          q
-            .updateTable('tasks')
-            .set({ branch: `${trigger.branch}/${id}` })
-            .where('id', '=', id),
-        )
-      }
-      return id
-    })()
-  }
-
   // A retrospective of `of`, and the task it runs in: an empty folder with the same model. Returns
-  // the task. It keeps the issue and root session of `of`, so whoever watches that task's
-  // decisions gets its rule decision too.
+  // the task. It keeps the issue and root session of `of`, so the session that hears of that task's
+  // decisions hears of its rule decision too.
   addRetro(of: Task, brief: string): number {
     return this.db.transaction(() => {
       const retroId = this.insert(
@@ -1253,7 +1104,6 @@ export class Ledger {
         checkCmd: null,
         model: of.model,
         after: [],
-        triggerId: null,
         issue: of.issue,
         rootSession: of.rootSession,
       })
@@ -1529,6 +1379,70 @@ export class Ledger {
       this.addRule(text, retro?.id ?? null, 'nod')
     }
     renameSync(path, `${path}.imported`)
+  }
+
+  // Keeps what the ledger held of triggers before v32 drops them: every row of theirs, their source
+  // items and the tasks they added go to <home>/triggers.json, and the triggers not removed, which
+  // ran until now, go into the person's inbox as one todo, so a schedule does not stop unseen. Run
+  // inside the migration's transaction, so a failed write leaves the ledger as it was.
+  private saveTriggers(home: string): void {
+    const rows = (sql: string): Record<string, string | number | null>[] =>
+      this.db.query<Record<string, string | number | null>, []>(sql).all()
+    const triggers = rows('select * from triggers order by id')
+    if (triggers.length === 0) return
+    const path = join(home, 'triggers.json')
+    const saved = {
+      triggers,
+      items: rows('select * from trigger_items order by trigger_id, seen_at'),
+      tasks: rows('select id, trigger_id from tasks where trigger_id is not null order by id'),
+    }
+    // Readable by the person alone: a source command may hold a token.
+    try {
+      writeFileSync(path, `${JSON.stringify(saved, null, 2)}\n`, { mode: 0o600 })
+      chmodSync(path, 0o600)
+    } catch (error) {
+      throw new Error(
+        `v32 keeps the triggers in ${path} before it drops them, and could not: ${error}`,
+      )
+    }
+    const running = triggers.filter((t) => t.removed_at === null)
+    if (running.length === 0) return
+    const field = (name: string, v: unknown): string[] => (v === null ? [] : [`  ${name}: ${v}`])
+    const notes = [
+      'nod no longer runs triggers. These ran until now:',
+      ...running.flatMap((t) => [
+        `c${t.id} \`${t.cron}\`: ${t.brief}`,
+        ...field('source', t.source),
+        ...field('repo', t.repo),
+        ...field('branch prefix', t.branch),
+        ...field('check', t.check_cmd),
+        ...field('model', t.model),
+      ]),
+      'Instead: at a set time, run nod add from cron or launchd; to take each item a command' +
+        ' lists once, nod in --source <name> --key <key>.',
+      `Every trigger row, the items their sources listed and the tasks they added: ${path}`,
+    ].join('\n')
+    const title = `Move ${running.length} trigger(s) to cron or launchd: nod no longer runs them`
+    const at = now()
+    const todo = this.db
+      .query<{ id: number }, [string, string, string, string]>(
+        "insert into todos (title, notes, status, source, created_at, status_at) values (?, ?, 'inbox', 'nod', ?, ?) returning id",
+      )
+      .get(title, notes, at, at)
+    if (todo === null) throw new Error('insert returned no id')
+    // As Todos.capture records a todo it puts in the inbox.
+    const change = {
+      title: [null, title],
+      notes: [null, notes],
+      status: [null, 'inbox'],
+      source: [null, 'nod'],
+    }
+    this.db.run('insert into todo_changes (todo_id, actor, change, at) values (?, ?, ?, ?)', [
+      todo.id,
+      'nod',
+      JSON.stringify(change),
+      at,
+    ])
   }
 
   // ── attempts ──
@@ -1906,18 +1820,6 @@ export class Ledger {
     )
   }
 
-  // What nod allowed any task's worker since notice `id`, oldest first (`nod watch`).
-  allowedAfter(id: number): Notice[] {
-    return this.run(
-      q
-        .selectFrom('notices')
-        .selectAll()
-        .where('event', '=', 'allowed')
-        .where('id', '>', id)
-        .orderBy('id'),
-    )
-  }
-
   // Marks sent to session `sessionId` (null: to none) those of `ids` still unsent, in one statement,
   // so of two processes sending at once only one sends each. Returns the ones this call marked, and
   // when.
@@ -1996,8 +1898,7 @@ export class Ledger {
     }
   }
 
-  // Each end is a notice for the task's project session, in one transaction with it: the ends `nod
-  // watch` prints, with what it prints of them (endLine in view.ts) as they are now.
+  // Each end is a notice for the task's project session, in one transaction with it.
   // A retrospective that has its outcome takes the status that outcome has instead, and once it has
   // that, nothing changes: no other path (an answer, an error, a late turn) moves it off.
   private setStatus(id: number, wanted: TaskStatus, wantedError: string | null): void {

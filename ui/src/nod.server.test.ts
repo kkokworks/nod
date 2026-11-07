@@ -26,7 +26,6 @@ test('a number no task or todo has gets no page, which the page shows as not fou
     checkCmd: null,
     model: null,
     after: [],
-    triggerId: null,
     issue: null,
   })
   expect(todoPage(todo)?.todo.id).toBe(todo)
@@ -60,7 +59,6 @@ test('the Settings page lists every rule with its retrospective task, and both p
     checkCmd: null,
     model: null,
     after: [],
-    triggerId: null,
     issue: null,
   })
   const retroTask = ledger.addRetro(ledger.get(of), 'look back')
@@ -94,7 +92,6 @@ test('the task page names as its root the project session whose task it is, with
     checkCmd: null,
     model: null,
     after: [],
-    triggerId: null,
     issue: null,
   }
   // A task in no project, or in the project.
