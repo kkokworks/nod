@@ -125,10 +125,11 @@ const USAGE = `usage:
                                    again, and the session that hears of it is told cancelled.
                                    Who cancelled it (this session, a worker or human) and the
                                    reason stay as its error. Its folder, branch and transcript
-                                   stay for gc. One whose landing work its worker has, or that
-                                   waits on a land decision, only stops landing, as drop does. A
-                                   task that ended is refused, one that succeeded and waits on
-                                   its pull request too. A worker cancels only the tasks of its
+                                   stay for gc. A task that ended is refused, one that succeeded
+                                   and waits on its pull request too, and one that is landing
+                                   (its worker has its landing work, or a land decision is open):
+                                   nod drop on its decision stops that, and nod land goes on with
+                                   it. A worker cancels only the tasks of its
                                    own work (its project, or the session that added it)
   nod add <brief> [--repo <path> --branch <name>] [--check <command>] [--model <model>]
           [--after <task,...>] [--issue <key>] [--todo <todo> | --project <project>]
@@ -521,8 +522,8 @@ switch (command) {
       throw new Error(`a worker cancels only the tasks of its own work, and n${id} is not one`)
     }
     const reason = values.reason?.trim() || null
-    const did = await cancel(ledger, home, terminals, id, actorFromEnv(), reason)
-    console.log(did === 'cancelled' ? 'cancelled' : 'stopped landing it; the task stays succeeded')
+    await cancel(ledger, home, terminals, id, actorFromEnv(), reason)
+    console.log('cancelled')
     break
   }
   case 'gc':

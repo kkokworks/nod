@@ -536,8 +536,29 @@ export async function drop(
     await announce(home, task, [decision], '(dropped)')
     return 'closed'
   }
+  // Landing work, or a decision on landing (land.ts): the work succeeded, so only its landing stops.
+  // Ending the task would turn that success into a cancellation and cancel the tasks after it. A
+  // rebase going on is undone, so the branch is as it was; the worker goes first, which may be
+  // in the middle of a turn on it.
   if (decision.reason === 'land' || ledger.landing(task.id)?.handedAt != null) {
-    await stopLanding(ledger, home, terminals, task, { stopped: 'dropped', dropped: decision, by })
+    const why = '(its landing was stopped)'
+    const closed = ledger.db
+      .transaction(() => {
+        const others = closeDecisions(ledger, task.id, (d) => d.id !== decisionId, why)
+        ledger.closeAnswered(decisionId, '(dropped)', 'succeeded')
+        ledger.setLanding(task.id, { handedAt: null, busy: null, stopped: 'dropped', note: null })
+        return others
+      })
+      .immediate()
+    noticeAnswered(ledger, [decision], by)
+    await terminals.close(sessionName(task.id))
+    const open = ledger.openAttempt(task.id)
+    if (open !== null) ledger.failAttempt(open.id, 'its landing was stopped')
+    if (task.workspace !== null && rebasing(task.workspace)) {
+      await spawn([...NOD_GIT, 'rebase', '--abort'], task.workspace)
+    }
+    await announce(home, task, [decision], '(dropped)')
+    await announce(home, task, closed, why)
     return 'landing stopped'
   }
   await endTask(ledger, home, terminals, task, {
@@ -551,15 +572,12 @@ export async function drop(
   return 'dropped'
 }
 
-// What a cancel did: ended the task, or stopped landing it, whose work stands (drop).
-export type Cancelled = 'cancelled' | 'landing stopped'
-
 // `nod cancel`: ends a task that has not ended, with no decision to drop, as dropping one does:
 // queued, running (its turn and a check of one going on stop with its session), or waiting on a
 // decision. `by` (actorFromEnv) and `reason` stay with the task as its error, which `nod show`, ls,
-// watch and the project session's notice show. One whose landing work its worker has, or that waits
-// on a land decision (landingOn), only stops landing, as drop does; one that only waits on its pull
-// request or the tick has ended (succeeded) and is refused.
+// watch and the project session's notice show. A task that ended is refused, and so is one whose
+// work succeeded and is landing (landingOn): its work stands, so the person drops a decision on it
+// to stop its landing, or lets nod land go on with it.
 export async function cancel(
   ledger: Ledger,
   home: string,
@@ -567,33 +585,22 @@ export async function cancel(
   taskId: number,
   by: string,
   reason: string | null = null,
-): Promise<Cancelled> {
+): Promise<void> {
   const task = ledger.get(taskId)
-  const landing = landingOn(ledger, taskId)
   const note = reason ? `cancelled by ${by}: ${reason}` : `cancelled by ${by}`
-  // Asked again in the transaction that cancels it: a Stop hook may have ended it meanwhile.
-  const unchanged = (): void => {
-    const { status } = ledger.get(taskId)
-    if (FINISHED.has(status)) throw new Error(`task n${taskId} has ended (${status})`)
-    if (landingOn(ledger, taskId) !== landing) {
-      throw new Error(`task n${taskId} changed as it was cancelled; try again`)
-    }
-  }
-  unchanged()
-  if (landing) {
-    await stopLanding(ledger, home, terminals, task, { stopped: note, check: unchanged })
-    return 'landing stopped'
-  }
   await endTask(ledger, home, terminals, task, {
     why: '(the task was cancelled)',
+    // Asked in the transaction that cancels it, as a Stop hook may end it, or landing take it up,
+    // up to then.
     end: () => {
-      unchanged()
+      const { status } = ledger.get(taskId)
+      if (FINISHED.has(status)) throw new Error(`task n${taskId} has ended (${status})`)
+      if (landingOn(ledger, taskId)) throw new Error(landingRefused(ledger, taskId))
       ledger.cancel(taskId, note)
       return 'dropped'
     },
     said: reason ? { by, reason } : { by },
   })
-  return 'cancelled'
 }
 
 // Landing work given to the worker, or a decision on landing it (land.ts): the task's work succeeded,
@@ -602,39 +609,16 @@ const landingOn = (ledger: Ledger, taskId: number): boolean =>
   ledger.landing(taskId)?.handedAt != null ||
   ledger.decisions(taskId).some((d) => d.answer === null && d.reason === 'land')
 
-// Stops landing a task (landingOn) a person drops a decision on (`dropped`) or cancels: the work
-// succeeded, so only its landing stops. Ending the task would turn that success into a cancellation
-// and cancel the tasks after it. A rebase going on is undone, so the branch is as it was; the worker
-// goes first, which may be in the middle of a turn on it. `stopped`: why, as the landing keeps it;
-// `check`: what must still hold, asked in the transaction.
-async function stopLanding(
-  ledger: Ledger,
-  home: string,
-  terminals: Terminals,
-  task: Task,
-  how: { stopped: string; dropped?: Decision; by?: string | null; check?: () => void },
-): Promise<void> {
-  const { dropped } = how
-  const why = '(its landing was stopped)'
-  const closed = ledger.db
-    .transaction(() => {
-      how.check?.()
-      const others = closeDecisions(ledger, task.id, (d) => d.id !== dropped?.id, why)
-      if (dropped === undefined) ledger.succeed(task.id)
-      else ledger.closeAnswered(dropped.id, '(dropped)', 'succeeded')
-      ledger.setLanding(task.id, { handedAt: null, busy: null, stopped: how.stopped, note: null })
-      return others
-    })
-    .immediate()
-  if (dropped !== undefined) noticeAnswered(ledger, [dropped], how.by)
-  await terminals.close(sessionName(task.id))
-  const open = ledger.openAttempt(task.id)
-  if (open !== null) ledger.failAttempt(open.id, 'its landing was stopped')
-  if (task.workspace !== null && rebasing(task.workspace)) {
-    await spawn([...NOD_GIT, 'rebase', '--abort'], task.workspace)
-  }
-  if (dropped !== undefined) await announce(home, task, [dropped], '(dropped)')
-  await announce(home, task, closed, why)
+// Why a landing task is not cancelled, and what to do instead: dropping a decision on it stops its
+// landing (drop), its land decision first; with none open, its worker's landing turn ends first.
+function landingRefused(ledger: Ledger, taskId: number): string {
+  const open = ledger.decisions(taskId).filter((d) => d.answer === null)
+  const decision = open.find((d) => d.reason === 'land') ?? open[0]
+  const instead =
+    decision !== undefined
+      ? `nod drop d${decision.id} stops its landing, and the task stays succeeded`
+      : `its worker has its landing work; once that turn ends, nod land n${taskId} goes on landing it, and dropping a decision it opens (nod drop) stops that`
+  return `task n${taskId} succeeded and is landing, so it is not cancelled: ${instead}`
 }
 
 // Ends a task the person stopped, by dropping a decision on it (drop) or cancelling it (cancel).
