@@ -29,7 +29,6 @@ const brief = (text: string): NewTask => ({
   checkCmd: null,
   model: null,
   after: [],
-  triggerId: null,
   issue: null,
 })
 
@@ -934,13 +933,13 @@ test("a Claude session that sets a project's work going hears, once per project 
   const theirs = task('Theirs')
   const loose = ofC('In no project', null)
   const health = ofC('Health work', q.id)
-  const deaf = (project: string, why: string, watch = 'nod watch --mine', it = 'it again') =>
-    `nod: ${project}'s session hears nothing from nod (${why}), so the decisions and ends of this work wait unheard; run ${watch} here, or nod open ${project} opens ${it}`
+  const deaf = (project: string, why: string, mine = ' --mine', it = 'it again') =>
+    `nod: ${project}'s session hears nothing from nod (${why}), so the decisions and ends of this work wait unheard until nod open ${project} opens ${it}; meanwhile nod${mine} and nod ls${mine} here show them`
 
   // No session of p1 yet: one line for its two tasks; --mine would leave out another's task.
   const never = 'nod open never opened one'
   expect(unheardWork(ledger, C, [mine, mine])).toEqual([deaf('p1', never, undefined, 'one')])
-  expect(unheardWork(ledger, C, [mine, theirs])).toEqual([deaf('p1', never, 'nod watch', 'one')])
+  expect(unheardWork(ledger, C, [mine, theirs])).toEqual([deaf('p1', never, '', 'one')])
   expect(unheardWork(ledger, C, [loose])).toEqual([])
   expect(unheardWork(ledger, null, [mine, health])).toEqual([])
 
@@ -1020,10 +1019,10 @@ test('nod add, tell and an answer run in a Claude session say on stderr that no 
   // No to landing again only stops landing it.
   const landing = ask(task('Land it'), 'Try landing again?', 'land')
   const line =
-    "nod: p1's session hears nothing from nod (nod open never opened one), so the decisions and ends of this work wait unheard; run nod watch --mine here, or nod open p1 opens one\n"
+    "nod: p1's session hears nothing from nod (nod open never opened one), so the decisions and ends of this work wait unheard until nod open p1 opens one; meanwhile nod --mine and nod ls --mine here show them\n"
   expect(added).toContain(line)
   expect(nod(C, 'tell', `n${id}`, 'and the docs')).toContain(line)
-  expect(nod(B, 'tell', `n${id}`, 'and the docs')).toContain(line.replace('--mine ', ''))
+  expect(nod(B, 'tell', `n${id}`, 'and the docs')).toContain(line.replaceAll(' --mine', ''))
   expect(nod(C, `d${d}`, 'left')).toContain(line)
   expect(nod(C, `d${stale}`, 'never mind')).not.toContain('hears nothing')
   expect(nod(C, `d${landing}`, 'no')).not.toContain('hears nothing')

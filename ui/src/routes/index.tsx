@@ -1,20 +1,20 @@
 import { createFileRoute, getRouteApi, Link } from '@tanstack/react-router'
 import { type ReactNode, useEffect, useState } from 'react'
 import type { TaskRow } from '../nod.server'
-import { DecisionCard, localTime, Status, TaskId } from '../parts'
+import { DecisionCard, Status, TaskId } from '../parts'
 import { Section } from '../todo-parts'
 
 const root = getRouteApi('__root__')
 
 export const Route = createFileRoute('/')({ component: Home })
 
-// The decisions waiting for the person, the tasks not yet collected by project, how hands-off nod
-// has been, and the triggers that add work on a schedule.
+// The decisions waiting for the person, the tasks not yet collected by project, and how hands-off
+// nod has been.
 function Home() {
   const data = root.useLoaderData()
   // Not shown then: the root shows its failure in place of the pages.
   if ('failed' in data) return null
-  const { decisions, groups, triggers, stats } = data
+  const { decisions, groups, stats } = data
   const finished = stats.tasks.succeeded
   return (
     <div className="page">
@@ -85,32 +85,6 @@ function Home() {
             {stats.tasks.error} error · {stats.tasks.cancelled} cancelled
           </Stat>
         </div>
-      </Section>
-
-      <Section title="Triggers" count={triggers.length} bare={triggers.length === 0}>
-        {triggers.length === 0 ? (
-          <p className="muted">
-            No triggers. <code>nod trigger add '&lt;cron&gt;' '&lt;brief&gt;'</code> adds work on a
-            schedule.
-          </p>
-        ) : (
-          triggers.map((t) => (
-            <div key={t.id} className="task-line">
-              <span className="side-id">c{t.id}</span>
-              <div className="task-line-main">
-                <div className="clamp">{t.brief}</div>
-                <div className="todo-tags">
-                  <code>{t.cron}</code>
-                  <span>
-                    {t.lastRunAt === null ? 'not run yet' : `last run ${localTime(t.lastRunAt)}`}
-                  </span>
-                  {t.source !== null && <code>{t.source}</code>}
-                </div>
-                {t.lastError !== null && <div className="banner">{t.lastError}</div>}
-              </div>
-            </div>
-          ))
-        )}
       </Section>
     </div>
   )

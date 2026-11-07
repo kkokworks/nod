@@ -20,7 +20,6 @@ function taskIn(dir: string): Task {
     checkCmd: null,
     model: null,
     after: [],
-    triggerId: null,
     issue: null,
   })
   ledger.setRunning(id, dir)

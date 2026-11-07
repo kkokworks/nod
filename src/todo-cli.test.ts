@@ -752,7 +752,6 @@ test('a todo delegated with nod add waits on its task, whose decision is listed 
     checkCmd: null,
     model: null,
     after: [],
-    triggerId: null,
     issue: null,
   })
   expect(await ok('add', '--todo', 't1', '--after', String(first))).toEqual(['2'])
@@ -799,7 +798,6 @@ test('nod search shows the one match as its own command does, and lists several 
       checkCmd: null,
       model: null,
       after: [],
-      triggerId: null,
       issue: null,
     },
     'human',

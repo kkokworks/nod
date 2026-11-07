@@ -281,7 +281,6 @@ const detail = (id: number) => ({
     repo: null,
     branch: null,
     checkCmd: null,
-    triggerId: null,
     rootSession: null,
     workspace: `/work/${id}`,
     error: null,

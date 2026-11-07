@@ -45,7 +45,6 @@ import {
   type RepoEdit,
   type Rule,
   type Task,
-  type Trigger,
 } from './ledger'
 import { branchOf, sessionName } from './place'
 import { message, readAtOnce, spawn } from './proc'
@@ -65,18 +64,8 @@ import {
   todoCommand,
 } from './todo-cli'
 import { type Found, OPEN_ROLES, oneOf, parseRef, Todos } from './todos'
+import { scheduleEnv, scheduleOff, scheduleOn, tick } from './triggers'
 import {
-  addTrigger,
-  nextRun,
-  SCHEDULE_OFF,
-  scheduleEnv,
-  scheduleOff,
-  scheduleOn,
-  tick,
-} from './triggers'
-import {
-  allowedLine,
-  endLine,
   indent,
   type LsTask,
   lsGroups,
@@ -89,7 +78,6 @@ import {
   taskLabel,
   taskNote,
   taskStatus,
-  watch,
 } from './view'
 import {
   answer,
@@ -190,20 +178,6 @@ const USAGE = `usage:
                                    number and branch, once you fixed what stopped it
   nod attach <task>                open the worker's terminal (tmux)
   nod peek <task>                  print what the worker's terminal shows right now
-  nod watch [--issue <key,...>] [--mine]
-                                   print decisions as they open and, each time a task ends
-                                   (succeeded, error, cancelled), a line task n<n> [<todo>]
-                                   [<issue>] <status>: <the worker's last report, or the
-                                   error's first line, else the brief>, until no worker is
-                                   running, and a line n<n> 허락: <command> for each command
-                                   nod allows a worker itself (nod hook permission).
-                                   Only what opens or ends after it starts; a task
-                                   that runs again and ends again is printed again. --issue:
-                                   only decisions, ends and workers of tasks on these issues;
-                                   --mine: only those of this Claude session's tasks, so
-                                   several root sessions can each watch their own. A project's
-                                   session or an orchestrator needs no watch: nod tells it (see
-                                   below)
   nod link <task> <url...>         record where the task's result went (a pull request, a posted
                                    review), so ls and show list it next to the task. Until then
                                    they list the remote branches that hold the task's branch
@@ -243,14 +217,6 @@ const USAGE = `usage:
                                    their tasks' commits: done once the commits are in the default
                                    branch, waiting while the branch's pull request is open, next
                                    once none is. The schedule runs both every 5 minutes
-  nod trigger add <cron> <brief...> [--source <command>] [--repo <path> --branch <prefix>]
-                  [--check <command>] [--model <model>]
-                                   add a task on a schedule (5-field cron, local time); with
-                                   --source, one task per line the command prints that it has
-                                   not printed before (text after a tab; before it, the key,
-                                   which is also the task's issue). In a repo each task works on
-                                   the branch <prefix>/<task>
-  nod trigger ls | rm <trigger>
   nod rule ls                      the rules every worker gets after the built-in ones: each one's
                                    number, on or off, the retrospective r<n> it came from, and
                                    the rule. Answering yes to a rule decision adds one
@@ -282,11 +248,12 @@ const USAGE = `usage:
                                    schedule is off
   nod schedule [on | off]          whether the OS scheduler runs the tick every minute; on, it
                                    runs with this shell's PATH and Claude config dir, which the
-                                   triggers' workers and the watches use. It stays on until off
-  nod tick                         run the triggers that are due and the watches, land what the
-                                   repos let nod land, and gc the finished tasks a signal says
-                                   are done with (as nod gc does); the scheduled tick does the
-                                   watches, landing and gc every fifth minute.
+                                   watches and the workers it restarts use. It stays on until off.
+                                   For work at a set time, have cron or launchd run nod add
+  nod tick                         run the watches, land what the repos let nod land, and gc the
+                                   finished tasks a signal says are done with (as nod gc does);
+                                   the scheduled tick does the watches, landing and gc every
+                                   fifth minute.
                                    It also asks about turns whose terminal is gone (a restart of
                                    the machine or tmux) and about tasks that have waited an hour
                                    on background work, has a worker report again when Claude Code
@@ -311,15 +278,15 @@ const USAGE = `usage:
                                    rm -rf of paths holding no uncommitted work in its worktree,
                                    or a package manager adding or removing registry packages.
                                    nod show lists each, and the root session hears of it (nod
-                                   tells a project session; nod watch prints it). Any other
-                                   prompt becomes a decision as it shows
+                                   tells a project session). Any other prompt becomes a decision
+                                   as it shows
   nod run <task> <claude...>       what runs in a worker's terminal: keeps its Claude Code running
 
 A <task> is n<n>, t<n> for the latest task doing todo t<n>, or r<n> for the task retrospective r<n>
-runs in. A <decision> is d<n>, and a <trigger> c<n>. Each also takes its bare number <n>.
+runs in. A <decision> is d<n>. Each also takes its bare number <n>.
 ${TODO_USAGE}
 
-A project's session (the latest nod open opened) hears from nod itself, with no watch running: a
+A project's session (the latest nod open opened) hears from nod itself: a
 message when each of the project's tasks ends (succeeded, error, cancelled, once its check and
 review are done) and when a decision opens on one, with the task's number and attempt or the
 decision's, and what to do next. The ledger keeps each until it went, so what comes while the
@@ -334,19 +301,19 @@ of nod open, or opened before nod open gave it hooks, reports its socket at its 
 session that cannot hear (not the project's latest, or no socket) says so on stderr. So does nod
 add, tell, resume, restart <task> or an answer in any other Claude session, for a project whose
 latest session cannot hear either (none, no socket known, or its socket gone): what that work
-brings waits unheard until nod watch runs there or nod open opens the project's session. /clear goes
-on under an ID nod open did not open: it hears nothing until nod open opens the project's session
-again. One with no hooks cannot say it cleared, so what went to it after, until its next nod
+brings waits unheard until nod open opens the project's session, and nod --mine and nod ls --mine
+show it meanwhile. /clear goes on under an ID nod open did not open: it hears nothing until nod open
+opens the project's session again. One with no hooks cannot say it cleared, so what went to it after, until its next nod
 command, is lost: once nod open opens it again, nod ls --mine and nod --mine show what it missed.
 An orchestrator hears the same way of the tasks in no project: the latest session of the name of
-the orchestrator that added each, and of those a shell, a trigger or any other session added, the
-one made last of the orchestrators taking messages, or of all of them while none is. What comes
-while it is closed waits for it too. Until one has been opened
-nobody hears of those, and what comes for them goes to no session.
+the orchestrator that added each, and of those a shell or any other session added, the one made
+last of the orchestrators taking messages, or of all of them while none is. What comes while it is
+closed waits for it too. Until one has been opened nobody hears of those, and what comes for them
+goes to no session.
 
 When <home>/notify exists, nod runs it with a JSON event on stdin whenever a decision opens, a
-task succeeds or fails to start, a trigger fails, a watch passes or can no longer run, or a
-restart waits for a person attached to the worker. <home> is $NOD_HOME, or ~/.nod.`
+task succeeds or fails to start, a watch passes or can no longer run, or a restart waits for a
+person attached to the worker. <home> is $NOD_HOME, or ~/.nod.`
 
 const [command, ...rest] = Bun.argv.slice(2)
 const home = nodHome()
@@ -431,23 +398,6 @@ switch (command) {
   case 'peek':
     peek(taskRef(rest[0]))
     break
-  case 'watch': {
-    const { values } = parseArgs({
-      args: rest,
-      options: { issue: { type: 'string' }, mine: { type: 'boolean' } },
-    })
-    const keys = issueKeys(values.issue)
-    const session = mySession(values.mine)
-    await watch(
-      ledger,
-      (t) => onIssues(keys, t) && isMine(session, t),
-      printDecision,
-      (t) => console.log(endLine(ledger, t)),
-      undefined,
-      (n) => console.log(allowedLine(n)),
-    )
-    break
-  }
   case 'link': {
     const id = taskRef(rest[0])
     const urls = rest.slice(1)
@@ -532,9 +482,6 @@ switch (command) {
   case 'stats':
     console.log(JSON.stringify(ledger.stats(), null, 2))
     break
-  case 'trigger':
-    await trigger(rest)
-    break
   case 'rule':
     rule(rest)
     break
@@ -549,14 +496,13 @@ switch (command) {
     break
   case 'tick': {
     // Run by hand, it checks the watches now too, not only on their every fifth minute.
-    const { added, passed, collected, lost, waited, cut, restarted, closed, landed } = await tick(
+    const { passed, collected, lost, waited, cut, restarted, closed, landed } = await tick(
       ledger,
       home,
       terminals,
       new Date(),
       true,
     )
-    if (added.length > 0) console.log(`added task(s) ${taskList(added)}`)
     if (passed.length > 0) console.log(`watch passed: ${passed.map((id) => `t${id}`).join(', ')}`)
     if (collected.length > 0) console.log(`collected task(s) ${taskList(collected)}`)
     if (lost.length > 0) console.log(`turn(s) lost with their terminal: ${taskList(lost)}`)
@@ -565,7 +511,7 @@ switch (command) {
     if (restarted.length > 0) console.log(`restarted task(s) ${taskList(restarted)}`)
     if (closed.length > 0) console.log(`closed the terminal(s) of task(s) ${taskList(closed)}`)
     for (const m of landed) console.log(`landing n${m.id}: ${m.did}`)
-    const did = [added, passed, collected, lost, waited, cut, restarted, closed, landed]
+    const did = [passed, collected, lost, waited, cut, restarted, closed, landed]
     if (did.every((x) => x.length === 0)) console.log('nothing due')
     break
   }
@@ -669,7 +615,6 @@ async function add(args: string[]): Promise<void> {
     checkCmd: values.check ?? null,
     model: values.model ?? null,
     after,
-    triggerId: null,
     issue: values.issue ?? null,
     rootSession,
   }
@@ -683,45 +628,6 @@ async function add(args: string[]): Promise<void> {
   if (after.length === 0) await startTask(ledger, home, terminals, id)
   else await startReady(ledger, home, terminals)
   console.log(id)
-}
-
-async function trigger([sub, ...args]: string[]): Promise<void> {
-  if (sub === 'add') {
-    const { values, positionals } = parseArgs({
-      args,
-      options: {
-        source: { type: 'string' },
-        repo: { type: 'string' },
-        branch: { type: 'string' },
-        check: { type: 'string' },
-        model: { type: 'string' },
-      },
-      allowPositionals: true,
-    })
-    const [cron, ...brief] = positionals
-    if (cron === undefined) throw new Error(USAGE)
-    const repo = repoPath(values.repo)
-    const { id, seen } = await addTrigger(ledger, home, {
-      cron,
-      brief: words(brief),
-      repo,
-      branch: branchName(repo, values.branch),
-      checkCmd: values.check ?? null,
-      model: values.model ?? null,
-      source: values.source ?? null,
-    })
-    console.log(id)
-    if (values.source) console.log(`the source lists ${seen} item(s) now; only new ones add tasks`)
-    printTrigger(ledger.trigger(id))
-    if (scheduleEnv(home) === null) console.log(SCHEDULE_OFF)
-  } else if (sub === 'ls') {
-    for (const t of ledger.triggers()) printTrigger(t)
-  } else if (sub === 'rm') {
-    ledger.removeTrigger(parseRef(args[0] ?? '', 'c', true))
-    console.log('removed')
-  } else {
-    throw new Error(USAGE)
-  }
 }
 
 function rule([sub, ...args]: string[]): void {
@@ -909,21 +815,11 @@ function accountCommand([how, ...args]: string[]): void {
   else if (how === 'file' && path !== undefined && args.length === 1) {
     setAccountRule(home, { file: resolve(path) })
   } else if (how === 'command' && args.length === 1) {
-    // One shell command, as a source or a watch is: words joined back would lose their quotes.
+    // One shell command, as a watch is: words joined back would lose their quotes.
     setAccountRule(home, { command: words(args) })
   } else if (how !== undefined) throw new Error(USAGE)
   console.log(describeRule(accountRule(home)))
   console.log(`  now ${configDir(home) ?? "(none: Claude Code's default)"}`)
-}
-
-function printTrigger(t: Trigger): void {
-  const next = nextRun(t.cron, new Date(t.lastRunAt ?? t.createdAt))
-  const when = next === null ? 'never' : next.toLocaleString('sv-SE')
-  console.log(
-    `c${String(t.id).padEnd(4)} ${t.cron.padEnd(16)} next ${when}  ${oneLine(t.brief, 60)}`,
-  )
-  if (t.source) console.log(`  source: ${t.source}`)
-  if (t.lastError) console.log(`  last run failed: ${oneLine(t.lastError, 200)}`)
 }
 
 function repoPath(path: string | undefined): string | null {
@@ -1238,7 +1134,6 @@ async function show(id: number): Promise<void> {
   if (task.workspace) console.log(`  workspace: ${task.workspace}`)
   if (task.account !== null) console.log(`  account: ${task.account || "Claude Code's default"}`)
   if (task.checkCmd) console.log(`  check: ${task.checkCmd}`)
-  if (task.triggerId !== null) console.log(`  added by trigger c${task.triggerId}`)
   if (task.retroId !== null) {
     const r = ledger.retro(task.retroId)
     console.log(`  retrospective: r${r.id} of n${r.ofTaskId}${r.outcome ? `, ${r.outcome}` : ''}`)

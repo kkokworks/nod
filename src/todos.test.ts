@@ -45,7 +45,6 @@ const task: NewTask = {
   checkCmd: null,
   model: null,
   after: [],
-  triggerId: null,
   issue: null,
 }
 // Opens a question on the task, as a worker that stops to ask does.
@@ -616,7 +615,6 @@ for (const role of OPEN_ROLES) {
             checkCmd: null,
             model: null,
             after: [],
-            triggerId: null,
             issue: null,
             rootSession,
           },
@@ -724,15 +722,12 @@ test('refs need their prefix: a bare number could be a decision or a task', () =
   expect(() => parseRef('p12', 't')).toThrow('not a todo: p12')
 })
 
-test('a decision is d<n> and a trigger c<n>, or their bare number as before; nothing else', () => {
+test('a decision is d<n>, or its bare number as before; nothing else', () => {
   expect(parseRef('d12', 'd', true)).toBe(12)
   expect(parseRef('12', 'd', true)).toBe(12)
-  expect(parseRef('c3', 'c', true)).toBe(3)
-  expect(parseRef('3', 'c', true)).toBe(3)
   expect(() => parseRef('#12', 'd', true)).toThrow('not a decision: #12 (write d<n>)')
   expect(() => parseRef('n12', 'd', true)).toThrow('not a decision: n12 (write d<n>)')
-  expect(() => parseRef('', 'c', true)).toThrow('not a trigger:  (write c<n>)')
-  expect(() => parseRef('d12', 'c', true)).toThrow('not a trigger: d12 (write c<n>)')
+  expect(() => parseRef('', 'd', true)).toThrow('not a decision:  (write d<n>)')
 })
 
 test('a delegated todo waits on its tasks, and follows the last once none can go on', async () => {

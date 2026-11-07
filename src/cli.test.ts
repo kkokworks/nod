@@ -15,155 +15,14 @@ import { Ledger } from './ledger'
 import { workspaceOf } from './place'
 import { openSettings } from './settings'
 import { OPEN_ROLES, Todos } from './todos'
-import { endLine, watch } from './view'
 
 const tmp = tempDirs()
 afterAll(tmp.removeAll)
 
 const cli = resolve(import.meta.dir, 'cli.ts')
 
-test('watch prints each decision once as it opens, and ends once no worker is running', async () => {
-  const home = tmp.make('nod-watch-')
-  const ledger = new Ledger(home)
-  const ask = (question: string): number => {
-    const taskId = ledger.add({
-      brief: 'some task',
-      repo: null,
-      branch: null,
-      checkCmd: null,
-      model: null,
-      after: [],
-      triggerId: null,
-      issue: null,
-    })
-    ledger.setRunning(taskId, home)
-    const attemptId = ledger.startAttempt({
-      taskId,
-      kind: 'start',
-      decisionId: null,
-      sessionId: 's',
-      prompt: 'some task',
-    })
-    ledger.ask(taskId, attemptId, 'question', question)
-    return taskId
-  }
-  ask('open before watching')
-  const worker = ledger.add({
-    brief: 'still working',
-    repo: null,
-    branch: null,
-    checkCmd: null,
-    model: null,
-    after: [],
-    triggerId: null,
-    issue: null,
-  })
-  ledger.setRunning(worker, home)
-  const watch = Bun.spawn(['bun', cli, 'watch'], { env: { ...process.env, NOD_HOME: home } })
-
-  await Bun.sleep(1500)
-  ask('opened while watching')
-  await Bun.sleep(1500)
-  ledger.succeed(worker)
-
-  expect(await watch.exited).toBe(0)
-  const out = await new Response(watch.stdout).text()
-  expect(out).not.toContain('open before watching')
-  expect(out.split('opened while watching')).toHaveLength(2)
-}, 15_000)
-
-test("watch tells each end of a task it watches once, again after the task runs again, and the last worker's before it stops", async () => {
-  const home = tmp.make('nod-watch-ends-')
-  const ledger = new Ledger(home)
-  const running = (brief: string, issue: string): number => {
-    const taskId = ledger.add({
-      brief,
-      repo: null,
-      branch: null,
-      checkCmd: null,
-      model: null,
-      after: [],
-      triggerId: null,
-      issue,
-    })
-    ledger.setRunning(taskId, home)
-    return taskId
-  }
-  const turn = (taskId: number, kind: 'start' | 'followup' | 'land'): number =>
-    ledger.startAttempt({ taskId, kind, decisionId: null, sessionId: 's', prompt: 'p' })
-  const done = (taskId: number, attemptId: number, summary: string): void => {
-    ledger.endAttempt(attemptId, { outcome: 'succeeded', summary, report: summary })
-    ledger.succeed(taskId)
-  }
-  const before = running('ended before watching', 'MINE')
-  done(before, turn(before, 'start'), 'old news')
-  const ok = running('write the docs', 'MINE')
-  const okTurn = turn(ok, 'start')
-  const bad = running('build it', 'MINE')
-  const dropped = running('ask first', 'MINE')
-  const lands = running('open the pull request', 'MINE')
-  const landsTurn = turn(lands, 'start')
-  const dropsLanding = running('add the feature', 'MINE')
-  const dropsTurn = turn(dropsLanding, 'start')
-  const last = running('last worker', 'MINE')
-  const lastTurn = turn(last, 'start')
-  const theirs = running('their task', 'OTHER')
-  const theirsTurn = turn(theirs, 'start')
-
-  const printed: string[] = []
-  let looks = 0
-  let landTurn = 0
-  let dropsLandTurn = 0
-  const wait = async (): Promise<void> => {
-    looks += 1
-    if (looks === 1) {
-      done(ok, okTurn, 'wrote the docs')
-      ledger.error(bad, 'the worktree could not be made\n  at somewhere')
-      ledger.drop(ledger.ask(dropped, turn(dropped, 'start'), 'question', 'which one?'))
-      // Landing gives this one a turn before watch looks again, so its first end goes unseen.
-      done(lands, landsTurn, 'did the work')
-      ledger.setRunning(lands, home)
-      landTurn = turn(lands, 'land')
-      done(dropsLanding, dropsTurn, 'added the feature')
-      done(theirs, theirsTurn, 'not mine')
-    }
-    // nod tell runs one task again; landing gives another a turn, which the person then drops.
-    if (looks === 2) {
-      ledger.setRunning(ok, home)
-      ledger.setRunning(dropsLanding, home)
-      dropsLandTurn = turn(dropsLanding, 'land')
-    }
-    if (looks === 3) {
-      done(ok, turn(ok, 'followup'), 'fixed the review')
-      done(lands, landTurn, 'wrote the pull request text')
-      ledger.failAttempt(dropsLandTurn, 'dropped')
-      ledger.succeed(dropsLanding)
-    }
-    if (looks === 4) done(last, lastTurn, 'all done')
-  }
-  await watch(
-    ledger,
-    (t) => t.issue === 'MINE',
-    () => {},
-    (t) => printed.push(endLine(ledger, t)),
-    wait,
-  )
-  expect(printed).toEqual([
-    `task n${ok} MINE succeeded: wrote the docs`,
-    `task n${bad} MINE error: the worktree could not be made`,
-    `task n${dropped} MINE cancelled: ask first`,
-    `task n${dropsLanding} MINE succeeded: added the feature`,
-    `task n${ok} MINE succeeded: fixed the review`,
-    `task n${lands} MINE succeeded: wrote the pull request text`,
-    `task n${dropsLanding} MINE succeeded: added the feature`,
-    `task n${last} MINE succeeded: all done`,
-  ])
-  // The look that found the last worker stopped told its end, then five idle looks.
-  expect(looks).toBe(8)
-})
-
-test('watch and the decision list with --issue keep to those issues, so roots split the work', async () => {
-  const home = tmp.make('nod-watch-issue-')
+test('the decision list with --issue keeps to those issues, so roots split the work', () => {
+  const home = tmp.make('nod-issue-')
   const ledger = new Ledger(home)
   const env = { ...process.env, NOD_HOME: home }
   const running = (issue: string | null): number => {
@@ -174,7 +33,6 @@ test('watch and the decision list with --issue keep to those issues, so roots sp
       checkCmd: null,
       model: null,
       after: [],
-      triggerId: null,
       issue,
     })
     ledger.setRunning(taskId, home)
@@ -191,31 +49,20 @@ test('watch and the decision list with --issue keep to those issues, so roots sp
     })
     ledger.ask(taskId, attemptId, 'question', question)
   }
-  const mine = running('A-1')
-  running('B-1') // another root's worker, still running when ours are done
-  const watch = Bun.spawn(['bun', cli, 'watch', '--issue', 'A-1,A-2'], { env })
-
-  await Bun.sleep(1500)
   ask('A-2', 'mine')
   ask('B-1', 'theirs')
   ask(null, 'no issue')
-  await Bun.sleep(1500)
-  ledger.succeed(mine)
 
-  expect(await watch.exited).toBe(0)
-  const out = await new Response(watch.stdout).text()
-  expect(out).toContain('mine')
-  expect(out).not.toContain('theirs')
-  expect(out).not.toContain('no issue')
-
+  const ours = Bun.spawnSync(['bun', cli, '--issue', 'A-1,A-2'], { env }).stdout.toString()
+  expect(ours).toContain('mine')
+  expect(ours).not.toContain('theirs')
+  expect(ours).not.toContain('no issue')
   const list = Bun.spawnSync(['bun', cli, '--issue', 'B-1'], { env }).stdout.toString()
   expect(list).toContain('theirs')
   expect(list).not.toContain('mine')
-  // About 7 s alone, the watch's idle looks; some 40 s once under the load of a full run beside
-  // other work (measured 2026-10-29).
-}, 60_000)
+}, 20_000)
 
-test('each root session sees in show the tasks it added, and with --mine lists and watches only those', async () => {
+test('each root session sees in show the tasks it added, and with --mine lists only those and their decisions', () => {
   const home = tmp.make('nod-root-')
   const ledger = new Ledger(home)
   // Made-up session ids.
@@ -243,7 +90,6 @@ test('each root session sees in show the tasks it added, and with --mine lists a
     checkCmd: null,
     model: null,
     after: [],
-    triggerId: null,
     issue: null,
   })
   const add = (session: string | null, brief: string): number =>
@@ -259,16 +105,13 @@ test('each root session sees in show the tasks it added, and with --mine lists a
   expect(nod(A, 'ls', '--mine').out).toContain('from a')
   expect(nod(A, 'ls', '--mine').out).not.toContain('from b')
   expect(nod(A, 'ls').out).toContain('from the shell')
-  for (const args of [
-    ['ls', '--mine'],
-    ['watch', '--mine'],
-  ]) {
+  for (const args of [['ls', '--mine'], ['--mine']]) {
     const r = nod(null, ...args)
     expect(r.code).not.toBe(0)
     expect(r.err).toContain("--mine picks a Claude session's tasks")
   }
 
-  // The tasks wait on `never`; running, each counts for watch.
+  // The tasks wait on `never`; running, each can ask.
   for (const id of [ofA, ofB, ofShell]) ledger.setRunning(id, home)
   const ask = (taskId: number, question: string): void => {
     const attemptId = ledger.startAttempt({
@@ -280,18 +123,10 @@ test('each root session sees in show the tasks it added, and with --mine lists a
     })
     ledger.ask(taskId, attemptId, 'question', question)
   }
-  const watch = Bun.spawn(['bun', cli, 'watch', '--mine'], { env: envOf(A) })
-  await Bun.sleep(1500)
   ask(ofA, 'for a')
   ask(ofB, 'for b')
   ask(ofShell, 'for the shell')
-  await Bun.sleep(1500)
-  // B's and the shell's tasks still wait on a decision; A's are done, so its watch ends.
-  ledger.answer(ledger.decisions(ofB)[0]?.id ?? 0, 'go on')
-  ledger.succeed(ofA)
-
-  expect(await watch.exited).toBe(0)
-  const out = await new Response(watch.stdout).text()
+  const out = nod(A, '--mine').out
   expect(out).toContain('for a')
   expect(out).not.toContain('for b')
   expect(out).not.toContain('for the shell')
@@ -340,7 +175,6 @@ test("in a session nod open opened, add hands over its project's work only, show
     checkCmd: null,
     model: null,
     after: [],
-    triggerId: null,
     issue: null,
   })
   const add = (session: string | null, ...args: string[]) =>
@@ -457,7 +291,7 @@ test("in a session nod open opened, add hands over its project's work only, show
   )
 }, 30_000)
 
-test("a project's new session takes over the project's tasks and decisions in ls, the decision list and watch with --mine, whoever added them, and nothing of another project or of none", async () => {
+test("a project's new session takes over the project's tasks and decisions in ls and the decision list with --mine, whoever added them, and nothing of another project or of none", () => {
   const home = tmp.make('nod-mine-')
   const ledger = new Ledger(home)
   const todos = new Todos(ledger)
@@ -501,7 +335,6 @@ test("a project's new session takes over the project's tasks and decisions in ls
     checkCmd: null,
     model: null,
     after: [],
-    triggerId: null,
     issue: null,
   })
   const add = (session: string, ...args: string[]): number => {
@@ -510,11 +343,11 @@ test("a project's new session takes over the project's tasks and decisions in ls
     return id
   }
   const byA = add(A, 'tag the release')
-  const alsoByA = add(A, 'write the changelog')
+  add(A, 'write the changelog')
   const byS = add(S, 'write the release notes', '--project', 'Release')
   const ofHealth = add(Q1, 'book the blood test')
   const loose = add(S, 'tidy the desk')
-  const healthToo = add(Q1, 'call the clinic')
+  add(Q1, 'call the clinic')
   todos.addSession(release.id, B, home)
   const ask = (taskId: number, question: string): number =>
     ledger.ask(
@@ -523,34 +356,10 @@ test("a project's new session takes over the project's tasks and decisions in ls
       'question',
       question,
     )
-
-  // watch, as nod watch --mine runs it in B. The decisions open at its first look, and A's last
-  // running task ends at its second, so B's watch ends while another project's worker still runs.
-  const printed: number[] = []
-  let looks = 0
-  let tag = 0
-  let notes = 0
-  const wait = async (): Promise<void> => {
-    looks += 1
-    if (looks === 1) {
-      tag = ask(byA, 'which tag?')
-      notes = ask(byS, 'which version for the notes?')
-      ask(ofHealth, 'which clinic?')
-      ask(loose, 'which desk?')
-    }
-    if (looks === 2) ledger.succeed(alsoByA)
-  }
-  await watch(
-    ledger,
-    (t) => todos.isMine(B, t),
-    (d) => printed.push(d.id),
-    () => {},
-    wait,
-  )
-  expect(printed).toEqual([tag, notes])
-  // Going while A's task ran, then five idle looks: Health's running worker is not B's.
-  expect(looks).toBe(6)
-  expect(ledger.get(healthToo).status).toBe('running')
+  ask(byA, 'which tag?')
+  ask(byS, 'which version for the notes?')
+  ask(ofHealth, 'which clinic?')
+  ask(loose, 'which desk?')
 
   const ls = nod(B, 'ls', '--mine')
   for (const brief of ['tag the release', 'write the changelog', 'write the release notes']) {
@@ -570,38 +379,7 @@ test("a project's new session takes over the project's tasks and decisions in ls
   expect(ofS).toContain('which desk?')
   expect(ofS).not.toContain('which clinic?')
   expect(nod(Q1, '--mine')).toContain('which clinic?')
-  // Run as a command too: B's watch keeps going while A's task in p1 runs, and prints the decisions
-  // on A's tasks, not Health's. It takes in only decisions that open after it starts, which nothing
-  // marks, so each round opens one more of each until it prints A's.
-  const running = add(A, 'tag the next release')
-  const watching = Bun.spawn(['bun', cli, 'watch', '--mine'], { env: envOf(B), stdout: 'pipe' })
-  let out = ''
-  const reading = (async () => {
-    const text = new TextDecoder()
-    for await (const chunk of watching.stdout) out += text.decode(chunk)
-  })()
-  try {
-    // A watch that misses A's decisions would leave the rounds going; they stop well inside the
-    // test's time, and the watch goes with them.
-    for (let round = 0; !out.includes('which branch?'); round += 1) {
-      if (round === 100) throw new Error(`B's watch printed none of A's decisions: ${out}`)
-      ask(ofHealth, 'which room?')
-      ask(byA, 'which branch?')
-      await Bun.sleep(200)
-    }
-    expect(out).not.toContain('which room?')
-    ledger.succeed(running)
-    // It ends once A's task stops, while Health's worker runs on; one that counted Health's would not.
-    const ended = await Promise.race([watching.exited, Bun.sleep(15_000).then(() => 'running')])
-    expect(ended).toBe(0)
-  } finally {
-    watching.kill()
-  }
-  await reading
-  expect(out).not.toContain('which room?')
-  // It ended with Health's worker still running.
-  expect(ledger.get(healthToo).status).toBe('running')
-}, 45_000)
+}, 30_000)
 
 test('nod open runs claude in this terminal with its environment and ends as claude does; called again it resumes that session, and after --new the new one', () => {
   const home = tmp.make('nod-open-cli-')
@@ -806,7 +584,6 @@ test('ls hides tasks gc collected unless --all, and lists links in their row', a
       checkCmd: null,
       model: null,
       after: [],
-      triggerId: null,
       issue: null,
     })
   const done = add('done')
@@ -858,7 +635,6 @@ test('ls shows where an unlinked task was pushed, under any name, until it is li
     checkCmd: null,
     model: null,
     after: [],
-    triggerId: null,
     issue: null,
   })
   ledger.setRunning(task, repo)
@@ -906,7 +682,6 @@ test('ls asks git where each unlinked task was pushed at once, not waiting on on
       checkCmd: null,
       model: null,
       after: [],
-      triggerId: null,
       issue: null,
     })
     ledger.setRunning(task, repo)
@@ -969,7 +744,6 @@ exit 0
       checkCmd: null,
       model: null,
       after: [],
-      triggerId: null,
       issue: null,
     })
     ledger.setRunning(id, home)
@@ -999,7 +773,6 @@ test('ls keeps tasks of one status together and gives each its issue; --plain an
       checkCmd: null,
       model: null,
       after: [],
-      triggerId: null,
       issue,
     })
   add('first', 'PROJ-1')
@@ -1102,7 +875,6 @@ test('tick by hand says which finished tasks it collected', () => {
       checkCmd: null,
       model: null,
       after: [],
-      triggerId: null,
       issue: null,
     })
     const cwd = workspaceOf(home, ledger.get(id))
@@ -1121,7 +893,7 @@ test('tick by hand says which finished tasks it collected', () => {
   expect(ledger.list().map((t) => t.collectedAt !== null)).toEqual([true, true])
 })
 
-test('a task is n<n>, a decision d<n> and a trigger c<n>, and each still takes its bare number', () => {
+test('a task is n<n> and a decision d<n>, and each still takes its bare number', () => {
   const home = tmp.make('nod-letters-')
   const ledger = new Ledger(home)
   const env = { ...process.env, NOD_HOME: home }
@@ -1138,7 +910,6 @@ test('a task is n<n>, a decision d<n> and a trigger c<n>, and each still takes i
     checkCmd: null,
     model: null,
     after: [],
-    triggerId: null,
     issue: null,
   })
   ledger.setRunning(id, home)
@@ -1180,15 +951,7 @@ test('a task is n<n>, a decision d<n> and a trigger c<n>, and each still takes i
   expect(nod('search', `n${id}`)).toBe(shown)
   expect(nod('search', `#${id}`)).toBe(shown)
 
-  const added = (brief: string): number =>
-    Number(nod('trigger', 'add', '0 9 * * *', brief).split('\n')[0])
-  const first = added('morning digest')
-  const second = added('evening digest')
-  expect(nod('trigger', 'ls')).toContain(`c${first}    0 9 * * *`)
-  expect(nod('trigger', 'rm', `c${first}`)).toBe('removed\n')
-  expect(nod('trigger', 'rm', String(second))).toBe('removed\n')
-  expect(ledger.triggers()).toEqual([])
-  // About 20 nod commands, each a bun process: about a second alone, longer on a loaded machine.
+  // About 10 nod commands, each a bun process: under a second alone, longer on a loaded machine.
 }, 20_000)
 
 test('nod cancel ends a task as whoever runs it, with the reason given, and refuses one that ended', () => {
@@ -1210,7 +973,6 @@ test('nod cancel ends a task as whoever runs it, with the reason given, and refu
       checkCmd: null,
       model: null,
       after: [],
-      triggerId: null,
       issue: null,
       rootSession,
     })
@@ -1253,7 +1015,6 @@ test('hook stop waits on the background work Claude Code says still runs, and ti
     checkCmd: null,
     model: null,
     after: [],
-    triggerId: null,
     issue: null,
   })
   ledger.setRunning(id, home)
@@ -1326,7 +1087,6 @@ test('rule ls, add, edit, off and on change rules as a person, show r<n> tells w
     checkCmd: null,
     model: null,
     after: [],
-    triggerId: null,
     issue: null,
   })
   const retroTask = ledger.addRetro(ledger.get(of), 'look back')
@@ -1403,7 +1163,6 @@ test('rule ls, add, edit, off and on change rules as a person, show r<n> tells w
     checkCmd: null,
     model: null,
     after: [],
-    triggerId: null,
     issue: null,
   })
   const asking = ledger.addRetro(ledger.get(other), 'look back again')
@@ -1505,7 +1264,6 @@ test('repo sets how far nod lands a repo, records who changed what, and refuses 
     checkCmd: null,
     model: null,
     after: [],
-    triggerId: null,
     issue: null,
   })
   const off = await nod({}, 'land', String(task))
@@ -1524,7 +1282,6 @@ test('attach and peek of a finished task whose terminal is closed say a message 
     checkCmd: null,
     model: null,
     after: [],
-    triggerId: null,
     issue: null,
   }
   const started = (id: number): number => {
@@ -1584,7 +1341,6 @@ test("the prompt hook opens the turn typed into a worker's terminal, printing no
     checkCmd: null,
     model: null,
     after: [],
-    triggerId: null,
     issue: null,
   }
   const started = (id: number): number => {

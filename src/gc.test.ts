@@ -46,7 +46,6 @@ test('gc removes old finished workspaces, keeps their session transcripts, and k
       checkCmd: null,
       model: null,
       after: [],
-      triggerId: null,
       issue: null,
     })
     const cwd = workspaceOf(home, ledger.get(id))
@@ -107,7 +106,6 @@ test('gc collects the tasks the human names, however recent, and leaves unfinish
       checkCmd: null,
       model: null,
       after: [],
-      triggerId: null,
       issue: null,
     })
     mkdirSync(workspaceOf(home, ledger.get(id)), { recursive: true })
@@ -174,7 +172,6 @@ test('gc deletes a branch once a remote branch holds it or the default branch ha
       checkCmd: null,
       model: null,
       after: [],
-      triggerId: null,
       issue: null,
     })
     const cwd = workspaceOf(home, ledger.get(id))
@@ -227,7 +224,6 @@ test('resume brings a collected task back: the worktree returns at the same path
       checkCmd: null,
       model: null,
       after: [],
-      triggerId: null,
       issue: null,
     })
     const cwd = workspaceOf(home, ledger.get(id))
@@ -380,7 +376,6 @@ test('gc keeps a worktree holding the only copy of commits: in a submodule, or o
       checkCmd: null,
       model: null,
       after: [],
-      triggerId: null,
       issue: null,
     })
     const cwd = workspaceOf(home, ledger.get(id))
@@ -481,7 +476,6 @@ test('gc removes nothing of a task told to go on while it checks the worktree', 
     checkCmd: null,
     model: null,
     after: [],
-    triggerId: null,
     issue: null,
   })
   const cwd = workspaceOf(home, ledger.get(id))
@@ -548,7 +542,6 @@ test('a task gc cannot finish after its worktree went stays listed, and a later 
     checkCmd: null,
     model: null,
     after: [],
-    triggerId: null,
     issue: null,
   })
   const cwd = workspaceOf(home, ledger.get(id))
@@ -599,7 +592,6 @@ test('gc reads each task again as it gets to it: one told to go on meanwhile is 
       checkCmd: null,
       model: null,
       after: [],
-      triggerId: null,
       issue: null,
     })
     mkdirSync(workspaceOf(home, ledger.get(id)), { recursive: true })
@@ -649,7 +641,6 @@ test('gc takes a finished task whose open turn went with its terminal', async ()
     checkCmd: null,
     model: null,
     after: [],
-    triggerId: null,
     issue: null,
   })
   const cwd = workspaceOf(home, ledger.get(id))
@@ -684,7 +675,6 @@ test('gc --older-than leaves a task a queued one waits for, as sweep does', asyn
     checkCmd: null,
     model: null,
     after: [],
-    triggerId: null,
     issue: null,
   }
   const base = ledger.add(spec)

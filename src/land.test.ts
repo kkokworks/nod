@@ -96,7 +96,6 @@ function finished(
     checkCmd: null,
     model: null,
     after: after === undefined ? [] : [after],
-    triggerId: null,
     issue: null,
   })
   const ws = workspaceOf(home, ledger.get(id))

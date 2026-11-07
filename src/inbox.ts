@@ -5,8 +5,8 @@ import { message, unbroken } from './proc'
 import { type Project, type Session, Todos } from './todos'
 import { allowedLine, firstLine, indent, oneLine, taskLabel } from './view'
 
-// nod tells a project's session, the one nod open opened for it last, what `nod watch` would print
-// for it: each of the project's tasks that ends (once its check and review are done) and each of
+// nod tells a project's session, the one nod open opened for it last, what happens to its work:
+// each of the project's tasks that ends (once its check and review are done) and each of
 // its decisions that opens, and what a person sends it with `nod tell p<n>`; also what nod allowed
 // a worker itself, and each decision a person answered elsewhere (decisions.ts). An orchestrator
 // hears the same of the tasks in no project (Todos.listener). The ledger records each as a
@@ -123,8 +123,8 @@ export const takesMessages = (session: Session | null): boolean =>
 // no socket of it, or its socket file is gone), so the decisions and ends that work brings wait
 // unheard. Each project once, and none of `warned`, which onCommand told of already, and which
 // gets those told here. Nothing for a person's shell (no session), nor for the project's latest
-// session, which onCommand speaks for. `nod watch --mine` shows only the session's own
-// tasks, so the line names plain `nod watch` for work another session added.
+// session, which onCommand speaks for. --mine shows only the session's own tasks, so the line
+// names plain `nod` and `nod ls` for work another session added.
 export function unheardWork(
   ledger: Ledger,
   session: string | null,
@@ -151,10 +151,10 @@ export function unheardWork(
         : latest.socket === null
           ? 'it takes no messages now'
           : 'its inbox socket is gone'
-    const watch = tasks.every((t) => todos.isMine(session, t)) ? 'nod watch --mine' : 'nod watch'
+    const mine = tasks.every((t) => todos.isMine(session, t)) ? ' --mine' : ''
     warned.add(projectId)
     told.push(
-      `nod: ${p}'s session hears nothing from nod (${why}), so the decisions and ends of this work wait unheard; run ${watch} here, or nod open ${p} opens ${latest === null ? 'one' : 'it again'}`,
+      `nod: ${p}'s session hears nothing from nod (${why}), so the decisions and ends of this work wait unheard until nod open ${p} opens ${latest === null ? 'one' : 'it again'}; meanwhile nod${mine} and nod ls${mine} here show them`,
     )
   }
   return told
@@ -285,14 +285,14 @@ function noticesText(ledger: Ledger, project: Project | null, notices: Notice[])
   return [head, ...notices.map((n) => noticeText(ledger, n))].join('\n\n')
 }
 
-// What the session does with each end, as it does with `nod watch`'s line.
+// What the session does with each end.
 const NEXT = {
   succeeded: (id: number) => `nod show n${id}, then send its result out`,
   error: (id: number) => `nod show n${id} says why; settle with the person what to do`,
   cancelled: (id: number) => `tell the person (nod show n${id})`,
 }
 
-// A notice as `nod watch` prints it, with the turn it came on (its attempt, counted from 1, or the
+// A notice as the session hears it, with the turn it came on (its attempt, counted from 1, or the
 // decision's number) to tell one sent twice, and what to do next.
 function noticeText(ledger: Ledger, n: Notice): string {
   if (n.event === 'tell') return n.note ?? ''

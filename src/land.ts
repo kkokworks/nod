@@ -24,7 +24,7 @@ import { baseOf, handOff, restore, type Send } from './worker'
 // a sandbox (landCommand in cli.ts).
 
 // The tick lands last but for its sweep, and the scheduler starts no tick while one runs, so a long
-// check holds back the sweep and the next ticks' triggers and watches.
+// check holds back the sweep and the next ticks' watches.
 // ponytail: one cap per step; land in a process of its own if checks run longer than ticks may wait.
 const CHECK_TIMEOUT_MS = 30 * 60_000
 const GATE_TIMEOUT_MS = 5 * 60_000

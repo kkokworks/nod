@@ -221,13 +221,12 @@ const REF_NAMES = {
   r: 'retrospective',
   n: 'task',
   d: 'decision',
-  c: 'trigger',
 } as const
 
 // `t12` for a todo, `p3` for a project, `r2` for a retrospective, `n5` for a task, `d7` for a
-// decision, `c2` for a trigger. A bare number is refused unless `bare`: tasks, decisions and
-// triggers took one before nod wrote their letters, and still do; `nod 12` answers a decision and
-// `nod drop 12` ends a task, so a number meant for a todo must not read as either.
+// decision. A bare number is refused unless `bare`: tasks and decisions took one before nod wrote
+// their letters, and still do; `nod 12` answers a decision and `nod drop 12` ends a task, so a
+// number meant for a todo must not read as either.
 export function parseRef(ref: string, prefix: keyof typeof REF_NAMES, bare = false): number {
   const m = new RegExp(`^${prefix}${bare ? '?' : ''}(\\d+)$`).exec(ref)
   if (m?.[1] === undefined) {

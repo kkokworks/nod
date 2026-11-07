@@ -15,10 +15,9 @@ import { ALLOW, harmless, onPermissionRequest } from './allow'
 import { NO_PERSON } from './decisions'
 import { onNotification, onPrompt } from './hooks'
 import { sendNotices } from './inbox'
-import { Ledger, type NewTask, type Task } from './ledger'
+import { Ledger, type NewTask } from './ledger'
 import { Tmux } from './tmux'
 import { Todos } from './todos'
-import { allowedLine, watch } from './view'
 import { answer, tell } from './worker'
 
 const tmp = tempDirs()
@@ -183,7 +182,6 @@ const spec = (repo: string | null): NewTask => ({
   checkCmd: null,
   model: null,
   after: [],
-  triggerId: null,
   issue: null,
 })
 
@@ -247,32 +245,6 @@ test('what nod allows goes into the ledger with its turn, and to the project ses
   // It opened no decision and left the task running.
   expect(ledger.decisions(id)).toEqual([])
   expect(ledger.get(id).status).toBe('running')
-})
-
-test('a root session that watches hears the line too, for the tasks it watches, from when it started', async () => {
-  const { ledger, id, event } = running()
-  onPermissionRequest(ledger, event('rm -rf dist'))
-  const heard = async (counts: (t: Task) => boolean): Promise<string[]> => {
-    const printed: string[] = []
-    let looks = 0
-    const wait = async (): Promise<void> => {
-      looks += 1
-      if (looks === 1) onPermissionRequest(ledger, event(`rm -rf build${looks}`))
-      if (looks === 2) ledger.succeed(id)
-    }
-    await watch(
-      ledger,
-      counts,
-      () => {},
-      () => {},
-      wait,
-      (n) => printed.push(allowedLine(n)),
-    )
-    return printed
-  }
-  expect(await heard((t) => t.id === id)).toEqual([`n${id} 허락: rm -rf build1`])
-  ledger.setRunning(id, ledger.get(id).workspace ?? '')
-  expect(await heard((t) => t.id !== id)).toEqual([])
 })
 
 // Runs `nod hook <name>` on `home` as Claude Code does, with `stdin`; returns what it printed.

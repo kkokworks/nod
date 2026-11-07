@@ -49,7 +49,6 @@ test('done signals: dropped, taken over, merged into the default branch, every p
     checkCmd: null,
     model: null,
     after: [],
-    triggerId: null,
     issue: null,
   })
   // A task added and finished at `at`; with a branch, a worktree on it, and a commit when `commit`
@@ -228,7 +227,6 @@ test("the finished tasks' signals are read at once, a slow git service waited on
       checkCmd: null,
       model: null,
       after: [],
-      triggerId: null,
       issue: null,
     })
     ledger.setRunning(id, repo)
@@ -288,7 +286,6 @@ test("a task that never started leaves the branch it was named for alone: it is 
     checkCmd: null,
     model: null,
     after,
-    triggerId: null,
     issue: null,
   })
   // Tasks queued after one the human drops are cancelled with it, before they make a branch.
@@ -334,7 +331,6 @@ test('sweep looks again for a person attached just before it closes the session'
     checkCmd: null,
     model: null,
     after: [],
-    triggerId: null,
     issue: null,
   })
   const cwd = workspaceOf(home, ledger.get(id))
@@ -371,7 +367,6 @@ test('sweep collects a task only as its signal read it: one that ran again and f
     checkCmd: null,
     model: null,
     after: [],
-    triggerId: null,
     issue: null,
   })
   const old = ledger.add(spec('old plain', null))
@@ -424,7 +419,6 @@ test("an errored repo task goes once a task added after the error does its todo,
     checkCmd: null,
     model: null,
     after: [],
-    triggerId: null,
     issue: null,
   })
   // A task for a new todo that errors, and another doing the same todo right after it (the next id).
@@ -519,7 +513,6 @@ function unpushedTasks() {
       checkCmd: null,
       model: null,
       after: [],
-      triggerId: null,
       issue: null,
     }
     const id = todo === undefined ? ledger.add(spec) : ledger.addTodoTask(spec, todo)
@@ -592,7 +585,6 @@ test('a succeeded task with commits no remote has goes once its own pull request
     checkCmd: null,
     model: null,
     after: [waitedOn],
-    triggerId: null,
     issue: null,
   })
   const unread = finish('unread', BEFORE)

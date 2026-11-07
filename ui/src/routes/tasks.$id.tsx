@@ -112,7 +112,6 @@ function TaskPage() {
               check <code>{task.checkCmd}</code>
             </span>
           )}
-          {task.triggerId !== null && <span className="tag">trigger c{task.triggerId}</span>}
           {root !== null ? (
             <span
               className="tag"
