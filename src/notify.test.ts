@@ -147,8 +147,9 @@ test('a signal that ends nod goes first to the commands it runs, with what they 
   // The signal goes once the second has said, through the fifo, that it runs. Until it execs, what
   // `sh` started is a copy of `sh`, trap and all, and bash loses a signal that comes then: what the
   // copy went on to run held the fifo to its end (30 runs in 800 under load, when the signal went on
-  // `sh`'s word after `&`). So the copy is held there, at a gate the test opens once the copy has
-  // said it waits; what waits lets the signal pass, so a signal sent on that word is lost every time.
+  // `sh`'s word after `&`). So the copy is held there by its `$(...)`, which says through the fifo
+  // that it waits at a gate, and waits until the test opens it. It lets the signal pass, so a signal
+  // sent on its word is lost every time.
   const dir = tmp.make('nod-group-')
   const fifo = join(dir, 'held')
   const mark = join(dir, 'got')
