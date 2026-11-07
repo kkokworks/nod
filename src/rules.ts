@@ -1,4 +1,5 @@
-import type { Ledger, Task } from './ledger'
+import type { Decision, Ledger, Task } from './ledger'
+import { parseReport } from './report'
 import { quote } from './review'
 import { oneLine } from './view'
 
@@ -11,12 +12,16 @@ export const activeRules = (ledger: Ledger): string =>
     .map((r) => `- ${r.text}`)
     .join('\n')
 
-// Worth a retrospective: a check sent the worker back, or it gave up or kept failing. Questions,
-// permissions and trust are ordinary decisions, not trouble.
+// Worth a retrospective: a check sent the worker back, or it gave up (a question its turn's report
+// asked with `NOD: failed`) or kept failing. Other questions, permissions and trust are ordinary
+// decisions, not trouble.
 export function hadTrouble(ledger: Ledger, taskId: number): boolean {
+  const gaveUp = (d: Decision): boolean =>
+    d.reason === 'question' &&
+    parseReport(ledger.attempt(d.attemptId).report ?? '')?.status === 'failed'
   return (
     ledger.attempts(taskId).some((a) => a.kind === 'retry') ||
-    ledger.decisions(taskId).some((d) => d.reason === 'failed' || d.reason === 'check_failed')
+    ledger.decisions(taskId).some((d) => d.reason === 'check_failed' || gaveUp(d))
   )
 }
 

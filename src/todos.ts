@@ -26,18 +26,10 @@ import { REVIEW_SOURCE, type Trust, trust } from './trust'
 import { oneLine } from './view'
 
 // The person's own todos, kept the GTD way: captured into the inbox, clarified into a next action,
-// something waited on, someday, or reference, and grouped into projects. A todo is not a task: it
-// is something to do, which a task may later do for the person.
+// something waited on, or someday, and grouped into projects. A todo is not a task: it is something
+// to do, which a task may later do for the person.
 
-export const TODO_STATUSES = [
-  'inbox',
-  'next',
-  'waiting',
-  'someday',
-  'reference',
-  'done',
-  'dropped',
-] as const
+export const TODO_STATUSES = ['inbox', 'next', 'waiting', 'someday', 'done', 'dropped'] as const
 export type TodoStatus = (typeof TODO_STATUSES)[number]
 export const PROJECT_STATUSES = ['active', 'someday', 'done', 'dropped'] as const
 export type ProjectStatus = (typeof PROJECT_STATUSES)[number]
@@ -62,9 +54,6 @@ export type Todo = {
   notes: string | null
   status: TodoStatus
   projectId: number | null
-  // One GTD context, such as `@computer`: where, or with what, the action can be done. A todo
-  // without one can be done anywhere.
-  context: string | null
   // Who the todo waits on while it is `waiting`. Empty while it waits on the tasks it was
   // delegated to.
   waitingOn: string | null
@@ -83,9 +72,6 @@ export type Todo = {
   // While it is `waiting`, a shell command that exits 0 once what it waits on has happened; nod's
   // tick runs it and then makes the todo a next action again.
   watch: string | null
-  // With a watch, the latest task the todo was delegated to: once the watch passes, that task's
-  // session hears what the watch printed and carries on, and the todo waits on it again.
-  backTo: number | null
   // Where it was captured: `cli`, or the channel a scan read it from. With a key, that channel's
   // id for it, so the same item is captured only once.
   source: string
@@ -123,7 +109,6 @@ export type TodoEdit = Partial<
     | 'notes'
     | 'status'
     | 'projectId'
-    | 'context'
     | 'waitingOn'
     | 'due'
     | 'scheduled'
@@ -131,7 +116,6 @@ export type TodoEdit = Partial<
     | 'repeat'
     | 'focus'
     | 'watch'
-    | 'backTo'
   >
 >
 // `orchestrator`: the orchestrator in charge, by its session's name; null for none.
@@ -147,8 +131,6 @@ export type TodoDecision = { decision: Decision; task: Task; todo: Todo | null }
 export type Change = { actor: string; change: Record<string, [unknown, unknown]>; at: string }
 export type TodoFilter = {
   statuses: TodoStatus[]
-  // Todos in this context, and those with none, which can be done anywhere.
-  context: string | null
   projectId: number | null
   // Leaves out the todos of someday projects: putting a project off puts off its actions.
   hideSomedayProjects: boolean
@@ -235,9 +217,6 @@ export function parseRef(ref: string, prefix: keyof typeof REF_NAMES, bare = fal
   return Number(m[1])
 }
 
-// GTD contexts start with `@`; `phone` and `@phone` are the same context.
-export const asContext = (c: string): string => (c.startsWith('@') ? c : `@${c}`)
-
 // Text up to its first newline, as it is: a brief or question as a title. view.ts firstLine also
 // trims it and takes out control characters.
 export const firstLineOf = (s: string): string => s.replace(/\n[\s\S]*/, '')
@@ -309,16 +288,13 @@ export class Todos {
   }
 
   list(f: TodoFilter): Todo[] {
-    const { context, projectId } = f
+    const { projectId } = f
     const query = q
       .selectFrom('todos')
       .selectAll()
       .where((eb) =>
         eb.and([
           eb('status', 'in', f.statuses),
-          ...(context === null
-            ? []
-            : [eb.or([eb('context', '=', asContext(context)), eb('context', 'is', null)])]),
           ...(projectId === null ? [] : [eb('projectId', '=', projectId)]),
           ...(f.day === null ? [] : [eb.or([eb('start', 'is', null), eb('start', '<=', f.day)])]),
           ...(f.hideSomedayProjects
@@ -671,27 +647,15 @@ export class Todos {
   }
 
   // Makes a watched todo a next action again once its watch has ended, with a line in its notes
-  // saying when and how: `passed`, or `cannot run (<why>)`. One that passed with a task to go back
-  // to waits on that task instead, which moves it on when it ends (followTasks); the task is the
-  // one it names now, not when the command started, so it is returned for the caller to tell. A
-  // todo that left waiting or got another watch while the command ran is left as it is; null says so.
-  endWatch(
-    id: number,
-    watch: string,
-    outcome: string,
-    actor: string,
-    passed = false,
-  ): { back: number | null } | null {
+  // saying when and how: `passed`, or `cannot run (<why>)`. A todo that left waiting or got another
+  // watch while the command ran is left as it is. Returns whether this one moved it.
+  endWatch(id: number, watch: string, outcome: string, actor: string): boolean {
     return this.db.transaction(() => {
       const t = this.get(id)
-      if (t.status !== 'waiting' || t.watch !== watch) return null
-      const back = passed ? t.backTo : null
-      const to = back === null ? '' : `, back to task n${back}`
-      const line = `${localTime(new Date())} watch ${outcome}${to}: ${watch}`
-      const notes = withLine(t.notes, line)
-      const edit: TodoEdit = back === null ? { status: 'next' } : { waitingOn: null, watch: null }
-      this.set(id, { ...edit, notes }, actor)
-      return { back }
+      if (t.status !== 'waiting' || t.watch !== watch) return false
+      const line = `${localTime(new Date())} watch ${outcome}: ${watch}`
+      this.set(id, { status: 'next', notes: withLine(t.notes, line) }, actor)
+      return true
     })()
   }
 
@@ -875,7 +839,6 @@ export class Todos {
       if (edit.status !== undefined && CLOSED_PROJECT.includes(edit.status)) {
         const open = this.list({
           statuses: OPEN,
-          context: null,
           projectId: id,
           hideSomedayProjects: false,
           day: null,
@@ -1162,7 +1125,6 @@ export class Todos {
   private settle(before: Todo, edit: TodoEdit, from?: TodoStatus): TodoEdit {
     if (edit.status !== undefined) oneOf('todo status', edit.status, TODO_STATUSES)
     if (edit.title !== undefined) filled('title', edit.title)
-    if (typeof edit.context === 'string') filled('context', edit.context)
     if (typeof edit.watch === 'string') filled('watch', edit.watch)
     const status = edit.status ?? before.status
     const was = `t${before.id} is ${before.status}`
@@ -1185,22 +1147,6 @@ export class Todos {
       this.ledger.tasksOf(before.id).some((t) => UNFINISHED.includes(t.status))
     ) {
       throw new Error(`t${before.id} waits on its task, which moves it on when it ends`)
-    }
-    // It goes back to its latest task, the one followTasks moves it on with, which has a session to
-    // go on in. One gc collected comes back when told (restore in worker.ts).
-    if (typeof edit.backTo === 'number') {
-      if ((edit.watch === undefined ? before.watch : edit.watch) === null || status !== 'waiting') {
-        throw new Error('--back-to is for when a watch passes; give the waiting todo a --watch')
-      }
-      const task = this.ledger.tasksOf(before.id).at(-1)
-      if (task?.id !== edit.backTo) {
-        throw new Error(
-          `task n${edit.backTo} is not the latest task of t${before.id}; give --back-to t${before.id}`,
-        )
-      }
-      if (task.workspace === null) {
-        throw new Error(`task n${task.id} never started, so it cannot carry on`)
-      }
     }
     const projectId = edit.projectId === undefined ? before.projectId : edit.projectId
     if (projectId !== null && OPEN.includes(status)) {
@@ -1233,10 +1179,8 @@ export class Todos {
     return {
       ...edit,
       ...dates,
-      ...(typeof edit.context === 'string' ? { context: asContext(edit.context) } : {}),
       ...(leftWaiting && edit.waitingOn === undefined ? { waitingOn: null } : {}),
-      // The task to go back to is for when the watch passes, so it goes with the watch.
-      ...(leftWaiting || edit.watch === null ? { watch: null, backTo: null } : {}),
+      ...(leftWaiting ? { watch: null } : {}),
     }
   }
 
@@ -1260,7 +1204,6 @@ export class Todos {
       notes: done.notes,
       status: 'next' as const,
       projectId: done.projectId,
-      context: done.context,
       ...nextDates(done, done.repeat, localDay(new Date()), this.earlier(done)),
       repeat: done.repeat,
       source: done.source,

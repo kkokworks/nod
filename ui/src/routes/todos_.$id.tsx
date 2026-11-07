@@ -122,7 +122,6 @@ function EditForm({ page }: { page: TodoPage }) {
     title: todo.title,
     status: todo.status,
     projectId: todo.projectId === null ? '' : String(todo.projectId),
-    context: todo.context ?? '',
     waitingOn: todo.waitingOn ?? '',
     dueDate: datePart(todo.due),
     dueTime: timePart(todo.due),
@@ -185,7 +184,6 @@ function EditForm({ page }: { page: TodoPage }) {
     title: f.title,
     status: f.status,
     projectId: f.projectId === '' ? null : Number(f.projectId),
-    context: f.context,
     waitingOn: f.waitingOn,
     due: join(f.dueDate, f.dueTime),
     scheduled: join(f.onDate, f.onTime),
@@ -238,10 +236,6 @@ function EditForm({ page }: { page: TodoPage }) {
             </option>
           ))}
         </select>
-      </label>
-      <label>
-        Context
-        <input value={f.context} placeholder="@desk" onChange={set('context')} />
       </label>
       <label>
         Waiting on

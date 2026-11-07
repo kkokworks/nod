@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'no
 import { join } from 'node:path'
 import { tempDirs } from '../test/tmp'
 import { Ledger, MIGRATIONS, RETRO_STATUS, type RetroOutcome, type TaskStatus } from './ledger'
+import { hadTrouble } from './rules'
 import { SESSION_ROLES, Todos } from './todos'
 
 const tmp = tempDirs()
@@ -24,7 +25,7 @@ test('reopening a ledger keeps its data and does not re-run migrations', () => {
   })
   const reopened = new Ledger(home)
   expect(reopened.get(id).brief).toBe('keep me')
-  expect(reopened.db.query('pragma user_version').get()).toEqual({ user_version: 32 })
+  expect(reopened.db.query('pragma user_version').get()).toEqual({ user_version: 33 })
 })
 
 test('v18 leaves the tasks before it without a root session', () => {
@@ -38,7 +39,7 @@ test('v18 leaves the tasks before it without a root session', () => {
 
   const ledger = new Ledger(home)
   expect(ledger.get(1)).toMatchObject({ brief: 'x', rootSession: null })
-  expect(ledger.db.query('pragma user_version').get()).toEqual({ user_version: 32 })
+  expect(ledger.db.query('pragma user_version').get()).toEqual({ user_version: 33 })
 })
 
 test('v23 gives a ledger of v22 project sessions, none yet, and leaves its projects as they were', () => {
@@ -78,7 +79,7 @@ test('v29 moves the project sessions of a v28 ledger to sessions under their ids
 
   const ledger = new Ledger(home)
   const todos = new Todos(ledger)
-  expect(ledger.db.query('pragma user_version').get()).toEqual({ user_version: 32 })
+  expect(ledger.db.query('pragma user_version').get()).toEqual({ user_version: 33 })
   expect(ledger.db.query('pragma foreign_key_check').all()).toEqual([])
   expect(todos.latestSession(1)).toEqual({
     id: 9,
@@ -105,11 +106,8 @@ test('v29 moves the project sessions of a v28 ledger to sessions under their ids
   expect(ledger.notice(3)).toMatchObject({ sessionId: null, sentAt: 'sent-3' })
   expect(ledger.notice(1)).not.toHaveProperty('sessionKey')
   expect(ledger.unsentNotices()).toMatchObject([{ id: 4, sessionId: null, note: 'unsent' }])
-  // A session no row names: the notice stays sent, and the ID it held stays in the ledger.
+  // A session no row names: the notice stays sent. v29 kept the ID it held; v33 drops it.
   expect(ledger.notice(5)).toMatchObject({ sessionId: null, sentAt: 'sent-5', note: 'to no row' })
-  expect(ledger.db.query('select * from unmatched_notice_sessions').all()).toEqual([
-    { notice_id: 5, session_key: 'key-gone' },
-  ])
   // A notice's session is a row of sessions now.
   expect(() => ledger.claimNotices([4], 99)).toThrow('FOREIGN KEY constraint failed')
   expect(ledger.claimNotices([4], 9).ids).toEqual([4])
@@ -126,7 +124,7 @@ test('v30 leaves the description of a v29 ledger’s projects empty and all else
 
   const ledger = new Ledger(home)
   const todos = new Todos(ledger)
-  expect(ledger.db.query('pragma user_version').get()).toEqual({ user_version: 32 })
+  expect(ledger.db.query('pragma user_version').get()).toEqual({ user_version: 33 })
   expect(todos.project(1)).toEqual({
     id: 1,
     title: 'Release',
@@ -152,7 +150,7 @@ test('v31 leaves a v30 ledger’s projects as they were, with no orchestrator, a
 
   const ledger = new Ledger(home)
   const todos = new Todos(ledger)
-  expect(ledger.db.query('pragma user_version').get()).toEqual({ user_version: 32 })
+  expect(ledger.db.query('pragma user_version').get()).toEqual({ user_version: 33 })
   expect(ledger.db.query('select * from project_orchestrators').all()).toEqual([])
   expect(todos.project(1)).toEqual({
     id: 1,
@@ -216,7 +214,8 @@ test('v32 drops the triggers of a v31 ledger that had none, and keeps every othe
         "select name from sqlite_schema where type = 'table' and name not like 'sqlite_%'",
       )
       .all()
-      .filter((t) => !['triggers', 'trigger_items'].includes(t.name))
+      // and the table v33 drops
+      .filter((t) => !['triggers', 'trigger_items', 'unmatched_notice_sessions'].includes(t.name))
       .map((t) => [
         t.name,
         before.query<{ n: number }, []>(`select count(*) n from ${t.name}`).get()?.n ?? -1,
@@ -225,7 +224,7 @@ test('v32 drops the triggers of a v31 ledger that had none, and keeps every othe
   before.close()
 
   const ledger = new Ledger(home)
-  expect(ledger.db.query('pragma user_version').get()).toEqual({ user_version: 32 })
+  expect(ledger.db.query('pragma user_version').get()).toEqual({ user_version: 33 })
   const after = shape(ledger)
   expect(after.tables).toEqual(tables)
   expect(after.taskColumns).not.toContain('trigger_id')
@@ -282,7 +281,6 @@ test('v32 keeps what a v31 ledger held of triggers in triggers.json, and puts th
   // One todo for the two that ran until now; the one removed before is only in the file.
   const inbox = todos.list({
     statuses: ['inbox'],
-    context: null,
     projectId: null,
     hideSomedayProjects: false,
     day: null,
@@ -344,6 +342,131 @@ test('v32 leaves a v31 ledger as it was when triggers.json cannot be written', (
   expect(old.query('select count(*) n from triggers').get()).toEqual({ n: 1 })
   expect(old.query('select count(*) n from todos').get()).toEqual({ n: 1 })
   old.close()
+})
+
+// A ledger as v32 left it, with two tasks, a turn of the first, a project, a todo, a rule and a
+// sent notice, and what `rows` inserts.
+function v32Home(rows: string): string {
+  const home = freshHome()
+  const old = new Database(join(home, 'nod.db'), { create: true, strict: true })
+  for (const sql of MIGRATIONS.slice(0, 32)) old.exec(sql)
+  old.exec(`pragma user_version = 32;
+    insert into tasks (id, brief, created_at) values (1, 'first', 'at'), (2, 'second', 'at');
+    insert into attempts (id, task_id, kind, session_id, prompt, outcome, report, started_at)
+      values (1, 1, 'start', 's', 'p', 'succeeded', 'NOD: done | shipped', 'at');
+    insert into projects (id, title, status, created_at, status_at)
+      values (1, 'Release', 'active', 'at', 'at');
+    insert into todos (id, title, source, created_at, status_at) values (1, 'Mine', 'cli', 'at', 'at');
+    insert into rules (id, text, state, created_at, changed_at) values (1, 'be brief', 'on', 'at', 'at');
+    insert into notices (id, project_id, event, note, created_at, sent_at)
+      values (1, 1, 'tell', 'hi', 'at', 'sent');
+    ${rows}`)
+  old.close()
+  return home
+}
+
+const columns = (ledger: Ledger, table: string): string[] =>
+  ledger.db
+    .query<{ name: string }, [string]>('select name from pragma_table_info(?)')
+    .all(table)
+    .map((c) => c.name)
+
+test('v33 drops the unused columns and table of a v32 ledger that held nothing in them, and keeps every other row', () => {
+  const home = v32Home('')
+  const before = new Database(join(home, 'nod.db'), { readonly: true })
+  const tables = Object.fromEntries(
+    before
+      .query<{ name: string }, []>(
+        "select name from sqlite_schema where type = 'table' and name not like 'sqlite_%'",
+      )
+      .all()
+      .filter((t) => t.name !== 'unmatched_notice_sessions')
+      .map((t) => [
+        t.name,
+        before.query<{ n: number }, []>(`select count(*) n from ${t.name}`).get()?.n ?? -1,
+      ]),
+  )
+  before.close()
+
+  const ledger = new Ledger(home)
+  expect(ledger.db.query('pragma user_version').get()).toEqual({ user_version: 33 })
+  expect(shape(ledger).tables).toEqual(tables)
+  expect(columns(ledger, 'todos')).not.toContain('context')
+  expect(columns(ledger, 'todos')).not.toContain('back_to')
+  expect(columns(ledger, 'attempts')).not.toContain('cost_usd')
+  expect(columns(ledger, 'attempts')).not.toContain('pid')
+  expect(ledger.db.query('pragma foreign_key_check').all()).toEqual([])
+  expect(new Todos(ledger).get(1)).toMatchObject({ title: 'Mine', status: 'inbox' })
+  expect(new Todos(ledger).changes(1)).toEqual([])
+  expect(ledger.attempt(1)).toMatchObject({ outcome: 'succeeded', report: 'NOD: done | shipped' })
+  expect(ledger.notice(1)).toMatchObject({ note: 'hi', sentAt: 'sent' })
+})
+
+test('v33 keeps what a v32 ledger held of a context or a task to go back to in each todo’s history, moves reference todos to someday, and reads failed turns as questions', () => {
+  const home = v32Home(`
+    insert into todos (id, title, source, status, project_id, context, back_to, followed,
+        created_at, status_at)
+      values (2, 'Call the bank', 'cli', 'done', null, '@phone', null, null, 'at', 'done-at'),
+             (3, 'Watch the deploy', 'cli', 'waiting', 1, null, 2, null, 'at', 'waited'),
+             (4, 'Style guide', 'import', 'reference', 1, '@desk', null, 'n1 done', 'at', 'filed'),
+             (5, 'Old manual', 'import', 'reference', null, null, null, null, 'at', 'filed');
+    update attempts set cost_usd = 0.5, pid = 4242 where id = 1;
+    insert into attempts (id, task_id, kind, session_id, prompt, outcome, report, started_at)
+      values (2, 2, 'start', 's', 'p', 'failed', 'cannot\nNOD: failed | the repo is gone', 'at'),
+             (3, 2, 'answer', 's', 'p', 'failed', 'NOD: failed | still gone', 'at');
+    insert into decisions (id, task_id, attempt_id, reason, question, answer, created_at, answered_at)
+      values (1, 2, 2, 'failed', 'the repo is gone', 'look again', 'at', 'answered'),
+             (2, 2, 3, 'failed', 'still gone', null, 'at', null);
+    insert into notices (id, project_id, event, note, created_at, sent_at)
+      values (2, 1, 'tell', 'to no row', 'at', 'sent');
+    insert into unmatched_notice_sessions (notice_id, session_key) values (2, 'key-gone');`)
+  const ledger = new Ledger(home)
+  const todos = new Todos(ledger)
+  expect(ledger.db.query('pragma user_version').get()).toEqual({ user_version: 33 })
+  expect(ledger.db.query('pragma foreign_key_check').all()).toEqual([])
+  expect(
+    ledger.db
+      .query("select name from sqlite_schema where name = 'unmatched_notice_sessions'")
+      .all(),
+  ).toEqual([])
+
+  // Each value is nod's change to none, so `nod todo <todo>` still shows it.
+  const change = (id: number) => todos.changes(id).map((c) => [c.actor, c.change])
+  expect(change(1)).toEqual([])
+  expect(change(2)).toEqual([['nod', { context: ['@phone', null] }]])
+  expect(change(3)).toEqual([['nod', { backTo: [2, null] }]])
+  expect(change(4)).toEqual([
+    ['nod', { context: ['@desk', null] }],
+    ['nod', { status: ['reference', 'someday'] }],
+  ])
+  expect(change(5)).toEqual([['nod', { status: ['reference', 'someday'] }]])
+  const at = todos.changes(5)[0]?.at ?? ''
+  expect(at).toMatch(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/)
+
+  expect(todos.get(2)).toMatchObject({ status: 'done', statusAt: 'done-at' })
+  expect(todos.get(3)).toMatchObject({ status: 'waiting', statusAt: 'waited', projectId: 1 })
+  expect(todos.get(4)).toMatchObject({
+    status: 'someday',
+    statusAt: at,
+    projectId: 1,
+    followed: null,
+  })
+  expect(todos.get(5)).toMatchObject({ status: 'someday', statusAt: at })
+  expect(todos.get(4)).not.toHaveProperty('context')
+  expect(todos.get(3)).not.toHaveProperty('backTo')
+
+  expect(ledger.attempt(1)).toMatchObject({ outcome: 'succeeded' })
+  expect(ledger.attempt(1)).not.toHaveProperty('costUsd')
+  expect(ledger.attempts(2).map((a) => a.outcome)).toEqual(['needs_decision', 'needs_decision'])
+  expect(ledger.decisions(2).map((d) => [d.reason, d.answer])).toEqual([
+    ['question', 'look again'],
+    ['question', null],
+  ])
+  // Still open, and still trouble enough for a retrospective: the report says the worker gave up.
+  expect(ledger.openDecisions().map((d) => d.id)).toEqual([2])
+  expect(hadTrouble(ledger, 2)).toBe(true)
+  expect(hadTrouble(ledger, 1)).toBe(false)
+  expect(ledger.notice(2)).toMatchObject({ sessionId: null, sentAt: 'sent', note: 'to no row' })
 })
 
 test('sessions take the roles SESSION_ROLES names and refuse any other', () => {
@@ -699,49 +822,24 @@ test('v17 without rules.md leaves the rules empty and makes no file', () => {
   expect(existsSync(join(home, 'rules.md.imported'))).toBe(false)
 })
 
-test('a rule changes only when told something new, records who changed what, and is one line', () => {
+test('a rule turns off or on only when it is not so already, records who did, and is one line', () => {
   const ledger = new Ledger(freshHome())
   const { id } = ledger.addRule('keep it short', null, 'human')
-  ledger.setRule(id, { text: 'keep it short', state: 'on' }, 'human')
-  ledger.setRule(id, { text: 'keep it shorter' }, 'claude:ab12')
-  ledger.setRule(id, { state: 'off' }, 'human')
-  expect(ledger.rule(id)).toMatchObject({ text: 'keep it shorter', state: 'off', retroId: null })
+  ledger.setRule(id, 'on', 'human')
+  ledger.setRule(id, 'off', 'claude:ab12')
+  ledger.setRule(id, 'off', 'human')
+  expect(ledger.rule(id)).toMatchObject({ text: 'keep it short', state: 'off', retroId: null })
   const changes = ledger.db
     .query<{ actor: string; change: string }, []>('select actor, change from rule_changes')
     .all()
     .map((c) => [c.actor, JSON.parse(c.change)])
   expect(changes).toEqual([
     ['human', { text: [null, 'keep it short'], state: [null, 'on'] }],
-    ['claude:ab12', { text: ['keep it short', 'keep it shorter'] }],
-    ['human', { state: ['on', 'off'] }],
+    ['claude:ab12', { state: ['on', 'off'] }],
   ])
   expect(() => ledger.addRule(' ', null, 'human')).toThrow('empty rule')
-  expect(() => ledger.setRule(id, { text: 'two\nlines' }, 'human')).toThrow('one line')
-  expect(() => ledger.setRule(9, { state: 'off' }, 'human')).toThrow('rule 9 not found')
-})
-
-test("a rule is edited once its words differ from its retrospective's proposal; one written by hand never is", () => {
-  const ledger = new Ledger(freshHome())
-  const of = ledger.add({
-    brief: 'x',
-    repo: null,
-    branch: null,
-    checkCmd: null,
-    model: null,
-    after: [],
-    issue: null,
-  })
-  const retroId = ledger.get(ledger.addRetro(ledger.get(of), 'look back')).retroId ?? 0
-  ledger.proposeRule(retroId, 'check first')
-  const proposed = ledger.addRule('check first', retroId, 'human')
-  const byHand = ledger.addRule('keep it short', null, 'human')
-  ledger.setRule(byHand.id, { text: 'keep it shorter' }, 'human')
-  const edited = (): boolean[] => ledger.rulesNow().map((r) => r.edited)
-  expect(edited()).toEqual([false, false])
-  ledger.setRule(proposed.id, { text: 'check first, always' }, 'human')
-  expect(edited()).toEqual([true, false])
-  ledger.setRule(proposed.id, { text: 'check first', state: 'off' }, 'human')
-  expect(ledger.rulesNow()[0]).toMatchObject({ state: 'off', edited: false })
+  expect(() => ledger.addRule('two\nlines', null, 'human')).toThrow('one line')
+  expect(() => ledger.setRule(9, 'off', 'human')).toThrow('rule 9 not found')
 })
 
 test('v16 moves the retrospectives so far into their own table, with what became of each', () => {

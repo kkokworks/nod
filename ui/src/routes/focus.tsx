@@ -1,5 +1,5 @@
 import { createFileRoute, Link } from '@tanstack/react-router'
-import { Fragment, useState } from 'react'
+import { Fragment } from 'react'
 import type { CalendarEvent } from '../../../src/calendar'
 import { inboxSince, reviewDue } from '../../../src/trust'
 import { keep } from '../parts'
@@ -13,18 +13,10 @@ export const Route = createFileRoute('/focus')({
 })
 
 // The day's first screen, after Mindwtr's Focus: what needs the person, the day's events, the few
-// todos picked for today, what the day holds, the next actions to pick from, those that start
-// later, and reference to look up.
+// todos picked for today, what the day holds, the next actions to pick from, and those that start
+// later.
 function FocusPage() {
   const page = Route.useLoaderData()
-  const [context, setContext] = useState<string | null>(null)
-  const contexts = [
-    ...new Set(page.next.flatMap((t) => (t.context === null ? [] : [t.context]))),
-  ].sort()
-  // A next action with no context can be done anywhere, so it shows in every context.
-  const next = page.next.filter(
-    (t) => context === null || t.context === null || t.context === context,
-  )
   // A full focus offers no more picks; unfocusing one makes room.
   const full = page.focus.length >= page.limit
   const rows = (ts: TodoItem[]) =>
@@ -67,21 +59,7 @@ function FocusPage() {
       )}
 
       <Section title="Next actions" count={page.next.length} bare={page.next.length === 0}>
-        {contexts.length > 0 && (
-          <div className="filters">
-            {[null, ...contexts].map((c) => (
-              <button
-                key={c ?? ''}
-                type="button"
-                className={context === c ? 'on' : ''}
-                onClick={() => setContext(c)}
-              >
-                {c ?? 'Anywhere'}
-              </button>
-            ))}
-          </div>
-        )}
-        {page.next.length === 0 ? <p className="muted">None.</p> : rows(next)}
+        {page.next.length === 0 ? <p className="muted">None.</p> : rows(page.next)}
       </Section>
 
       {page.upcoming.length > 0 && (
@@ -89,27 +67,7 @@ function FocusPage() {
           {rows(page.upcoming)}
         </Section>
       )}
-
-      <Reference ts={page.reference} today={page.today} />
     </div>
-  )
-}
-
-// Reference is looked up, not worked from, so it stays folded at the bottom.
-function Reference({ ts, today }: { ts: TodoItem[]; today: string }) {
-  if (ts.length === 0) return null
-  return (
-    <details className="fold">
-      <summary className="section">
-        Reference
-        <span className="count">{ts.length}</span>
-      </summary>
-      <div className="list">
-        {ts.map((t) => (
-          <TodoRow key={t.id} t={t} today={today} usual="reference" />
-        ))}
-      </div>
-    </details>
   )
 }
 

@@ -296,31 +296,29 @@ test('capture, clarify into a project, finish, and read back who changed what', 
   expect(await ok('project')).toEqual([
     'p1    active   Health — Teeth fixed  0 next  0 waiting  · no next action',
   ])
-  expect(
-    await ok('todo', 'set', 't1', '--status', 'next', '--project', 'Health', '--context', 'phone'),
-  ).toEqual(['t1    next      Call the dentist  · @phone · p1 Health'])
+  expect(await ok('todo', 'set', 't1', '--status', 'next', '--project', 'Health')).toEqual([
+    't1    next      Call the dentist  · p1 Health',
+  ])
   expect(await ok('in', 'Ask about the invoice')).toEqual([
     't2    inbox     Ask about the invoice  · since <time>',
   ])
   await ok('todo', 'set', 't2', '--status', 'waiting', '--waiting-on', 'Kim', '--project', 'p1')
   expect(await ok('todo')).toEqual([
-    't1    next      Call the dentist  · @phone · p1 Health',
+    't1    next      Call the dentist  · p1 Health',
     't2    waiting   Ask about the invoice  · p1 Health · waiting on Kim · since <time>',
   ])
-  expect(await ok('todo', 'next', '--context', '@phone')).toEqual([
-    't1    next      Call the dentist  · @phone · p1 Health',
-  ])
+  expect(await ok('todo', 'next')).toEqual(['t1    next      Call the dentist  · p1 Health'])
   expect(await ok('project')).toEqual(['p1    active   Health — Teeth fixed  1 next  1 waiting'])
   expect(await ok('project', 'p1')).toEqual([
     'p1    active   Health — Teeth fixed',
-    '  t1    next      Call the dentist  · @phone · p1 Health',
+    '  t1    next      Call the dentist  · p1 Health',
     '  t2    waiting   Ask about the invoice  · p1 Health · waiting on Kim · since <time>',
     '  changes',
     '    <time>  human  title — → Health, outcome — → Teeth fixed, status — → active',
   ])
 
   expect(await ok('todo', 'done', 't1', 't2')).toEqual([
-    't1    done      Call the dentist  · @phone · p1 Health · on <time>',
+    't1    done      Call the dentist  · p1 Health · on <time>',
     't2    done      Ask about the invoice  · p1 Health · on <time>',
   ])
   expect(await ok('todo')).toEqual([''])
@@ -774,7 +772,7 @@ test('a todo delegated with nod add waits on its task, whose decision is listed 
     'd1    decide    Write the release notes  · question · task n2 · p1 Release · since <time>',
     't1    waiting   Write the release notes  · p1 Release · waiting on task n2 (needs_decision) · since <time>',
   ])
-  expect(await ok('todo', 'next', '--context', 'phone')).toHaveLength(1)
+  expect(await ok('todo', 'next')).toHaveLength(1)
   expect(await ok('todo', 'inbox')).toEqual([''])
   expect(await ok('project')).toEqual(['p1    active   Release  1 next  1 waiting'])
   expect((await ok('todo', 't1')).filter((l) => l.startsWith('  task'))).toEqual([

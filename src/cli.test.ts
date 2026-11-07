@@ -1088,7 +1088,7 @@ test('add refuses repo work without a valid branch, before adding anything', asy
   expect(new Ledger(home).list()).toEqual([])
 })
 
-test('rule ls, add, edit, off and on change rules as a person, show r<n> tells what became of its rule, and a worker can neither change one nor trust a repo', async () => {
+test('rule ls, add, off and on change rules as a person, show r<n> tells what became of its rule, and a worker can neither change one nor trust a repo', async () => {
   const home = tmp.make('nod-rule-')
   const ledger = new Ledger(home)
   // A retrospective whose rule was added, as answering yes to its decision leaves it.
@@ -1133,18 +1133,12 @@ test('rule ls, add, edit, off and on change rules as a person, show r<n> tells w
 
   expect(await ok('rule', 'ls')).toEqual(['1    on  r1    did it'])
   expect(await ok('rule', 'add', 'keep', 'it', 'short')).toEqual(['2    on        keep it short'])
-  expect(await ok('rule', 'edit', '1', 'did it, and checked')).toEqual([
-    '1    on  r1    did it, and checked',
-  ])
-  expect(await ok('rule', 'off', '1')).toEqual(['1    off r1    did it, and checked'])
-  expect(await ok('rule', 'off', '1')).toEqual(['1    off r1    did it, and checked'])
-  expect(await ok('show', 'r1')).toContain('  rule 1 off, edited: did it, and checked')
-  expect(await ok('rule', 'on', '1')).toEqual(['1    on  r1    did it, and checked'])
-  expect(await ok('show', String(retroTask))).toContain('  rule 1 on, edited: did it, and checked')
-  expect(await ok('rule', 'ls')).toEqual([
-    '1    on  r1    did it, and checked',
-    '2    on        keep it short',
-  ])
+  expect(await ok('rule', 'off', '1')).toEqual(['1    off r1    did it'])
+  expect(await ok('rule', 'off', '1')).toEqual(['1    off r1    did it'])
+  expect(await ok('show', 'r1')).toContain('  rule 1 off: did it')
+  expect(await ok('rule', 'on', '1')).toEqual(['1    on  r1    did it'])
+  expect(await ok('show', String(retroTask))).toContain('  rule 1 on: did it')
+  expect(await ok('rule', 'ls')).toEqual(['1    on  r1    did it', '2    on        keep it short'])
   // Each change is the person's; turning off a rule already off changed nothing.
   const changes = ledger.db
     .query<{ actor: string; change: string }, [number]>(
@@ -1154,12 +1148,13 @@ test('rule ls, add, edit, off and on change rules as a person, show r<n> tells w
     .map((c) => [c.actor, Object.keys(JSON.parse(c.change))])
   expect(changes).toEqual([
     ['human', ['text', 'retroId', 'state']],
-    ['human', ['text']],
     ['human', ['state']],
     ['human', ['state']],
   ])
 
-  expect(await fails('rule', 'edit', '9', 'x')).toContain('rule 9 not found')
+  expect(await fails('rule', 'off', '9')).toContain('rule 9 not found')
+  // Nothing rewords a rule: a new wording is a rule of its own.
+  expect(await fails('rule', 'edit', '1', 'x')).toContain('usage:')
   expect(await fails('rule', 'off', 'r1')).toContain('not a rule number: r1')
   expect(await fails('rule', 'add')).toContain('usage:')
   expect(await fails('rule', 'rm', '1')).toContain('usage:')

@@ -221,10 +221,10 @@ const USAGE = `usage:
                                    number, on or off, the retrospective r<n> it came from, and
                                    the rule. Answering yes to a rule decision adds one
   nod rule add <rule...>           add a rule of your own
-  nod rule edit <rule> <rule...>   reword a rule
-  nod rule off|on <rule>           stop or start giving a rule to workers. Nothing deletes a rule,
-                                   so where one came from stays known. Each change records who
-                                   made it, as a todo's do; a worker cannot make one
+  nod rule off|on <rule>           stop or start giving a rule to workers. Nothing deletes or
+                                   rewords a rule, so where one came from stays known: to reword
+                                   one, turn it off and add the new words. Each change records
+                                   who made it, as a todo's do; a worker cannot make one
   nod repo [<path> [off | pr | merge] [--check <command>] [--gate <command>]]
                                    how far nod takes a repo's tasks once they succeed: off (the
                                    default: the person pushes), pr (rebase onto the default
@@ -654,10 +654,8 @@ function rule([sub, ...args]: string[]): void {
   const actor = actorFromEnv()
   if (sub === 'add') {
     printRule(ledger.addRule(words(args), null, actor))
-  } else if (sub === 'edit') {
-    printRule(ledger.setRule(ruleId(args[0]), { text: words(args.slice(1)) }, actor))
   } else if ((sub === 'on' || sub === 'off') && args.length === 1) {
-    printRule(ledger.setRule(ruleId(args[0]), { state: sub }, actor))
+    printRule(ledger.setRule(ruleId(args[0]), sub, actor))
   } else {
     throw new Error(USAGE)
   }
@@ -1150,10 +1148,9 @@ async function show(id: number): Promise<void> {
   if (task.retroId !== null) {
     const r = ledger.retro(task.retroId)
     console.log(`  retrospective: r${r.id} of n${r.ofTaskId}${r.outcome ? `, ${r.outcome}` : ''}`)
-    // The rule it added, as it stands now.
-    for (const added of ledger.rulesNow().filter((x) => x.retroId === r.id)) {
-      const edited = added.edited ? ', edited' : ''
-      console.log(`  rule ${added.id} ${added.state}${edited}: ${added.text}`)
+    // The rule it added, on or off now.
+    for (const added of ledger.rules().filter((x) => x.retroId === r.id)) {
+      console.log(`  rule ${added.id} ${added.state}: ${added.text}`)
     }
   }
   if (task.todoId !== null) console.log(`  todo: t${task.todoId}`)

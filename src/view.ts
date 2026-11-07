@@ -288,8 +288,7 @@ const FIELD: Record<string, string> = {
 }
 const shown = (field: string, v: unknown): string => {
   if (v === null) return '—'
-  if (field === 'projectId') return `p${String(v)}`
-  return field === 'backTo' ? `n${String(v)}` : oneLine(clean(String(v)), 40)
+  return field === 'projectId' ? `p${String(v)}` : oneLine(clean(String(v)), 40)
 }
 
 // A cut through a character beyond U+FFFF would leave half of it, which prints as U+FFFD.

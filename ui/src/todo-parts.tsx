@@ -18,7 +18,7 @@ import { changeTodo } from './todo-fns'
 import type { TodoItem } from './todos.server'
 
 // The ledger's statuses (todos.ts), which the browser cannot import: it reaches the database.
-export const STATUSES = ['inbox', 'next', 'waiting', 'someday', 'reference', 'done', 'dropped']
+export const STATUSES = ['inbox', 'next', 'waiting', 'someday', 'done', 'dropped']
 
 // How long a moved todo can be put back.
 const UNDO_MS = 6000
@@ -81,7 +81,6 @@ export function todoTags(t: TodoItem, today: string): Tag[] {
     kind: dayOf(when) <= today ? 'due' : 'when',
   })
   const tags: (Tag | null)[] = [
-    t.context === null ? null : { text: t.context, kind: 'place' },
     t.project === null ? null : { text: t.project, kind: 'place' },
     t.waitingFor === null ? null : { text: `waiting on ${t.waitingFor}`, kind: 'plain' },
     t.scheduled === null ? null : date('on', t.scheduled),
@@ -182,8 +181,7 @@ export function useTodoActions(t: TodoItem, today: string, full: boolean) {
 }
 
 // Each status's glyph, drawn as the sidebar draws its lists: a tray for the inbox, an arrow for the
-// next actions, pause for waiting, a clock for someday, a book for reference, a check for done and
-// a slash for dropped.
+// next actions, pause for waiting, a clock for someday, a check for done and a slash for dropped.
 export const STATUS_ICONS: Record<string, ReactNode> = {
   inbox: (
     <path d="M2.5 9h3l1 1.75h3l1-1.75h3M4.1 3.5h7.8l1.6 5.5v3a1.25 1.25 0 0 1-1.25 1.25h-8.5A1.25 1.25 0 0 1 2.5 12V9z" />
@@ -205,9 +203,6 @@ export const STATUS_ICONS: Record<string, ReactNode> = {
       <circle cx="8" cy="8" r="6.25" />
       <path d="M8 4.75V8l2.25 1.5" />
     </>
-  ),
-  reference: (
-    <path d="M8 4.5C6.9 3.6 5.2 3.25 2.75 3.25v9c2.45 0 4.15.35 5.25 1.25 1.1-.9 2.8-1.25 5.25-1.25v-9c-2.45 0-4.15.35-5.25 1.25zM8 4.5v9" />
   ),
   done: (
     <>
@@ -348,7 +343,6 @@ export function MoreMenu({ items, disabled }: { items: MenuItem[]; disabled: boo
 export function TodoFacts({ t }: { t: TodoItem }) {
   const facts: [string, string | null][] = [
     ['Project', t.project],
-    ['Context', t.context],
     ['Waiting on', t.waitingFor],
     ['On', t.scheduled],
     ['Due', t.due],

@@ -13,12 +13,7 @@ import { Todos } from './todos'
 // What a worker asks as its turn ends, which an answer goes on from in its conversation. Once it
 // goes on without one, nothing waits on them. Permission, trust and rule decisions are about other
 // things, and close where those end; every decision closes once the task does.
-export const ASKED: readonly DecisionReason[] = [
-  'question',
-  'failed',
-  'check_failed',
-  'interrupted',
-]
+export const ASKED: readonly DecisionReason[] = ['question', 'check_failed', 'interrupted']
 export const WENT_ON = '(it went on without an answer)'
 // How much of what a worker said or would run a decision's question takes, at most.
 export const QUESTION_LIMIT = 2000
