@@ -739,8 +739,8 @@ export const MIGRATIONS = [
     select id, 'nod', json_object('status', json_array('reference', 'someday')),
       strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
     from todos where status = 'reference' order by id;
-  update todos set status = 'someday', status_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
-    followed = null
+  update todos set status = 'someday', followed = null,
+    status_at = (select at from todo_changes c where c.todo_id = todos.id order by c.id desc limit 1)
   where status = 'reference';
   alter table todos drop column context;
   alter table todos drop column back_to;
