@@ -93,6 +93,7 @@ import {
 } from './view'
 import {
   answer,
+  cancel,
   drop,
   keepWorker,
   type Restart,
@@ -116,6 +117,20 @@ const USAGE = `usage:
                                    --mine: only those of this Claude session's tasks)
   nod <decision> <answer...>       answer a decision; the worker gets it in its own session
   nod drop <decision>              end the task instead of answering
+  nod cancel <task> [--reason <text>]
+                                   end a task that has not ended (queued, running, or waiting on
+                                   a decision) as drop does: its turn and any check or review of
+                                   one stop with its session, its decisions close, the tasks
+                                   after it are cancelled with it, its todo is a next action
+                                   again, and the session that hears of it is told cancelled.
+                                   Who cancelled it (this session, a worker or human) and the
+                                   reason stay as its error. Its folder, branch and transcript
+                                   stay for gc. A task that ended is refused, one that succeeded
+                                   and waits on its pull request too, and one that is landing
+                                   (its worker has its landing work, or a land decision is open):
+                                   nod drop on its decision stops that, and nod land goes on with
+                                   it. A worker cancels only the tasks of its
+                                   own work (its project, or the session that added it)
   nod add <brief> [--repo <path> --branch <name>] [--check <command>] [--model <model>]
           [--after <task,...>] [--issue <key>] [--todo <todo> | --project <project>]
                                    start a worker on the task now, or once the tasks it comes
@@ -487,6 +502,28 @@ switch (command) {
     }
     const id = parseRef(rest[0] ?? '', 'd', true)
     console.log(said[await drop(ledger, home, terminals, id, answerer())])
+    break
+  }
+  case 'cancel': {
+    const { values, positionals } = parseArgs({
+      args: rest,
+      options: { reason: { type: 'string' } },
+      allowPositionals: true,
+    })
+    if (positionals.length !== 1) throw new Error(USAGE)
+    const id = taskRef(positionals[0])
+    // A worker cancels only the tasks of its own work, as it tells only those (cannotTell in
+    // worker.ts): one working on what anyone could write in an issue steers no other.
+    const worker = process.env.NOD_TASK
+    if (
+      worker !== undefined &&
+      !new Todos(ledger).sameWork(ledger.get(Number(worker)), ledger.get(id))
+    ) {
+      throw new Error(`a worker cancels only the tasks of its own work, and n${id} is not one`)
+    }
+    const reason = values.reason?.trim() || null
+    await cancel(ledger, home, terminals, id, actorFromEnv(), reason)
+    console.log('cancelled')
     break
   }
   case 'gc':

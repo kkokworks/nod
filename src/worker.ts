@@ -28,6 +28,7 @@ import {
   FINISHED,
   type Ledger,
   type Message,
+  type RetroOutcome,
   type Task,
 } from './ledger'
 import { notify, notifyError, taskRef } from './notify'
@@ -220,7 +221,8 @@ export async function startTask(
           prompt: NOT_SENT,
         })
         ledger.failAttempt(attemptId, message(error))
-        ledger.error(taskId, why)
+        // One cancelled meanwhile (nod cancel) stays as it ended.
+        if (!ended(ledger, taskId)) ledger.error(taskId, why)
       })
       .immediate()
     throw new Error(why, { cause: error })
@@ -231,7 +233,10 @@ export async function startTask(
     const env = workerEnv(home, taskId)
     return { env, ...(await prepareWorkspace(ledger, home, terminals, task)) }
   }
-  const { env, cwd, start } = await ready().catch(failed)
+  // One cancelled meanwhile (nod cancel) failed nothing: its cancel told the person.
+  const prepared = await ready().catch((error) => (ended(ledger, taskId) ? null : failed(error)))
+  if (prepared === null) return
+  const { env, cwd, start } = prepared
   const sessionId = crypto.randomUUID()
   // Only a repo can be untrusted; nod's own work folder is trusted by ensureTrusted.
   const started = task.repo === null ? null : startedMarker(home, taskId)
@@ -239,8 +244,14 @@ export async function startTask(
   // either kept in time for this start to take, or finds the task started and a terminal to paste
   // into, never a turn with no terminal yet, which deliver would take for one cut off. A launch that
   // fails is the turn's failure, below, so it must not undo the turn with the transaction.
-  const { attemptId, unlaunched } = ledger.db
-    .transaction((): { attemptId: number; unlaunched: unknown } => {
+  const launched = ledger.db
+    .transaction((): { attemptId: number; unlaunched: unknown } | null => {
+      // Cancelled while its folder was made (nod cancel): it never starts, and keeps the folder for
+      // gc.
+      if (ended(ledger, taskId)) {
+        ledger.setWorkspace(taskId, cwd)
+        return null
+      }
       ledger.setRunning(taskId, cwd)
       // With its folder the task is no longer one a resume starts again (claimRestart), so the
       // mark of the resume starting it goes, even if that resume is cut off from here.
@@ -269,11 +280,16 @@ export async function startTask(
       }
     })
     .immediate()
+  if (launched === null) return
+  const { attemptId, unlaunched } = launched
   try {
     if (unlaunched !== null) throw unlaunched
     if (started !== null) await awaitStart(ledger, home, terminals, task, attemptId, started)
   } catch (error) {
     ledger.failAttempt(attemptId, message(error))
+    // Cancelled as it started, its terminal closed with it: it stays as it ended, and the cancel
+    // tells what it was told (endTask).
+    if (ended(ledger, taskId)) return
     ledger.error(taskId, message(error))
     // The next start hears what this one took (firstWords), but none may come before gc collects
     // the task, and a task with no conversation cannot be brought back, so the person hears it now.
@@ -545,32 +561,109 @@ export async function drop(
     await announce(home, task, closed, why)
     return 'landing stopped'
   }
-  // The task ends, so its other decisions wait on nothing, and a retrospective ends with it, before
-  // anything is heard of, so no message goes on in it meanwhile (deliver).
-  const why = '(the task was dropped)'
+  await endTask(ledger, home, terminals, task, {
+    why: '(the task was dropped)',
+    end: () => {
+      ledger.drop(decisionId)
+      return decision.reason === 'rule' ? 'declined' : 'dropped'
+    },
+    heard: () => noticeAnswered(ledger, [decision], by),
+  })
+  return 'dropped'
+}
+
+// `nod cancel`: ends a task that has not ended, with no decision to drop, as dropping one does:
+// queued, running (its turn and a check of one going on stop with its session), or waiting on a
+// decision. `by` (actorFromEnv) and `reason` stay with the task as its error, which `nod show`, ls,
+// watch and the project session's notice show. A task that ended is refused, and so is one whose
+// work succeeded and is landing (landingOn): its work stands, so the person drops a decision on it
+// to stop its landing, or lets nod land go on with it.
+export async function cancel(
+  ledger: Ledger,
+  home: string,
+  terminals: Terminals,
+  taskId: number,
+  by: string,
+  reason: string | null = null,
+): Promise<void> {
+  const task = ledger.get(taskId)
+  const note = reason ? `cancelled by ${by}: ${reason}` : `cancelled by ${by}`
+  await endTask(ledger, home, terminals, task, {
+    why: '(the task was cancelled)',
+    // Asked in the transaction that cancels it, as a Stop hook may end it, or landing take it up,
+    // up to then.
+    end: () => {
+      const { status } = ledger.get(taskId)
+      if (FINISHED.has(status)) throw new Error(`task n${taskId} has ended (${status})`)
+      if (landingOn(ledger, taskId)) throw new Error(landingRefused(ledger, taskId))
+      ledger.cancel(taskId, note)
+      return 'dropped'
+    },
+    said: reason ? { by, reason } : { by },
+  })
+}
+
+// Landing work given to the worker, or a decision on landing it (land.ts): the task's work succeeded,
+// and what goes on is its landing.
+const landingOn = (ledger: Ledger, taskId: number): boolean =>
+  ledger.landing(taskId)?.handedAt != null ||
+  ledger.decisions(taskId).some((d) => d.answer === null && d.reason === 'land')
+
+// Why a landing task is not cancelled, and what to do instead: dropping a decision on it stops its
+// landing (drop), its land decision first; with none open, its worker's landing turn ends first.
+function landingRefused(ledger: Ledger, taskId: number): string {
+  const open = ledger.decisions(taskId).filter((d) => d.answer === null)
+  const decision = open.find((d) => d.reason === 'land') ?? open[0]
+  const instead =
+    decision !== undefined
+      ? `nod drop d${decision.id} stops its landing, and the task stays succeeded`
+      : `its worker has its landing work; once that turn ends, nod land n${taskId} goes on landing it, and dropping a decision it opens (nod drop) stops that`
+  return `task n${taskId} succeeded and is landing, so it is not cancelled: ${instead}`
+}
+
+// Ends a task the person stopped, by dropping a decision on it (drop) or cancelling it (cancel).
+// `end` marks it cancelled and gives how a retrospective it runs ends, in one transaction with
+// closing its other decisions (`why`), which wait on nothing now: a retrospective ends before
+// anything is heard of, so no message goes on in it meanwhile (deliver). `heard`: what to record
+// right after (noticeAnswered); `said`: who ended it and why, for <home>/notify. Its session
+// closes, and a turn going on and a Stop hook checking one with it, the check and the review
+// included (runGroup); a hook that got past that changes nothing (settle). Its folder, branch and
+// transcript stay for gc.
+async function endTask(
+  ledger: Ledger,
+  home: string,
+  terminals: Terminals,
+  task: Task,
+  how: {
+    why: string
+    end: () => RetroOutcome
+    heard?: () => void
+    said?: { by: string; reason?: string }
+  },
+): Promise<void> {
   const closed = ledger.db
     .transaction(() => {
       refuseEnded(ledger, task)
-      const others = closeDecisions(ledger, task.id, (d) => d.id !== decisionId, why)
-      ledger.drop(decisionId)
-      if (task.retroId !== null) {
-        ledger.endRetro(task.retroId, decision.reason === 'rule' ? 'declined' : 'dropped')
-      }
+      const outcome = how.end()
+      const others = closeDecisions(ledger, task.id, () => true, how.why)
+      if (task.retroId !== null) ledger.endRetro(task.retroId, outcome)
       return others
     })
     .immediate()
-  noticeAnswered(ledger, [decision], by)
-  await announce(home, task, closed, why)
+  how.heard?.()
+  await announce(home, task, closed, how.why)
   // The person takes back a todo whose task they ended.
   await followWork(ledger, SELF, null)
   await terminals.close(sessionName(task.id))
-  await notify(home, { event: 'cancelled', task: taskRef(task) })
+  // A turn its session went with; one its Stop hook closed first keeps what that recorded.
+  const open = ledger.openAttempt(task.id)
+  if (open !== null) ledger.failOpenAttempt(open.id, 'the task was cancelled')
+  await notify(home, { event: 'cancelled', task: taskRef(task), ...how.said })
   for (const m of unheardAtStart(ledger, home, task)) {
     await notPassedOn(home, task, m.fromTask, 'its worker never took it in', m.text)
   }
   await reportLostTells(ledger, home)
   await startRetro(ledger, home, terminals, task)
-  return 'dropped'
 }
 
 // Looks back on a task that ran into trouble, in a new session that gets only its history, and
@@ -791,6 +884,9 @@ export async function settle(
     holdLines(home, task.id, text)
     return null
   }
+  // Ended meanwhile (nod cancel, a decision dropped): nothing can come of the report, so neither
+  // the check nor the review runs.
+  if (ended(ledger, task.id)) return null
   // Lines nod cannot read or send go back like a failed check, before the slower checks run. So do
   // the lines of a done nod did not take that this report leaves out.
   const captured = parseCaptures(text)
@@ -1969,6 +2065,8 @@ async function awaitStart(
   const name = sessionName(task.id)
   const deadline = Date.now() + TRUST_TIMEOUT_MS
   while (!existsSync(started)) {
+    // Cancelled as it started (nod cancel), its terminal went.
+    if (ended(ledger, task.id)) return
     const screen = terminals.screen(name)
     if (screen.includes(TRUST_DIALOG)) {
       const by = task.repo === null ? null : trustedBy(ledger, task.repo)

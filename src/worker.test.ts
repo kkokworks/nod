@@ -52,6 +52,7 @@ import { Todos } from './todos'
 import { addTrigger, tick } from './triggers'
 import {
   answer,
+  cancel,
   claudeArgs,
   closeFinished,
   drop,
@@ -420,6 +421,328 @@ test('dropping a decision cancels the task and closes its session', async () => 
   await drop(ledger, home, terminals, decision.id)
   expect(status(id)).toBe('cancelled')
   expect(terminals.alive(sessionName(id))).toBe(false)
+})
+
+test('dropping a decision of a turn still running closes that turn with the session', async () => {
+  const id = await add('hang')
+  await until(() => entries('turn').length === 1)
+  const turn = ledger.openAttempt(id)
+  if (turn === null) throw new Error('no turn')
+  // As a permission dialog the turn waits on (onPermissionAsk).
+  await drop(
+    ledger,
+    home,
+    terminals,
+    ledger.ask(id, turn.id, 'permission', 'Claude needs your permission'),
+  )
+  expect(status(id)).toBe('cancelled')
+  expect(ledger.attempts(id).map((a) => [a.kind, a.outcome, a.error])).toEqual([
+    ['start', 'error', 'the task was cancelled'],
+  ])
+})
+
+// The ends of a task its project's session hears (setStatus), as the ledger keeps them.
+const endNotices = (id: number) =>
+  ledger.db
+    .query<{ event: string; note: string | null }, [number]>(
+      'select event, note from notices where task_id = ? order by id',
+    )
+    .all(id)
+
+test('nod cancel stops a running task with its turn, and the project session hears who cancelled it and why', async () => {
+  const events = listen()
+  const id = await add('hang')
+  await until(() => entries('turn').length === 1)
+  await cancel(ledger, home, terminals, id, 'human', 'not needed')
+  expect(status(id)).toBe('cancelled')
+  expect(ledger.get(id).error).toBe('cancelled by human: not needed')
+  expect(terminals.alive(sessionName(id))).toBe(false)
+  // Its turn went with its session; its folder stays for gc.
+  expect(ledger.attempts(id).map((a) => [a.kind, a.outcome, a.error])).toEqual([
+    ['start', 'error', 'the task was cancelled'],
+  ])
+  expect(existsSync(workspaceOf(home, ledger.get(id)))).toBe(true)
+  expect(events()).toEqual([
+    {
+      event: 'cancelled',
+      task: { id, brief: 'hang', issue: null },
+      by: 'human',
+      reason: 'not needed',
+    },
+  ])
+  expect(endNotices(id)).toEqual([{ event: 'cancelled', note: 'cancelled by human: not needed' }])
+})
+
+test('nod cancel ends a task waiting on a decision, and closes the decision', async () => {
+  const events = listen()
+  const id = await add('ask-first')
+  const decision = await until(() => ledger.decisions(id)[0])
+  // Heard before the cancel: closing its terminal ends the Stop hook that tells of it, with the hook.
+  await until(() => events().some((e) => e.event === 'decision'))
+  await cancel(ledger, home, terminals, id, 'human')
+  expect(status(id)).toBe('cancelled')
+  expect(ledger.get(id).error).toBe('cancelled by human')
+  expect(ledger.decision(decision.id).answer).toBe('(the task was cancelled)')
+  expect(terminals.alive(sessionName(id))).toBe(false)
+  // The turn that asked ended as it asked.
+  expect(ledger.attempts(id).map((a) => a.outcome)).toEqual(['needs_decision'])
+  const heard = (event: string) => events().filter((e) => e.event === event)
+  expect(heard('answered')).toMatchObject([
+    { task: { id }, decision: { id: decision.id, answer: '(the task was cancelled)' } },
+  ])
+  // No reason given, none heard.
+  expect(heard('cancelled')).toEqual([
+    { event: 'cancelled', task: { id, brief: 'ask-first', issue: null }, by: 'human' },
+  ])
+})
+
+test('nod cancel ends a queued task and the tasks that wait on it, and their todos are next actions again', async () => {
+  const todos = new Todos(ledger)
+  const first = delegated(todos, 'First', 'plain')
+  const then = delegated(todos, 'Then', 'plain', [first.task])
+  expect([status(first.task), status(then.task)]).toEqual(['queued', 'queued'])
+  expect([todos.get(first.todo).status, todos.get(then.todo).status]).toEqual([
+    'waiting',
+    'waiting',
+  ])
+  await cancel(ledger, home, terminals, first.task, 'worker:7', 'superseded')
+  expect([status(first.task), status(then.task)]).toEqual(['cancelled', 'cancelled'])
+  expect(ledger.get(then.task).error).toBe(`task n${first.task} it waits for was cancelled`)
+  expect([todos.get(first.todo).status, todos.get(then.todo).status]).toEqual(['next', 'next'])
+  // Neither started, nor starts now.
+  await startReady(ledger, home, terminals)
+  expect([...ledger.attempts(first.task), ...ledger.attempts(then.task)]).toEqual([])
+  expect(endNotices(first.task)).toEqual([
+    { event: 'cancelled', note: 'cancelled by worker:7: superseded' },
+  ])
+  expect(endNotices(then.task)).toEqual([
+    { event: 'cancelled', note: `task n${first.task} it waits for was cancelled` },
+  ])
+})
+
+test('nod cancel refuses a task that has ended, and leaves it as it ended', async () => {
+  const done = await finished('plain')
+  const queued = () =>
+    ledger.add({
+      brief: 'x',
+      repo: null,
+      branch: null,
+      checkCmd: null,
+      model: null,
+      after: [],
+      triggerId: null,
+      issue: null,
+    })
+  const failed = queued()
+  ledger.error(failed, 'it broke')
+  const cancelled = queued()
+  ledger.cancel(cancelled, 'cancelled by human')
+  const events = listen()
+  for (const [id, was] of [
+    [done, 'succeeded'],
+    [failed, 'error'],
+    [cancelled, 'cancelled'],
+  ] as const) {
+    const before = ledger.get(id)
+    await expect(cancel(ledger, home, terminals, id, 'human')).rejects.toThrow(
+      `task n${id} has ended (${was})`,
+    )
+    expect(ledger.get(id)).toEqual(before)
+  }
+  expect(events()).toEqual([])
+})
+
+test("nod cancel stops a check going on with the task's session, and no review follows", async () => {
+  // The check holds until something writes to the FIFO, which it keeps open as long as it runs.
+  const fifo = join(home, 'hold')
+  const held = join(home, 'held')
+  const checked = join(home, 'checked')
+  if (Bun.spawnSync(['mkfifo', fifo]).exitCode !== 0) throw new Error('mkfifo failed')
+  const id = await add(
+    'plain',
+    `exec 3<> ${quote(fifo)}; : > ${quote(held)}; read _ <&3; : > ${quote(checked)}`,
+  )
+  await until(() => existsSync(held))
+  await cancel(ledger, home, terminals, id, 'human')
+  // The Stop hook went with the session, and the check with it: nothing reads the FIFO any more.
+  const checkGone = (): boolean => {
+    try {
+      closeSync(openSync(fifo, constants.O_WRONLY | constants.O_NONBLOCK))
+      return false
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENXIO') return true
+      throw error
+    }
+  }
+  await until(checkGone)
+  expect(existsSync(checked)).toBe(false)
+  expect(entries('review')).toEqual([])
+  expect(status(id)).toBe('cancelled')
+  expect(ledger.attempts(id).map((a) => a.checkResult)).toEqual([null])
+})
+
+it('a Stop hook that comes once its task was cancelled runs neither the check nor the review', async () => {
+  const id = started('write it', 'cancel-late')
+  const checked = join(home, 'checked')
+  ledger.db
+    .query('update tasks set check_cmd = $check where id = $id')
+    .run({ check: `: > ${quote(checked)}`, id })
+  await cancel(ledger, home, terminals, id, 'human')
+  expect(await stopped('cancel-late', 'NOD: done | did it')).toBeNull()
+  expect(existsSync(checked)).toBe(false)
+  expect(entries('review')).toEqual([])
+  expect(status(id)).toBe('cancelled')
+  expect(ledger.get(id).error).toBe('cancelled by human')
+  // Nor does it go in as a turn typed into the terminal after the cancel.
+  expect(ledger.attempts(id).map((a) => [a.kind, a.outcome, a.error])).toEqual([
+    ['start', 'error', 'the task was cancelled'],
+  ])
+})
+
+it('a Stop hook that comes as a cancel closes its session, its turn still open, runs neither the check nor the review', async () => {
+  const id = started('write it', 'cancel-closing')
+  const checked = join(home, 'checked')
+  ledger.db
+    .query('update tasks set check_cmd = $check where id = $id')
+    .run({ check: `: > ${quote(checked)}`, id })
+  // As endTask has it once its transaction ended the task, before it closes the open turn.
+  ledger.cancel(id, 'cancelled by human')
+  expect(await stopped('cancel-closing', 'NOD: done | did it')).toBeNull()
+  expect(existsSync(checked)).toBe(false)
+  expect(entries('review')).toEqual([])
+  expect(status(id)).toBe('cancelled')
+})
+
+it('a task cancelled while nod starts it does not start, and keeps its folder for gc', async () => {
+  const id = ledger.add({
+    brief: 'plain',
+    repo: null,
+    branch: null,
+    checkCmd: null,
+    model: null,
+    after: [],
+    triggerId: null,
+    issue: null,
+  })
+  const config = process.env.CLAUDE_CONFIG_DIR ?? ''
+  setAccountRule(home, { command: `${cancelling(id)}; echo ${quote(config)}` })
+  await startTask(ledger, home, terminals, id)
+  expect(ledger.get(id)).toMatchObject({ status: 'cancelled', error: 'cancelled by human' })
+  expect(ledger.attempts(id)).toEqual([])
+  expect(terminals.alive(sessionName(id))).toBe(false)
+  const folder = ledger.get(id).workspace
+  expect(folder === null ? false : existsSync(folder)).toBe(true)
+})
+
+// The account command runs as a start begins, before its transaction: there the person cancels task
+// `id`, from a process of its own, as `nod cancel` in their shell does.
+function cancelling(id: number): string {
+  const cli = resolve(import.meta.dir, 'cli.ts')
+  // Not as the worker this test may itself run in.
+  const nod = `env -u NOD_TASK NOD_HOME=${quote(home)} NOD_ACTOR=human ${quote(process.execPath)} ${quote(cli)}`
+  return `${nod} cancel n${id} >/dev/null 2>&1`
+}
+
+it('a start that fails once its task was cancelled leaves it cancelled, and fails nothing', async () => {
+  const id = ledger.add({
+    brief: 'plain',
+    repo: null,
+    branch: null,
+    checkCmd: null,
+    model: null,
+    after: [],
+    triggerId: null,
+    issue: null,
+  })
+  // And then the account cannot be read, which would fail the start: its cancel told the person,
+  // so neither an error (notifyError on what startTask throws) nor a start to resume follows.
+  setAccountRule(home, { command: `${cancelling(id)}; exit 1` })
+  await startTask(ledger, home, terminals, id)
+  expect(ledger.get(id)).toMatchObject({ status: 'cancelled', error: 'cancelled by human' })
+  expect(ledger.attempts(id)).toEqual([])
+})
+
+it('a repo task cancelled as nod waits for its Claude Code to come up stops waiting, and stays cancelled', async () => {
+  // Its Claude Code never gets past its start, so nod keeps looking at its screen (awaitStart).
+  writeFileSync(join(home, 'fake-slow-start'), '')
+  const screen = fake.screen.bind(fake)
+  // The person cancels it as nod first looks, and that look finds its terminal there (`shown`) or
+  // already gone.
+  for (const shown of [true, false]) {
+    const id = ledger.add({
+      brief: 'work here',
+      repo: newRepo(),
+      branch: 'feat/here',
+      checkCmd: null,
+      model: null,
+      after: [],
+      triggerId: null,
+      issue: null,
+    })
+    let cancelled: Promise<void> | undefined
+    fake.screen = (name: string): string => {
+      cancelled ??= cancel(ledger, home, terminals, id, 'human')
+      if (!shown) throw new Error(`can't find session: ${name}`)
+      return screen(name)
+    }
+    await startTask(ledger, home, terminals, id)
+    await cancelled
+    expect(ledger.get(id)).toMatchObject({ status: 'cancelled', error: 'cancelled by human' })
+    expect(terminals.alive(sessionName(id))).toBe(false)
+    // One it found there it stops waiting for at once, rather than failing its start on a look at
+    // the terminal gone.
+    if (shown) {
+      expect(ledger.attempts(id).map((a) => [a.kind, a.outcome, a.error])).toEqual([
+        ['start', 'error', 'the task was cancelled'],
+      ])
+    }
+  }
+})
+
+it('nod cancel refuses a task that is landing, says to drop its decision or let nod land go on, and changes nothing', async () => {
+  const events = listen()
+  // Its work succeeded, and landing it asks a land decision.
+  const asking = started('write it', 'cancel-land-decision')
+  const turn = ledger.lastAttempt(asking)?.id ?? 0
+  ledger.endAttempt(turn, { outcome: 'succeeded', summary: 'did it', report: 'NOD: done | did it' })
+  ledger.succeed(asking)
+  const after = ledger.add({
+    brief: 'after it',
+    repo: null,
+    branch: null,
+    checkCmd: null,
+    model: null,
+    after: [asking],
+    triggerId: null,
+    issue: null,
+  })
+  const asked = ledger.ask(
+    asking,
+    turn,
+    'land',
+    'Its pull request was closed without being merged.',
+  )
+  // Its work succeeded, and its worker has its landing work, in a turn going on.
+  const handed = started('write that', 'cancel-land-handed')
+  ledger.setLanding(handed, { handedAt: new Date().toISOString() })
+  for (const [id, instead] of [
+    [asking, `nod drop d${asked} stops its landing`],
+    [handed, `nod land n${handed} goes on landing it`],
+  ] as const) {
+    const [task, landing, decisions] = [ledger.get(id), ledger.landing(id), ledger.decisions(id)]
+    const refused = cancel(ledger, home, terminals, id, 'human', 'merged by hand')
+    await expect(refused).rejects.toThrow(`task n${id} succeeded and is landing`)
+    await expect(refused).rejects.toThrow(instead)
+    expect([ledger.get(id), ledger.landing(id), ledger.decisions(id)]).toEqual([
+      task,
+      landing,
+      decisions,
+    ])
+  }
+  expect(ledger.decision(asked).answer).toBeNull()
+  expect(ledger.openAttempt(handed)).not.toBeNull()
+  expect(status(after)).toBe('queued')
+  expect(events()).toEqual([])
 })
 
 test('tell continues the same session, and reopens it from the transcript once it has ended', async () => {
@@ -1776,8 +2099,9 @@ test("Claude Code's default folder trusts nod's work folder for itself, whatever
 
 type Heard = {
   event: string
-  task?: { id: number }
+  task?: { id: number; brief?: string; issue?: string | null }
   error?: string
+  by?: string
   reason?: string
   decision?: { answer: string }
 }
@@ -2725,30 +3049,37 @@ test('a turn whose terminal went (the machine or tmux restarted) becomes a decis
   expect(entries('turn').at(-1)?.message).toContain('Human decision: carry on')
 }, 30_000)
 
+// A todo the person delegated to a task (`nod add --todo`), which has not started yet.
+function delegated(
+  todos: Todos,
+  title: string,
+  brief: string,
+  after: number[] = [],
+): { todo: number; task: number } {
+  const todo = todos.capture(
+    { title, notes: null, source: 'cli', sourceKey: null, url: null },
+    'human',
+  ).todo.id
+  const task = todos.delegate(
+    todo,
+    {
+      brief,
+      repo: null,
+      branch: null,
+      checkCmd: null,
+      model: null,
+      after,
+      triggerId: null,
+      issue: null,
+    },
+    'human',
+  )
+  return { todo, task }
+}
+
 test("a delegated todo waits through its task's decision, is done when it succeeds, and comes back when dropped", async () => {
   const todos = new Todos(ledger)
-  const delegated = (title: string, brief: string, after: number[] = []) => {
-    const todo = todos.capture(
-      { title, notes: null, source: 'cli', sourceKey: null, url: null },
-      'human',
-    ).todo.id
-    const task = todos.delegate(
-      todo,
-      {
-        brief,
-        repo: null,
-        branch: null,
-        checkCmd: null,
-        model: null,
-        after,
-        triggerId: null,
-        issue: null,
-      },
-      'human',
-    )
-    return { todo, task }
-  }
-  const asked = delegated('Ask first', 'ask-first, then write ok.txt')
+  const asked = delegated(todos, 'Ask first', 'ask-first, then write ok.txt')
   await startTask(ledger, home, terminals, asked.task)
   const question = await until(() => ledger.decisions(asked.task)[0])
   expect(todos.get(asked.todo).status).toBe('waiting')
@@ -2762,8 +3093,8 @@ test("a delegated todo waits through its task's decision, is done when it succee
   expect(todos.tasks(asked.todo).map((x) => x.summary)).toEqual(['did it'])
 
   // Dropping a task gives its todo back, and the todo of the task that waited on it too.
-  const gaveUp = delegated('Give up', 'give-up')
-  const after = delegated('Then this', 'after it', [gaveUp.task])
+  const gaveUp = delegated(todos, 'Give up', 'give-up')
+  const after = delegated(todos, 'Then this', 'after it', [gaveUp.task])
   await startTask(ledger, home, terminals, gaveUp.task)
   const failed = await until(() => ledger.decisions(gaveUp.task)[0])
   await drop(ledger, home, terminals, failed.id)
@@ -4483,9 +4814,16 @@ it('a review that fails on a task dropped while its Stop hook checked leaves it 
   const id = started('review-mute: write it', 'mute-dropped')
   const attempt = ledger.openAttempt(id)
   if (attempt === null) throw new Error('no turn')
-  // Dropped as its turn ends: the hook still checks that turn, and its review gives no verdict.
-  ledger.drop(ledger.ask(id, attempt.id, 'question', 'Go on?'))
+  // Dropped as its check runs, from a process of its own as `nod drop` in the person's shell: the
+  // hook still reviews that turn, and its review gives no verdict.
+  const decision = ledger.ask(id, attempt.id, 'question', 'Go on?')
+  const cli = resolve(import.meta.dir, 'cli.ts')
+  const nod = `NOD_HOME=${quote(home)} NOD_ACTOR=human ${quote(process.execPath)} ${quote(cli)}`
+  ledger.db
+    .query('update tasks set check_cmd = $check where id = $id')
+    .run({ check: `${nod} drop d${decision} >/dev/null 2>&1`, id })
   await stopped('mute-dropped', 'NOD: done | did it')
+  expect(ledger.decision(decision).answer).toBe('(dropped)')
   expect(status(id)).toBe('cancelled')
   expect(ledger.attempts(id).map((a) => a.outcome)).toEqual(['error'])
 })
