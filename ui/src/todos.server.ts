@@ -77,8 +77,6 @@ export type FocusPage = {
   next: TodoItem[]
   // Next actions that start after today, the soonest first.
   upcoming: TodoItem[]
-  // Looked up, not worked from.
-  reference: TodoItem[]
 }
 
 export type ProjectsPage = {
@@ -96,9 +94,7 @@ const item = (t: Todo): TodoItem => ({
 export function lists(): Lists {
   const day = localDay(new Date())
   const of = (status: TodoStatus): TodoItem[] =>
-    todos
-      .list({ statuses: [status], context: null, projectId: null, hideSomedayProjects: true, day })
-      .map(item)
+    todos.list({ statuses: [status], projectId: null, hideSomedayProjects: true, day }).map(item)
   return {
     today: day,
     inbox: of('inbox'),
@@ -113,13 +109,7 @@ export function lists(): Lists {
 export function donePage(shown: DoneShown): DonePage {
   const of = (status: 'done' | 'dropped'): Shown<TodoItem> => {
     const all = todos
-      .list({
-        statuses: [status],
-        context: null,
-        projectId: null,
-        hideSomedayProjects: false,
-        day: null,
-      })
+      .list({ statuses: [status], projectId: null, hideSomedayProjects: false, day: null })
       .sort((a, b) => b.statusAt.localeCompare(a.statusAt))
     return { items: all.slice(0, shown[status]).map(item), total: all.length }
   }
@@ -165,13 +155,7 @@ export async function focusPage(): Promise<FocusPage> {
   const ofDay = [...d.overdue, ...d.scheduled, ...d.due, ...d.focus]
   const shown = new Set(ofDay.map((t) => t.id))
   const of = (status: TodoStatus, day: string | null): Todo[] =>
-    todos.list({
-      statuses: [status],
-      context: null,
-      projectId: null,
-      hideSomedayProjects: true,
-      day,
-    })
+    todos.list({ statuses: [status], projectId: null, hideSomedayProjects: true, day })
   const earlier = (t: Todo): number => (t.focus !== null && t.focus < today ? 0 : 1)
   return {
     today,
@@ -188,7 +172,6 @@ export async function focusPage(): Promise<FocusPage> {
       .filter((t) => t.start !== null && t.start > today)
       .sort((a, b) => (a.start ?? '').localeCompare(b.start ?? ''))
       .map(item),
-    reference: of('reference', today).map(item),
   }
 }
 
@@ -203,7 +186,6 @@ export function projectsPage(): ProjectsPage {
       todos: todos
         .list({
           statuses: ['inbox', 'next', 'waiting'],
-          context: null,
           projectId: p.id,
           hideSomedayProjects: false,
           day: null,
@@ -225,7 +207,6 @@ export function editTodo(id: number, raw: RawEdit, from?: string): void {
     notes: added === '' ? cleared(raw.notes) : withLine(todos.get(id).notes, added),
     status: raw.status === undefined ? undefined : oneOf('todo status', raw.status, TODO_STATUSES),
     projectId: raw.projectId,
-    context: cleared(raw.context),
     waitingOn: cleared(raw.waitingOn),
     due: cleared(raw.due),
     scheduled: cleared(raw.scheduled),

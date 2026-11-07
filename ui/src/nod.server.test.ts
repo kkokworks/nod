@@ -51,7 +51,7 @@ test('a status sent from the web goes in only from the status the page showed', 
   expect(todos.get(id).status).toBe('next')
 })
 
-test('the Settings page lists every rule with its retrospective task, and both pages mark the same edits', () => {
+test('the Settings page lists every rule with its retrospective task, and the task page the rule its retrospective added', () => {
   const of = ledger.add({
     brief: 'x',
     repo: null,
@@ -65,14 +65,14 @@ test('the Settings page lists every rule with its retrospective task, and both p
   const retroId = ledger.get(retroTask).retroId ?? 0
   ledger.proposeRule(retroId, 'check first')
   const proposed = ledger.addRule('check first', retroId, 'human')
-  ledger.setRule(proposed.id, { text: 'check first, always', state: 'off' }, 'human')
+  ledger.setRule(proposed.id, 'off', 'human')
   ledger.addRule('keep it short', null, 'human')
 
   expect(rules()).toMatchObject([
-    { text: 'check first, always', state: 'off', retroId, retroTaskId: retroTask, edited: true },
-    { text: 'keep it short', state: 'on', retroId: null, retroTaskId: null, edited: false },
+    { text: 'check first', state: 'off', retroId, retroTaskId: retroTask },
+    { text: 'keep it short', state: 'on', retroId: null, retroTaskId: null },
   ])
-  expect(detail(retroTask)?.retro?.rules).toMatchObject([{ id: proposed.id, edited: true }])
+  expect(detail(retroTask)?.retro?.rules).toMatchObject([{ id: proposed.id, state: 'off' }])
 })
 
 test('the task page names as its root the project session whose task it is, with the command that reopens it and who added it', () => {

@@ -20,12 +20,11 @@
   --row-hover: #fbfaf8;
   --star: #d49b0b;
   /* A todo's status, in Mindwtr's hues: new is blue, ready to do green, waiting amber, later
-     purple, kept for reference teal, finished receding grey, let go a muted rose. */
+     purple, finished receding grey, let go a muted rose. */
   --s-inbox: #2563d9;
   --s-next: #23824a;
   --s-waiting: #b7791f;
   --s-someday: #7c5cc4;
-  --s-reference: #13799e;
   --s-done: #626976;
   --s-dropped: #b35c63;
   /* A task at work, waiting its turn, and a link out. */
@@ -58,7 +57,6 @@
     --s-next: #4fc27a;
     --s-waiting: #e2a33b;
     --s-someday: #b49afa;
-    --s-reference: #5bb6dc;
     --s-done: #9399a3;
     --s-dropped: #d9898f;
     --t-running: #7aa7f7;
@@ -1329,8 +1327,7 @@ details summary {
   flex-shrink: 0;
 }
 
-.todo-actions button,
-.filters button {
+.todo-actions button {
   padding: 0.15rem 0.6rem;
   border: 1px solid var(--line);
   border-radius: 999px;
@@ -1341,27 +1338,13 @@ details summary {
   cursor: pointer;
 }
 
-.todo-actions button:hover,
-.filters button:hover {
+.todo-actions button:hover {
   background: var(--hover);
 }
 
 .todo-actions button:disabled {
   opacity: 0.4;
   cursor: default;
-}
-
-.filters {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.35rem;
-  margin: 0 0 0.75rem;
-}
-
-.filters .on {
-  border-color: var(--accent);
-  background: var(--accent);
-  color: var(--bg);
 }
 
 .event-time {
@@ -1465,11 +1448,6 @@ details summary {
 .list > .muted {
   margin: 0;
   padding: 0.85rem 1rem;
-}
-
-.list > .filters {
-  margin: 0;
-  padding: 0.7rem 0.9rem;
 }
 
 .list > .todo-row {
@@ -1581,7 +1559,7 @@ details summary {
    its name on a faint tint, a chevron saying it opens. In a list of its own status it says nothing
    new, so it stays plain, glyph and name only, until the pointer comes. */
 .status-pill {
-  --s: var(--s-reference);
+  --s: var(--muted);
   flex: none;
   align-self: center;
   display: inline-flex;
@@ -1649,7 +1627,7 @@ details summary {
 }
 
 .status-option {
-  --s: var(--s-reference);
+  --s: var(--muted);
   display: flex;
   align-items: center;
   gap: 0.6rem;
@@ -2038,7 +2016,7 @@ a.task-line:hover {
   align-self: flex-start;
 }
 
-/* A project's tasks on the home page, and Focus's Reference, fold under their title, the chevron pointing down while open. */
+/* A project's tasks on the home page fold under their title, the chevron pointing down while open. */
 .fold > summary.section {
   list-style: none;
   cursor: pointer;

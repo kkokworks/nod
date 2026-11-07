@@ -250,15 +250,13 @@ const todoItem = (id: number, title: string) => ({
   notes: 'first',
   status: 'next',
   projectId: null,
-  context: null as string | null,
-  waitingOn: null,
+  waitingOn: null as string | null,
   due: null,
   scheduled: null,
   start: null,
   repeat: null,
   focus: null,
   watch: null,
-  backTo: null,
   source: 'cli',
   sourceKey: null,
   createdAt: AT,
@@ -718,12 +716,12 @@ test('a change to the todo keeps what is being typed in the form and says so', a
   type(field('.todo-form input'), 'new title')
   expect(banners()).toEqual([])
 
-  // A worker sets the context.
-  todo = { ...todo, context: '@desk' }
-  changes.push({ actor: 'worker:1', at: AT, text: 'context @desk' })
+  // A worker sets whom it waits on.
+  todo = { ...todo, waitingOn: 'Kim' }
+  changes.push({ actor: 'worker:1', at: AT, text: 'waiting on Kim' })
   await reload()
   expect(title()).toBe('new title')
-  expect(field<HTMLInputElement>('input[placeholder="@desk"]').value).toBe('@desk')
+  expect(field<HTMLInputElement>('input[placeholder="who"]').value).toBe('Kim')
   expect(banners().join()).toContain('changed')
 
   // A line added to the notes shows in them, and the title stays.
@@ -1358,16 +1356,16 @@ test('an address under Settings that is not there, or a page of it that fails as
 })
 
 test('the Rules page lists every rule, one that is off faded, with what made it', async () => {
-  const rule = { edited: false, changedAt: AT }
+  const rule = { changedAt: AT }
   answer = () => [
     { ...rule, id: 1, text: 'check first', state: 'on', retroId: null, retroTaskId: null },
-    { ...rule, id: 2, text: 'keep short', state: 'off', retroId: 4, retroTaskId: 9, edited: true },
+    { ...rule, id: 2, text: 'keep short', state: 'off', retroId: 4, retroTaskId: 9 },
   ]
   await go('/settings/rules')
   const [on, off] = document.querySelectorAll('.todo-row')
   expect(on?.textContent).toBe(`1check firstonby handchanged ${localTime(AT)}`)
   expect(on?.className).toBe('todo-row')
-  expect(off?.textContent).toBe(`2keep shortoffr4editedchanged ${localTime(AT)}`)
+  expect(off?.textContent).toBe(`2keep shortoffr4changed ${localTime(AT)}`)
   expect(off?.className).toBe('todo-row rule-off')
   expect(off?.querySelector('a')?.getAttribute('href')).toBe('/tasks/9')
 })

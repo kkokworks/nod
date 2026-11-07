@@ -7,7 +7,6 @@ const TEXT_FIELDS = [
   'notes',
   'addNote',
   'status',
-  'context',
   'waitingOn',
   'due',
   'scheduled',

@@ -38,22 +38,19 @@ export const TODO_USAGE = `  nod in <what...> [--notes <text>] [--source <channe
                                    capture a todo into the inbox, in the project when given. A
                                    channel's key is captured once; capturing it again prints the
                                    todo it became, left where it is
-  nod todo [inbox|next|waiting|someday|reference] [--context <@x>] [--project <p>] [--all]
-           [--json]
+  nod todo [inbox|next|waiting|someday] [--project <p>] [--all] [--json]
                                    todos (default: inbox, next and waiting; --all: every status,
                                    finished ones too). Open decisions come first, as next
-                                   actions: answer with nod <decision> <answer>. --context also
-                                   lists todos with no context, which can be done anywhere.
-                                   Todos of someday projects show only with --project or --all,
-                                   and todos that start later only with --all. --json prints
-                                   each todo as a JSON line, with its links, and no decisions
+                                   actions: answer with nod <decision> <answer>. Todos of someday
+                                   projects show only with --project or --all, and todos that
+                                   start later only with --all. --json prints each todo as a
+                                   JSON line, with its links, and no decisions
   nod todo <todo>                  one todo: notes, links, the tasks it was delegated to (nod add
                                    --todo) with what they reported, and who changed what
   nod todo set <todo> [--status <s>] [--title <text>] [--notes <text> | --add-note <line>]
-                      [--from <s>] [--project <p>]
-                      [--context <@x>] [--waiting-on <who>] [--link <url>]...
+                      [--from <s>] [--project <p>] [--waiting-on <who>] [--link <url>]...
                       [--due <day>] [--on <day>] [--start <day>] [--focus <day>]
-                      [--repeat daily|weekly|monthly] [--watch <command>] [--back-to <task>]
+                      [--repeat daily|weekly|monthly] [--watch <command>]
                                    clarify and organize it; an empty value clears a field.
                                    --from names the status it was read in: when it is in another
                                    by now, nothing changes, and nod says who moved it and when,
@@ -68,16 +65,12 @@ export const TODO_USAGE = `  nod in <what...> [--notes <text>] [--source <channe
                                    that does not parse, passes already, or that the shell cannot
                                    run, is refused. When it last ran and how it ended show with
                                    the todo. Keep secrets out of it: it is kept in the notes and
-                                   history. --back-to names the latest task the todo was handed to
-                                   (t<n> for short): once the watch passes, that task's session
-                                   hears what the watch printed and carries on, asking before
-                                   anything that needs you, and the todo waits on it instead. A
-                                   <day> is
-                                   YYYY-MM-DD, today or tomorrow; --due and --on also take a time,
-                                   '<day> HH:MM'. --on is a day- or time-specific action, --start
-                                   leaves it out of the lists until that day, and --focus picks it
-                                   for that day. Done makes a repeating todo's next one, its dates
-                                   whole periods on from the schedule
+                                   history. A <day> is YYYY-MM-DD, today or tomorrow; --due and
+                                   --on also take a time, '<day> HH:MM'. --on is a day- or
+                                   time-specific action, --start leaves it out of the lists until
+                                   that day, and --focus picks it for that day. Done makes a
+                                   repeating todo's next one, its dates whole periods on from the
+                                   schedule
   nod today [<day>] [--days <n>]   the day's events, read from macOS Calendar, then its open
                                    todos: overdue, scheduled, due, and picked for its focus.
                                    --days goes on for n days, showing those that hold something
@@ -116,7 +109,7 @@ export const TODO_USAGE = `  nod in <what...> [--notes <text>] [--source <channe
 
 // The lists `nod todo <list>` names. Finished todos are listed with --all, since `nod todo done`
 // finishes todos.
-const LISTS = ['inbox', 'next', 'waiting', 'someday', 'reference'] as const
+const LISTS = ['inbox', 'next', 'waiting', 'someday'] as const
 // `nod today --days`: a weekly review looks two weeks ahead.
 const MAX_DAYS = 31
 
@@ -353,7 +346,6 @@ function listTodos(todos: Todos, args: string[]): void {
     args,
     allowPositionals: true,
     options: {
-      context: { type: 'string' },
       project: { type: 'string' },
       all: { type: 'boolean' },
       json: { type: 'boolean' },
@@ -376,7 +368,6 @@ function listTodos(todos: Todos, args: string[]): void {
   }
   const shown = todos.list({
     statuses,
-    context: values.context ?? null,
     projectId,
     hideSomedayProjects: !values.all && values.project === undefined,
     day: values.all ? null : localDay(new Date()),
@@ -437,7 +428,6 @@ async function setTodo(todos: Todos, home: string, args: string[]): Promise<void
       notes: { type: 'string' },
       'add-note': { type: 'string' },
       project: { type: 'string' },
-      context: { type: 'string' },
       'waiting-on': { type: 'string' },
       link: { type: 'string', multiple: true },
       due: { type: 'string' },
@@ -446,7 +436,6 @@ async function setTodo(todos: Todos, home: string, args: string[]): Promise<void
       focus: { type: 'string' },
       repeat: { type: 'string' },
       watch: { type: 'string' },
-      'back-to': { type: 'string' },
     },
   })
   const [ref, ...extra] = positionals
@@ -461,12 +450,9 @@ async function setTodo(todos: Todos, home: string, args: string[]): Promise<void
     throw new Error('--notes replaces the notes and --add-note adds a line to them; give one')
   }
   const watch = cleared(values.watch)
-  const backToRef = cleared(values['back-to'])
-  const backTo = typeof backToRef === 'string' ? todos.taskRef(backToRef) : backToRef
   const edit = {
     status,
     title: values.title,
-    context: cleared(values.context),
     waitingOn: cleared(values['waiting-on']),
     due: cleared(values.due),
     scheduled: cleared(values.on),
@@ -474,7 +460,6 @@ async function setTodo(todos: Todos, home: string, args: string[]): Promise<void
     focus: cleared(values.focus),
     repeat: repeatOf(values.repeat),
     watch,
-    backTo,
     projectId:
       project === undefined ? undefined : project === '' ? null : todos.findProject(project).id,
   }
@@ -528,7 +513,6 @@ function showTodo(todos: Todos, id: number): void {
   if (where.length > 0) console.log(`  ${where.join(' · ')}`)
   console.log(`  from ${t.source}${t.sourceKey === null ? '' : ` ${t.sourceKey}`}`)
   if (t.watch !== null) console.log(`  watch ${t.watch}\n    ${checkText(todos.lastCheck(t))}`)
-  if (t.backTo !== null) console.log(`  back to task n${t.backTo} once the watch passes`)
   for (const l of todos.links(id)) {
     console.log(`  link ${l.url}${l.title === null ? '' : ` (${l.title})`}`)
   }
@@ -622,13 +606,7 @@ function showProject(todos: Todos, p: Project): void {
     const lines = p.description.split('\n').map(clean).join('\n')
     console.log(`  description\n${indent(lines, 4)}`)
   }
-  const open = {
-    statuses: OPEN,
-    context: null,
-    projectId: p.id,
-    hideSomedayProjects: false,
-    day: null,
-  }
+  const open = { statuses: OPEN, projectId: p.id, hideSomedayProjects: false, day: null }
   for (const t of todos.list(open)) console.log(`  ${line(todos, t)}`)
   printChanges(todos.projectChanges(p.id))
 }
@@ -711,8 +689,7 @@ function line(todos: Todos, t: Todo): string {
   return `t${String(t.id).padEnd(4)} ${t.status.padEnd(9)} ${oneLine(t.title, 80)}${after}`
 }
 
-// `d12 decide`, the decision `nod d12 <answer>` answers. It has no context: it can be answered
-// anywhere.
+// `d12 decide`, the decision `nod d12 <answer>` answers.
 function decisionLine(todos: Todos, { decision, task, todo }: TodoDecision): string {
   const project = todo === null || todo.projectId === null ? null : todos.project(todo.projectId)
   const rest = [
@@ -730,7 +707,6 @@ function tags(todos: Todos, t: Todo): string[] {
   const finished = t.status === 'done' || t.status === 'dropped'
   const on = t.status === 'waiting' ? todos.waitingFor(t) : null
   return [
-    t.context,
     project === null ? null : `p${project.id} ${project.title}`,
     on === null ? null : `waiting on ${on}`,
     t.watch === null ? null : `watched, ${checkedWhen(todos.lastCheck(t))}`,

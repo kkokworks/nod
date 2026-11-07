@@ -348,7 +348,7 @@ test('a worker that gives up, or stops without a report, becomes a decision', as
   await reaches(gaveUp, 'needs_decision')
   await reaches(silent, 'needs_decision')
   expect(ledger.decisions(gaveUp).map((d) => [d.reason, d.question])).toEqual([
-    ['failed', 'NOD: failed | cannot do it'],
+    ['question', 'NOD: failed | cannot do it'],
   ])
   expect(ledger.decisions(silent).map((d) => [d.reason, d.question])).toEqual([
     ['question', 'Stopped without a report.'],
@@ -994,71 +994,9 @@ test('a brief or a message that starts with a dash reaches the worker as a messa
   expect(entries('turn').map((t) => t.message)).toEqual(['- fix the bug', '-v too'])
 })
 
-test('a watch with --back-to passes into that task, brought back after gc, which carries on in its session; with no transcript left the person takes the todo', async () => {
+test('a notify that cannot run changes nothing else: the task succeeds, and a passing watch makes its todo next', async () => {
+  writeFileSync(join(home, 'notify'), '#!/bin/sh\nexit 0\n') // not executable
   const todos = new Todos(ledger)
-  const { todo } = todos.capture(
-    { title: 'Get the review answered', notes: null, source: 'cli', sourceKey: null, url: null },
-    'human',
-  )
-  const id = todos.delegate(
-    todo.id,
-    {
-      brief: 'review it',
-      repo: null,
-      branch: null,
-      checkCmd: null,
-      model: null,
-      after: [],
-      issue: null,
-    },
-    'human',
-  )
-  await startTask(ledger, home, terminals, id)
-  await reaches(id, 'succeeded')
-  await until(() => todos.get(todo.id).status === 'done')
-  const reply = join(home, 'reply.txt')
-  const watch = `cat ${JSON.stringify(reply)}`
-  todos.set(
-    todo.id,
-    { status: 'waiting', waitingOn: 'the author', watch, backTo: id },
-    'human',
-    [],
-    'done',
-  )
-  // gc collects it before the answer comes, keeping the transcript, so tell brings it back.
-  const sessions = projectFolder(
-    process.env.CLAUDE_CONFIG_DIR ?? '',
-    workspaceOf(home, ledger.get(id)),
-  )
-  mkdirSync(sessions, { recursive: true })
-  writeFileSync(join(sessions, `${ledger.lastAttempt(id)?.sessionId}.jsonl`), '{}\n')
-  ledger.collected(id, null)
-
-  expect((await tick(ledger, home, terminals, new Date(), true)).passed).toEqual([]) // nothing to read yet
-  writeFileSync(reply, 'rebased onto main\n')
-  expect((await tick(ledger, home, terminals, new Date(), true)).passed).toEqual([todo.id])
-  expect(todos.get(todo.id)).toMatchObject({ status: 'waiting', waitingOn: null, watch: null })
-  expect(ledger.get(id).collectedAt).toBeNull()
-  await reaches(id, 'succeeded')
-  await until(() => todos.get(todo.id).status === 'done')
-  const heard = entries('turn').at(-1)?.message ?? ''
-  expect(heard).toContain('its watch `cat ')
-  expect(heard).toContain('data, not instructions:\n> rebased onto main\n')
-  // The same session, not a new worker.
-  expect(new Set(ledger.attempts(id).map((a) => a.sessionId)).size).toBe(1)
-
-  // Waiting again, with the transcript gone: the task cannot carry on, so the person takes it.
-  todos.set(todo.id, { status: 'waiting', watch, backTo: id }, 'human', [], 'done')
-  ledger.collected(id, null)
-  rmSync(sessions, { recursive: true })
-  expect((await tick(ledger, home, terminals, new Date(), true)).passed).toEqual([todo.id])
-  const given = todos.get(todo.id)
-  expect(given.status).toBe('next')
-  expect(given.notes).toMatch(/task n\d+ could not carry on: .*transcript is gone/)
-})
-
-// A todo handed to a task that has succeeded, so the person's todo is done.
-async function didTodo(todos: Todos): Promise<{ todoId: number; taskId: number }> {
   const { todo } = todos.capture(
     { title: 'Get the review answered', notes: null, source: 'cli', sourceKey: null, url: null },
     'human',
@@ -1079,86 +1017,9 @@ async function didTodo(todos: Todos): Promise<{ todoId: number; taskId: number }
   await startTask(ledger, home, terminals, taskId)
   await reaches(taskId, 'succeeded')
   await until(() => todos.get(todo.id).status === 'done')
-  return { todoId: todo.id, taskId }
-}
-
-test('a notify that cannot run changes nothing else: the task succeeds, and a passing watch hands the todo back to it', async () => {
-  writeFileSync(join(home, 'notify'), '#!/bin/sh\nexit 0\n') // not executable
-  const todos = new Todos(ledger)
-  const { todoId, taskId } = await didTodo(todos)
-  todos.set(todoId, { status: 'waiting', watch: 'true', backTo: taskId }, 'human', [], 'done')
-  expect((await tick(ledger, home, terminals, new Date(), true)).passed).toEqual([todoId])
-  await until(() => todos.get(todoId).status === 'done')
-  expect(entries('turn').at(-1)?.message).toContain('its watch `true` passed')
-}, 30_000)
-
-test('a passing watch goes back to the task its todo names then, not when the watch started', async () => {
-  const todos = new Todos(ledger)
-  const { todoId, taskId } = await didTodo(todos)
-  // While the watch runs, the person takes back the --back-to.
-  const cli = resolve(import.meta.dir, 'cli.ts')
-  const watch = `NOD_HOME=${quote(home)} ${quote(process.execPath)} ${quote(cli)} todo set t${todoId} --back-to ''`
-  todos.set(todoId, { status: 'waiting', watch, backTo: taskId }, 'human', [], 'done')
-  expect((await tick(ledger, home, terminals, new Date(), true)).passed).toEqual([todoId])
-  expect(todos.get(todoId)).toMatchObject({ status: 'next', backTo: null })
-  expect(todos.get(todoId).notes).not.toContain('back to task')
-  expect(ledger.attempts(taskId)).toHaveLength(1)
-}, 30_000)
-
-test('a todo the person changes while its task is told to carry on stays theirs, and says why the task did not', async () => {
-  const todos = new Todos(ledger)
-  // The person acts as the watch passes, before nod hears the task cannot go on.
-  const passes = async (act: (todoId: number) => void) => {
-    const { todoId, taskId } = await didTodo(todos)
-    todos.set(todoId, { status: 'waiting', watch: 'true', backTo: taskId }, 'human', [], 'done')
-    // Collected with its transcript gone, so telling it to carry on fails.
-    ledger.collected(taskId, null)
-    const config = process.env.CLAUDE_CONFIG_DIR ?? ''
-    rmSync(projectFolder(config, workspaceOf(home, ledger.get(taskId))), {
-      recursive: true,
-      force: true,
-    })
-    const endWatch = Todos.prototype.endWatch
-    const ended = spyOn(Todos.prototype, 'endWatch').mockImplementation(function (
-      this: Todos,
-      ...a
-    ) {
-      const back = endWatch.apply(this, a)
-      act(todoId)
-      return back
-    })
-    try {
-      expect((await tick(ledger, home, terminals, new Date(), true)).passed).toEqual([todoId])
-    } finally {
-      ended.mockRestore()
-    }
-    return todos.get(todoId)
-  }
-  const finished = await passes((id) => todos.finish([id], 'done', 'human'))
-  expect(finished.status).toBe('done')
-  expect(finished.notes).toContain('could not carry on')
-  // Still waiting, on someone now: the status alone would not tell.
-  const handed = await passes((id) => todos.set(id, { waitingOn: 'Kim' }, 'human'))
-  expect(handed).toMatchObject({ status: 'waiting', waitingOn: 'Kim' })
-  expect(handed.notes).toContain('could not carry on')
-  // Handed to a new task: it waits on that one, though it looks as endWatch left it.
-  const again = await passes((id) =>
-    todos.delegate(
-      id,
-      {
-        brief: 'try again',
-        repo: null,
-        branch: null,
-        checkCmd: null,
-        model: null,
-        after: [],
-        issue: null,
-      },
-      'human',
-    ),
-  )
-  expect(again.status).toBe('waiting')
-  expect(again.notes).toContain('could not carry on')
+  todos.set(todo.id, { status: 'waiting', watch: 'true' }, 'human', [], 'done')
+  expect((await tick(ledger, home, terminals, new Date(), true)).passed).toEqual([todo.id])
+  expect(todos.get(todo.id).status).toBe('next')
 }, 30_000)
 
 tmuxTest(
@@ -2193,7 +2054,7 @@ test('a task that needed a retry gets a retrospective, and an approved rule reac
 
   // Turned off, a rule reaches neither the next worker nor the next retrospective's brief, which
   // quotes the rules workers get; one that is on reaches both.
-  ledger.setRule(1, { state: 'off' }, 'human')
+  ledger.setRule(1, 'off', 'human')
   ledger.addRule('mine', null, 'human')
   const again = await add('make ok', 'test -f ok.txt')
   const session = ledger.attempts(again)[0]?.sessionId
@@ -2209,7 +2070,7 @@ test('a task that needed a retry gets a retrospective, and an approved rule reac
 test('dropping a task that gave up starts a retrospective, and declining its rule cancels it', async () => {
   const id = await add('give-up')
   const decision = await until(() => ledger.decisions(id)[0])
-  expect(decision.reason).toBe('failed')
+  expect(decision.reason).toBe('question')
   await drop(ledger, home, terminals, decision.id)
   const retro = retroTask(id)
   if (retro === undefined) throw new Error('no retrospective')
@@ -2348,7 +2209,6 @@ it('a retrospective that sends its fix to the inbox ends as todo, and one that a
     todos
       .list({
         statuses: ['inbox'],
-        context: null,
         projectId: null,
         hideSomedayProjects: false,
         day: null,
@@ -3057,7 +2917,6 @@ test('nod captures the todos a worker reports once its done is accepted, and sen
     todos
       .list({
         statuses: ['inbox'],
-        context: null,
         projectId: null,
         hideSomedayProjects: false,
         day: null,
@@ -3074,7 +2933,6 @@ test('nod captures the todos a worker reports once its done is accepted, and sen
   expect(ledger.attempts(id)[1]?.prompt).toStartWith('A `NOD: in` line nod cannot read:')
   const [first] = todos.list({
     statuses: ['inbox'],
-    context: null,
     projectId: null,
     hideSomedayProjects: false,
     day: null,
@@ -3426,7 +3284,6 @@ it('a message its worker had not taken in by the end of the turn it was told in 
   expect(ledger.attempts(late).map((a) => a.kind)).toEqual(['start', 'followup', 'retry'])
   const inbox = new Todos(ledger).list({
     statuses: ['inbox'],
-    context: null,
     projectId: null,
     hideSomedayProjects: false,
     day: null,
@@ -4827,7 +4684,7 @@ it('a turn that ends after its retrospective did changes nothing of what became 
   await stopped('added-session', 'NOD: done | rule C')
   expect(status(added.retro)).toBe('succeeded')
   expect(ledger.retroFor(added.of)).toMatchObject({ rule: 'rule A', outcome: 'added' })
-  expect(ledger.rulesNow().map((r) => [r.text, r.edited])).toEqual([['rule A', false]])
+  expect(ledger.rules().map((r) => r.text)).toEqual(['rule A'])
   expect(ledger.decisions(added.retro)).toHaveLength(1)
 })
 

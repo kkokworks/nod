@@ -44,7 +44,11 @@ function setup() {
   const task = (text: string, project: number | null = p.id): number =>
     todos.delegateNew(brief(text), project, 'human')
   // A turn of the task's worker, ended as `outcome` with `summary`.
-  const turn = (taskId: number, outcome: 'succeeded' | 'failed', summary: string): number => {
+  const turn = (
+    taskId: number,
+    outcome: 'succeeded' | 'needs_decision',
+    summary: string,
+  ): number => {
     const id = ledger.startAttempt({
       taskId,
       kind: 'start',
@@ -74,13 +78,18 @@ test("each end of a project's task and each decision opened on one go once, in o
   turn(shipped, 'succeeded', 'Added the export button\nwith a test')
   ledger.succeed(shipped)
   const broke = task('Fix the build')
-  turn(broke, 'failed', 'tried')
+  turn(broke, 'needs_decision', 'tried')
   ledger.error(broke, 'the worktree is gone\nmore')
   const dropped = task('Drop me')
-  ledger.drop(ledger.ask(dropped, turn(dropped, 'failed', 'stuck'), 'question', 'Go on?'))
+  ledger.drop(ledger.ask(dropped, turn(dropped, 'needs_decision', 'stuck'), 'question', 'Go on?'))
   const asking = task('Pick a branch')
   turn(asking, 'succeeded', 'first try')
-  ledger.ask(asking, turn(asking, 'failed', 'which'), 'question', 'Which branch?\nmain or next')
+  ledger.ask(
+    asking,
+    turn(asking, 'needs_decision', 'which'),
+    'question',
+    'Which branch?\nmain or next',
+  )
 
   await sendNotices(ledger, send)
   expect(sent).toEqual([
@@ -307,7 +316,7 @@ test('work in no project waits while the orchestrator session is closed, and goe
   const ended = task('Ended', null)
   ledger.succeed(ended)
   const asking = task('Asking', null)
-  const d = ledger.ask(asking, turn(asking, 'failed', 'which'), 'question', 'Which?')
+  const d = ledger.ask(asking, turn(asking, 'needs_decision', 'which'), 'question', 'Which?')
   await sendNotices(ledger, send)
   expect(sent).toEqual([])
   expect(ledger.unsentNotices()).toHaveLength(2)
@@ -344,7 +353,7 @@ test('a decision on work in no project goes to its orchestrator as a line when a
   todos.addSession({ role: 'orchestrator', name: 'south' }, B, '/work/two')
   const ask = (text: string): number => {
     const id = todos.delegateNew({ ...brief(text), rootSession: A }, null, 'human')
-    return ledger.ask(id, turn(id, 'failed', 'which'), 'question', `${text}?`)
+    return ledger.ask(id, turn(id, 'needs_decision', 'which'), 'question', `${text}?`)
   }
   const [mine, theirs] = [ask('Mine'), ask('Theirs')]
   await sendNotices(ledger, send)
@@ -399,7 +408,7 @@ test('notices wait while the project has no session taking messages, and go in o
 
   ledger.succeed(task('First'))
   const asking = task('Second')
-  ledger.ask(asking, turn(asking, 'failed', 'q'), 'permission', 'Allow it?')
+  ledger.ask(asking, turn(asking, 'needs_decision', 'q'), 'permission', 'Allow it?')
   await sendNotices(ledger, send)
   // A session nod open opened, whose hooks have not said yet; and one nod open did not open.
   todos.addSession(p.id, A, '/work/one')
@@ -1054,7 +1063,7 @@ test("a decision a person answers or drops goes to the project's latest session 
   // A decision left open on a task that succeeded.
   const open = (text: string): number => {
     const id = task(text)
-    const d = ledger.ask(id, turn(id, 'failed', 'asked'), 'question', `${text}?`)
+    const d = ledger.ask(id, turn(id, 'needs_decision', 'asked'), 'question', `${text}?`)
     ledger.succeed(id)
     return d
   }
@@ -1133,7 +1142,7 @@ test('nod d<n> and nod drop d<n> run in the project’s latest session, or by a 
   // Decisions left open on tasks that succeeded: an answer only closes them, and no worker runs.
   const open = (): number => {
     const id = task('Done already')
-    const d = ledger.ask(id, turn(id, 'failed', 'asked'), 'question', 'Still?')
+    const d = ledger.ask(id, turn(id, 'needs_decision', 'asked'), 'question', 'Still?')
     ledger.succeed(id)
     return d
   }
@@ -1162,7 +1171,10 @@ test("a question the person answers by typing into the worker's terminal goes to
   const { home, ledger, task, turn } = setup()
   const asking = (text: string) => {
     const id = task(text)
-    return { id, d: ledger.ask(id, turn(id, 'failed', 'which'), 'question', 'Which branch?') }
+    return {
+      id,
+      d: ledger.ask(id, turn(id, 'needs_decision', 'which'), 'question', 'Which branch?'),
+    }
   }
   // The person types into the worker's terminal: the turn their words open answers the question.
   const typed = asking('Typed into')
@@ -1177,7 +1189,14 @@ test("a question the person answers by typing into the worker's terminal goes to
   expect(ledger.decision(itself.d).answer).toBe(WENT_ON)
   // A newer question replaces the one before.
   const again = asking('Asked again')
-  await decide(ledger, home, again.id, turn(again.id, 'failed', 'which'), 'question', 'Really?')
+  await decide(
+    ledger,
+    home,
+    again.id,
+    turn(again.id, 'needs_decision', 'which'),
+    'question',
+    'Really?',
+  )
   expect(ledger.decision(again.d).answer).toBe(WENT_ON)
   // The turn showing a dialog is cut off with its terminal.
   const cut = task('Cut off')
@@ -1230,7 +1249,7 @@ test("a drop that ends a task or stops its landing, and a no to trust, which dro
 test('an answer the ledger cannot record for the project session still stands, and what follows it runs', async () => {
   const { home, ledger, task, turn } = setup()
   const id = task('Done already')
-  const d = ledger.ask(id, turn(id, 'failed', 'asked'), 'question', 'Still?')
+  const d = ledger.ask(id, turn(id, 'needs_decision', 'asked'), 'question', 'Still?')
   ledger.succeed(id)
   const add = ledger.addNotice.bind(ledger)
   const busy = spyOn(ledger, 'addNotice').mockImplementation((n) => {

@@ -289,6 +289,7 @@ const FIELD: Record<string, string> = {
 const shown = (field: string, v: unknown): string => {
   if (v === null) return '—'
   if (field === 'projectId') return `p${String(v)}`
+  // backTo is gone from todos (v33), but the history keeps the tasks it named.
   return field === 'backTo' ? `n${String(v)}` : oneLine(clean(String(v)), 40)
 }
 

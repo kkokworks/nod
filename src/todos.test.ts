@@ -32,7 +32,6 @@ const captured = (todos: Todos, title: string, source = 'cli', sourceKey: string
 const project = (todos: Todos, title: string) => todos.addProject({ title, outcome: null }, 'human')
 const open: TodoFilter = {
   statuses: OPEN,
-  context: null,
   projectId: null,
   hideSomedayProjects: true,
   day: null,
@@ -102,13 +101,11 @@ test('clarifying records each field before and after; status time moves only wit
   const todos = fresh()
   const t = captured(todos, 'Call the dentist')
   const p = project(todos, 'Health')
-  // A context is written with @, given with or without it.
-  const next = todos.set(t.id, { status: 'next', projectId: p.id, context: 'phone' }, 'human')
-  expect(next.context).toBe('@phone')
+  const next = todos.set(t.id, { status: 'next', projectId: p.id }, 'human')
   const statusChanged = todos.changes(t.id)[1]?.at
   expect(next.statusAt).toBe(String(statusChanged))
   Bun.sleepSync(2)
-  const renamed = todos.set(t.id, { title: 'Call the dentist to book', context: null }, 'worker:3')
+  const renamed = todos.set(t.id, { title: 'Call the dentist to book' }, 'worker:3')
   expect(renamed.statusAt).toBe(next.statusAt)
   expect(todos.changes(t.id)[2]?.at).not.toBe(statusChanged)
   // Setting what is already there is no change.
@@ -118,11 +115,8 @@ test('clarifying records each field before and after; status time moves only wit
       'human',
       { title: [null, 'Call the dentist'], status: [null, 'inbox'], source: [null, 'cli'] },
     ],
-    ['human', { status: ['inbox', 'next'], projectId: [null, p.id], context: [null, '@phone'] }],
-    [
-      'worker:3',
-      { title: ['Call the dentist', 'Call the dentist to book'], context: ['@phone', null] },
-    ],
+    ['human', { status: ['inbox', 'next'], projectId: [null, p.id] }],
+    ['worker:3', { title: ['Call the dentist', 'Call the dentist to book'] }],
   ])
 })
 
@@ -147,13 +141,13 @@ test('a watch is only for a waiting todo, and passing it makes the todo next aga
   expect(ids(todos.watched())).toEqual([t.id])
 
   // Its watch changed while the command ran: that result is not for this watch.
-  expect(todos.endWatch(t.id, 'test -f other', 'passed', 'nod')).toBeNull()
-  expect(todos.endWatch(t.id, 'test -f pushed', 'passed', 'nod', true)).toEqual({ back: null })
+  expect(todos.endWatch(t.id, 'test -f other', 'passed', 'nod')).toBe(false)
+  expect(todos.endWatch(t.id, 'test -f pushed', 'passed', 'nod')).toBe(true)
   const back = todos.get(t.id)
   expect([back.status, back.waitingOn, back.watch]).toEqual(['next', null, null])
   expect(back.notes).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2} watch passed: test -f pushed$/)
   expect(todos.changes(t.id).at(-1)?.actor).toBe('nod')
-  expect(todos.endWatch(t.id, 'test -f pushed', 'passed', 'nod')).toBeNull()
+  expect(todos.endWatch(t.id, 'test -f pushed', 'passed', 'nod')).toBe(false)
   expect(todos.watched()).toEqual([])
 
   // Leaving waiting any other way forgets the watch too.
@@ -200,88 +194,6 @@ test('a todo waiting on its task has no watch: handing it over drops one, and no
   expect(watched.watch).toBe('test -f shipped')
 })
 
-test('--back-to names the task that did the todo; a passing watch hands the todo back to it', async () => {
-  const { ledger, todos } = books()
-  const t = captured(todos, 'Get the review answered')
-  const did = todos.delegate(t.id, task, 'human')
-  const unrelated = ledger.add(task)
-  for (const id of [did, unrelated]) {
-    ledger.setRunning(id, `/work/${id}`)
-    ledger.succeed(id)
-  }
-  await follow(todos)
-  const watch = 'test -f answered'
-  // The task did it, so it is done: reopening it says so (from).
-  const reopen = (edit: TodoEdit) => todos.set(t.id, edit, 'human', [], 'done')
-  expect(() => reopen({ status: 'waiting', backTo: did })).toThrow(
-    '--back-to is for when a watch passes',
-  )
-  expect(() => reopen({ status: 'waiting', watch, backTo: unrelated })).toThrow(
-    `task n${unrelated} is not the latest task of t${t.id}`,
-  )
-  reopen({ status: 'waiting', waitingOn: 'Kim', watch, backTo: did })
-  // It goes with the watch: clearing the watch, or leaving waiting, forgets it.
-  expect(todos.set(t.id, { watch: null }, 'human').backTo).toBeNull()
-  todos.set(t.id, { watch, backTo: did }, 'human')
-  expect(todos.set(t.id, { status: 'next' }, 'human').backTo).toBeNull()
-  // The task is the one named when the watch ends: none for a watch that cannot run, nor once the
-  // person took it back while the command ran.
-  todos.set(t.id, { status: 'waiting', watch, backTo: did }, 'human')
-  expect(todos.endWatch(t.id, watch, 'cannot run (gone)', 'nod')).toEqual({ back: null })
-  todos.set(t.id, { status: 'waiting', watch, backTo: did }, 'human')
-  todos.set(t.id, { backTo: null }, 'human')
-  expect(todos.endWatch(t.id, watch, 'passed', 'nod', true)).toEqual({ back: null })
-  expect(todos.get(t.id).status).toBe('next')
-
-  Bun.sleepSync(2) // so it starts waiting after the task ended, on a millisecond clock
-  todos.set(t.id, { status: 'waiting', waitingOn: 'Kim', watch, backTo: did }, 'human')
-  expect(todos.endWatch(t.id, watch, 'passed', 'nod', true)).toEqual({ back: did })
-  const back = todos.get(t.id)
-  expect([back.status, back.waitingOn, back.watch, back.backTo]).toEqual([
-    'waiting',
-    null,
-    null,
-    null,
-  ])
-  expect(back.notes).toMatch(/ watch passed, back to task n\d+: test -f answered$/)
-  // It waits on the task now: not moved by its earlier end, moved by the next one.
-  await follow(todos)
-  expect(todos.get(t.id).status).toBe('waiting')
-  ledger.setRunning(did, `/work/${did}`)
-  ledger.succeed(did)
-  await follow(todos)
-  expect(todos.get(t.id).status).toBe('done')
-
-  // A task gc collected comes back when told, so it can still be named.
-  ledger.collected(did, null)
-  expect(reopen({ status: 'waiting', watch, backTo: did }).backTo).toBe(did)
-})
-
-test('--back-to takes only the latest task, the one whose end moves the todo', async () => {
-  const { ledger, todos } = books()
-  const t = captured(todos, 'Get the review answered')
-  const ended = async (id: number) => {
-    ledger.setRunning(id, `/work/${id}`)
-    ledger.succeed(id)
-    await follow(todos)
-  }
-  const earlier = todos.delegate(t.id, task, 'human')
-  await ended(earlier)
-  todos.set(t.id, { status: 'next' }, 'human', [], 'done')
-  const latest = todos.delegate(t.id, task, 'human')
-  await ended(latest)
-  const watch = 'test -f answered'
-  const reopen = (edit: TodoEdit) => todos.set(t.id, edit, 'human', [], 'done')
-  // followTasks goes by the latest task, so an earlier one carrying on would never move the todo.
-  expect(() => reopen({ status: 'waiting', watch, backTo: earlier })).toThrow(
-    `task n${earlier} is not the latest task of t${t.id}`,
-  )
-  reopen({ status: 'waiting', watch, backTo: latest })
-  todos.endWatch(t.id, watch, 'passed', 'nod', true)
-  await ended(latest)
-  expect(todos.get(t.id).status).toBe('done')
-})
-
 test('a watched todo waits on its watch, not on a task told more after it began waiting', async () => {
   const { ledger, todos } = books()
   const t = captured(todos, 'Get the review answered')
@@ -294,10 +206,10 @@ test('a watched todo waits on its watch, not on a task told more after it began 
   await ended()
   Bun.sleepSync(2) // so it starts waiting after the task ended, on a millisecond clock
   const watch = 'test -f answered'
-  todos.set(t.id, { status: 'waiting', watch, backTo: did }, 'human', [], 'done')
+  todos.set(t.id, { status: 'waiting', watch }, 'human', [], 'done')
   Bun.sleepSync(2)
   await ended() // the person told the task something (nod tell), and it ended again
-  expect(todos.get(t.id)).toMatchObject({ status: 'waiting', watch, backTo: did })
+  expect(todos.get(t.id)).toMatchObject({ status: 'waiting', watch })
 })
 
 test('an edit that fails changes nothing, links included', () => {
@@ -375,26 +287,20 @@ test('links are kept once each and recorded as changes', () => {
   expect(todos.changes(t.id).filter((c) => 'link' in c.change)).toHaveLength(2)
 })
 
-test('lists go in GTD order and filter by status, context and project', () => {
+test('lists go in GTD order and filter by status and project', () => {
   const todos = fresh()
   const p = project(todos, 'P')
   const waiting = captured(todos, 'w')
   todos.set(waiting.id, { status: 'waiting', waitingOn: 'Kim', projectId: p.id }, 'human')
   const inbox = captured(todos, 'i')
-  const phone = captured(todos, 'n')
-  todos.set(phone.id, { status: 'next', context: '@phone', projectId: p.id }, 'human')
-  const anywhere = captured(todos, 'a')
-  todos.set(anywhere.id, { status: 'next' }, 'human')
-  const desk = captured(todos, 'd')
-  todos.set(desk.id, { status: 'next', context: '@desk' }, 'human')
+  const inP = captured(todos, 'n')
+  todos.set(inP.id, { status: 'next', projectId: p.id }, 'human')
+  const loose = captured(todos, 'a')
+  todos.set(loose.id, { status: 'next' }, 'human')
 
-  expect(ids(todos.list(open))).toEqual([inbox.id, phone.id, anywhere.id, desk.id, waiting.id])
-  // A todo with no context can be done anywhere, so it is listed in every context.
-  expect(ids(todos.list({ ...open, statuses: ['next'], context: 'phone' }))).toEqual([
-    phone.id,
-    anywhere.id,
-  ])
-  expect(ids(todos.list({ ...open, projectId: p.id }))).toEqual([phone.id, waiting.id])
+  expect(ids(todos.list(open))).toEqual([inbox.id, inP.id, loose.id, waiting.id])
+  expect(ids(todos.list({ ...open, statuses: ['next'] }))).toEqual([inP.id, loose.id])
+  expect(ids(todos.list({ ...open, projectId: p.id }))).toEqual([inP.id, waiting.id])
 })
 
 test('putting a project off hides its todos until it is named or everything is listed', () => {
@@ -933,14 +839,13 @@ test('done makes the next one of a repeating todo, once; dropped ends it', () =>
   const todos = fresh()
   const p = project(todos, 'Habits')
   const t = captured(todos, 'Weekly review')
-  const edit: TodoEdit = { status: 'next', projectId: p.id, context: 'desk', focus: 'today' }
+  const edit: TodoEdit = { status: 'next', projectId: p.id, focus: 'today' }
   todos.set(t.id, { ...edit, due: '2026-10-16 17:00', repeat: 'weekly' }, 'claude:abc')
   todos.finish([t.id], 'done', 'claude:abc')
   const next = only(todos.list({ ...open, statuses: ['next'] }))
   expect(next).toMatchObject({
     title: 'Weekly review',
     projectId: p.id,
-    context: '@desk',
     repeat: 'weekly',
     focus: null,
     source: 'cli',

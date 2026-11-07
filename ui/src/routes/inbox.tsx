@@ -9,8 +9,8 @@ export const Route = createFileRoute('/inbox')({
   component: InboxPage,
 })
 
-// Mindwtr's Inbox: capture, and the todos still to clarify. Next actions and reference are on
-// Focus, decisions on the home page, Waiting For and Someday/Maybe on pages of their own.
+// Mindwtr's Inbox: capture, and the todos still to clarify. Next actions are on Focus, decisions
+// on the home page, Waiting For and Someday/Maybe on pages of their own.
 function InboxPage() {
   const l = Route.useLoaderData()
   return (

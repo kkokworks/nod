@@ -25,13 +25,12 @@ export type TaskStatus =
 export const FINISHED: ReadonlySet<TaskStatus> = new Set(['succeeded', 'cancelled', 'error'])
 // `waiting`: the turn ended while background work the worker started still ran, which starts its
 // next turn once done, so nobody is asked anything yet (settle in worker.ts).
-export type Outcome = 'succeeded' | 'failed' | 'needs_decision' | 'waiting'
+export type Outcome = 'succeeded' | 'needs_decision' | 'waiting'
 // `land`: a turn nod gave the worker as it lands the task (land.ts): a conflict, a failed check,
 // the pull request's text.
 export type AttemptKind = 'start' | 'retry' | 'answer' | 'resume' | 'followup' | 'land'
 export type DecisionReason =
   | 'question'
-  | 'failed'
   | 'check_failed'
   | 'permission'
   | 'trust'
@@ -111,10 +110,6 @@ export type Rule = {
   createdAt: string
   changedAt: string
 }
-export type RuleEdit = Partial<Pick<Rule, 'text' | 'state'>>
-// A rule as it stands now, edited once its words differ from what its retrospective proposed. One
-// the person wrote has no proposal, so it is never edited.
-export type RuleNow = Rule & { edited: boolean }
 // Each field a change set, as [before, after], the way todo_changes keeps it (todos.ts).
 type Changed = Record<string, [unknown, unknown]>
 
@@ -186,7 +181,6 @@ export type Attempt = {
   report: string | null
   checkResult: 'passed' | 'failed' | null
   checkOutput: string | null
-  costUsd: number | null
   error: string | null
   startedAt: string
   finishedAt: string | null
@@ -269,7 +263,6 @@ export type Stats = {
   attempts: number
   retries: number
   decisions: { total: number; open: number; medianWaitSecs: number | null }
-  costUsd: number
 }
 
 // Append-only: never edit a shipped migration, add a new one. Exported so a test can build a ledger
@@ -317,6 +310,7 @@ export const MIGRATIONS = [
   create index decisions_task on decisions(task_id);
   `,
   // v2: the worker process, so a new runner can wait for a worker its dead predecessor started.
+  // Unused once workers ran in terminals; v33 drops it.
   'alter table attempts add column pid integer;',
   // v3: tasks that wait for others, and the model, since a waiting task starts long after `nod add`.
   `
@@ -454,6 +448,7 @@ export const MIGRATIONS = [
   // rebuild the worktree after gc deleted the branch.
   'alter table tasks add column head text;',
   // v15: the task a watched todo goes back to once its watch passes, instead of to the person.
+  // v33 drops it.
   'alter table todos add column back_to integer references tasks(id);',
   // v16: retrospectives in a table of their own, apart from the person's todos, with the rule each
   // proposed and what became of it; the task a retrospective runs in points at it, as a delegated
@@ -668,7 +663,8 @@ export const MIGRATIONS = [
   // until nod open writes it again. Ids stay, as a project's latest session is its highest id. A
   // notice's session is that row now, not the Claude session ID. nod deletes no session, so only a
   // ledger edited by hand has a notice sent to one no row names: it stays sent, with no session, and
-  // unmatched_notice_sessions keeps the ID it held, as no role can be told for a row in sessions.
+  // unmatched_notice_sessions keeps the ID it held, as no role can be told for a row in sessions
+  // (v33 drops it).
   `
   create table sessions (
     id integer primary key,
@@ -722,6 +718,38 @@ export const MIGRATIONS = [
   drop table trigger_items;
   drop table triggers;
   `,
+  // v33: what nothing used. Attempts lose their cost, which interactive workers never report, and
+  // the worker's process, which nothing wrote since workers run in terminals; the IDs v29 kept of
+  // notices sent to a session no row names go, as only a ledger edited by hand had any. Todos lose
+  // their context and the task to go back to once a watch passes, each value first recorded in the
+  // todo's history as nod's change to none, so `nod todo <todo>` still shows it; and the reference
+  // status, whose todos go to someday, recorded the same way. A worker's `NOD: failed` asks the
+  // person as a question does, so its turns and decisions read as a question's (hadTrouble in
+  // rules.ts reads that line in the report itself).
+  `
+  insert into todo_changes (todo_id, actor, change, at)
+    select id, 'nod', json_object('context', json_array(context, null)),
+      strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    from todos where context is not null order by id;
+  insert into todo_changes (todo_id, actor, change, at)
+    select id, 'nod', json_object('backTo', json_array(back_to, null)),
+      strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    from todos where back_to is not null order by id;
+  insert into todo_changes (todo_id, actor, change, at)
+    select id, 'nod', json_object('status', json_array('reference', 'someday')),
+      strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    from todos where status = 'reference' order by id;
+  update todos set status = 'someday', followed = null,
+    status_at = (select at from todo_changes c where c.todo_id = todos.id order by c.id desc limit 1)
+  where status = 'reference';
+  alter table todos drop column context;
+  alter table todos drop column back_to;
+  alter table attempts drop column cost_usd;
+  alter table attempts drop column pid;
+  drop table unmatched_notice_sessions;
+  update attempts set outcome = 'needs_decision' where outcome = 'failed';
+  update decisions set reason = 'question' where reason = 'failed';
+  `,
 ]
 // The migration that moves <home>/rules.md into the ledger, numbered as user_version counts.
 const RULES_FILE_MIGRATION = 17
@@ -734,7 +762,7 @@ type Tables = {
   tasks: Omit<Task, 'id' | 'status'> & { id: Generated<number>; status: Generated<TaskStatus> }
   taskDeps: { taskId: number; afterId: number }
   links: { taskId: number; url: string; createdAt: string }
-  attempts: Omit<Attempt, 'id'> & { id: Generated<number>; pid: number | null }
+  attempts: Omit<Attempt, 'id'> & { id: Generated<number> }
   decisions: Omit<Decision, 'id'> & { id: Generated<number> }
   messages: Omit<Message, 'id'> & { id: Generated<number> }
   pendingTells: Omit<PendingTell, 'id'> & { id: Generated<number> }
@@ -794,7 +822,6 @@ const ATTEMPT = [
   'report',
   'checkResult',
   'checkOutput',
-  'costUsd',
   'error',
   'startedAt',
   'finishedAt',
@@ -1222,33 +1249,15 @@ export class Ledger {
     return this.run(q.selectFrom('rules').selectAll().orderBy('id'))
   }
 
-  rulesNow(): RuleNow[] {
-    return this.rules().map((r) => ({
-      ...r,
-      edited: r.retroId !== null && r.text !== this.retro(r.retroId).rule,
-    }))
-  }
-
-  // Changes what the edit names and records who changed what; a field set to the value it has is
-  // not a change.
-  setRule(id: number, edit: RuleEdit, actor: string): Rule {
-    if (edit.text !== undefined) ruleText(edit.text)
+  // Turns a rule on or off and records who did; the state it is in already is not a change. Its
+  // words never change: a new wording is a rule of its own (addRule), the old one turned off.
+  setRule(id: number, state: RuleState, actor: string): Rule {
     return this.db.transaction(() => {
       const before = this.rule(id)
-      const change = Object.fromEntries(
-        (['text', 'state'] as const)
-          .filter((k) => edit[k] !== undefined && edit[k] !== before[k])
-          .map((k): [string, Changed[string]] => [k, [before[k], edit[k]]]),
-      )
-      if (Object.keys(change).length === 0) return before
+      if (before.state === state) return before
       const at = now()
-      this.run(
-        q
-          .updateTable('rules')
-          .set({ ...edit, changedAt: at })
-          .where('id', '=', id),
-      )
-      this.recordRule(id, actor, change, at)
+      this.run(q.updateTable('rules').set({ state, changedAt: at }).where('id', '=', id))
+      this.recordRule(id, actor, { state: [before.state, state] }, at)
       return this.rule(id)
     })()
   }
@@ -1269,8 +1278,9 @@ export class Ledger {
     return this.run(q.selectFrom('repos').select(REPO).orderBy('path'))
   }
 
-  // Changes what the edit names and records who changed what, as setRule does. Going up from off
-  // marks when, so only the tasks added from then on land without being named.
+  // Changes what the edit names and records who changed what, as setRule does; a field set to the
+  // value it has is not a change. Going up from off marks when, so only the tasks added from then on
+  // land without being named.
   setRepo(path: string, edit: RepoEdit, actor: string): Repo {
     return this.db.transaction(() => {
       const at = now()
@@ -1463,7 +1473,6 @@ export class Ledger {
     )
   }
 
-  // Interactive sessions do not report cost, so cost_usd stays empty for these attempts.
   endAttempt(id: number, r: { outcome: Outcome; summary: string; report: string | null }): void {
     this.run(
       q
@@ -1890,11 +1899,6 @@ export class Ledger {
         open: one(q.selectFrom('decisions').select(count).where('answer', 'is', null)),
         medianWaitSecs: median(waits),
       },
-      // Rounded to 1/100 cent so float sums compare exactly.
-      costUsd:
-        Math.round(
-          one(q.selectFrom('attempts').select(q.fn.sum<number | null>('costUsd').as('n'))) * 1e4,
-        ) / 1e4,
     }
   }
 

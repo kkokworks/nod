@@ -854,7 +854,6 @@ export async function settle(
     await announce(home, task, trusted, past)
   }
   if (!done) {
-    const failed = report?.status === 'failed'
     // Background work the worker started still runs, and Claude Code starts its next turn once that
     // is done (2.1.309), so what it asks now waits on nothing the person can give yet. Not past
     // WAIT_LIMIT_MS of waiting in a row with no turn open, though (overdueWaits does it between
@@ -863,7 +862,7 @@ export async function settle(
     const overdue = wait >= WAIT_LIMIT_MS
     const waiting = work.length > 0 && !overdue
     ledger.endAttempt(attemptId, {
-      outcome: waiting ? 'waiting' : failed ? 'failed' : 'needs_decision',
+      outcome: waiting ? 'waiting' : 'needs_decision',
       summary,
       report: text,
     })
@@ -872,8 +871,7 @@ export async function settle(
     if (waiting || newer()) return null
     const still = work.map((w) => w.description ?? w.type ?? '?').join(', ')
     const note = work.length > 0 ? `${waitedNote(wait)} Still running: ${still}.\n` : ''
-    const reason = failed ? 'failed' : 'question'
-    await decide(ledger, home, task.id, attemptId, reason, note + text.slice(-QUESTION_LIMIT))
+    await decide(ledger, home, task.id, attemptId, 'question', note + text.slice(-QUESTION_LIMIT))
     return null
   }
   ledger.endAttempt(attemptId, { outcome: 'succeeded', summary, report: text })
@@ -1869,16 +1867,14 @@ export async function overdueWaits(ledger: Ledger, home: string, now: Date): Pro
     if (last === null || last.outcome !== 'waiting' || wait === null) continue
     if (wait < WAIT_LIMIT_MS) continue
     const report = last.report ?? ''
-    const failed = parseReport(report)?.status === 'failed'
     // Taken first, in one statement: of two ticks at once one asks, and a turn that started since
     // (the work finished just now) goes on instead.
     // ponytail: a turn that starts between this and the decision runs with it open, until the
     // task's next question or its success closes it.
     const past = turns.filter((a) => a.id > last.id && noTurn(a)).map((a) => a.id)
-    if (!ledger.endWait(last.id, failed ? 'failed' : 'needs_decision', past)) continue
+    if (!ledger.endWait(last.id, 'needs_decision', past)) continue
     const note = `${waitedNote(wait)} No turn has come since it stopped.\n`
-    const reason = failed ? 'failed' : 'question'
-    await decide(ledger, home, t.id, last.id, reason, note + report.slice(-QUESTION_LIMIT))
+    await decide(ledger, home, t.id, last.id, 'question', note + report.slice(-QUESTION_LIMIT))
     asked.push(t.id)
   }
   return asked

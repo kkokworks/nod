@@ -41,7 +41,6 @@ function RulesPage() {
                     r{r.retroId}
                   </Link>
                 )}
-                {r.edited && <span>edited</span>}
                 <span>changed {localTime(r.changedAt)}</span>
               </div>
             </div>
