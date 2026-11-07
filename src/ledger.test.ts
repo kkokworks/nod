@@ -6,6 +6,7 @@ import { tempDirs } from '../test/tmp'
 import { Ledger, MIGRATIONS, RETRO_STATUS, type RetroOutcome, type TaskStatus } from './ledger'
 import { hadTrouble } from './rules'
 import { SESSION_ROLES, Todos } from './todos'
+import { changeText } from './view'
 
 const tmp = tempDirs()
 afterAll(tmp.removeAll)
@@ -435,6 +436,7 @@ test('v33 keeps what a v32 ledger held of a context or a task to go back to in e
   expect(change(1)).toEqual([])
   expect(change(2)).toEqual([['nod', { context: ['@phone', null] }]])
   expect(change(3)).toEqual([['nod', { backTo: [2, null] }]])
+  expect(todos.changes(3).map(changeText)).toEqual(['backTo n2 → —'])
   expect(change(4)).toEqual([
     ['nod', { context: ['@desk', null] }],
     ['nod', { status: ['reference', 'someday'] }],

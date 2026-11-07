@@ -288,7 +288,9 @@ const FIELD: Record<string, string> = {
 }
 const shown = (field: string, v: unknown): string => {
   if (v === null) return '—'
-  return field === 'projectId' ? `p${String(v)}` : oneLine(clean(String(v)), 40)
+  if (field === 'projectId') return `p${String(v)}`
+  // backTo is gone from todos (v33), but the history keeps the tasks it named.
+  return field === 'backTo' ? `n${String(v)}` : oneLine(clean(String(v)), 40)
 }
 
 // A cut through a character beyond U+FFFF would leave half of it, which prints as U+FFFD.
