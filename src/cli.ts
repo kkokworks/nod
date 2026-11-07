@@ -540,6 +540,19 @@ switch (command) {
   case 'today':
     await todayCommand(new Todos(ledger), home, rest)
     break
+  // Gone in v32: whoever still types them hears what does that work now.
+  case 'watch':
+    console.error(
+      'nod watch is gone: the session nod open <project> or nod session claim opened hears the decisions and ends; nod ls --mine shows what it missed',
+    )
+    process.exit(1)
+    break
+  case 'trigger':
+    console.error(
+      'nod trigger is gone: run nod add from cron or launchd at a set time; nod in --source <name> --key <key> takes each item once',
+    )
+    process.exit(1)
+    break
   default: {
     const id = Number(/^d\d+$/.test(command) ? command.slice(1) : command)
     if (!Number.isInteger(id)) {

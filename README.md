@@ -144,7 +144,7 @@ Claude 세션에서 `nod add` 를 하면 작업에 그 세션(루트 세션)의 
 nod schedule on
 ```
 
-정해진 때나 새 항목마다 할 일을 맡기던 트리거(`nod trigger`)는 지웠습니다(2026-11-07). 정해진 시각에 할 일은 cron·launchd 에서 `nod add` 를 부르고, 목록의 항목마다 한 번씩 받으려면 `nod in --source <이름> --key <키>` 로 받아 적습니다(같은 키는 한 번만 들어감). 스케줄러는 짧은 PATH 로 띄우므로, `nod`·tmux·claude 가 있는 PATH 를 그 줄에 줍니다(`PATH=<경로> nod add …`).
+정해진 때나 새 항목마다 할 일을 맡기던 트리거(`nod trigger`)는 지웠습니다(2026-11-07). 정해진 시각에 할 일은 cron·launchd 에서 `nod add` 를 부르고, 목록의 항목마다 한 번씩 받으려면 `nod in --source <이름> --key <키>` 로 받아 적습니다(같은 키는 한 번만 들어감). 스케줄러는 거의 빈 환경으로 띄우고 워커는 `nod add` 의 환경을 받으므로, 그 줄에 `nod`·tmux·claude 가 있는 `PATH` 와, 셸에서 쓰는 `NOD_HOME`·`CLAUDE_CONFIG_DIR`(`nod account` 로 계정 규칙을 정했으면 그 규칙을 따름)·`TMUX_TMPDIR` 를 줍니다(`PATH=<경로> CLAUDE_CONFIG_DIR=<경로> nod add …`). 그 밖에 워커가 받는 변수는 아래 「워커가 끊기지 않게」에 있습니다.
 
 ## 결과 올리기 (착지)
 

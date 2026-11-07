@@ -114,8 +114,9 @@ async function runWatch(
 
 const cannotRun = (code: number): boolean => code === 126 || code === 127
 
-// Runs a new watch once, with the PATH the tick will give it. One that does not parse, cannot run, or passes already is refused: it would never wait,
-// or never end. Any other failure looks like not yet, so how it ended is recorded and shown.
+// Runs a new watch once, with the PATH the tick will give it. One that does not parse, cannot run,
+// or passes already is refused: it would never wait, or never end. Any other failure looks like
+// not yet, so how it ended is recorded and shown.
 // ponytail: only the schedule's PATH and Claude config dir are the tick's; the rest of this shell's
 // environment (a token in it) is not, so a watch that needs it passes here and fails in the tick.
 export async function tryWatch(

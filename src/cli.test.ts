@@ -893,6 +893,18 @@ test('tick by hand says which finished tasks it collected', () => {
   expect(ledger.list().map((t) => t.collectedAt !== null)).toEqual([true, true])
 })
 
+test('nod watch and nod trigger, gone, say what does their work now', () => {
+  const env = { ...process.env, NOD_HOME: tmp.make('nod-gone-') }
+  for (const [args, now] of [
+    [['watch', '--mine'], 'nod watch is gone: the session nod open <project>'],
+    [['trigger', 'ls'], 'nod trigger is gone: run nod add from cron or launchd'],
+  ] as const) {
+    const r = Bun.spawnSync(['bun', cli, ...args], { env })
+    expect(r.exitCode).not.toBe(0)
+    expect(r.stderr.toString()).toContain(now)
+  }
+})
+
 test('a task is n<n> and a decision d<n>, and each still takes its bare number', () => {
   const home = tmp.make('nod-letters-')
   const ledger = new Ledger(home)

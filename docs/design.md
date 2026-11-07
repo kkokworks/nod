@@ -656,6 +656,7 @@ nod 는 프로젝트의 알림을 그 프로젝트의 최신 세션에만 보냅
 - **Mindwtr 가져오기**(`scripts/import-mindwtr.ts`). 10/21 에 한 번 돌고 끝났고, 할 일이 없는 빈 장부에서만 돕니다. 필요하면 git 이력에서 꺼냅니다.
 - **장부 v32.** `triggers`·`trigger_items` 표와 `tasks.trigger_id` 를 지웁니다. 지우기 전에 트리거 행이 하나라도 있으면, 모든 트리거 행과 source 항목 행, 트리거가 넣은 작업을 `<홈>/triggers.json` 에 씁니다. 지우지 않은 트리거가 있으면 받은 일함에 할 일 하나(출처 `nod`)를 넣습니다. 그 트리거들의 일정·지시·source·레포·브랜치 접두어·검사·모델, 대신 쓰는 길, 그 파일의 경로가 들어 있습니다. 돌던 일정이 소리 없이 멈추지 않게 하려는 것입니다. 이 일은 마이그레이션의 트랜잭션 안에서 하므로, 파일 쓰기가 실패하면 장부는 그대로입니다.
 - **내일 준비.** 사람 없이 도는 내일 준비는 트리거의 source 로 데이터를 모았습니다. 이제 `tomorrow.ts` 가 데이터를 모아 `nod add` 까지 하고, 사람이 crontab 에 한 줄로 등록합니다(`skills/gtd/skills/tomorrow/SKILL.md`).
+- **지운 명령의 안내.** `nod watch` 와 `nod trigger` 는 쓰임 전체 대신 지웠다는 것과 대신 쓰는 길을 한 줄로 알리고 실패로 끝납니다(`src/cli.ts`). cron 의 `nod add` 줄에는 `PATH` 말고도 `NOD_HOME`·`CLAUDE_CONFIG_DIR`·`TMUX_TMPDIR` 를 줘야 워커가 사람의 셸에서와 같이 뜹니다(README).
 - **남긴 것.** tick(`nod schedule on|off`)은 칸 닫기·착지·대기 감시·끝난 작업 정리·다시 띄우기를 돌리므로 그대로입니다. `nod schedule on` 이 잡는 PATH 와 Claude 설정 폴더는 이제 이 일들과 `tomorrow.ts` 가 씁니다. 할 일 감시(`--watch`), 세션 알림, `nod ls --mine`, `nod --issue` 도 그대로입니다.
 
 ## 할 일 (G1, 2026-10-20)
