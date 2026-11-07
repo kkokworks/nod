@@ -286,25 +286,25 @@ A <task> is n<n>, t<n> for the latest task doing todo t<n>, or r<n> for the task
 runs in. A <decision> is d<n>. Each also takes its bare number <n>.
 ${TODO_USAGE}
 
-A project's session (the latest nod open opened) hears from nod itself: a
-message when each of the project's tasks ends (succeeded, error, cancelled, once its check and
-review are done) and when a decision opens on one, with the task's number and attempt or the
-decision's, and what to do next. The ledger keeps each until it went, so what comes while the
-session is closed goes, in one message, once nod open opens it again. nod writes a line into the
-session's inbox socket, which its hooks report as it starts (Claude Code's
-CLAUDE_CODE_MESSAGING_SOCKET), as another Claude session does; Claude Code shows it as from
-another session, not the person. The line's format is Claude Code's own, not documented, and the
-socket answers nothing: a line Claude Code drops counts as sent. A session that skips permission
-prompts holds such messages for the person to approve. One reopened with claude --resume instead
-of nod open, or opened before nod open gave it hooks, reports its socket at its first nod command
-(Claude Code exports it to Bash too), and hears nothing before. A nod command in a project's
-session that cannot hear (not the project's latest, or no socket) says so on stderr. So does nod
-add, tell, resume, restart <task> or an answer in any other Claude session, for a project whose
-latest session cannot hear either (none, no socket known, or its socket gone): what that work
-brings waits unheard until nod open opens the project's session, and nod --mine and nod ls --mine
-show it meanwhile. /clear goes on under an ID nod open did not open: it hears nothing until nod open
-opens the project's session again. One with no hooks cannot say it cleared, so what went to it after, until its next nod
-command, is lost: once nod open opens it again, nod ls --mine and nod --mine show what it missed.
+A project's session (the latest nod open opened) hears from nod itself: a message when each of the
+project's tasks ends (succeeded, error, cancelled, once its check and review are done) and when a
+decision opens on one, with the task's number and attempt or the decision's, and what to do next.
+The ledger keeps each until it went, so what comes while the session is closed goes, in one
+message, once nod open opens it again. nod writes a line into the session's inbox socket, which
+its hooks report as it starts (Claude Code's CLAUDE_CODE_MESSAGING_SOCKET), as another Claude
+session does; Claude Code shows it as from another session, not the person. The line's format is
+Claude Code's own, not documented, and the socket answers nothing: a line Claude Code drops counts
+as sent. A session that skips permission prompts holds such messages for the person to approve.
+One reopened with claude --resume instead of nod open, or opened before nod open gave it hooks,
+reports its socket at its first nod command (Claude Code exports it to Bash too), and hears
+nothing before. A nod command in a project's session that cannot hear (not the project's latest,
+or no socket) says so on stderr. So does nod add, tell, resume, restart <task> or an answer in any
+other Claude session, for a project whose latest session cannot hear either (none, no socket known,
+or its socket gone): what that work brings waits unheard until nod open opens the project's
+session, and nod --mine and nod ls --mine show it meanwhile. /clear goes on under an ID nod open
+did not open: it hears nothing until nod open opens the project's session again. One with no hooks
+cannot say it cleared, so what went to it after, until its next nod command, is lost: once
+nod open opens it again, nod ls --mine and nod --mine show what it missed.
 An orchestrator hears the same way of the tasks in no project: the latest session of the name of
 the orchestrator that added each, and of those a shell or any other session added, the one made
 last of the orchestrators taking messages, or of all of them while none is. What comes while it is

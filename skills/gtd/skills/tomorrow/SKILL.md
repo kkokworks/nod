@@ -25,11 +25,11 @@ description: 다음 근무일을 준비한다(일정·마감, 오래된 대기 �
 
 1. `nod schedule` 로 스케줄이 켜져 있는지 봅니다. 꺼져 있으면 `tomorrow.ts` 가 거절하니, 사용자에게 자기 터미널에서 `nod schedule on` 을 한 번 실행해 달라고 합니다. 워커는 그때 켠 셸의 PATH·Claude 설정으로 뜹니다.
 2. 시각을 사용자에게 묻습니다(예: 평일 18시).
-3. `command -v bun` 으로 bun 의 절대 경로를 찾습니다. cron 은 짧은 PATH 로 돌기 때문입니다. nod 홈이 기본(`~/.nod`)이 아니면 줄의 `<bun 절대 경로>` 앞에 `NOD_HOME=<경로>` 를 붙입니다.
-4. 아래 한 줄의 시각과 `<…>` 를 실제 값으로 바꿔 보여 주고, `!` 로 실행해 달라고 부탁합니다.
+3. `command -v bun` 으로 bun 의 절대 경로를 찾습니다. cron 은 짧은 PATH 로 돌기 때문입니다. nod 홈이 기본(`~/.nod`)이 아니면 줄의 `"<bun 절대 경로>"` 앞에 `NOD_HOME="<경로>"` 를 붙입니다.
+4. 아래 한 줄의 시각과 `<…>` 를 실제 값으로 바꿔 보여 주고, `!` 로 실행해 달라고 부탁합니다. 경로는 공백이 있어도 되게 큰따옴표 안에 둡니다. cron 은 `%` 를 줄바꿈으로 읽으니, 경로에 `%` 가 있으면 `\%` 로 씁니다.
 
 ```sh
-! (crontab -l 2>/dev/null; echo '0 18 * * 1-5 <bun 절대 경로> <gtd 폴더>/tomorrow.ts >> <nod 홈>/tomorrow.log 2>&1') | crontab -
+! (crontab -l 2>/dev/null; echo '0 18 * * 1-5 "<bun 절대 경로>" "<gtd 폴더>/tomorrow.ts" >> "<nod 홈>/tomorrow.log" 2>&1') | crontab -
 ```
 
 - 돌 때마다 `<nod 홈>/tomorrow.log` 에 `added task n<번호>` 나 오류가 남습니다.

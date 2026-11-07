@@ -1,5 +1,5 @@
 import { Database, type SQLQueryBindings } from 'bun:sqlite'
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -459,8 +459,8 @@ export const MIGRATIONS = [
   // proposed and what became of it; the task a retrospective runs in points at it, as a delegated
   // task points at its todo. The retrospectives so far move over, each with its latest rule
   // decision: answering one with anything but yes and then resuming the task makes another. Yes is
-  // what answer() takes for it, as typed. tasks.retro_of stays, unused: SQLite cannot drop a column a
-  // foreign key is on.
+  // what answer() takes for it, as typed. tasks.retro_of stays, unused: SQLite was thought unable to
+  // drop a column with a foreign key, though it can (v32 drops tasks.trigger_id, which has one).
   `
   create table retros (
     id integer primary key,
@@ -1396,7 +1396,15 @@ export class Ledger {
       items: rows('select * from trigger_items order by trigger_id, seen_at'),
       tasks: rows('select id, trigger_id from tasks where trigger_id is not null order by id'),
     }
-    writeFileSync(path, `${JSON.stringify(saved, null, 2)}\n`)
+    // Readable by the person alone: a source command may hold a token.
+    try {
+      writeFileSync(path, `${JSON.stringify(saved, null, 2)}\n`, { mode: 0o600 })
+      chmodSync(path, 0o600)
+    } catch (error) {
+      throw new Error(
+        `v32 keeps the triggers in ${path} before it drops them, and could not: ${error}`,
+      )
+    }
     const running = triggers.filter((t) => t.removed_at === null)
     if (running.length === 0) return
     const field = (name: string, v: unknown): string[] => (v === null ? [] : [`  ${name}: ${v}`])

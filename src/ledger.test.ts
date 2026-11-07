@@ -1,6 +1,6 @@
 import { Database } from 'bun:sqlite'
 import { afterAll, expect, test } from 'bun:test'
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tempDirs } from '../test/tmp'
 import { Ledger, MIGRATIONS, RETRO_STATUS, type RetroOutcome, type TaskStatus } from './ledger'
@@ -253,6 +253,7 @@ test('v32 keeps what a v31 ledger held of triggers in triggers.json, and puts th
   expect(ledger.rules().map((r) => r.text)).toEqual(['be brief'])
 
   const path = join(home, 'triggers.json')
+  expect(statSync(path).mode & 0o777).toBe(0o600) // a source command may hold a token
   const saved = JSON.parse(readFileSync(path, 'utf8'))
   expect(saved.triggers.map((t: { id: number }) => t.id)).toEqual([1, 2, 3])
   expect(saved.triggers[0]).toEqual({
@@ -335,7 +336,9 @@ test('v32 leaves a v31 ledger as it was when triggers.json cannot be written', (
   const home = v31Home(`
     insert into triggers (id, cron, brief, created_at) values (1, '0 9 * * *', 'b', 'made');`)
   mkdirSync(join(home, 'triggers.json')) // a folder where the file goes
-  expect(() => new Ledger(home)).toThrow()
+  expect(() => new Ledger(home)).toThrow(
+    `v32 keeps the triggers in ${join(home, 'triggers.json')} before it drops them, and could not: `,
+  )
   const old = new Database(join(home, 'nod.db'), { readonly: true })
   expect(old.query('pragma user_version').get()).toEqual({ user_version: 31 })
   expect(old.query('select count(*) n from triggers').get()).toEqual({ n: 1 })
