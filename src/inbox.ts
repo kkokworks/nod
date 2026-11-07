@@ -9,7 +9,7 @@ import { allowedLine, firstLine, indent, oneLine, taskLabel } from './view'
 // each of the project's tasks that ends (once its check and review are done) and each of
 // its decisions that opens, and what a person sends it with `nod tell p<n>`; also what nod allowed
 // a worker itself, and each decision a person answered elsewhere (decisions.ts). An orchestrator
-// hears the same of the tasks in no project (Todos.listener). The ledger records each as a
+// hears the same of the tasks in no project it added (Todos.listener). The ledger records each as a
 // notice with the change itself (ledger.ts); sendNotices sends what is unsent into the session's
 // inbox socket, as another Claude session on this machine does (SendMessage), after each notify and
 // on each tick. What finds no session running, or a send that fails, waits for the next.
@@ -125,21 +125,30 @@ export const takesMessages = (session: Session | null): boolean =>
 // gets those told here. Nothing for a person's shell (no session), nor for the project's latest
 // session, which onCommand speaks for. --mine shows only the session's own tasks, so the line
 // names plain `nod` and `nod ls` for work another session added.
+// Of the tasks in no project that no session hears of (Todos.listener: no orchestrator added them,
+// a shell's for one), one line for all, to a shell too: nod tells their decisions and ends to none.
 export function unheardWork(
   ledger: Ledger,
   session: string | null,
   ids: number[],
   warned = new Set<number>(),
 ): string[] {
-  if (session === null) return []
   const todos = new Todos(ledger)
   const work = new Map<number, Task[]>()
+  const loose: number[] = []
   for (const id of ids) {
     const task = ledger.get(id)
     const project = todos.projectOf(task)
     if (project !== null) work.set(project, [...(work.get(project) ?? []), task])
+    else if (todos.listener(null, task.rootSession) === null && !loose.includes(id)) loose.push(id)
   }
   const told: string[] = []
+  if (loose.length > 0) {
+    told.push(
+      `nod: no session hears of the decisions and ends of ${loose.map((id) => `n${id}`).join(', ')}, in no project and handed over by no orchestrator; nod, nod ls and the web screen show them`,
+    )
+  }
+  if (session === null) return told
   for (const [projectId, tasks] of work) {
     const latest = todos.latestSession(projectId)
     if (warned.has(projectId) || latest?.sessionKey === session) continue
@@ -191,9 +200,9 @@ export async function tellSessions(home: string): Promise<void> {
 }
 
 // Sends each session its unsent notices, oldest first, all in one message: each project's to its
-// latest session, and those of tasks in no project to the orchestrator that hears of them
-// (Todos.listener). One of a task in no project with no orchestrator session ever opened, and a
-// decision's opening once it was answered, goes to none. A session not running keeps them. A send
+// latest session, and those of tasks in no project to the orchestrator that added them
+// (Todos.listener). One of a task in no project no orchestrator added, and a decision's opening
+// once it was answered, goes to none. A session not running keeps them. A send
 // that fails keeps them too, and a socket that is gone (the session ended without its SessionEnd
 // hook, `ended`) is forgotten until the session says it again.
 // Notices are marked sent before the send, so the two are unbroken: a hook that nod ends by closing

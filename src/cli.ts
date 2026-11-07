@@ -140,7 +140,10 @@ const USAGE = `usage:
                                    opened, the work goes in its project, a todo with none
                                    included, and work of another project is refused. In an
                                    orchestrator or relay session, work of any project is refused,
-                                   with where it goes instead, and work in no project goes in
+                                   with where it goes instead, and work in no project goes in. In
+                                   any other Claude session, work in no project is refused, as
+                                   no session would hear of it; from a shell it goes in, and nod
+                                   says so on stderr
   nod open <project> [--new]       Claude Code in this terminal, in the project's session, named
                                    after it each time it opens (a /rename lasts until then):
                                    the latest one nod open opened for it, resumed in the folder
@@ -160,9 +163,9 @@ const USAGE = `usage:
                                    it. Its tasks are those it added, and nod add there takes work
                                    in no project only: a project's goes to its session with nod
                                    tell p<n>, or in as a todo with nod in --project. An orchestrator
-                                   hears of the tasks in no project (see below); a relay passes
-                                   what comes from outside to the project session it is for, and
-                                   nod tells it of no task
+                                   hears of the tasks it adds in no project (see below); a relay
+                                   passes what comes from outside to the project session it is
+                                   for, and nod tells it of no task
   nod session claim <name> --role orchestrator|relay
                                    give the Claude session this runs in that role and name, its
                                    conversation going on: nod records it if it did not know it,
@@ -305,11 +308,11 @@ session, and nod --mine and nod ls --mine show it meanwhile. /clear goes on unde
 did not open: it hears nothing until nod open opens the project's session again. One with no hooks
 cannot say it cleared, so what went to it after, until its next nod command, is lost: once
 nod open opens it again, nod ls --mine and nod --mine show what it missed.
-An orchestrator hears the same way of the tasks in no project: the latest session of the name of
-the orchestrator that added each, and of those a shell or any other session added, the one made
-last of the orchestrators taking messages, or of all of them while none is. What comes while it is
-closed waits for it too. Until one has been opened nobody hears of those, and what comes for them
-goes to no session.
+An orchestrator hears the same way of the tasks it added in no project: the latest session of its
+name, even while another orchestrator runs. What comes while it is closed waits for it too. No
+session hears of a task in no project that no orchestrator added (a shell's, a relay's): what
+comes for it goes to no session, nod add and the commands that set it going say so on stderr, and
+nod, nod ls and the web screen show it.
 
 When <home>/notify exists, nod runs it with a JSON event on stdin whenever a decision opens, a
 task succeeds or fails to start, a watch passes or can no longer run, or a restart waits for a
@@ -1066,8 +1069,9 @@ function answerer(): string | null {
   return process.env.NOD_TASK === undefined ? sessionFromEnv() : NO_PERSON
 }
 
-// Before a command sets these tasks going: a Claude session whose work no project session hears
-// is told so (unheardWork); what goes wrong only goes to stderr, as the command still runs.
+// Before a command sets these tasks going: a Claude session whose work no project session hears,
+// and anyone of work in no project no session hears, is told so (unheardWork); what goes wrong
+// only goes to stderr, as the command still runs.
 function warnUnheard(ids: number[]): void {
   try {
     for (const line of unheardWork(ledger, sessionFromEnv(), ids, warned)) console.error(line)

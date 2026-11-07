@@ -65,13 +65,17 @@ test('the decision list with --issue keeps to those issues, so roots split the w
 test('each root session sees in show the tasks it added, and with --mine lists only those and their decisions', () => {
   const home = tmp.make('nod-root-')
   const ledger = new Ledger(home)
-  // Made-up session ids.
+  // Made-up session ids, of two orchestrators: work in no project is theirs to hand over.
   const [A, B] = ['aaaa1111-0000-4000-8000-00000000000a', 'bbbb2222-0000-4000-8000-00000000000b']
+  const todos = new Todos(ledger)
+  todos.addSession({ role: 'orchestrator', name: 'north' }, A, home)
+  todos.addSession({ role: 'orchestrator', name: 'south' }, B, home)
   const {
     CLAUDECODE: _,
     CLAUDE_CODE_SESSION_ID: __,
     NOD_TASK: ___,
     NOD_ACTOR: ____,
+    CLAUDE_CODE_MESSAGING_SOCKET: _____,
     ...shell
   } = process.env
   const envOf = (session: string | null) =>
@@ -132,7 +136,7 @@ test('each root session sees in show the tasks it added, and with --mine lists o
   expect(out).not.toContain('for the shell')
 }, 30_000)
 
-test("in a session nod open opened, add hands over its project's work only, show names it by its project, and other sessions and a shell add as before", () => {
+test("in a session nod open opened, add hands over its project's work only, show names it by its project; another session adds a project's work and none in no project, and a shell adds as before", () => {
   const home = tmp.make('nod-open-add-')
   const ledger = new Ledger(home)
   const todos = new Todos(ledger)
@@ -225,14 +229,35 @@ test("in a session nod open opened, add hands over its project's work only, show
   expect(ledger.list().length).toBe(before)
   expect(todos.get(theirs.id)).toMatchObject({ status: 'inbox', projectId: health.id })
 
-  // Another Claude session adds as before, and hears how to keep projects apart.
+  // Another Claude session adds a project's work as before, and hears how to keep projects apart.
   const fromB = add(B, 'book the blood test', '--project', 'Health')
   expect(fromB.err).toContain('hint: nod open <project>')
   expect(projectOf(added(fromB))).toBe(health.id)
-  expect(projectOf(added(add(B, 'anything')))).toBeNull()
-  // A shell adds as before, without a word.
+  // Work in no project it is refused, either way, as no session would hear of it.
+  const none = ledger.list().length
+  const unheard =
+    'this Claude session is in no project and no role, so no session would hear of the work in no project it hands over: hand it over in an orchestrator session (nod open <name> --role orchestrator, or nod session claim <name> --role orchestrator in this one) or in a project session (nod open <project>)'
+  const anything = add(B, 'anything')
+  expect(anything.code).not.toBe(0)
+  expect(anything.err).toContain(unheard)
+  const loosened = todos.capture(
+    { title: 'loosened', notes: null, source: 'cli', sourceKey: null, url: null },
+    'human',
+  ).todo
+  const byB = add(B, '--todo', `t${loosened.id}`)
+  expect(byB.code).not.toBe(0)
+  expect(byB.err).toContain(unheard)
+  expect(ledger.list().length).toBe(none)
+  expect(todos.get(loosened.id).status).toBe('inbox')
+  // A shell adds as before, without a word of a project's work; of work in no project it hears
+  // that no session hears of it.
   const fromShell = add(null, 'from the shell', '--project', 'Health')
   expect(fromShell.err).toBe('')
+  const looseShell = add(null, 'loose from the shell')
+  expect(looseShell.err).toBe(
+    `nod: no session hears of the decisions and ends of n${added(looseShell)}, in no project and handed over by no orchestrator; nod, nod ls and the web screen show them\n`,
+  )
+  expect(projectOf(added(looseShell))).toBeNull()
 
   // A session of no project hands over work in no project, without a hint, and refuses a project's
   // whichever way it is named, saying where it goes.
@@ -346,7 +371,22 @@ test("a project's new session takes over the project's tasks and decisions in ls
   add(A, 'write the changelog')
   const byS = add(S, 'write the release notes', '--project', 'Release')
   const ofHealth = add(Q1, 'book the blood test')
-  const loose = add(S, 'tidy the desk')
+  // What S added in no project before nod add refused it that.
+  const loose = todos.delegateNew(
+    {
+      brief: 'tidy the desk',
+      repo: null,
+      branch: null,
+      checkCmd: null,
+      model: null,
+      after: [never],
+      issue: null,
+      rootSession: S,
+    },
+    null,
+    'human',
+  )
+  ledger.setRunning(loose, home)
   add(Q1, 'call the clinic')
   todos.addSession(release.id, B, home)
   const ask = (taskId: number, question: string): number =>
