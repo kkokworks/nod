@@ -260,7 +260,8 @@ test("in a session nod open opened, add hands over its project's work only, show
   expect(projectOf(added(looseShell))).toBeNull()
 
   // A session of no project hands over work in no project, without a hint, and refuses a project's
-  // whichever way it is named, saying where it goes.
+  // whichever way it is named, saying where it goes. An orchestrator hears of what it adds; a relay
+  // does not, and hears so as it adds it.
   for (const [role, key] of [
     ['orchestrator', 'dddd4444-0000-4000-8000-00000000000d'],
     ['relay', 'eeee5555-0000-4000-8000-00000000000e'],
@@ -269,6 +270,9 @@ test("in a session nod open opened, add hands over its project's work only, show
     const free = add(key, 'in no project')
     expect(free.err).not.toContain('hint:')
     expect(projectOf(added(free))).toBeNull()
+    const unheardFree = `nod: no session hears of the decisions and ends of n${added(free)}, in no project and handed over by no orchestrator; nod, nod ls and the web screen show them\n`
+    if (role === 'relay') expect(free.err).toContain(unheardFree)
+    else expect(free.err).not.toContain('no session hears')
     const loose = todos.capture(
       { title: 'loose', notes: null, source: 'cli', sourceKey: null, url: null },
       'human',
