@@ -259,25 +259,36 @@ test("in a session nod open opened, add hands over its project's work only, show
   )
   expect(projectOf(added(looseShell))).toBeNull()
 
-  // A session of no project hands over work in no project, without a hint, and refuses a project's
-  // whichever way it is named, saying where it goes. An orchestrator hears of what it adds; a relay
-  // does not, and hears so as it adds it.
+  // A session of no project refuses a project's work whichever way it is named, saying where it
+  // goes. An orchestrator hands over work in no project, without a hint, and hears of it; a relay,
+  // which hears of no task, refuses it too, saying where it goes instead.
   for (const [role, key] of [
     ['orchestrator', 'dddd4444-0000-4000-8000-00000000000d'],
     ['relay', 'eeee5555-0000-4000-8000-00000000000e'],
   ] as const) {
     todos.addSession({ role, name: `north-${role}` }, key, home)
-    const free = add(key, 'in no project')
-    expect(free.err).not.toContain('hint:')
-    expect(projectOf(added(free))).toBeNull()
-    const unheardFree = `nod: no session hears of the decisions and ends of n${added(free)}, in no project and handed over by no orchestrator; nod, nod ls and the web screen show them\n`
-    if (role === 'relay') expect(free.err).toContain(unheardFree)
-    else expect(free.err).not.toContain('no session hears')
     const loose = todos.capture(
       { title: 'loose', notes: null, source: 'cli', sourceKey: null, url: null },
       'human',
     ).todo
-    expect(projectOf(added(add(key, '--todo', `t${loose.id}`)))).toBeNull()
+    if (role === 'orchestrator') {
+      const free = add(key, 'in no project')
+      expect(free.err).not.toContain('hint:')
+      expect(free.err).not.toContain('no session hears')
+      expect(projectOf(added(free))).toBeNull()
+      expect(projectOf(added(add(key, '--todo', `t${loose.id}`)))).toBeNull()
+    } else {
+      const before = ledger.list().length
+      const nowhere = `this session is the relay north-relay, which hands over no work in no project, as no session would hear of it: pass it to the session of the project it is for (nod tell p<n> <message...>) or put it in as a todo (nod in <what...>)`
+      const free = add(key, 'in no project')
+      expect(free.code).not.toBe(0)
+      expect(free.err).toContain(nowhere)
+      const byLoose = add(key, '--todo', `t${loose.id}`)
+      expect(byLoose.code).not.toBe(0)
+      expect(byLoose.err).toContain(nowhere)
+      expect(ledger.list().length).toBe(before)
+      expect(todos.get(loose.id).status).toBe('inbox')
+    }
     const count = ledger.list().length
     const refused = `this session is the ${role} north-${role}, which hands over no project's work; p${health.id} Health's goes to its session (nod tell p${health.id} <message...>) or in as a todo (nod in <what...> --project p${health.id})`
     const byProject = add(key, 'book it', '--project', `p${health.id}`)

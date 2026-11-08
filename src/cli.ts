@@ -140,10 +140,10 @@ const USAGE = `usage:
                                    opened, the work goes in its project, a todo with none
                                    included, and work of another project is refused. In an
                                    orchestrator or relay session, work of any project is refused,
-                                   with where it goes instead, and work in no project goes in. In
-                                   any other Claude session, work in no project is refused, as
-                                   no session would hear of it; from a shell it goes in, and nod
-                                   says so on stderr
+                                   with where it goes instead. Work in no project goes in from an
+                                   orchestrator; from a relay or any other Claude session it is
+                                   refused, as no session would hear of it; from a shell it goes
+                                   in, and nod says so on stderr
   nod open <project> [--new]       Claude Code in this terminal, in the project's session, named
                                    after it each time it opens (a /rename lasts until then):
                                    the latest one nod open opened for it, resumed in the folder
@@ -160,12 +160,12 @@ const USAGE = `usage:
                                    or that names a project, is refused
   nod open <name> [--new]          the latest session of that name, as a project's is opened, when
                                    no project goes by it; a session of another name runs beside
-                                   it. Its tasks are those it added, and nod add there takes work
-                                   in no project only: a project's goes to its session with nod
-                                   tell p<n>, or in as a todo with nod in --project. An orchestrator
-                                   hears of the tasks it adds in no project (see below); a relay
-                                   passes what comes from outside to the project session it is
-                                   for, and nod tells it of no task
+                                   it. Its tasks are those it added. nod add there takes no
+                                   project's work: a project's goes to its session with nod tell
+                                   p<n>, or in as a todo with nod in --project. An orchestrator
+                                   hands over work in no project and hears of it (see below); a
+                                   relay passes what comes from outside to the project session it
+                                   is for, hands over no task, and nod tells it of no task
   nod session claim <name> --role orchestrator|relay
                                    give the Claude session this runs in that role and name, its
                                    conversation going on: nod records it if it did not know it,
@@ -310,7 +310,7 @@ cannot say it cleared, so what went to it after, until its next nod command, is 
 nod open opens it again, nod ls --mine and nod --mine show what it missed.
 An orchestrator hears the same way of the tasks it added in no project: the latest session of its
 name, even while another orchestrator runs. What comes while it is closed waits for it too. No
-session hears of a task in no project that no orchestrator added (a shell's, a relay's): what
+session hears of a task in no project that no orchestrator added (a shell's, say): what
 comes for it goes to no session, nod add and the commands that set it going say so on stderr, and
 nod, nod ls and the web screen show it.
 

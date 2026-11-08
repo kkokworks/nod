@@ -173,7 +173,7 @@ const ROLE_DUTIES: Record<OpenRole, string> = {
   orchestrator:
     "it belongs to no project, keeps the person's todos with the gtd skills, hears of the tasks it adds in no project, and passes a project's work to that project's session (nod tell p<n>). It picks the project by the descriptions in nod project ls, which also shows each project's orchestrator: it talks, by SendMessage too, only to the sessions of projects in its charge or in no orchestrator's.",
   relay:
-    "it belongs to no project, takes messages from outside, picks the project each is for by the descriptions in nod project ls, passes it to that project's session (nod tell p<n>), and nod tells it of no task.",
+    "it belongs to no project, takes messages from outside, picks the project each is for by the descriptions in nod project ls, passes it to that project's session (nod tell p<n>) or puts it in as a todo (nod in), hands over no task itself, and nod tells it of no task.",
 }
 export const roleLine = (role: OpenRole, name: string): string =>
   `the ${role} ${name}: ${ROLE_DUTIES[role]}`
@@ -275,7 +275,8 @@ export function openSession(
 // The project `nod add` puts its work in, by the Claude session it runs in (`session`). One nod
 // open opened for a project hands over its project's work only: the work goes in that project, and
 // work of another is refused with where it goes instead. One in a role of no project hands over no
-// project's work, refused the same way, and work in no project stays in none. Any other Claude
+// project's work, refused the same way; an orchestrator's work in no project stays in none, and a
+// relay's is refused, as no session would hear of it (relays hear of no task). Any other Claude
 // session puts a project's work where it is told, and hears how to keep projects apart; work in no
 // project it is refused, as no session would hear of it (Todos.listener). A shell, a script with
 // NOD_ACTOR and the like (no session) put work where they are told.
@@ -294,6 +295,11 @@ export function placeWork(
       const p = todos.project(other)
       throw new Error(
         `this session is the ${opened.role} ${opened.name}, which hands over no project's work; p${p.id} ${p.title}'s goes to its session (nod tell p${p.id} <message...>) or in as a todo (nod in <what...> --project p${p.id})`,
+      )
+    }
+    if (opened?.role === 'relay' && other === null) {
+      throw new Error(
+        `this session is the relay ${opened.name}, which hands over no work in no project, as no session would hear of it: pass it to the session of the project it is for (nod tell p<n> <message...>) or put it in as a todo (nod in <what...>)`,
       )
     }
     if (session !== null && opened === null && other === null) {

@@ -215,7 +215,7 @@ test('what would break a terminal stays out of an orchestrator’s name, whereve
   )
 })
 
-test('a session of no project hears how to pick a project, and an orchestrator how far its charge goes, with no skill read', () => {
+test('a session of no project hears how to pick a project, an orchestrator how far its charge goes, and a relay that it hands over no task, with no skill read', () => {
   for (const role of OPEN_ROLES) {
     expect(roleLine(role, 'north')).toContain('by the descriptions in nod project ls')
   }
@@ -223,6 +223,10 @@ test('a session of no project hears how to pick a project, and an orchestrator h
     "only to the sessions of projects in its charge or in no orchestrator's",
   )
   expect(roleLine('relay', 'north')).not.toContain('charge')
+  expect(roleLine('relay', 'north')).toContain(
+    'or puts it in as a todo (nod in), hands over no task itself',
+  )
+  expect(roleLine('orchestrator', 'north')).not.toContain('hands over no task')
 })
 
 test('an orchestrator tells only a project it has or none has, and no other session is held to it', () => {
