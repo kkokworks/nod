@@ -47,7 +47,16 @@ import { PROMPTED_OPTION, sessionName, socketsDir, workspaceOf } from './place'
 import { AT_ONCE, readAtOnce, spawn } from './proc'
 import { askedAgain, reviewBrief } from './review'
 import { retroBrief } from './rules'
-import { knownDialog, listen as listenFor, SENDING, type Worker, watchStart } from './sending'
+import {
+  forgetStuck,
+  heldUp,
+  knownDialog,
+  listen as listenFor,
+  SENDING,
+  sendWatched,
+  type Worker,
+  watchStart,
+} from './sending'
 import { quote, type Terminals, Tmux } from './tmux'
 import { Todos } from './todos'
 import { heardOf, promptMark } from './transcript'
@@ -66,6 +75,7 @@ import {
   restartMark,
   resume,
   StopEvent,
+  settle,
   startReady,
   startTask,
   tell,
@@ -5233,9 +5243,14 @@ const UNKNOWN_DIALOG = 'A notice nod has not seen'
 test('which screens show a dialog nod may close', () => {
   const footer = '↑/↓ choose · ←/→ change size · enter confirm · esc not now'
   expect(knownDialog(`text\n ${COMPACT_OFFER}\n ❯ Keep\n ${footer}\n\n`)).toBe(true)
-  expect(knownDialog(`╭──╮\n│ ${COMPACT_OFFER}   │\n│ ${footer}   │\n╰──╯\n> `)).toBe(true)
+  expect(knownDialog(`╭──╮\n│ ${COMPACT_OFFER}   │\n│ ${footer}   │\n╰──╯\n`)).toBe(true)
   expect(knownDialog(`✻ ${COMPACT_OFFER}\n${footer}\n`)).toBe(true)
-  // Words a conversation quotes: in one line, without its footer, or out of the screen's end.
+  // Words a conversation quotes: in a block above the prompt, which no dialog leaves on the screen.
+  const box = (prompt: string) => `────\n${prompt} \n────\n  auto mode on\n`
+  const quoted = `⏺ It said:\n\n  ${COMPACT_OFFER}\n  ${footer}\n\n`
+  expect(knownDialog(`${quoted}${box('>')}`)).toBe(false)
+  expect(knownDialog(`${quoted}✻ Thinking…\n\n${box('❯')}`)).toBe(false)
+  // Or in one line, without its footer, or out of the screen's end.
   expect(knownDialog(`The window said "${COMPACT_OFFER} … ${footer}"\n`)).toBe(false)
   expect(knownDialog(`${COMPACT_OFFER}\n`)).toBe(false)
   expect(knownDialog(`${footer}\n`)).toBe(false)
@@ -5396,6 +5411,135 @@ test('an answer to a stuck message that went in meanwhile does not send it again
   expect(status(id)).toBe('running')
 })
 
+test('a stuck message that opened a turn which ends another way goes on as the next turn, once', async () => {
+  SENDING.waitMs = 200
+  const id = await offered('unknown', UNKNOWN_DIALOG)
+  await tell(ledger, home, terminals, id, 'use tabs')
+  const [decision] = ledger.decisions(id)
+  expect(heldUp(ledger, id)).toContain(`d${decision?.id}`)
+  // The person clears the screen and types something of their own, whose turn ends with a Stop.
+  terminals.keys(sessionName(id), 'Enter', 'Enter')
+  await until(() => !terminals.screen(sessionName(id)).includes(UNKNOWN_DIALOG))
+  terminals.send(sessionName(id), 'something else')
+  await until(() => entries('turn')[2])
+  await reaches(id, 'succeeded')
+  await settled(id)
+  expect(entries('turn').map((t) => t.message)).toEqual(['first', 'something else', 'use tabs'])
+  expect(ledger.decisions(id).map((d) => [d.reason, d.answer])).toEqual([
+    ['stuck', '(its turn ended)'],
+  ])
+  expect(heldUp(ledger, id)).toBeNull()
+}, 30_000)
+
+test('two messages kept out by one screen are a decision each, and neither is lost', async () => {
+  SENDING.waitMs = 1000
+  const id = await offered('unknown', UNKNOWN_DIALOG)
+  // The second comes as the first is pasted, so before anything is raised on the first.
+  let second: Promise<void> = Promise.resolve()
+  const { watched, sent } = typedInto(undefined, undefined, async (text) => {
+    terminals.send(sessionName(id), text)
+    if (text === 'first message') second = tell(ledger, home, watched, id, 'second message')
+  })
+  await tell(ledger, home, watched, id, 'first message')
+  await second
+  expect(sent).toEqual(['first message', 'second message'])
+  const open = ledger.decisions(id)
+  expect(open.map((d) => d.reason)).toEqual(['stuck', 'stuck'])
+  const files = readdirSync(join(home, 'work')).filter((f) => f.startsWith(`.stuck-${id}-`))
+  expect(files).toHaveLength(2)
+  for (const file of files) expect(statSync(join(home, 'work', file)).mode & 0o777).toBe(0o600)
+  terminals.keys(sessionName(id), 'Enter', 'Enter')
+  await until(() => !terminals.screen(sessionName(id)).includes(UNKNOWN_DIALOG))
+  SENDING.waitMs = USUAL_SENDING.waitMs
+  const [first] = open
+  if (first === undefined) throw new Error('no decision')
+  await answer(ledger, home, terminals, first.id, 'yes', 'human')
+  await until(() => entries('turn')[2])
+  await reaches(id, 'succeeded')
+  await settled(id)
+  expect(entries('turn').map((t) => t.message)).toEqual([
+    'first',
+    'first message',
+    'second message',
+  ])
+}, 30_000)
+
+test('forgetting a task takes its stuck messages, and no other task of a like number', () => {
+  const work = join(home, 'work')
+  mkdirSync(work, { recursive: true })
+  writeFileSync(join(work, '.stuck-7-a'), '{}')
+  writeFileSync(join(work, '.stuck-71-a'), '{}')
+  forgetStuck(home, 7)
+  expect(existsSync(join(work, '.stuck-7-a'))).toBe(false)
+  expect(existsSync(join(work, '.stuck-71-a'))).toBe(true)
+  // A home that has no work yet has nothing to forget.
+  forgetStuck(join(home, 'nothing here'), 7)
+})
+
+test('no to a permission while a message of that turn is stuck ends the turn with both reaching the worker', async () => {
+  SENDING.waitMs = 100
+  const id = await add('need-permission')
+  const asked = await until(() => ledger.decisions(id).find((d) => d.reason === 'permission'))
+  const turn = ledger.attempt(asked.attemptId)
+  // A message whose paste got nowhere, as the dialog was still coming.
+  const nowhere: Terminals = Object.assign(Object.create(terminals), { send: () => {} })
+  const to: Worker = {
+    ledger,
+    home,
+    terminals: nowhere,
+    taskId: id,
+    attemptId: turn.id,
+    sessionId: turn.sessionId,
+    gone: () => false,
+  }
+  expect(await sendWatched(to, 'use tabs')).toBe(false)
+  await answer(ledger, home, terminals, asked.id, 'not that', 'human')
+  await until(() => entries('turn')[1])
+  expect(entries('turn')[1]?.message).toBe(
+    'use tabs\n\nHuman decision: permission denied. not that',
+  )
+  expect(ledger.get(id).error).toBeNull()
+  const stuck = ledger.decisions(id).filter((d) => d.reason === 'stuck')
+  expect(stuck.map((d) => d.answer)).toEqual(['(its turn ended)'])
+}, 30_000)
+
+test('an answer goes in past another message stuck on the screen, and is a decision of its own if it stays out', async () => {
+  SENDING.waitMs = 100
+  const id = await add('ask-first')
+  const asked = await until(() => ledger.decisions(id).find((d) => d.reason === 'question'))
+  const turn = ledger.attempt(asked.attemptId)
+  ledger.ask(id, turn.id, 'stuck', 'a message did not go in')
+  // A message of nod's is refused, as its Enter would go to that screen.
+  await expect(tell(ledger, home, terminals, id, 'more')).rejects.toThrow('answer stuck decision')
+  await answer(ledger, home, terminals, asked.id, 'go ahead', 'human')
+  await until(() => entries('turn')[1])
+  expect(entries('turn')[1]?.message).toBe('Human decision: go ahead')
+  expect(ledger.get(id).error).toBeNull()
+}, 30_000)
+
+test('messages left after one stays out of the turn a message opened in the hook wait for that turn', async () => {
+  SENDING.waitMs = 200
+  const id = await offered('unknown', UNKNOWN_DIALOG)
+  await tell(ledger, home, terminals, id, 'opening')
+  const turn = ledger.openAttempt(id)
+  if (turn === null) throw new Error('no turn')
+  // Two more the screen took, told in that turn.
+  ledger.addMessage(id, turn.id, 'one', null)
+  ledger.addMessage(id, turn.id, 'two', null)
+  // Its Stop: the words that opened it open the next turn, so the two have no turn of their own.
+  const event = {
+    session_id: turn.sessionId,
+    last_assistant_message: 'NOD: done | did it',
+    stop_hook_active: false,
+  }
+  await settle(ledger, home, terminals, ledger.get(id), turn.id, event)
+  const next = ledger.openAttempt(id)
+  expect(next?.prompt).toBe('opening')
+  const [one, two] = ledger.messages(id).filter((m) => m.text === 'one' || m.text === 'two')
+  expect(one?.attemptId).toBe(turn.id)
+  expect(two?.attemptId).toBe(next?.id)
+})
+
 test('a stuck message the prompt hook sees go in closes its decision, and another message does not', async () => {
   SENDING.waitMs = 200
   const id = await offered('unknown', UNKNOWN_DIALOG)
@@ -5504,6 +5648,14 @@ test('a message Claude Code started with that no screen lets through is a decisi
   await watchStart(
     { ...to, gone: () => true },
     turn.prompt,
+    () => false,
+    () => false,
+  )
+  expect(ledger.decisions(id)).toHaveLength(1)
+  // A command shows no words to wait for.
+  await watchStart(
+    to,
+    '/some-skill go',
     () => false,
     () => false,
   )

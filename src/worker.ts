@@ -45,7 +45,7 @@ import {
 import { message, spawn } from './proc'
 import { type Capture, nodLines, parseCaptures, parseReport, parseTells, type Tell } from './report'
 import { activeRules, hadTrouble, isNoRule, retroBrief } from './rules'
-import { listen, sendWatched, unsent, type Worker, watchStart } from './sending'
+import { listen, sendWatched, unsent, unsentOfTurn, type Worker, watchStart } from './sending'
 import { CLI, STOP_HOOK_TIMEOUT_SECS, workerSettings } from './settings'
 import { pasted, quote, running, type Terminals } from './tmux'
 import { Todos } from './todos'
@@ -505,10 +505,13 @@ export async function answer(
     summary: 'permission denied',
     report: null,
   })
-  const ofTurn = (d: Decision) => d.reason === 'permission' && d.attemptId === decision.attemptId
+  // So does a message stuck in it, which nothing would send once the turn is over.
+  const ofTurn = (d: Decision) =>
+    (d.reason === 'permission' || d.reason === 'stuck') && d.attemptId === decision.attemptId
+  const left = unsentOfTurn(ledger, home, decision.taskId, decision.attemptId)
   const gone = closeDecisions(ledger, decision.taskId, ofTurn, TURN_ENDED)
   await announce(home, ledger.get(decision.taskId), gone, TURN_ENDED)
-  await reply(`Human decision: permission denied. ${text}`)
+  await reply([...left, `Human decision: permission denied. ${text}`].join('\n\n'))
   return true
 }
 
@@ -892,18 +895,31 @@ export async function settle(
   // And a turn that ran got past the trust dialog: one a person answered there waits on nothing.
   const past = '(it got past the trust dialog)'
   const dialogs = async (): Promise<void> => {
-    // And a message that looked stuck: the turn ran past what was in the way, and carryUnheard below
-    // sends it again if it went nowhere.
+    // And a message that looked stuck: the turn ran past what was in the way, and it goes again if
+    // it went nowhere: by carryUnheard below if the turn kept it, here as the next turn if it opened
+    // this one, which keeps its words only as its prompt.
     const ofTurn = (d: Decision): boolean =>
       (d.reason === 'permission' || d.reason === 'stuck') && d.attemptId === attemptId
     // One its transcript shows they refused there is their answer, which the project's session hears.
     const denied = refusedDialogs(ledger, home, task.id, attemptId)
+    const kept = ledger.messages(task.id).filter((m) => m.attemptId === attemptId)
+    const left = unsentOfTurn(ledger, home, task.id, attemptId).filter(
+      (words) => !kept.some((m) => m.text === words),
+    )
     const closed = closeDecisions(ledger, task.id, ofTurn, TURN_ENDED)
     const trusted = closeDecisions(ledger, task.id, (d) => d.reason === 'trust', past)
     goesOn(ledger, task.id, [...denied, ...closed, ...trusted])
     await announce(home, task, denied, DENIED_HERE)
     await announce(home, task, closed, TURN_ENDED)
     await announce(home, task, trusted, past)
+    if (ended(ledger, task.id)) return
+    const { kind, fromTask } = ledger.attempt(attemptId)
+    for (const words of left) {
+      const again = kind === 'land' ? 'land' : 'followup'
+      await deliver(ledger, home, terminals, task.id, again, words, null, fromTask).catch(
+        notifyError(ledger, home, task.id),
+      )
+    }
   }
   if (!done) {
     // Background work the worker started still runs, and Claude Code starts its next turn once that
@@ -1237,9 +1253,10 @@ async function carryUnheard(
     let clear = true
     for (const { said, fate } of unheard) {
       if (gone) leavePrompt(home, task.id, said.text)
-      else if (fate !== 'lost' || !clear) continue
+      else if (fate !== 'lost') continue
       else if (turn === null) terminals.send(name, said.text)
-      else clear = await sendWatched(workerOf(ledger, home, terminals, turn), said.text)
+      else if (clear) clear = await sendWatched(workerOf(ledger, home, terminals, turn), said.text)
+      else ledger.moveMessages([said.id], turn.id)
     }
   } catch (error) {
     if (carried.next !== null) ledger.failAttempt(carried.next, message(error))
@@ -1310,10 +1327,15 @@ async function deliver(
     !settling(terminals, name)
   // A trust decision open is a trust dialog on the screen (awaitStart), whichever turn it is on, and
   // the dialog has "No, exit" selected first: the message's Enter would end Claude Code. One that
-  // kept a message out (sending.ts) has something on the screen that took those keys already.
+  // kept a message out (sending.ts) has something on the screen that took those keys already. Not
+  // for a person's answer, which has been closed by now and has nowhere else to go: if it stays
+  // out, that is a decision of its own.
   const trusting = ledger
     .decisions(taskId)
-    .find((d) => d.answer === null && (d.reason === 'trust' || d.reason === 'stuck'))
+    .find(
+      (d) =>
+        d.answer === null && (d.reason === 'trust' || (d.reason === 'stuck' && kind !== 'answer')),
+    )
   if (live && !restarting && trusting !== undefined) {
     throw new Error(
       `answer ${trusting.reason} decision d${trusting.id} first: Enter would answer its dialog`,
@@ -1587,7 +1609,8 @@ export async function keepWorker(
       }
       // What this start takes from its arguments, listened for before it can go in.
       const turn = ledger.openAttempt(taskId)
-      const said = left ?? (run === 0 && first.length > 0 ? (turn?.prompt ?? null) : null)
+      const brief = (run === 0 && first.length > 0) || next.fresh
+      const said = left ?? (brief ? (turn?.prompt ?? null) : null)
       if (said !== null && turn !== null) {
         const to = workerOf(ledger, home, terminals, turn)
         const heard = listen(to, said)
