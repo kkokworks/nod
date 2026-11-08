@@ -4,6 +4,7 @@ import { parseArgs } from 'node:util'
 import { transcriptPath } from './account'
 import { type CalendarEvent, calendarBuild, readEvents } from './calendar'
 import { addDays, dayOf, localDay, localTime, parseWhen, REPEATS, type Repeat } from './days'
+import { unheardWork } from './inbox'
 import { message } from './proc'
 import { openSettings } from './settings'
 import {
@@ -23,6 +24,7 @@ import {
   type TodoDecision,
   type TodoStatus,
   type Todos,
+  UNFINISHED,
   type WatchCheck,
   withLine,
 } from './todos'
@@ -171,9 +173,9 @@ export function capture(todos: Todos, args: string[]): void {
 // What Claude in a session of no project hears of its role, as it opens or claims it.
 const ROLE_DUTIES: Record<OpenRole, string> = {
   orchestrator:
-    "it belongs to no project, keeps the person's todos with the gtd skills, hears of the tasks it adds in no project and of those no orchestrator added, and passes a project's work to that project's session (nod tell p<n>). It picks the project by the descriptions in nod project ls, which also shows each project's orchestrator: it talks, by SendMessage too, only to the sessions of projects in its charge or in no orchestrator's.",
+    "it belongs to no project, keeps the person's todos with the gtd skills, hears of the tasks it adds in no project, and passes a project's work to that project's session (nod tell p<n>). It picks the project by the descriptions in nod project ls, which also shows each project's orchestrator: it talks, by SendMessage too, only to the sessions of projects in its charge or in no orchestrator's.",
   relay:
-    "it belongs to no project, takes messages from outside, picks the project each is for by the descriptions in nod project ls, passes it to that project's session (nod tell p<n>), and nod tells it of no task.",
+    "it belongs to no project, takes messages from outside, picks the project each is for by the descriptions in nod project ls, passes it to that project's session (nod tell p<n>) or puts it in as a todo (nod in), hands over no task itself, and nod tells it of no task.",
 }
 export const roleLine = (role: OpenRole, name: string): string =>
   `the ${role} ${name}: ${ROLE_DUTIES[role]}`
@@ -275,8 +277,11 @@ export function openSession(
 // The project `nod add` puts its work in, by the Claude session it runs in (`session`). One nod
 // open opened for a project hands over its project's work only: the work goes in that project, and
 // work of another is refused with where it goes instead. One in a role of no project hands over no
-// project's work, refused the same way, and work in no project stays in none. Any other session,
-// and none, puts it where it is told; a Claude session also hears how to keep projects apart.
+// project's work, refused the same way; an orchestrator's work in no project stays in none, and a
+// relay's is refused, as no session would hear of it (relays hear of no task). Any other Claude
+// session puts a project's work where it is told, and hears how to keep projects apart; work in no
+// project it is refused, as no session would hear of it (Todos.listener). A shell, a script with
+// NOD_ACTOR and the like (no session) put work where they are told.
 export function placeWork(
   todos: Todos,
   session: string | null,
@@ -292,6 +297,16 @@ export function placeWork(
       const p = todos.project(other)
       throw new Error(
         `this session is the ${opened.role} ${opened.name}, which hands over no project's work; p${p.id} ${p.title}'s goes to its session (nod tell p${p.id} <message...>) or in as a todo (nod in <what...> --project p${p.id})`,
+      )
+    }
+    if (opened?.role === 'relay' && other === null) {
+      throw new Error(
+        `this session is the relay ${opened.name}, which hands over no work in no project, as no session would hear of it: pass it to the session of the project it is for (nod tell p<n> <message...>) or put it in as a todo (nod in <what...>)`,
+      )
+    }
+    if (session !== null && opened === null && other === null) {
+      throw new Error(
+        'this Claude session is in no project and no role, so no session would hear of the work in no project it hands over: hand it over in an orchestrator session (nod open <name> --role orchestrator, or nod session claim <name> --role orchestrator in this one) or in a project session (nod open <project>)',
       )
     }
     if (session !== null && opened === null) {
@@ -472,6 +487,17 @@ async function setTodo(todos: Todos, home: string, args: string[]): Promise<void
   const todo = todos.set(id, { ...edit, notes }, actorFromEnv(), values.link ?? [], from)
   if (tried !== null) todos.recordCheck(id, tried.watch, tried.code, tried.output)
   console.log(line(todos, todo))
+  // Its tasks go with the todo, and so does who hears of them (Todos.listener): say who no longer
+  // can, as nod add does (unheardWork). The edit stands whatever goes wrong here.
+  if (project !== undefined) {
+    try {
+      const going = todos.tasks(id).filter(({ task }) => UNFINISHED.includes(task.status))
+      const ids = going.map(({ task }) => task.id)
+      for (const said of unheardWork(todos.ledger, sessionFromEnv(), ids)) console.error(said)
+    } catch (error) {
+      console.error(`nod: could not check who hears this work: ${message(error)}`)
+    }
+  }
   if (tried === null) return
   console.log(`  ${checkText(todos.lastCheck(todo))}`)
   if (scheduleEnv(home) === null) console.log(`  ${SCHEDULE_OFF}`)

@@ -391,7 +391,6 @@ test('a session of no project has no project_sessions row and no place, and the 
   const [A, B, C, D] = ['key-a', 'key-b', 'key-c', 'key-d']
   const north = { role: 'orchestrator', name: 'north' } as const
   expect(todos.latestNamed('north')).toBeNull()
-  expect(todos.latestOrchestrator()).toBeNull()
   const first = todos.addSession(north, A, '/work/one')
   const gate = todos.addSession({ role: 'relay', name: 'gate' }, B, '/work/two')
   const south = todos.addSession({ role: 'orchestrator', name: 'south' }, C, '/work/three')
@@ -402,7 +401,6 @@ test('a session of no project has no project_sessions row and no place, and the 
   expect(todos.latestNamed('north')).toEqual(again)
   expect(todos.latestNamed('south')).toEqual(south)
   expect(todos.latestNamed('gate')).toEqual(gate)
-  expect(todos.latestOrchestrator()).toEqual(again)
   for (const key of [A, B, C, D]) expect(todos.sessionPlace(key)).toBeNull()
   expect(todos.session(B)).toEqual(gate)
   const rows = (): unknown => ledger.db.query('select count(*) n from project_sessions').get()
@@ -426,7 +424,7 @@ test('a session of no project has no project_sessions row and no place, and the 
   expect(todos.session('key-q')).toBeNull()
 })
 
-test('a task in no project is heard by the latest of the orchestrator that added it, anything else by the orchestrator made last of those taking messages, and none by a relay', () => {
+test('a task in no project is heard by the latest of the orchestrator that added it, running or not, and anything else by none', () => {
   const { todos } = books()
   const [A, B, C, D] = ['key-a', 'key-b', 'key-c', 'key-d']
   expect(todos.listener(null, null)).toBeNull()
@@ -434,32 +432,18 @@ test('a task in no project is heard by the latest of the orchestrator that added
   const north = { role: 'orchestrator', name: 'north' } as const
   const opened = todos.addSession(north, A, '/work/one')
   todos.addSession({ role: 'relay', name: 'gate' }, B, '/work/two')
-  // No orchestrator opened since, the relay after it included.
-  expect(todos.listener(null, null)).toEqual(opened)
   const south = todos.addSession({ role: 'orchestrator', name: 'south' }, C, '/work/three')
+  todos.setSocket(C, '/socks/c')
   expect(todos.listener(null, A)).toEqual(opened)
-  expect(todos.listener(null, C)).toEqual(south)
-  expect(todos.listener(null, B)).toEqual(south)
-  expect(todos.listener(null, null)).toEqual(south)
-  expect(todos.listener(null, 'key-unknown')).toEqual(south)
+  expect(todos.listener(null, C)).toEqual({ ...south, socket: '/socks/c' })
+  // A shell's, a relay's and an unknown session's go to no orchestrator, though one runs.
+  expect(todos.listener(null, null)).toBeNull()
+  expect(todos.listener(null, B)).toBeNull()
+  expect(todos.listener(null, 'key-unknown')).toBeNull()
+  // --new: the newer of the name goes on for it, closed while another runs.
   const newer = todos.addSession(north, D, '/work/four')
   expect(todos.listener(null, A)).toEqual(newer)
-  expect(todos.listener(null, C)).toEqual(south)
-
-  // Taking messages goes before being made last, for what no orchestrator added alone.
-  todos.setSocket(C, '/socks/c')
-  const running = { ...south, socket: '/socks/c' }
-  expect(todos.listener(null, null)).toEqual(running)
-  expect(todos.listener(null, B)).toEqual(running)
-  expect(todos.listener(null, A)).toEqual(newer)
-  todos.setSocket(A, '/socks/a')
-  expect(todos.listener(null, null)).toEqual(running)
-  // Of those taking messages, the one made last.
-  todos.setSocket(D, '/socks/d')
-  expect(todos.listener(null, null)).toEqual({ ...newer, socket: '/socks/d' })
-  // None taking messages: it waits for the one made last.
-  for (const key of [A, C, D]) todos.setSocket(key, null)
-  expect(todos.listener(null, null)).toEqual(newer)
+  expect(todos.listener(null, null)).toBeNull()
 
   const p = project(todos, 'Release')
   expect(todos.listener(p.id, A)).toBeNull()
