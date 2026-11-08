@@ -1128,9 +1128,12 @@ test('add refuses repo work without a valid branch, before adding anything', asy
   const home = tmp.make('nod-branch-')
   const repo = tmp.make('nod-branch-repo-')
   Bun.spawnSync(['git', 'init', '-q', repo])
+  // As a shell, whatever runs the tests: a Claude session's add in no project is refused before
+  // its branch is looked at.
+  const { CLAUDECODE: _, NOD_TASK: __, NOD_ACTOR: ___, ...env } = process.env
   const add = async (...args: string[]): Promise<string> => {
     const p = Bun.spawn(['bun', cli, 'add', 'work', ...args], {
-      env: { ...process.env, NOD_HOME: home },
+      env: { ...env, NOD_HOME: home },
       stderr: 'pipe',
     })
     expect(await p.exited).not.toBe(0)
