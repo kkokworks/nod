@@ -46,7 +46,7 @@ export const OPEN: TodoStatus[] = ['inbox', 'next', 'waiting']
 const FINISHED: TodoStatus[] = ['done', 'dropped']
 const CLOSED_PROJECT: ProjectStatus[] = ['done', 'dropped']
 // A delegated todo's tasks that may still go on: one in error can be resumed.
-const UNFINISHED: TaskStatus[] = ['queued', 'running', 'needs_decision', 'error']
+export const UNFINISHED: TaskStatus[] = ['queued', 'running', 'needs_decision', 'error']
 
 export type Todo = {
   id: number

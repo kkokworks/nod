@@ -471,6 +471,51 @@ test('nod in --project captures the todo into that project, and a project that i
   expect(await ok('todo', 'inbox')).toHaveLength(2)
 })
 
+test('moving a todo out of its project says so when no session hears its going task any more; one an orchestrator added, or whose task ended, says nothing', async () => {
+  const { home } = runner()
+  const run = nod(home)
+  const ledger = new Ledger(home)
+  const todos = new Todos(ledger)
+  const p = todos.addProject({ title: 'Health', outcome: null }, 'human')
+  todos.addSession(p.id, 'key-health', home)
+  todos.addSession({ role: 'orchestrator', name: 'north' }, 'key-north', home)
+  const task = (brief: string, rootSession: string): { id: number; todo: string } => {
+    const id = todos.delegateNew(
+      {
+        brief,
+        repo: null,
+        branch: null,
+        checkCmd: null,
+        model: null,
+        after: [],
+        issue: null,
+        rootSession,
+      },
+      p.id,
+      'human',
+    )
+    return { id, todo: `t${ledger.get(id).todoId}` }
+  }
+  const going = task('book the blood test', 'key-health')
+  const north = task('call the clinic', 'key-north')
+  const ended = task('find the card', 'key-health')
+  ledger.setRunning(going.id, home)
+  ledger.cancel(ended.id, 'found')
+  const move = async (todo: string, project: string): Promise<string> => {
+    const r = await run('todo', 'set', todo, '--project', project)
+    expect(r.code).toBe(0)
+    return r.err
+  }
+  expect(await move(going.todo, '')).toBe(
+    `nod: no session hears of the decisions and ends of n${going.id}, in no project and handed over by no orchestrator; nod, nod ls and the web screen show them\n`,
+  )
+  expect(todos.projectOf(ledger.get(going.id))).toBeNull()
+  expect(await move(north.todo, '')).toBe('')
+  expect(await move(ended.todo, '')).toBe('')
+  // Back in the project, its session hears it again, and a shell is told nothing of a project's.
+  expect(await move(going.todo, 'p1')).toBe('')
+})
+
 test('nod open resumes the latest session where it was opened, or starts one: with --new, with none yet, and again under its ID while Claude Code keeps no transcript of it, named after the project every way', () => {
   const todos = new Todos(new Ledger(tmp.make('nod-open-')))
   const config = tmp.make('nod-open-config-')

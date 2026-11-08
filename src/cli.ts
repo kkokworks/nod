@@ -311,8 +311,9 @@ nod open opens it again, nod ls --mine and nod --mine show what it missed.
 An orchestrator hears the same way of the tasks it added in no project: the latest session of its
 name, even while another orchestrator runs. What comes while it is closed waits for it too. No
 session hears of a task in no project that no orchestrator added (a shell's, say): what
-comes for it goes to no session, nod add and the commands that set it going say so on stderr, and
-nod, nod ls and the web screen show it.
+comes for it goes to no session, nod add and the commands that set it going say so on stderr, as
+does nod todo set --project moving its todo out of a project, and nod, nod ls and the web screen
+show it.
 
 When <home>/notify exists, nod runs it with a JSON event on stdin whenever a decision opens, a
 task succeeds or fails to start, a watch passes or can no longer run, or a restart waits for a

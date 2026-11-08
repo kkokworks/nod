@@ -4,6 +4,7 @@ import { parseArgs } from 'node:util'
 import { transcriptPath } from './account'
 import { type CalendarEvent, calendarBuild, readEvents } from './calendar'
 import { addDays, dayOf, localDay, localTime, parseWhen, REPEATS, type Repeat } from './days'
+import { unheardWork } from './inbox'
 import { message } from './proc'
 import { openSettings } from './settings'
 import {
@@ -23,6 +24,7 @@ import {
   type TodoDecision,
   type TodoStatus,
   type Todos,
+  UNFINISHED,
   type WatchCheck,
   withLine,
 } from './todos'
@@ -485,6 +487,17 @@ async function setTodo(todos: Todos, home: string, args: string[]): Promise<void
   const todo = todos.set(id, { ...edit, notes }, actorFromEnv(), values.link ?? [], from)
   if (tried !== null) todos.recordCheck(id, tried.watch, tried.code, tried.output)
   console.log(line(todos, todo))
+  // Its tasks go with the todo, and so does who hears of them (Todos.listener): say who no longer
+  // can, as nod add does (unheardWork). The edit stands whatever goes wrong here.
+  if (project !== undefined) {
+    try {
+      const going = todos.tasks(id).filter(({ task }) => UNFINISHED.includes(task.status))
+      const ids = going.map(({ task }) => task.id)
+      for (const said of unheardWork(todos.ledger, sessionFromEnv(), ids)) console.error(said)
+    } catch (error) {
+      console.error(`nod: could not check who hears this work: ${message(error)}`)
+    }
+  }
   if (tried === null) return
   console.log(`  ${checkText(todos.lastCheck(todo))}`)
   if (scheduleEnv(home) === null) console.log(`  ${SCHEDULE_OFF}`)

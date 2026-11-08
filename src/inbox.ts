@@ -118,7 +118,8 @@ export const takesMessages = (session: Session | null): boolean =>
   session !== null && session.socket !== null && existsSync(session.socket)
 
 // What a Claude session hears as it sets a project's work going (nod add, tell, an answer, resume,
-// restart) though it is not the project's latest session, the one nod tells: a line for stderr for
+// restart) or moves a todo with going tasks (nod todo set --project), though it is not the
+// project's latest session, the one nod tells: a line for stderr for
 // each project of the tasks `ids` whose latest session cannot hear either (there is none, nod knows
 // no socket of it, or its socket file is gone), so the decisions and ends that work brings wait
 // unheard. Each project once, and none of `warned`, which onCommand told of already, and which
