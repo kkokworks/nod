@@ -13,11 +13,18 @@ import {
 } from './decisions'
 import { followWork } from './done'
 import type { Attempt, Ledger } from './ledger'
-import { CLAUDE_OPTION, SETTLING_OPTION, STALLED_OPTION, sessionName } from './place'
+import {
+  CLAUDE_OPTION,
+  PROMPTED_OPTION,
+  SETTLING_OPTION,
+  STALLED_OPTION,
+  sessionName,
+} from './place'
 import { message } from './proc'
 import { askedAgain } from './review'
+import { wentIn } from './sending'
 import { pasted, running, type Terminals } from './tmux'
-import { endedWithoutStop, HELD_BACK, transcriptTail } from './transcript'
+import { endedWithoutStop, HELD_BACK, PASTE_WRAP, promptMark, transcriptTail } from './transcript'
 import {
   currentTurn,
   cutOff,
@@ -205,6 +212,8 @@ export async function onPrompt(
   const taskId = ledger.taskOfSession(event.session_id)
   if (taskId === null) return
   const name = sessionName(taskId)
+  // First, and whatever else fails: what sent the message waits on this (listen in sending.ts).
+  if (terminals.alive(name)) terminals.setOption(name, PROMPTED_OPTION, promptMark(event.prompt))
   const typed = terminals.attached(name) && !OWN_MESSAGE.test(event.prompt)
   // What a restart after an API error left for the new start (restart), which nod keeps nowhere
   // else; the mark stays until a Stop, or the decision the error raises (onStopFailure).
@@ -223,6 +232,7 @@ export async function onPrompt(
   // words are what the review and a question's answer go by. The turn stays the one it was.
   const stopped = typed ? stoppedDialogs(ledger, home, taskId) : []
   await announce(home, ledger.get(taskId), stopped, STOPPED_DIALOG)
+  await wentIn(ledger, home, taskId, event.prompt)
 }
 
 // A message Claude Code gives the worker by itself, while a person may be attached: a background
@@ -249,7 +259,7 @@ function pastedByNod(ledger: Ledger, open: Attempt, prompt: string, left: string
     .flatMap((t) => (t === undefined || pasted(t).trim() === '' ? [] : [pasted(t).trim()]))
     // The longest first, so one inside another goes with it.
     .sort((a, b) => b.length - a.length)
-  let rest = prompt.replace(/<\/?pasted_content\b[^>]*>/g, '')
+  let rest = prompt.replace(PASTE_WRAP, '')
   for (const s of sent) rest = rest.replaceAll(s, '')
   return rest.trim() === ''
 }

@@ -34,6 +34,8 @@ export type DecisionReason =
   | 'check_failed'
   | 'permission'
   | 'trust'
+  // A message nod sent did not reach the worker (sending.ts).
+  | 'stuck'
   | 'rule'
   // The worker's Claude Code ended in the middle of a turn, or kept exiting as it started.
   | 'interrupted'

@@ -45,6 +45,7 @@ import {
 import { message, spawn } from './proc'
 import { type Capture, nodLines, parseCaptures, parseReport, parseTells, type Tell } from './report'
 import { activeRules, hadTrouble, isNoRule, retroBrief } from './rules'
+import { listen, sendWatched, unsent, type Worker, watchStart } from './sending'
 import { CLI, STOP_HOOK_TIMEOUT_SECS, workerSettings } from './settings'
 import { pasted, quote, running, type Terminals } from './tmux'
 import { Todos } from './todos'
@@ -479,6 +480,10 @@ export async function answer(
     await acceptTrust(terminals, name, startedMarker(home, decision.taskId))
     return true
   }
+  if (decision.reason === 'stuck') {
+    await sendAgain(ledger, home, terminals, decision, yes ? null : text, reply)
+    return true
+  }
   if (decision.reason !== 'permission') {
     await reply(
       `${decision.reason === 'interrupted' ? `${CUT_OFF_PROMPT}\n` : ''}Human decision: ${text}`,
@@ -505,6 +510,50 @@ export async function answer(
   await announce(home, ledger.get(decision.taskId), gone, TURN_ENDED)
   await reply(`Human decision: permission denied. ${text}`)
   return true
+}
+
+// The person cleared what a stuck decision showed: the message it waited on goes again unless it
+// went in meanwhile, with what they said beyond yes (`said`). Into the turn it was for, which is
+// open, as that turn's Stop closes the decision. With no such turn or terminal to type into (the
+// person stopped the turn, its terminal went), all of it is a message like any other, as deliver
+// starts a turn with one: an answer must leave a turn running, not a task that reads as running.
+async function sendAgain(
+  ledger: Ledger,
+  home: string,
+  terminals: Terminals,
+  decision: Decision,
+  said: string | null,
+  reply: (words: string) => Promise<void>,
+): Promise<void> {
+  const { taskId } = decision
+  const name = sessionName(taskId)
+  const lost = unsent(ledger, home, decision)
+  const human = said === null ? null : `Human decision: ${said}`
+  const open = ledger.openAttempt(taskId)
+  if (open === null || !terminals.alive(name) || restartingClaude(terminals, name)) {
+    const words = [lost, human].filter((w) => w !== null).join('\n\n')
+    await reply(words === '' ? 'Human decision: yes' : words)
+    return
+  }
+  if (lost !== null && !(await sendWatched(workerOf(ledger, home, terminals, open), lost))) return
+  if (human !== null) await reply(human)
+}
+
+// Who a message goes to while `turn` runs (sending.ts).
+function workerOf(ledger: Ledger, home: string, terminals: Terminals, turn: Attempt): Worker {
+  const name = sessionName(turn.taskId)
+  return {
+    ledger,
+    home,
+    terminals,
+    taskId: turn.taskId,
+    attemptId: turn.id,
+    sessionId: turn.sessionId,
+    gone: () =>
+      !terminals.alive(name) ||
+      restartingClaude(terminals, name) ||
+      ledger.openAttempt(turn.taskId)?.id !== turn.id,
+  }
 }
 
 async function waitForScreen(terminals: Terminals, name: string, text: string): Promise<void> {
@@ -843,7 +892,10 @@ export async function settle(
   // And a turn that ran got past the trust dialog: one a person answered there waits on nothing.
   const past = '(it got past the trust dialog)'
   const dialogs = async (): Promise<void> => {
-    const ofTurn = (d: Decision): boolean => d.reason === 'permission' && d.attemptId === attemptId
+    // And a message that looked stuck: the turn ran past what was in the way, and carryUnheard below
+    // sends it again if it went nowhere.
+    const ofTurn = (d: Decision): boolean =>
+      (d.reason === 'permission' || d.reason === 'stuck') && d.attemptId === attemptId
     // One its transcript shows they refused there is their answer, which the project's session hears.
     const denied = refusedDialogs(ledger, home, task.id, attemptId)
     const closed = closeDecisions(ledger, task.id, ofTurn, TURN_ENDED)
@@ -867,7 +919,7 @@ export async function settle(
       report: text,
     })
     await dialogs()
-    carryUnheard(ledger, home, terminals, task, attemptId, event.session_id)
+    await carryUnheard(ledger, home, terminals, task, attemptId, event.session_id)
     if (waiting || newer()) return null
     const still = work.map((w) => w.description ?? w.type ?? '?').join(', ')
     const note = work.length > 0 ? `${waitedNote(wait)} Still running: ${still}.\n` : ''
@@ -876,7 +928,7 @@ export async function settle(
   }
   ledger.endAttempt(attemptId, { outcome: 'succeeded', summary, report: text })
   await dialogs()
-  carryUnheard(ledger, home, terminals, task, attemptId, event.session_id)
+  await carryUnheard(ledger, home, terminals, task, attemptId, event.session_id)
   // That turn decides, and the lines of this done go back to the worker at its done (heldBack).
   if (newer()) {
     holdLines(home, task.id, text)
@@ -1135,14 +1187,15 @@ async function sendTells(
 // hook (deliver) came after them, so they stay where they are, before its words in the review. A
 // transcript that cannot be read leaves them in the turn that ended, as before. What a person typed
 // (onPrompt) came from Claude Code's prompt hook, so Claude Code had it: it is not nod's to send.
-function carryUnheard(
+// One that goes in nowhere again is a decision (sendWatched), and the rest wait for that turn's end.
+async function carryUnheard(
   ledger: Ledger,
   home: string,
   terminals: Terminals,
   task: Task,
   attemptId: number,
   sessionId: string,
-): void {
+): Promise<void> {
   const told = ledger
     .messages(task.id)
     .filter((m) => m.attemptId === attemptId && !typedHere(m.text))
@@ -1179,10 +1232,14 @@ function carryUnheard(
   const name = sessionName(task.id)
   const live = terminals.alive(name)
   const gone = !live || restartingClaude(terminals, name)
+  const turn = ledger.openAttempt(task.id)
   try {
+    let clear = true
     for (const { said, fate } of unheard) {
       if (gone) leavePrompt(home, task.id, said.text)
-      else if (fate === 'lost') terminals.send(name, said.text)
+      else if (fate !== 'lost' || !clear) continue
+      else if (turn === null) terminals.send(name, said.text)
+      else clear = await sendWatched(workerOf(ledger, home, terminals, turn), said.text)
     }
   } catch (error) {
     if (carried.next !== null) ledger.failAttempt(carried.next, message(error))
@@ -1252,10 +1309,15 @@ async function deliver(
     accountChanged(home, task.account) &&
     !settling(terminals, name)
   // A trust decision open is a trust dialog on the screen (awaitStart), whichever turn it is on, and
-  // the dialog has "No, exit" selected first: the message's Enter would end Claude Code.
-  const trusting = ledger.decisions(taskId).find((d) => d.answer === null && d.reason === 'trust')
+  // the dialog has "No, exit" selected first: the message's Enter would end Claude Code. One that
+  // kept a message out (sending.ts) has something on the screen that took those keys already.
+  const trusting = ledger
+    .decisions(taskId)
+    .find((d) => d.answer === null && (d.reason === 'trust' || d.reason === 'stuck'))
   if (live && !restarting && trusting !== undefined) {
-    throw new Error(`answer trust decision d${trusting.id} first: Enter would answer its dialog`)
+    throw new Error(
+      `answer ${trusting.reason} decision d${trusting.id} first: Enter would answer its dialog`,
+    )
   }
   // Whether the worker is mid-turn is settled in one transaction, as the Stop hook acts on a check
   // in one (settle): a retry it starts takes the message, and a turn started here it leaves to run.
@@ -1313,9 +1375,19 @@ async function deliver(
         `answer permission decision d${dialog.id} first: Enter would answer its dialog`,
       )
     }
-    if (restarting) leavePrompt(home, taskId, text)
-    else terminals.send(name, text)
-    ledger.addMessage(taskId, turn.attemptId, text, from)
+    const told = (): void => {
+      ledger.addMessage(taskId, turn.attemptId, text, from)
+    }
+    if (restarting) {
+      leavePrompt(home, taskId, text)
+      told()
+    } else {
+      await sendWatched(
+        workerOf(ledger, home, terminals, ledger.attempt(turn.attemptId)),
+        text,
+        told,
+      )
+    }
     return
   }
   await announce(home, task, turn.cut, CUT)
@@ -1327,7 +1399,7 @@ async function deliver(
       leavePrompt(home, taskId, text)
       startAgain(terminals, name)
     } else if (live) {
-      terminals.send(name, text)
+      await sendWatched(workerOf(ledger, home, terminals, ledger.attempt(turn.attemptId)), text)
     } else {
       // keepWorker starts it as any later start: the current account, trust, the message.
       leavePrompt(home, taskId, text)
@@ -1497,6 +1569,7 @@ export async function keepWorker(
   for (let run = 0; ; run++) {
     let exited: Promise<unknown> = Promise.resolve()
     let left: string | null = null
+    let watch: (() => Promise<void>) | null = null
     try {
       // ponytail: a trust check the session ended in the middle of leaves its own session behind.
       const next: Start | null =
@@ -1511,6 +1584,17 @@ export async function keepWorker(
       // What waited on the Claude Code that ended is done with this start.
       for (const option of [RESTART_OPTION, TOLD_OPTION, STALLED_OPTION]) {
         terminals.setOption(name, option, null)
+      }
+      // What this start takes from its arguments, listened for before it can go in.
+      const turn = ledger.openAttempt(taskId)
+      const said = left ?? (run === 0 && first.length > 0 ? (turn?.prompt ?? null) : null)
+      if (said !== null && turn !== null) {
+        const to = workerOf(ledger, home, terminals, turn)
+        const heard = listen(to, said)
+        const holding = (): boolean =>
+          ledger.decisions(taskId).some((d) => d.answer === null && d.reason === 'trust') ||
+          terminals.screen(name).includes(TRUST_DIALOG)
+        watch = () => watchStart(to, said, heard, holding)
       }
       child = Bun.spawn(next.argv, { env: next.env, stdio: ['inherit', 'inherit', 'inherit'] })
       terminals.setOption(name, CLAUDE_OPTION, String(child.pid))
@@ -1534,8 +1618,14 @@ export async function keepWorker(
       quick = 0
       // The new Claude Code is up: messages paste again, and one left while it started goes in.
       terminals.setOption(name, RESTARTING_OPTION, null)
+      void watch?.().catch(notifyError(ledger, home, taskId))
       const late = takePrompt(home, taskId)
-      if (late !== null) terminals.send(name, late)
+      const lateTurn = ledger.openAttempt(taskId) ?? ledger.lastAttempt(taskId)
+      if (late !== null && lateTurn === null) terminals.send(name, late)
+      else if (late !== null && lateTurn !== null) {
+        const to = workerOf(ledger, home, terminals, lateTurn)
+        void sendWatched(to, late).catch(notifyError(ledger, home, taskId))
+      }
       const turn = cut
       cut = null
       // A turn cut off goes on in a message the person sent since, which the new start got: there
@@ -1719,7 +1809,7 @@ async function goOnCut(
   if (cut.outcome === null || cut.outcome === 'waiting') return false
   // A decision it raised on that turn is its result: an answer going on from it is on its way.
   const raised = (d: Decision): boolean =>
-    d.attemptId === cut.id && d.reason !== 'permission' && d.reason !== 'trust'
+    d.attemptId === cut.id && !['permission', 'trust', 'stuck'].includes(d.reason)
   if (ledger.decisions(taskId).some(raised)) return false
   if (!ledger.cutCheck(cut.id, CUT_MARK)) return false
   const cutOff = "nod's check of its last turn was cut off before it finished"

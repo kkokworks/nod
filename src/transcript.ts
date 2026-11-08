@@ -1,4 +1,4 @@
-import { closeSync, fstatSync, openSync, readFileSync, readSync } from 'node:fs'
+import { closeSync, fstatSync, openSync, readFileSync, readSync, statSync } from 'node:fs'
 import { z } from 'zod'
 import { configDir, transcriptPath } from './account'
 import type { Attempt, Ledger } from './ledger'
@@ -55,6 +55,35 @@ export function transcriptTail(ledger: Ledger, home: string, open: Attempt): str
     }
   } catch (error) {
     console.error(`nod: could not read the transcript of task n${open.taskId}: ${message(error)}`)
+    return []
+  }
+}
+
+// How long the transcript of a task's session is, in bytes; 0 for one there is none of yet.
+export function transcriptSize(
+  ledger: Ledger,
+  home: string,
+  taskId: number,
+  sessionId: string,
+): number {
+  const file = transcriptOf(ledger, home, taskId, sessionId)
+  return file === null ? 0 : statSync(file).size
+}
+
+// The lines the transcript of a task's session got past `from` (transcriptSize); none for one there
+// is none of, or that cannot be read, which goes to stderr only.
+export function transcriptSince(
+  ledger: Ledger,
+  home: string,
+  taskId: number,
+  sessionId: string,
+  from: number,
+): string[] {
+  try {
+    const file = transcriptOf(ledger, home, taskId, sessionId)
+    return file === null ? [] : readFileSync(file).subarray(from).toString().split('\n')
+  } catch (error) {
+    console.error(`nod: could not read the transcript of task n${taskId}: ${message(error)}`)
     return []
   }
 }
@@ -127,12 +156,14 @@ type Fate = 'heard' | 'queued' | 'lost'
 // with the words decides, so words sent again count from their last. 'lost': no entry, so Claude
 // Code never had it.
 // ponytail: reads the whole transcript, parsing only the lines with the words; words inside other
-// words count as those, and words Claude Code changed read as lost and go twice.
+// words count as those, and words Claude Code changed otherwise (spoken) read as lost and go twice.
 export function heardOf(lines: string[], text: string): Fate {
-  const sent = pasted(text).trim()
+  const sent = spoken(text)
   // Claude Code takes no blank message.
   if (sent === '') return 'heard'
-  const words = JSON.stringify(sent).slice(1, -1)
+  // Lines to parse: the longest piece no tab can have changed, as the line may hold either.
+  const piece = sent.split(TAB_AS_PASTED).reduce((a, b) => (b.length > a.length ? b : a))
+  const words = JSON.stringify(piece).slice(1, -1)
   let fate: Fate = 'lost'
   for (const line of lines) {
     if (!line.includes(words)) continue
@@ -147,11 +178,26 @@ export function heardOf(lines: string[], text: string): Fate {
           : attachment?.type === 'queued_command'
             ? [attachment.prompt]
             : []
-    if (!said.some((s) => typeof s === 'string' && s.includes(sent))) continue
+    const held = said.filter((s) => typeof s === 'string')
+    if (!held.some((s) => s.replaceAll('\t', TAB_AS_PASTED).includes(sent))) continue
     fate = type === 'queue-operation' && operation === 'enqueue' ? 'queued' : 'heard'
   }
   return fate
 }
+
+// How a paste of several lines comes back: wrapped, in the transcript and in the prompt hook.
+export const PASTE_WRAP = /<\/?pasted_content\b[^>]*>/g
+
+// What Claude Code makes of a tab in a paste (2.1.319's binary). One message it started with, from
+// its arguments, may keep its tabs, so both sides are read this way.
+const TAB_AS_PASTED = '    '
+
+// The words of a message as they show once Claude Code has it.
+export const spoken = (text: string): string => pasted(text).trim().replaceAll('\t', TAB_AS_PASTED)
+
+// A short mark of a message, the same for what nod pastes and what the prompt hook gets of it.
+export const promptMark = (prompt: string): string =>
+  Bun.hash(spoken(prompt.replace(PASTE_WRAP, ''))).toString(36)
 
 // What Claude Code gives the worker as a tool's result once the person refused it in its permission
 // dialog, with or without words of theirs after it, and once they stopped it with Escape (2.1.316's
