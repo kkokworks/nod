@@ -49,6 +49,7 @@ import {
 import { branchOf, sessionName } from './place'
 import { message, readAtOnce, spawn } from './proc'
 import { pullRequests } from './prs'
+import { heldUp } from './sending'
 import { type Terminals, Tmux } from './tmux'
 import {
   actorFromEnv,
@@ -384,7 +385,7 @@ switch (command) {
     const id = taskRef(rest[0])
     warnUnheard([id])
     await tell(ledger, home, terminals, id, words(rest.slice(1)), answerer())
-    console.log('sent')
+    console.log(heldUp(ledger, id) ?? 'sent')
     break
   }
   case 'resume': {
@@ -583,7 +584,8 @@ switch (command) {
       // Yes tries again now, not at the next fifth minute, unless this is a sandbox (leaveToTick).
       if (/^y(es)?$/i.test(said)) await landCommand([taskId])
     } else {
-      console.log(took ? `answered; sent to task n${taskId}` : `closed; task n${taskId} had ended`)
+      const sent = heldUp(ledger, taskId) ?? `answered; sent to task n${taskId}`
+      console.log(took ? sent : `closed; task n${taskId} had ended`)
     }
   }
 }

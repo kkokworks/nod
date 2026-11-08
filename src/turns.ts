@@ -209,13 +209,16 @@ export async function cutOff(
   if (!ledger.failOpenAttempt(attempt.id, why.split('\n')[0] ?? why)) return false
   const closed = closeDecisions(ledger, taskId, (d) => d.attemptId === attempt.id, CUT)
   await announce(home, ledger.get(taskId), closed, CUT)
+  const owes = closed.some((d) => d.reason === 'stuck')
+    ? '\nA message that had not gone in goes to the worker after the next turn.'
+    : ''
   await decide(
     ledger,
     home,
     taskId,
     attempt.id,
     'interrupted',
-    `${why}\nThe turn did not finish, and part of it may be done. It was on:\n> ${oneLine(attempt.prompt, 200)}\nAnswer with how to go on, such as to check what is done and carry on; the answer goes into the same conversation.`,
+    `${why}\nThe turn did not finish, and part of it may be done. It was on:\n> ${oneLine(attempt.prompt, 200)}\nAnswer with how to go on, such as to check what is done and carry on; the answer goes into the same conversation.${owes}`,
   )
   return true
 }

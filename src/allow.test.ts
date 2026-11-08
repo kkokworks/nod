@@ -16,14 +16,39 @@ import { NO_PERSON } from './decisions'
 import { onNotification, onPrompt } from './hooks'
 import { sendNotices } from './inbox'
 import { Ledger, type NewTask } from './ledger'
+import { PROMPTED_OPTION } from './place'
 import { Tmux } from './tmux'
 import { Todos } from './todos'
+import { promptMark } from './transcript'
 import { answer, tell } from './worker'
 
 const tmp = tempDirs()
 afterAll(tmp.removeAll)
 
 const cli = resolve(import.meta.dir, 'cli.ts')
+
+// A worker's terminal up, which tmux stands in for: `shows` on its screen, and its Claude Code takes
+// what is pasted, as the prompt hook marks it (listen in sending.ts).
+function takingMessages(shows = '') {
+  let mark = ''
+  const spies = {
+    alive: spyOn(Tmux.prototype, 'alive').mockReturnValue(true),
+    screen: spyOn(Tmux.prototype, 'screen').mockReturnValue(shows),
+    setOption: spyOn(Tmux.prototype, 'setOption').mockImplementation(() => {}),
+    option: spyOn(Tmux.prototype, 'option').mockImplementation((_, key) =>
+      key === PROMPTED_OPTION ? mark : '',
+    ),
+    send: spyOn(Tmux.prototype, 'send').mockImplementation((_, text) => {
+      mark = promptMark(text)
+    }),
+  }
+  return {
+    send: spies.send,
+    restore: () => {
+      for (const spy of Object.values(spies)) spy.mockRestore()
+    },
+  }
+}
 
 // A repo whose worktree a task works in, as nod makes one: a branch in a folder of its own, its git
 // folder shared with the repo's. Committed: a package, a source file, and what git ignores. Not:
@@ -352,10 +377,8 @@ test("a question a person's nod tell goes on past goes to the project's session 
     ledger.endAttempt(turn, { outcome: 'needs_decision', summary: 'which?', report: 'which?' })
     return ledger.ask(id, turn, 'question', 'Which branch?')
   }
-  const alive = spyOn(Tmux.prototype, 'alive').mockReturnValue(true)
+  const terminal = takingMessages()
   const attached = spyOn(Tmux.prototype, 'attached').mockReturnValue(false)
-  const option = spyOn(Tmux.prototype, 'option').mockReturnValue('')
-  const send = spyOn(Tmux.prototype, 'send').mockImplementation(() => {})
   const told: number[] = []
   try {
     // From a shell or the web UI, the project's older session, its latest, a worker, and nod (a
@@ -374,7 +397,8 @@ test("a question a person's nod tell goes on past goes to the project's session 
       expect(ledger.decision(d).answer).toBe('(it went on without an answer)')
     }
   } finally {
-    for (const spy of [alive, attached, option, send]) spy.mockRestore()
+    terminal.restore()
+    attached.mockRestore()
   }
   const [shell = 0, older = 0] = told
   expect(answeredNotices(ledger)).toEqual([shell, older])
@@ -407,9 +431,7 @@ test("a prompt's decision whose turn the person stopped with Escape closes as th
   }
   const stop = { type: 'text', text: '[Request interrupted by user for tool use]' }
   expect(hook(home, JSON.stringify(event('git push origin feat/x')))).toBe('')
-  const alive = spyOn(Tmux.prototype, 'alive').mockReturnValue(true)
-  const option = spyOn(Tmux.prototype, 'option').mockReturnValue('')
-  const send = spyOn(Tmux.prototype, 'send').mockImplementation(() => {})
+  const terminal = takingMessages()
   try {
     transcript(asking)
     await expect(tell(ledger, home, Tmux.of(home), id, 'push to the fork')).rejects.toThrow(
@@ -418,11 +440,9 @@ test("a prompt's decision whose turn the person stopped with Escape closes as th
     // Escape on the dialog ends the turn with no Stop (2.1.290).
     transcript(asking, { type: 'user', message: { role: 'user', content: [stop] } })
     await tell(ledger, home, Tmux.of(home), id, 'push to the fork')
-    expect(send.mock.calls.map(([, text]) => text)).toEqual(['push to the fork'])
+    expect(terminal.send.mock.calls.map(([, text]) => text)).toEqual(['push to the fork'])
   } finally {
-    alive.mockRestore()
-    option.mockRestore()
-    send.mockRestore()
+    terminal.restore()
   }
   expect(ledger.decisions(id).map((d) => [d.reason, d.answer])).toEqual([
     ['permission', '(the person stopped its turn)'],
@@ -447,10 +467,8 @@ test("a prompt's decision whose turn the person stopped with Escape closes as th
   const stop = { type: 'text', text: '[Request interrupted by user for tool use]' }
   expect(hook(home, JSON.stringify(event('git push origin feat/x')))).toBe('')
   // A person at the worker's terminal, which tmux stands in for.
-  const alive = spyOn(Tmux.prototype, 'alive').mockReturnValue(true)
+  const terminal = takingMessages()
   const attached = spyOn(Tmux.prototype, 'attached').mockReturnValue(true)
-  const option = spyOn(Tmux.prototype, 'option').mockReturnValue('')
-  const send = spyOn(Tmux.prototype, 'send').mockImplementation(() => {})
   try {
     // They answer the dialog no with Escape, which ends the turn with no Stop (2.1.290), and type
     // what to do instead: the prompt hook runs before Claude Code keeps it.
@@ -459,14 +477,12 @@ test("a prompt's decision whose turn the person stopped with Escape closes as th
     expect(ledger.get(id).status).toBe('running')
     transcript(said([stop]), said('push to the fork'))
     await tell(ledger, home, Tmux.of(home), id, 'and tag it')
-    expect(send.mock.calls.map(([, text]) => text)).toEqual(['and tag it'])
+    expect(terminal.send.mock.calls.map(([, text]) => text)).toEqual(['and tag it'])
     // The project's session hears they answered it, as it heard it open.
     expect(answeredNotices(ledger)).toEqual(ledger.decisions(id).map((d) => d.id))
   } finally {
-    alive.mockRestore()
+    terminal.restore()
     attached.mockRestore()
-    option.mockRestore()
-    send.mockRestore()
   }
   expect(ledger.decisions(id).map((d) => [d.reason, d.answer])).toEqual([
     ['permission', '(the person stopped its turn)'],
@@ -585,21 +601,20 @@ test("no to one of the prompts tools that ran at once queued closes the others' 
   expect(hook(home, JSON.stringify(event('git push origin feat/x')))).toBe('')
   expect(hook(home, JSON.stringify(event('git push origin --tags')))).toBe('')
   const [first] = ledger.decisions(id)
-  const alive = spyOn(Tmux.prototype, 'alive').mockReturnValue(true)
-  const option = spyOn(Tmux.prototype, 'option').mockReturnValue('')
+  // Claude Code shows the turn stopped once Escape is in.
+  const terminal = takingMessages('Interrupted')
   const attached = spyOn(Tmux.prototype, 'attached').mockReturnValue(false)
   const keys = spyOn(Tmux.prototype, 'keys').mockImplementation(() => {})
-  // Claude Code shows the turn stopped once Escape is in.
-  const screen = spyOn(Tmux.prototype, 'screen').mockReturnValue('Interrupted')
-  const send = spyOn(Tmux.prototype, 'send').mockImplementation(() => {})
   try {
     await answer(ledger, home, Tmux.of(home), first?.id ?? 0, 'no, not yet', 'human')
     expect(keys.mock.calls.map(([, key]) => key)).toEqual(['Escape'])
-    expect(send.mock.calls.map(([, text]) => text)).toEqual([
+    expect(terminal.send.mock.calls.map(([, text]) => text)).toEqual([
       'Human decision: permission denied. no, not yet',
     ])
   } finally {
-    for (const spy of [alive, option, attached, keys, screen, send]) spy.mockRestore()
+    terminal.restore()
+    attached.mockRestore()
+    keys.mockRestore()
   }
   expect(ledger.decisions(id).map((d) => [d.attemptId, d.answer])).toEqual([
     [attemptId, 'no, not yet'],

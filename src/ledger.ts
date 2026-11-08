@@ -34,6 +34,8 @@ export type DecisionReason =
   | 'check_failed'
   | 'permission'
   | 'trust'
+  // A message nod sent did not reach the worker (sending.ts).
+  | 'stuck'
   | 'rule'
   // The worker's Claude Code ended in the middle of a turn, or kept exiting as it started.
   | 'interrupted'
@@ -1638,8 +1640,13 @@ export class Ledger {
     const [first, ...rest] = ids
     if (first === undefined) return
     this.run(q.deleteFrom('messages').where('id', '=', first))
-    if (rest.length === 0) return
-    this.run(q.updateTable('messages').set({ attemptId }).where('id', 'in', rest))
+    this.moveMessages(rest, attemptId)
+  }
+
+  // Messages that wait for the end of turn `attemptId`, whose carryUnheard picks them up.
+  moveMessages(ids: number[], attemptId: number): void {
+    if (ids.length === 0) return
+    this.run(q.updateTable('messages').set({ attemptId }).where('id', 'in', ids))
   }
 
   // Records the check of a turn as failed with `output`, the mark of a check cut off, only while it

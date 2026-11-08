@@ -366,6 +366,17 @@ test('a live session shows Yes and No under its terminal for landing and rules o
   expect(document.querySelector('.composer-label')?.textContent).toContain('decision d34')
 })
 
+test('a live session whose message is stuck takes the answer under its terminal, in words: anything but yes goes to the worker', async () => {
+  open[24] = { id: 35, reason: 'stuck' }
+  answer = (id) => live(id as number)
+  await go('/tasks/24')
+  await reload()
+  expect(document.querySelector('.term')).not.toBeNull()
+  expect(document.querySelector('.composer-label')?.textContent).toContain('decision d35')
+  expect(field<HTMLTextAreaElement>('.composer textarea').placeholder).toBe('Your answer…')
+  open[24] = undefined
+})
+
 test("a worker's terminal looks as in a terminal app: its font, weights, cursor and dark theme to the box's edges, drawn with WebGL at Unicode 11 widths, its colours as the worker sets them", async () => {
   expect(TERMINAL).toMatchObject({
     fontSize: 14,

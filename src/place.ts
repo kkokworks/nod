@@ -39,6 +39,9 @@ export const STALLED_OPTION = 'nod_stalled'
 // The pid of the Claude Code keepWorker runs, so its Stop hook can tell whether it is still there to
 // hear what the hook answers.
 export const CLAUDE_OPTION = 'nod_claude'
+// The mark of the last message the prompt hook saw (promptMark in transcript.ts, onPrompt in
+// hooks.ts), for what sent it (listen in sending.ts).
+export const PROMPTED_OPTION = 'nod_prompted'
 
 // The one folder a worker's sandbox lets it make and reach Unix sockets in, so its tests can listen
 // on a socket, which the sandbox refuses anywhere else (EPERM, 2.1.310). tmux makes its socket here

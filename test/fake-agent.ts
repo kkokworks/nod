@@ -10,10 +10,12 @@
 // nod gives a worker a fixed environment, so the fake takes its switches from files in $NOD_HOME:
 // with `fake-untrusted`, a new session first shows the trust dialog, and with `fake-untrusted-again`
 // a resumed one does, as Claude Code asks about a repo once per account; with `fake-exit`, it exits
-// as it starts, as Claude Code does without a login; with `fake-slow-start`, it never gets past its
-// start, as Claude Code waiting on a first-run screen. Like Claude Code, it runs a SessionStart
-// hook only for a start its matcher names (startup, resume, compact), and a turn whose first line
-// starts with `compact` compacts the conversation first, as Claude Code does once it fills up.
+// as it starts, as Claude Code does without a login; while `fake-slow-start` is there, it gets no
+// further than its start, as Claude Code waiting on a first-run screen; with `fake-offer`, it shows
+// a dialog that takes the keys the next time it has nothing to do (offerDialog), once. Like Claude
+// Code, it runs a SessionStart hook only for a start its matcher names (startup, resume, compact),
+// and a turn whose first line starts with `compact` compacts the conversation first, as Claude Code
+// does once it fills up.
 // Every launch, with its account, the names in its environment and how early it compacts, every
 // turn, what a turn takes in while it runs, and what SessionStart hooks print is logged to
 // $NOD_HOME/agent.log.
@@ -23,6 +25,7 @@ import {
   mkdirSync,
   readFileSync,
   realpathSync,
+  rmSync,
   writeFileSync,
 } from 'node:fs'
 import { dirname, join } from 'node:path'
@@ -111,11 +114,15 @@ let wake: () => void = () => {}
 // While a turn is `deaf`, what is typed goes nowhere, as into a dialog that takes the keys.
 let deaf = false
 let lost = 0
+// A dialog on the screen, which takes every key. `refusing`: keys it still refuses.
+let dialog: { known: boolean; refusing: number } | null = null
 if (process.stdin.isTTY) process.stdin.setRawMode(true)
 process.stdin.on('data', (chunk: Buffer) => {
   // An arrow key arrives as an escape sequence; read it as one key, not Escape and text.
   for (const ch of chunk.toString().replaceAll(DOWN, '\0')) {
-    if (ch === '\0') {
+    if (dialog !== null) {
+      dialogKey(dialog, ch)
+    } else if (ch === '\0') {
       inputs.push(DOWN)
     } else if (ch === ENTER && deaf) {
       lost++
@@ -132,6 +139,44 @@ process.stdin.on('data', (chunk: Buffer) => {
   }
   wake()
 })
+
+// With `fake-offer`, between turns and with nothing queued, it shows a dialog: the one Claude Code
+// shows to offer compacting earlier (2.1.319, its words), or with `unknown` in the file one nod does
+// not know, as `fake-offer` says.
+function offerDialog(): void {
+  const file = join(home ?? '', 'fake-offer')
+  if (inputs.length > 0 || !existsSync(file)) return
+  const known = readFileSync(file, 'utf8') !== 'unknown'
+  rmSync(file)
+  dialog = { known, refusing: 0 }
+  const lines = known
+    ? [
+        ' We recommend compacting earlier',
+        '   Autocompact at ‹ 500k › tokens',
+        ' ❯ Keep 1M tokens',
+        ' ↑/↓ choose · ←/→ change size · enter confirm · esc not now',
+      ]
+    : [' A notice nod has not seen', ' ❯ Go on', ' enter to go on']
+  process.stdout.write(`\x1b[2J\x1b[H${lines.join('\r\n')}\r\n`)
+}
+
+// As Claude Code's dialog takes a key (2.1.319's binary): what is pasted into it goes nowhere, and it
+// refuses the two keys after that, here Enter and an Escape, a stray paste's guard. Past that Enter
+// or an arrow picks, which changes the person's settings in the one nod knows, and Escape picks
+// nothing. Nothing but a person's pick closes the one it does not know.
+function dialogKey(shown: { known: boolean; refusing: number }, key: string): void {
+  if (key !== ENTER && key !== ESCAPE && key !== '\0') {
+    shown.refusing = 2
+  } else if (shown.refusing > 0) {
+    shown.refusing--
+  } else if (key === ESCAPE && !shown.known) {
+    return
+  } else {
+    if (key !== ESCAPE && shown.known) log({ event: 'picked', sessionId, message: key })
+    dialog = null
+    process.stdout.write('\x1b[2J\x1b[H')
+  }
+}
 
 async function nextInput(): Promise<string> {
   while (true) {
@@ -357,13 +402,14 @@ if (existsSync(join(home, 'fake-exit'))) {
   console.log('Not logged in · Please run /login')
   process.exit(1)
 }
-if (existsSync(join(home, 'fake-slow-start'))) await new Promise(() => {})
+while (existsSync(join(home, 'fake-slow-start'))) await Bun.sleep(50)
 if (existsSync(join(home, resumed === null ? 'fake-untrusted' : 'fake-untrusted-again'))) {
   await trustDialog()
 }
 await sessionStart(resumed === null ? 'startup' : 'resume')
 if (prompt !== null) await turn(prompt, false)
 while (true) {
+  offerDialog()
   const input = await nextInput()
   queue('dequeue', input)
   await turn(input, false)

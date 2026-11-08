@@ -264,8 +264,9 @@ function TaskPage() {
 const YES_OR_NO = new Set(['permission', 'trust', 'rule', 'land'])
 // How long the buttons wait after the open decision changed under them.
 const CHANGED_MS = 1000
-// The decisions a live worker's terminal shows no dialog for: answered here even then.
-const NO_DIALOG = new Set(['land', 'rule'])
+// The decisions a live worker's terminal shows no dialog of nod's for: answered here even then. A
+// stuck message is what the person clears in the terminal, and then says so here.
+const NO_DIALOG = new Set(['land', 'rule', 'stuck'])
 // What No does where it does not end the task (answer): a permission is denied, and landing stops
 // while the work stands.
 const NO_SAYS: Record<string, string> = { permission: 'No', land: 'No — stop landing' }

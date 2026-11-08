@@ -3,6 +3,7 @@ import { dirname, join, resolve } from 'node:path'
 import { FINISHED, type Ledger, type Task } from './ledger'
 import { branchOf, sessionName, settling } from './place'
 import { message, spawn } from './proc'
+import { forgetStuck } from './sending'
 import type { Terminals } from './tmux'
 import { endTurnWithoutStop } from './turns'
 
@@ -163,6 +164,7 @@ export async function collect(
         skip('told to go on while gc ran')
         continue
       }
+      forgetStuck(home, task.id)
       const { workspace } = task
       await afterMark(async () => {
         await dropBranch(task)
