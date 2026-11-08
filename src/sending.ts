@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { z } from 'zod'
 import { announce, closeDecisions, decide, goesOn } from './decisions'
@@ -7,7 +7,7 @@ import { notifyError } from './notify'
 import { PROMPTED_OPTION, sessionName } from './place'
 import { message } from './proc'
 import { pasted, type Terminals } from './tmux'
-import { heardOf, promptMark, spoken, transcriptSince, transcriptSize } from './transcript'
+import { heardOf, holds, promptMark, transcriptSince, transcriptSize } from './transcript'
 import { oneLine } from './view'
 
 // Knowing that a message nod typed into a worker's terminal went in (docs/design.md, 「안내 창에
@@ -186,7 +186,7 @@ export async function watchStart(
     if (to.gone()) return
     if (holding()) deadline = Date.now() + SENDING.startMs
     if (Date.now() > deadline) {
-      await stuck(to, text)
+      await stuck(to, text, true)
       return
     }
     await Bun.sleep(SENDING.pollMs)
@@ -196,25 +196,37 @@ export async function watchStart(
 // How much a decision shows of what is on the screen and of the message.
 const SCREEN_LINES = 15
 const WORDS_SHOWN = 200
+const SCREEN_HEAD = '\nThe screen:\n'
 
-// The message a stuck decision waits to send and where the transcript stood before it, kept for its
-// answer: only the first words fit a decision's question, and the same words may have gone in before.
-// One file per decision, found by its question: two messages sent into one screen are two decisions.
-// ponytail: a decision that closes without an answer (its turn was cut off, its task dropped) leaves
-// its file until gc collects the task (forgetStuck); nod reads one only for an open decision.
+const lastLines = (terminals: Terminals, taskId: number): string => {
+  const name = sessionName(taskId)
+  return terminals.alive(name)
+    ? terminals.screen(name).trimEnd().split('\n').slice(-SCREEN_LINES).join('\n')
+    : ''
+}
+
+// The message a stuck decision holds and where the transcript stood before it: only its first words
+// fit the question, and the same words may have gone in before. `started`: Claude Code has it from
+// its arguments (watchStart). One file per decision, found by its question: two messages sent into
+// one screen are two decisions. A file left is a message nod still owes, whatever closed its
+// decision (a turn cut off, a message that went on past it): the next turn's end sends it (owed).
 const stuckPrefix = (taskId: number): string => `.stuck-${taskId}-`
 const stuckFile = (home: string, taskId: number, question: string): string =>
   join(home, 'work', `${stuckPrefix(taskId)}${Bun.hash(question).toString(36)}`)
-const StuckMessage = z.object({ text: z.string(), from: z.number() })
-const stuckMessage = (file: string): z.infer<typeof StuckMessage> | null =>
+const StuckMessage = z.object({ text: z.string(), from: z.number(), started: z.boolean() })
+export type Unsent = z.infer<typeof StuckMessage>
+const stuckMessage = (file: string): Unsent | null =>
   existsSync(file) ? StuckMessage.parse(JSON.parse(readFileSync(file, 'utf8'))) : null
+const stuckFiles = (home: string, taskId: number): string[] => {
+  const work = join(home, 'work')
+  if (!existsSync(work)) return []
+  return readdirSync(work)
+    .filter((file) => file.startsWith(stuckPrefix(taskId)))
+    .map((file) => join(work, file))
+}
 
 export function forgetStuck(home: string, taskId: number): void {
-  const work = join(home, 'work')
-  if (!existsSync(work)) return
-  for (const file of readdirSync(work)) {
-    if (file.startsWith(stuckPrefix(taskId))) rmSync(join(work, file), { force: true })
-  }
+  for (const file of stuckFiles(home, taskId)) rmSync(file, { force: true })
 }
 
 // What a command that sent a message says instead of "sent" while one has stayed out, so whoever ran
@@ -228,48 +240,76 @@ export function heldUp(ledger: Ledger, taskId: number): string | null {
 
 // Raises what kept `text` out. The person looks at the terminal, and their answer sends it again if
 // it did not go in (unsent, answer in worker.ts). Until then deliver refuses messages, whose Enter
-// would go to the same screen.
-async function stuck(to: Worker, text: string): Promise<void> {
-  const { ledger, home, terminals, taskId, attemptId, sessionId } = to
-  const name = sessionName(taskId)
-  const from = transcriptSize(ledger, home, taskId, sessionId)
-  const screen = terminals.alive(name)
-    ? terminals.screen(name).trimEnd().split('\n').slice(-SCREEN_LINES).join('\n')
-    : ''
-  const question = `A message nod sent did not reach the worker: something on its screen is in the way. Look with nod attach n${taskId} and clear it, and do not pick anything in a dialog you do not know, as that may change the person's Claude Code settings. Then answer yes, and nod sends the message again if it has not gone in; anything else goes to the worker as well.\nThe message: ${oneLine(text, WORDS_SHOWN)}\nThe screen:\n${screen}`
+// would go to the same screen. `from`: where the transcript stood before it, for one raised again.
+async function stuck(
+  to: Worker,
+  text: string,
+  started = false,
+  from = transcriptSize(to.ledger, to.home, to.taskId, to.sessionId),
+): Promise<void> {
+  const { ledger, home, terminals, taskId, attemptId } = to
+  const then = started
+    ? '. Claude Code has this message from its start and takes it once it can, so nod types nothing, and asks again if it has not gone in'
+    : ', and nod sends the message again if it has not gone in. Into a screen that has not changed nod types nothing, and asks again; you may type the message there yourself'
+  const question = `A message nod sent did not reach the worker: something on its screen is in the way. Look with nod attach n${taskId} and clear it, and do not pick anything in a dialog you do not know, as that may change the person's Claude Code settings. Then answer yes${then}. Anything else you answer goes to the worker as well.\nThe message: ${oneLine(text, WORDS_SHOWN)}${SCREEN_HEAD}${lastLines(terminals, taskId)}`
   await decide(ledger, home, taskId, attemptId, 'stuck', question, () => {
     const file = stuckFile(home, taskId, question)
-    writeFileSync(file, JSON.stringify({ text, from }), { mode: 0o600 })
+    writeFileSync(file, JSON.stringify({ text, from, started }), { mode: 0o600 })
   })
 }
 
-// The message the stuck decision waited on, if it has still not gone in. Reads and forgets the file:
-// of two answers one gets here (the decision closes first), and a message goes once.
-// ponytail: an answer the moment the person cleared the screen of a Claude Code that had the message
-// waiting may find it not yet written down, and send it twice; a person is rarely that quick.
-export function unsent(ledger: Ledger, home: string, decision: Decision): string | null {
-  const file = stuckFile(home, decision.taskId, decision.question)
-  const held = stuckMessage(file)
-  if (held === null) return null
-  rmSync(file)
-  // Only what the transcript got since the decision: the same words may have gone in before.
-  const { sessionId } = ledger.attempt(decision.attemptId)
-  const lines = transcriptSince(ledger, home, decision.taskId, sessionId, held.from)
-  return heardOf(lines, held.text) === 'lost' ? held.text : null
+// Sends the message of a stuck decision a person answered, unless that can do harm; then raises it
+// anew, and returns false as sendWatched does. Not into the screen the decision showed, which nobody
+// cleared and where Enter may pick in a dialog, and not one Claude Code has from its arguments, which
+// it takes by itself: pasted too, it would run twice.
+// ponytail: a screen with a clock in it reads as changed, and a person who typed nothing has to type
+// the message into a screen that did not change.
+export async function sendUnsent(to: Worker, decision: Decision, held: Unsent): Promise<boolean> {
+  const screen = `${SCREEN_HEAD}${lastLines(to.terminals, to.taskId)}`
+  if (!held.started && !decision.question.endsWith(screen)) return sendWatched(to, held.text)
+  await stuck(to, held.text, held.started, held.from)
+  return false
 }
 
-// What the open stuck decisions of a turn that ended waited on, which closing them leaves to the
-// caller to send.
-export function unsentOfTurn(
+// The message in `file` if it has still not gone in. Reads and forgets the file: of two answers one
+// gets here (the decision closes first), and a message goes once.
+// ponytail: an answer the moment the person cleared the screen of a Claude Code that had the message
+// waiting may find it not yet written down, and send it twice; a person is rarely that quick.
+function take(
   ledger: Ledger,
   home: string,
   taskId: number,
-  attemptId: number,
-): string[] {
-  return ledger
+  sessionId: string,
+  file: string,
+): Unsent | null {
+  const held = stuckMessage(file)
+  if (held === null) return null
+  rmSync(file, { force: true })
+  // Only what the transcript got since the decision: the same words may have gone in before.
+  const lines = transcriptSince(ledger, home, taskId, sessionId, held.from)
+  return heardOf(lines, held.text) === 'lost' ? held : null
+}
+
+// The message the stuck decision waited on, if it has still not gone in.
+export function unsent(ledger: Ledger, home: string, decision: Decision): Unsent | null {
+  const { sessionId } = ledger.attempt(decision.attemptId)
+  const file = stuckFile(home, decision.taskId, decision.question)
+  return take(ledger, home, decision.taskId, sessionId, file)
+}
+
+// What nod still owes the worker as turn `attemptId` ends, oldest first, which is the caller's to
+// send: the messages of that turn's stuck decisions, and of those closed before anyone answered. Not
+// of one open on another turn, which its answer sends.
+export function owed(ledger: Ledger, home: string, taskId: number, attemptId: number): string[] {
+  const { sessionId } = ledger.attempt(attemptId)
+  const waiting = ledger
     .decisions(taskId)
-    .filter((d) => d.answer === null && d.reason === 'stuck' && d.attemptId === attemptId)
-    .map((d) => unsent(ledger, home, d))
+    .filter((d) => d.answer === null && d.reason === 'stuck' && d.attemptId !== attemptId)
+    .map((d) => stuckFile(home, taskId, d.question))
+  return stuckFiles(home, taskId)
+    .filter((file) => !waiting.includes(file))
+    .toSorted((a, b) => statSync(a).mtimeMs - statSync(b).mtimeMs)
+    .map((file) => take(ledger, home, taskId, sessionId, file)?.text ?? null)
     .filter((text) => text !== null)
 }
 
@@ -285,7 +325,7 @@ export async function wentIn(
     if (d.answer !== null || d.reason !== 'stuck') return false
     const file = stuckFile(home, taskId, d.question)
     const held = stuckMessage(file)
-    if (held === null || !spoken(prompt).includes(spoken(held.text))) return false
+    if (held === null || !holds(prompt, held.text)) return false
     rmSync(file)
     return true
   })

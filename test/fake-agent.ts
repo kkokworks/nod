@@ -10,12 +10,12 @@
 // nod gives a worker a fixed environment, so the fake takes its switches from files in $NOD_HOME:
 // with `fake-untrusted`, a new session first shows the trust dialog, and with `fake-untrusted-again`
 // a resumed one does, as Claude Code asks about a repo once per account; with `fake-exit`, it exits
-// as it starts, as Claude Code does without a login; with `fake-slow-start`, it never gets past its
-// start, as Claude Code waiting on a first-run screen; with `fake-offer`, it shows a dialog that
-// takes the keys the next time it has nothing to do (offerDialog), once. Like Claude Code, it runs a
-// SessionStart hook only for a start its matcher names (startup, resume, compact), and a turn whose
-// first line starts with `compact` compacts the conversation first, as Claude Code does once it
-// fills up.
+// as it starts, as Claude Code does without a login; while `fake-slow-start` is there, it gets no
+// further than its start, as Claude Code waiting on a first-run screen; with `fake-offer`, it shows
+// a dialog that takes the keys the next time it has nothing to do (offerDialog), once. Like Claude
+// Code, it runs a SessionStart hook only for a start its matcher names (startup, resume, compact),
+// and a turn whose first line starts with `compact` compacts the conversation first, as Claude Code
+// does once it fills up.
 // Every launch, with its account, the names in its environment and how early it compacts, every
 // turn, what a turn takes in while it runs, and what SessionStart hooks print is logged to
 // $NOD_HOME/agent.log.
@@ -402,7 +402,7 @@ if (existsSync(join(home, 'fake-exit'))) {
   console.log('Not logged in · Please run /login')
   process.exit(1)
 }
-if (existsSync(join(home, 'fake-slow-start'))) await new Promise(() => {})
+while (existsSync(join(home, 'fake-slow-start'))) await Bun.sleep(50)
 if (existsSync(join(home, resumed === null ? 'fake-untrusted' : 'fake-untrusted-again'))) {
   await trustDialog()
 }

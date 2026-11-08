@@ -5532,13 +5532,226 @@ test('messages left after one stays out of the turn a message opened in the hook
     last_assistant_message: 'NOD: done | did it',
     stop_hook_active: false,
   }
-  await settle(ledger, home, terminals, ledger.get(id), turn.id, event)
+  const { watched, sent } = typedInto()
+  await settle(ledger, home, watched, ledger.get(id), turn.id, event)
   const next = ledger.openAttempt(id)
   expect(next?.prompt).toBe('opening')
+  // Those words stayed out again, so nothing more goes to that screen.
+  expect(sent).toEqual(['opening'])
   const [one, two] = ledger.messages(id).filter((m) => m.text === 'one' || m.text === 'two')
-  expect(one?.attemptId).toBe(turn.id)
+  expect(one?.attemptId).toBe(next?.id)
   expect(two?.attemptId).toBe(next?.id)
 })
+
+// The person clears the fake's dialog in the terminal: the stray paste's guard, then their pick.
+async function clearScreen(id: number): Promise<void> {
+  terminals.keys(sessionName(id), 'Enter', 'Enter')
+  await until(() => !terminals.screen(sessionName(id)).includes(UNKNOWN_DIALOG))
+}
+
+test('a compaction offer that comes back after the message went again is a decision, with no third paste', async () => {
+  SENDING.waitMs = 200
+  const id = await offered('', COMPACT_OFFER)
+  const offer = terminals.screen(sessionName(id))
+  // It shows after each paste until an Escape closes it. Past a third paste it stops, so a test that
+  // fails ends.
+  let back = false
+  const { watched, sent, keys } = typedInto(
+    (screen, nth) => (nth > 0 && back ? offer : screen),
+    () => {
+      back = false
+    },
+    async () => {
+      back = sent.length < 3
+    },
+  )
+  // The first look finds it closed.
+  const first: Terminals = Object.assign(Object.create(watched), {
+    screen: (name: string) => (sent.length === 0 ? '' : watched.screen(name)),
+  })
+  await tell(ledger, home, first, id, 'use tabs')
+  expect(sent).toEqual(['use tabs', 'use tabs'])
+  expect(keys).toEqual(['Escape'])
+  expect(entries('picked')).toEqual([])
+  expect(ledger.decisions(id).map((d) => d.reason)).toEqual(['stuck'])
+})
+
+test('yes with the screen as the decision showed it types nothing into it and asks again, and it goes once it is cleared', async () => {
+  SENDING.waitMs = 200
+  const id = await offered('unknown', UNKNOWN_DIALOG)
+  const { watched, sent, keys } = typedInto()
+  await tell(ledger, home, watched, id, 'use tabs')
+  const [first] = ledger.decisions(id)
+  if (first === undefined) throw new Error('no decision')
+  sent.length = 0
+  await answer(ledger, home, watched, first.id, 'yes', 'human')
+  expect(sent).toEqual([])
+  expect(keys).toEqual([])
+  const again = ledger.decisions(id)[1]
+  if (again === undefined) throw new Error('not asked again')
+  expect(again.reason).toBe('stuck')
+  expect(again.answer).toBeNull()
+  expect(again.question).toContain('The message: use tabs')
+  expect(heldUp(ledger, id)).toContain(`d${again.id}`)
+  await clearScreen(id)
+  SENDING.waitMs = USUAL_SENDING.waitMs
+  await answer(ledger, home, watched, again.id, 'yes', 'human')
+  await until(() => entries('turn')[1])
+  await reaches(id, 'succeeded')
+  await settled(id)
+  expect(sent).toEqual(['use tabs'])
+  expect(entries('turn').map((t) => t.message)).toEqual(['first', 'use tabs'])
+})
+
+test('what a person says beyond yes stays with the turn when the message stays out again', async () => {
+  SENDING.waitMs = 200
+  const id = await offered('unknown', UNKNOWN_DIALOG)
+  await tell(ledger, home, terminals, id, 'use tabs')
+  const [first] = ledger.decisions(id)
+  if (first === undefined) throw new Error('no decision')
+  await answer(ledger, home, terminals, first.id, 'and spaces after', 'human')
+  const again = ledger.decisions(id)[1]
+  if (again === undefined) throw new Error('not asked again')
+  await clearScreen(id)
+  SENDING.waitMs = USUAL_SENDING.waitMs
+  await answer(ledger, home, terminals, again.id, 'yes', 'human')
+  await until(() => entries('turn').length === 3)
+  await reaches(id, 'succeeded')
+  await settled(id)
+  expect(entries('turn').map((t) => t.message)).toEqual([
+    'first',
+    'use tabs',
+    'Human decision: and spaces after',
+  ])
+})
+
+test('yes to a message Claude Code is starting with types nothing, and it runs once', async () => {
+  SENDING.startMs = 100
+  writeFileSync(join(home, 'fake-slow-start'), '')
+  const id = await add('the brief, once')
+  const turn = ledger.openAttempt(id)
+  if (turn === null) throw new Error('no turn')
+  const to: Worker = {
+    ledger,
+    home,
+    terminals,
+    taskId: id,
+    attemptId: turn.id,
+    sessionId: turn.sessionId,
+    gone: () => false,
+  }
+  await watchStart(to, turn.prompt, listenFor(to, turn.prompt), () => false)
+  const [decision] = ledger.decisions(id)
+  if (decision === undefined) throw new Error('no decision')
+  const { watched, sent } = typedInto()
+  await answer(ledger, home, watched, decision.id, 'yes', 'human')
+  expect(sent).toEqual([])
+  expect(ledger.decisions(id).map((d) => d.answer)).toEqual(['yes', null])
+  expect(ledger.decisions(id)[1]?.question).toContain('from its start')
+  rmSync(join(home, 'fake-slow-start'))
+  await reaches(id, 'succeeded')
+  await settled(id)
+  expect(entries('turn').map((t) => t.message)).toEqual(['the brief, once'])
+  expect(ledger.decisions(id).every((d) => d.answer !== null)).toBe(true)
+})
+
+test('what a person types with the words of a stuck message in it is not that message, which still goes', async () => {
+  SENDING.waitMs = 200
+  const id = await offered('unknown', UNKNOWN_DIALOG)
+  await tell(ledger, home, terminals, id, 'use tabs')
+  await clearScreen(id)
+  const typed = 'do not use tabs here, whatever you hear'
+  terminals.send(sessionName(id), typed)
+  await until(() => entries('turn')[2])
+  await reaches(id, 'succeeded')
+  await settled(id)
+  expect(entries('turn').map((t) => t.message)).toEqual(['first', typed, 'use tabs'])
+  expect(ledger.decisions(id).map((d) => d.answer)).toEqual(['(its turn ended)'])
+})
+
+test('heardOf and the prompt hook take a message in whole lines, not as words of a sentence', () => {
+  const said = (content: string) => JSON.stringify({ type: 'user', message: { content } })
+  expect(heardOf([said('do not use tabs here')], 'use tabs')).toBe('lost')
+  expect(heardOf([said('<pasted_content id="1">use tabs</pasted_content>')], 'use tabs')).toBe(
+    'heard',
+  )
+  expect(heardOf([said('<pasted_content id="1">\nuse tabs\n</pasted_content>')], 'use tabs')).toBe(
+    'heard',
+  )
+  expect(heardOf([said('write it\n\nuse tabs\n\ngo on')], 'use tabs')).toBe('heard')
+  expect(heardOf([said('  use tabs  ')], 'use tabs')).toBe('heard')
+  expect(heardOf([said('use tabs\nand spaces')], 'use tabs\nand spaces')).toBe('heard')
+})
+
+test('words a stuck message leaves as two go on as one message, neither lost', async () => {
+  SENDING.waitMs = 200
+  const id = await offered('unknown', UNKNOWN_DIALOG)
+  await tell(ledger, home, terminals, id, 'opening')
+  const turn = ledger.openAttempt(id)
+  if (turn === null) throw new Error('no turn')
+  // A message no ledger row keeps, as one left for a new start or sent again.
+  const to: Worker = {
+    ledger,
+    home,
+    terminals,
+    taskId: id,
+    attemptId: turn.id,
+    sessionId: turn.sessionId,
+    gone: () => false,
+  }
+  expect(await sendWatched(to, 'late words')).toBe(false)
+  const event = {
+    session_id: turn.sessionId,
+    last_assistant_message: 'NOD: done | did it',
+    stop_hook_active: false,
+  }
+  await settle(ledger, home, terminals, ledger.get(id), turn.id, event)
+  expect(ledger.openAttempt(id)?.prompt).toBe('opening\n\nlate words')
+  const open = ledger.decisions(id).filter((d) => d.answer === null)
+  expect(open.map((d) => d.reason)).toEqual(['stuck'])
+  // What stayed out is in the file its answer reads.
+  const [file] = readdirSync(join(home, 'work')).filter((f) => f.startsWith(`.stuck-${id}-`))
+  const held = JSON.parse(readFileSync(join(home, 'work', file ?? ''), 'utf8'))
+  expect(held.text).toBe('opening\n\nlate words')
+})
+
+test('a stuck message that opened a turn its Claude Code ended in still goes, whole, once', async () => {
+  SENDING.waitMs = 200
+  const id = await offered('unknown', UNKNOWN_DIALOG)
+  const long = `${'x'.repeat(300)} the end of it`
+  await tell(ledger, home, terminals, id, long)
+  endClaude(id)
+  const cut = await until(
+    () => ledger.decisions(id).find((d) => d.reason === 'interrupted' && d.answer === null),
+    20_000,
+  )
+  expect(cut.question).toContain('A message that had not gone in')
+  SENDING.waitMs = USUAL_SENDING.waitMs
+  await answer(ledger, home, terminals, cut.id, 'carry on', 'human')
+  await until(() => entries('turn').some((t) => t.message === long), 20_000)
+  await reaches(id, 'succeeded')
+  await settled(id)
+  expect(entries('turn').filter((t) => t.message === long)).toHaveLength(1)
+}, 60_000)
+
+test('a stuck message told into a turn its Claude Code ended in still goes, once', async () => {
+  SENDING.waitMs = 200
+  const id = await add('deaf: write it')
+  await until(() => entries('turn')[0])
+  await tell(ledger, home, terminals, id, 'use tabs')
+  expect(status(id)).toBe('needs_decision')
+  endClaude(id)
+  const cut = await until(
+    () => ledger.decisions(id).find((d) => d.reason === 'interrupted' && d.answer === null),
+    20_000,
+  )
+  SENDING.waitMs = USUAL_SENDING.waitMs
+  await answer(ledger, home, terminals, cut.id, 'carry on', 'human')
+  await until(() => entries('turn').some((t) => t.message === 'use tabs'), 20_000)
+  await reaches(id, 'succeeded')
+  await settled(id)
+  expect(entries('turn').filter((t) => t.message === 'use tabs')).toHaveLength(1)
+}, 60_000)
 
 test('a stuck message the prompt hook sees go in closes its decision, and another message does not', async () => {
   SENDING.waitMs = 200

@@ -155,8 +155,8 @@ type Fate = 'heard' | 'queued' | 'lost'
 // (deliver) is in the first message of that start, a `user` entry, with no queue. The last entry
 // with the words decides, so words sent again count from their last. 'lost': no entry, so Claude
 // Code never had it.
-// ponytail: reads the whole transcript, parsing only the lines with the words; words inside other
-// words count as those, and words Claude Code changed otherwise (spoken) read as lost and go twice.
+// ponytail: reads the whole transcript, parsing only the lines with the words; words Claude Code
+// changed otherwise (spoken) read as lost and go twice.
 export function heardOf(lines: string[], text: string): Fate {
   const sent = spoken(text)
   // Claude Code takes no blank message.
@@ -179,7 +179,7 @@ export function heardOf(lines: string[], text: string): Fate {
             ? [attachment.prompt]
             : []
     const held = said.filter((s) => typeof s === 'string')
-    if (!held.some((s) => s.replaceAll('\t', TAB_AS_PASTED).includes(sent))) continue
+    if (!held.some((s) => holds(s, text))) continue
     fate = type === 'queue-operation' && operation === 'enqueue' ? 'queued' : 'heard'
   }
   return fate
@@ -194,6 +194,12 @@ const TAB_AS_PASTED = '    '
 
 // The words of a message as they show once Claude Code has it.
 export const spoken = (text: string): string => pasted(text).trim().replaceAll('\t', TAB_AS_PASTED)
+
+// Whether what Claude Code has of a message, `said`, is the message `text`: its words in whole lines,
+// as a paste comes wrapped and a start's arguments hold it among others. The same words inside a
+// longer sentence are another message, which a person may type with `text` still to go.
+export const holds = (said: string, text: string): boolean =>
+  `\n${spoken(said.replace(PASTE_WRAP, '\n'))}\n`.includes(`\n${spoken(text)}\n`)
 
 // A short mark of a message, the same for what nod pastes and what the prompt hook gets of it.
 export const promptMark = (prompt: string): string =>
