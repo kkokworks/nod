@@ -125,3 +125,77 @@ it('a pull request title on the first line stays the title, whatever headings it
   }
   expect(prText('\n**NOD: done | nothing**')).toBeNull()
 })
+
+it('a pull request loses only the lines nod reads: its code and its plain nod: lines stay', () => {
+  const code = [
+    '```sh',
+    'nod: no session hears of the decisions and ends of n1, in no project',
+    'NOD: done | an example',
+    '**NOD: question | an example**',
+    'NOD: in {"title": "an example"}',
+    'nod: in not even JSON',
+    'NOD: tell n5 an example',
+    '```',
+  ].join('\n')
+  const body = [
+    '## What changed',
+    code,
+    code.replaceAll('```sh', '~~~').replaceAll('```', '~~~'),
+    `\`\`\`\`md\n${code}\n\`\`\`\``,
+    'nod: no session hears of these any more',
+    '`nod: could not run it`',
+    '**nod:** a word on the tool',
+    'NOD: done, with no bar',
+    'NOD: nothing nod reads',
+  ].join('\n')
+  expect(prText(`# Fix it\n\n${body}\nNOD: done | wrote it`)).toEqual({ title: 'Fix it', body })
+  // A plain first line is still a title, as a line nod reads is not.
+  expect(prText('nod: count from one\nBody\nNOD: done | ok')).toEqual({
+    title: 'nod: count from one',
+    body: 'Body',
+  })
+  const reportLines = [
+    'NOD: done | ok',
+    'nod: done | ok',
+    'NoD: Question | ok',
+    'NOD: failed |',
+    '**NOD: failed | ok**',
+    '**NOD:** done | ok',
+    '**NOD: Done** | `ok`',
+    '`NOD: done | ok`',
+    '  NOD: done | ok',
+    'NOD: in {"title": "x"}',
+    'nod: in {"title": "x"}',
+    '`NOD: in {"title": "x"}`',
+    '**NOD:** in {"title": "x"}',
+    'NOD: tell n5 hi',
+    'nod: tell n5 hi',
+    'NOD: tell #5 hi',
+    '`NOD:` tell n5 hi',
+    '**NOD: tell n5 hi**',
+    '```NOD: tell n5 hi```',
+  ]
+  for (const line of reportLines) {
+    expect(prText(`# Fix it\nBody\n${line}\nMore`)).toEqual({ title: 'Fix it', body: 'Body\nMore' })
+    expect(prText(`# Fix it\n${code}\n${line}\n${code}\nNOD: done | ok`)).toEqual({
+      title: 'Fix it',
+      body: `${code}\n${code}`,
+    })
+  }
+  // Markdown runs a fence never closed to the end, over the report: it keeps nothing back.
+  const reals = 'NOD: in {"title": "real"}\nNOD: tell n6 real\nNOD: done | real'
+  const closedThenOpen = '```\nNOD: tell n5 example\n```\nwords\n~~~\n'
+  for (const open of ['```sh\nbun test\n', '```\ncode\n```\nwords\n~~~\n', closedThenOpen]) {
+    expect(prText(`Fix it\n${open}${reals}`)?.body).toBe(open.trim())
+  }
+  // With the last status in code, the report is wrapped, and its lines do not go out, even under an
+  // older status out of code.
+  for (const status of ['done', 'question', 'failed']) {
+    const wrapped = `Words\n\`\`\`\nNOD: in {"title": "real"}\nNOD: ${status} | wrapped\n\`\`\``
+    expect(prText(`# Fix it\n${wrapped}`)?.body).toBe('Words\n```\n```')
+    expect(prText(`# Fix it\nNOD: question | older\n${wrapped}`)?.body).toBe('Words\n```\n```')
+  }
+  // A long line reads at once: parseReport's pattern takes seconds over these spaces.
+  const spaced = `NOD: done |${' '.repeat(100_000)}a\rb`
+  expect(prText(`# Fix it\nBody\n${spaced}`)).toEqual({ title: 'Fix it', body: 'Body' })
+})
