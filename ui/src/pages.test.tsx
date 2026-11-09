@@ -290,7 +290,6 @@ const detail = (id: number) => ({
   decisions: [open[id]]
     .filter((d) => d !== undefined)
     .map((d) => ({ ...d, taskId: id, attemptId: 1, question: 'ok?', answer: null, createdAt: AT })),
-  report: null,
   place: { todo: null, project: null },
   retro: null,
   screen: null as string | null,
@@ -716,6 +715,44 @@ test('a task that failed before it started has no box to message it, having no c
   await go('/tasks/11')
   expect(document.querySelector('textarea')).toBeNull()
   expect(document.querySelector('.idle-note')).toBeNull()
+})
+
+test('the last report is the result at the end of the page, and those before it fold under their turns', async () => {
+  const turn = (id: number, kind: string, report: string | null) => ({
+    id,
+    kind,
+    report,
+    outcome: 'succeeded',
+    summary: `${kind} summary`,
+    startedAt: AT,
+    finishedAt: AT,
+  })
+  const folds = () => [...document.querySelectorAll('.timeline details')].map((d) => d.textContent)
+  const result = () => document.querySelector('.card')?.textContent
+  const turns = {
+    // A turn in between reported nothing, and so did the one after the last report.
+    12: [
+      turn(1, 'start', 'the work report'),
+      turn(2, 'answer', null),
+      turn(3, 'retry', 'the retry report'),
+      turn(4, 'land', 'the pull request'),
+      turn(5, 'followup', null),
+    ],
+    // Two the same stay apart: the earlier still folds under its turn.
+    13: [turn(1, 'start', 'the same report'), turn(2, 'land', 'the same report')],
+    14: [turn(1, 'start', 'the only report')],
+  } as Record<number, unknown[]>
+  answer = (id) => ({ ...detail(id as number), attempts: turns[id as number] })
+  await go('/tasks/12')
+  expect(folds()).toEqual(['reportthe work report', 'reportthe retry report'])
+  // Named by its turn, as `nod show` names it: a later turn may have reported nothing.
+  expect(result()).toBe('attempt 4 · landthe pull request')
+  await go('/tasks/13')
+  expect(folds()).toEqual(['reportthe same report'])
+  expect(result()).toBe('attempt 2 · landthe same report')
+  await go('/tasks/14')
+  expect(folds()).toEqual([])
+  expect(result()).toBe('attempt 1 · startthe only report')
 })
 
 test('a change to the todo keeps what is being typed in the form and says so', async () => {

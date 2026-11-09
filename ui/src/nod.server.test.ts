@@ -34,6 +34,35 @@ test('a number no task or todo has gets no page, which the page shows as not fou
   expect(detail(Math.max(todo, task) + 1)).toBeNull()
 })
 
+test('the task page gets the report of its work turn and of its landing turn, each with its turn', () => {
+  const task = ledger.add({
+    brief: 'x',
+    repo: null,
+    branch: null,
+    checkCmd: null,
+    model: null,
+    after: [],
+    issue: null,
+  })
+  for (const [kind, report] of [
+    ['start', 'the work report'],
+    ['land', 'the pull request'],
+  ] as const) {
+    const id = ledger.startAttempt({
+      taskId: task,
+      kind,
+      decisionId: null,
+      sessionId: 'session',
+      prompt: 'x',
+    })
+    ledger.endAttempt(id, { outcome: 'succeeded', summary: 'done', report })
+  }
+  expect(detail(task)?.attempts.map((a) => [a.kind, a.report])).toEqual([
+    ['start', 'the work report'],
+    ['land', 'the pull request'],
+  ])
+})
+
 test('a status sent from the web goes in only from the status the page showed', () => {
   const todos = new Todos(ledger)
   const { id } = todos.capture(

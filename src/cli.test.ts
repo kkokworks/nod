@@ -1396,6 +1396,63 @@ test('attach and peek of a finished task whose terminal is closed say a message 
   }
 })
 
+test("nod show ends with every turn's report under its turn, the last at the very end, and one report alone as it always was", () => {
+  const home = tmp.make('nod-show-reports-')
+  const ledger = new Ledger(home)
+  const withTurns = (...turns: ['start' | 'answer' | 'land', string | null][]): string => {
+    const task = ledger.add({
+      brief: 'some task',
+      repo: null,
+      branch: null,
+      checkCmd: null,
+      model: null,
+      after: [],
+      issue: null,
+    })
+    for (const [kind, report] of turns) {
+      const id = ledger.startAttempt({
+        taskId: task,
+        kind,
+        decisionId: null,
+        sessionId: 'session',
+        prompt: 'some task',
+      })
+      ledger.endAttempt(id, { outcome: 'succeeded', summary: `${kind} summary`, report })
+    }
+    const shown = Bun.spawnSync(['bun', cli, 'show', String(task)], {
+      env: { ...process.env, NOD_HOME: home },
+    })
+    expect(shown.exitCode).toBe(0)
+    return shown.stdout.toString()
+  }
+
+  // The number is the turn's, as a notice gives it, so a turn with no report still counts.
+  expect(
+    withTurns(['start', 'the work\nreport'], ['answer', null], ['land', 'the pull request']),
+  ).toEndWith(
+    [
+      '    land summary',
+      '',
+      '--- attempt 1 (start) ---',
+      'the work',
+      'report',
+      '',
+      '--- attempt 3 (land) ---',
+      'the pull request',
+      '',
+    ].join('\n'),
+  )
+  // One report has no heading, whichever turn gave it and whatever followed.
+  expect(withTurns(['start', 'the only report'])).toEndWith(
+    '    start summary\n\nthe only report\n',
+  )
+  expect(withTurns(['start', 'the only report'], ['answer', null])).toEndWith(
+    '    answer summary\n\nthe only report\n',
+  )
+  // None, and nothing follows the history. An empty one is none, as ever.
+  expect(withTurns(['start', ''])).toEndWith('    start summary\n')
+})
+
 test("the prompt hook opens the turn typed into a worker's terminal, printing nothing and never failing, and keeps no words while no one is attached", () => {
   const home = tmp.make('nod-prompt-')
   const ledger = new Ledger(home)

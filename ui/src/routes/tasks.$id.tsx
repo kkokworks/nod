@@ -58,8 +58,10 @@ const KIND_ICON = {
 } as const
 
 function TaskPage() {
-  const { task, status, links, after, attempts, decisions, report, place, retro, screen, root } =
+  const { task, status, links, after, attempts, decisions, place, retro, screen, root } =
     Route.useLoaderData()
+  // The last report is the result, at the end of the page; those before it fold under their turns.
+  const last = attempts.findLast((a) => a.report)
   // The brief's first line is the title; the whole brief folds away, as it can run to pages.
   const nl = task.brief.indexOf('\n')
   const title = nl === -1 ? task.brief : task.brief.slice(0, nl)
@@ -190,6 +192,12 @@ function TaskPage() {
                       <pre>{a.checkOutput}</pre>
                     </details>
                   )}
+                  {a.report && a.id !== last?.id && (
+                    <details>
+                      <summary className="muted">report</summary>
+                      <Markdown text={a.report} />
+                    </details>
+                  )}
                 </div>
               </div>
               {decisions
@@ -201,7 +209,7 @@ function TaskPage() {
           ))}
         </ol>
 
-        {(report !== null || links.length > 0) && (
+        {(last !== undefined || links.length > 0) && (
           <>
             <h2 className="section">Result</h2>
             <div className="card">
@@ -210,7 +218,14 @@ function TaskPage() {
                   <Url url={url} />
                 </div>
               ))}
-              {report !== null && <Markdown text={report} />}
+              {last?.report && (
+                <>
+                  <div className="muted small">
+                    attempt {attempts.indexOf(last) + 1} · {last.kind}
+                  </div>
+                  <Markdown text={last.report} />
+                </>
+              )}
             </div>
           </>
         )}
