@@ -12,6 +12,6 @@ description: 받은 일함의 항목마다 다음 행동·대기·버림 등을 
 3. 표로 보여 줍니다: 번호(`t<번호>`), 원래 제목, 제안, 고친 제목, 날짜·프로젝트.
 4. 사용자의 확인을 받습니다. "다 좋아", "t3 은 버려", "t5 는 다음 주부터" 같은 답을 그대로 반영합니다. 확인 전에는 아무것도 바꾸지 않습니다.
 5. 확인받은 대로 `nod todo set t<번호> --from inbox --status … --title … --project … --due … --start …` 로 반영합니다. 1단계에서 받은 일함으로 읽었으니 `--from inbox` 입니다(ledger.md 의 "읽은 상태로 바꾸기"). 한 항목의 칸은 한 명령에 모아 바꿉니다. 버림은 `nod todo drop t<번호> --from inbox`, 지금 하기로 한 2분짜리는 끝난 뒤 `nod todo done t<번호> --from inbox` 입니다. 거절된 항목은 다시 읽어 바뀐 것을 보여 주고 다시 확인받습니다.
-6. nod 작업에 맡기기로 확인한 항목은 nod 스킬대로 `nod add --todo t<번호>` 합니다. 프로젝트도 역할도 없는 세션의 프로젝트 없는 할 일처럼 거절되면 ledger.md 의 "맡기기가 거절될 때"대로 합니다.
+6. nod 작업에 맡기기로 확인한 항목은 nod 스킬대로 `nod add --todo t<번호>` 합니다. 프로젝트도 역할도 없는 세션의 프로젝트 없는 할 일처럼 거절되면 [delegate-rejected.md](../../delegate-rejected.md) 대로 합니다.
 
 끝: `nod todo inbox` 가 비었고, 지금 하기로 정한 것을 목록으로 보여 줬습니다.
