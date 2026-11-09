@@ -124,7 +124,7 @@ next: tell the person in a line; it is closed, so answer it no more
 
 nod 는 Claude Code 가 세션마다 여는 수신 소켓에 이 메시지를 한 줄로 씁니다. 같은 PC 에서 `SendMessage` 가 쓰는 길입니다. 소켓 경로는 `nod open` 이 세션에 붙이는 SessionStart 훅(`nod hook inbox`)이, Claude Code 가 훅에 주는 `CLAUDE_CODE_MESSAGING_SOCKET` 을 장부에 적고, SessionEnd 훅이 지웁니다. 한계가 있습니다. 줄의 형식은 Claude Code 문서에 없고 실행 파일에서 찾은 것이라 바뀔 수 있고, 소켓은 아무것도 돌려주지 않아 전달을 확인할 수 없습니다. Claude Code 가 형식을 바꿔 조용히 버려도 nod 는 보낸 것으로 칩니다. 권한 확인을 건너뛰는 모드(bypassPermissions)의 세션은 이런 메시지를 사람이 승인할 때까지 붙잡아 둡니다. `claude --resume` 으로 직접 열었거나 이 기능 전에 연 세션은 훅이 없어, 그 세션 안의 첫 nod 명령이 Bash 에도 export 된 소켓을 장부에 적고 기다리던 알림을 보냅니다. 그 전까지는 받지 못합니다. 프로젝트 세션인데 받을 수 없으면(그 프로젝트의 최신 세션이 아니거나 소켓이 없음) nod 명령이 stderr 에 그렇다고 말하니 `nod open` 으로 다시 엽니다. 다른 Claude 세션이 프로젝트의 일을 `nod add`·`nod tell`·결정 답·`nod resume`·`nod restart` 로 굴리는데 그 프로젝트의 최신 세션도 받을 수 없으면(없음, 장부에 소켓이 없음, 소켓 파일이 없어짐) 그 명령도 stderr 에 그렇다고 말하니, `nod open` 으로 프로젝트 세션을 열거나 그동안 그 세션에서 `nod --mine`·`nod ls --mine`(다른 세션이 맡긴 작업이 섞였으면 `nod`·`nod ls`)으로 결정과 끝을 봅니다. `/clear` 하면 대화가 새 세션 ID 로 이어져 `nod open` 으로 다시 열 때까지 알림을 받지 못합니다(알림은 장부에 남음). 다만 `claude --resume` 으로 연 세션은 `/clear` 를 알려 줄 훅이 없어, 그 뒤 nod 명령을 돌리기 전까지 보낸 알림은 버려지고 다시 가지 않습니다. 다시 연 뒤 `nod ls --mine`·`nod --mine` 으로 놓친 끝과 결정을 봅니다. 자세한 것은 [docs/design.md](docs/design.md) 의 「프로젝트 세션에 직접 알리기」에 있습니다.
 
-결정과 끝난 작업을 생기는 대로 내던 `nod watch` 는 지웠습니다(2026-11-07). 알림을 받는 세션을 `nod open <프로젝트>` 나 `nod session claim <이름> --role orchestrator` 로 두고, 놓친 것은 `nod ls --mine`(작업)과 `nod --mine`(열린 결정)으로 봅니다.
+알림을 받는 세션은 `nod open <프로젝트>` 나 `nod session claim <이름> --role orchestrator` 로 두고, 놓친 것은 `nod ls --mine`(작업)과 `nod --mine`(열린 결정)으로 봅니다.
 
 `--issue` 로 이슈를 주면 `nod ls` 의 이슈·결과 칸과 결정 목록, 알림에 이슈가 붙습니다. 한 이슈를 여러 작업으로 나눠도 같은 키를 주면 그 결정들을 `nod --issue <키>` 로 함께 거를 수 있습니다.
 
@@ -144,7 +144,7 @@ Claude 세션에서 `nod add` 를 하면 작업에 그 세션(루트 세션)의 
 nod schedule on
 ```
 
-정해진 때나 새 항목마다 할 일을 맡기던 트리거(`nod trigger`)는 지웠습니다(2026-11-07). 정해진 시각에 할 일은 cron·launchd 에서 `nod add` 를 부르고, 목록의 항목마다 한 번씩 받으려면 `nod in --source <이름> --key <키>` 로 받아 적습니다(같은 키는 한 번만 들어감). 스케줄러는 거의 빈 환경으로 띄우고 워커는 `nod add` 의 환경을 받으므로, 그 줄에 `nod`·tmux·claude 가 있는 `PATH` 와, 셸에서 쓰는 `NOD_HOME`·`CLAUDE_CONFIG_DIR`(`nod account` 로 계정 규칙을 정했으면 그 규칙을 따름)·`TMUX_TMPDIR` 를 줍니다(`PATH=<경로> CLAUDE_CONFIG_DIR=<경로> nod add …`). 그 밖에 워커가 받는 변수는 아래 「워커가 끊기지 않게」에 있습니다.
+정해진 시각에 할 일은 cron·launchd 에서 `nod add` 를 부르고, 목록의 항목마다 한 번씩 받으려면 `nod in --source <이름> --key <키>` 로 받아 적습니다(같은 키는 한 번만 들어감). 스케줄러는 거의 빈 환경으로 띄우고 워커는 `nod add` 의 환경을 받으므로, 그 줄에 `nod`·tmux·claude 가 있는 `PATH` 와, 셸에서 쓰는 `NOD_HOME`·`CLAUDE_CONFIG_DIR`(`nod account` 로 계정 규칙을 정했으면 그 규칙을 따름)·`TMUX_TMPDIR` 를 줍니다(`PATH=<경로> CLAUDE_CONFIG_DIR=<경로> nod add …`). 그 밖에 워커가 받는 변수는 아래 「워커가 끊기지 않게」에 있습니다.
 
 ## 결과 올리기 (착지)
 
