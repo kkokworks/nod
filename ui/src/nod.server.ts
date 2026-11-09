@@ -81,10 +81,9 @@ export type Detail = {
   status: string
   links: string[]
   after: { id: number; status: string }[]
-  // The prompt is left out, as in `nod show`.
+  // Each turn with its report. The prompt is left out, as in `nod show`.
   attempts: Omit<Attempt, 'prompt'>[]
   decisions: Decision[]
-  report: string | null
   place: Place
   // With the rule it added, on or off now.
   retro: (Retro & { rules: Rule[] }) | null
@@ -166,7 +165,6 @@ export function detail(id: number): Detail | null {
     after: ledger.after(id).map((a) => ({ id: a.id, status: a.status })),
     attempts: attempts.map(({ prompt: _, ...a }) => a),
     decisions: ledger.decisions(id),
-    report: attempts.filter((a) => a.report).at(-1)?.report ?? null,
     place: place(todos, task),
     retro: task.retroId === null ? null : retroOf(task.retroId),
     screen: live.has(name) ? terminals.screen(name).trimEnd() : null,

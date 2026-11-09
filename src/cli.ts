@@ -196,11 +196,11 @@ const USAGE = `usage:
                                    number, todo, status, turns, the time its age counts from,
                                    the note's first line, issue, links, pushes); --json, a JSON
                                    line a task
-  nod show <task>                  history, links, then the worker's last full report. root: is
-                                   the Claude session whose task it is: its project's latest
-                                   session, by the project and how to reopen it, with the session
-                                   that added it when that was another; else the session that
-                                   added it (claude --resume <session>)
+  nod show <task>                  history, links, then each turn's full report, the last at the
+                                   very end. root: is the Claude session whose task it is: its
+                                   project's latest session, by the project and how to reopen it,
+                                   with the session that added it when that was another; else the
+                                   session that added it (claude --resume <session>)
   nod search <ref>                 find by number: t<n>, n<n>, r<n>, p<n>, d<n>, or <n> for every
                                    kind
   nod stats
@@ -1196,8 +1196,15 @@ async function show(id: number): Promise<void> {
     console.log(`  decision d${d.id} ${d.reason} — ${answered}`)
   }
   for (const n of ledger.allowed(id)) console.log(`  allowed by nod ${n.createdAt}: ${n.note}`)
-  const report = ledger.attempts(id).findLast((a) => a.report)?.report
-  if (report) console.log(`\n${report}`)
+  // Each turn's report in order, so the last is the very end, where readers look for it. Several
+  // are told apart by the number a notice gives the turn (inbox.ts); one alone needs no heading.
+  const attempts = ledger.attempts(id)
+  const reported = attempts.filter((a) => a.report)
+  for (const a of reported) {
+    const head =
+      reported.length > 1 ? `--- attempt ${attempts.indexOf(a) + 1} (${a.kind}) ---\n` : ''
+    console.log(`\n${head}${a.report}`)
+  }
 }
 
 // One match prints as the command that shows it does; several, a line each with that command.
