@@ -21,7 +21,7 @@ nod 는 작업을 `n<번호>`, 결정을 `d<번호>` 로 씁니다. 할 일 `t<�
 | 일 맡기기, 이미 있는 작업에 후속 지시 | [delegate.md](delegate.md) |
 | 결정 알림 전하기, 사용자의 답 넘기기 | [decisions.md](decisions.md) |
 | 자리를 비울 때 알림(`~/.nod/notify`) | [decisions.md](decisions.md) 의 "자리를 비울 때 알림" |
-| 결과 내보내기(push·PR·게시)와 링크, 리뷰 반영, 정리(gc) | [results.md](results.md) |
+| 결과 내보내기(push·PR·게시)와 링크, 보고에서 남길 것 고르기, 리뷰 반영, 정리(gc) | [results.md](results.md) |
 | 프로젝트(업무 묶음) 하나를 맡아 nod 로 굴리기 | [project.md](project.md) |
 | 다른 루트 세션(일반·프로젝트)에 말 보내기, 받은 말에 답하기 | [project.md](project.md) 의 "다른 루트 세션에 말 보내기" |
 | 이 세션이 오케스트레이터·릴레이일 때, 세션에 역할 주기 | [delegate.md](delegate.md) 의 "오케스트레이터·릴레이 세션" |
