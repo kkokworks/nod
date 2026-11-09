@@ -422,6 +422,37 @@ test('nod land inside a sandbox runs no check and leaves the landing to the tick
   expect(existsSync(ran)).toBe(true)
 }, 30_000)
 
+test('nod land says another landing holds the repo when that kept it from a task, and nothing to land when nothing is due; the tick stays quiet', async () => {
+  setRepo('pr')
+  const nodLand = (...ids: string[]): string[] => {
+    const r = Bun.spawnSync(['bun', resolve(import.meta.dir, 'cli.ts'), 'land', ...ids], {
+      env: { ...process.env, SANDBOX_RUNTIME: '' },
+    })
+    expect(r.stderr.toString()).toBe('')
+    expect(r.exitCode).toBe(0)
+    return r.stdout.toString().trimEnd().split('\n')
+  }
+  // The parent of this test process, alive and neither this process nor the CLI: another pass.
+  const hold = () => expect(ledger.claimRepo(repo, process.ppid, () => false)).toBe(true)
+
+  expect(nodLand()).toEqual(['nothing to land'])
+  const id = finished('feat/held', { 'h.txt': 'h\n' })
+  hold()
+  const busy = `n${id} another landing is running in its repo: run the same nod land again once it ends`
+  expect(nodLand(String(id))).toEqual([busy])
+  expect(nodLand()).toEqual([busy])
+  expect((await tick(ledger, home, Tmux.of(home), new Date(), true)).landed).toEqual([])
+  expect(handed).toEqual([])
+
+  // Once that pass ends the same task lands, and with none left a held repo is nothing to land.
+  ledger.releaseRepo(repo, process.ppid)
+  expect(await land(ledger, home, Tmux.of(home), { send })).toEqual([
+    { id, did: 'its worker writes the pull request' },
+  ])
+  hold()
+  expect(nodLand()).toEqual(['nothing to land'])
+}, 30_000)
+
 test('a message while nod works in the worktree waits, so the worker does not edit files that move under it', async () => {
   setRepo('pr')
   const id = finished('feat/busy', { 'b.txt': 'b\n' })

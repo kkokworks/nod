@@ -39,17 +39,26 @@ export type Moved = { id: number; did: string }
 
 // `only`: these tasks, whenever they were added (nod land <task>); every task due otherwise.
 // `send`: how a landing turn reaches the worker, `deliver` but in tests.
+// `sayBusy`: a task due in a repo another pass holds gets a row, for `nod land`, whose caller would
+// otherwise read nothing done as nothing to land. The tick has no one to tell and comes round again.
 export async function land(
   ledger: Ledger,
   home: string,
   terminals: Terminals,
-  opts: { only?: number[]; send?: Send } = {},
+  opts: { only?: number[]; send?: Send; sayBusy?: boolean } = {},
 ): Promise<Moved[]> {
   const moved: Moved[] = []
   const { only } = opts
   for (const repo of landingRepos(ledger, only)) {
     // Two passes at once would rebase and push the same branches; the other one lands these.
-    if (!ledger.claimRepo(repo.path, process.pid, running)) continue
+    if (!ledger.claimRepo(repo.path, process.pid, running)) {
+      if (opts.sayBusy) {
+        const did =
+          'another landing is running in its repo: run the same nod land again once it ends'
+        for (const t of due(ledger, terminals, repo, only)) moved.push({ id: t.id, did })
+      }
+      continue
+    }
     try {
       await landRepo({ ledger, home, terminals, repo, send: opts.send, moved }, only)
     } finally {
