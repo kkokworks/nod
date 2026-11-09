@@ -27,10 +27,18 @@ export type Tell = { to: number; text: string }
 
 type Report = { status: 'done' | 'question' | 'failed'; text: string }
 
-// The last `NOD: <status> | <text>` line out of code (outOfCode), ignoring Markdown emphasis around
-// it.
+// The last `NOD: <status> | <text>` line out of code (outOfCode), so an example shown under the
+// report line is not it, or with none the last in code: a worker that wraps its report line still
+// reports, where "no report" would pass a question for done after a blocked stop (settle).
+// ponytail: so a worker that only shows the form, with no report line, reports what it shows, as
+// before code counted: the same shape as a wrapped report line, told apart only by guessing.
 export function parseReport(text: string): Report | null {
-  for (const line of outOfCode(text).reverse()) {
+  return lastStatus(outOfCode(text)) ?? lastStatus(text.split('\n'))
+}
+
+// The last line of `lines` that is a status, ignoring Markdown emphasis around it.
+function lastStatus(lines: string[]): Report | null {
+  for (const line of lines.reverse()) {
     const match = /^NOD:\s*(done|question|failed)\s*\|\s*(.*)$/i.exec(
       line.replace(/[*`]/g, '').trim(),
     )
@@ -153,10 +161,12 @@ function firstHeading(lines: string[]): number {
 }
 
 // The lines nod looks for its own in: all but the code of a fence that closes, so what a worker
-// shows there is no todo, message or status of its own. Markdown runs a fence never closed to the
-// end, but a report line under one is still the report: such a fence holds nothing back.
-// ponytail: fences only, with up to three spaces before them: an indented code block, or a fence
-// indented further under a list, still reads as report lines. Tell those apart when one bites.
+// shows there is no todo or message, and no status while there is one out of it. Markdown runs a
+// fence never closed to the end, but a report line under one is still the report: such a fence
+// holds nothing back.
+// ponytail: fences only, with up to three spaces before them and LF line ends: an indented code
+// block, a fence indented further under a list or one in CRLF text still reads as report lines.
+// Tell those apart when one bites.
 function outOfCode(text: string): string[] {
   const lines = text.split('\n')
   const code = closedFences(lines)

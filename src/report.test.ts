@@ -184,7 +184,7 @@ it('a pull request loses only the lines nod reads: its code and its plain nod: l
   }
 })
 
-it('a closed code fence holds examples: no todo, no message, no status, nothing to send back', () => {
+it('a closed code fence holds examples: no todo, no message, nothing to send back, no status over a real one', () => {
   const code = [
     '```',
     'NOD: in {"title": "an example"}',
@@ -203,8 +203,16 @@ it('a closed code fence holds examples: no todo, no message, no status, nothing 
     expect(parseReport(report)).toEqual({ status: 'done', text: 'real' })
     expect(parseCaptures(fenced)).toEqual({ captures: [] })
     expect(parseTells(fenced)).toEqual({ tells: [] })
-    // Not even as the only one, or a worker that only shows the form would have reported.
-    expect(parseReport(fenced)).toBeNull()
+  }
+  // A real status above an example under it stays the report, whichever the example says.
+  const failed = `NOD: failed | real\n\`\`\`\nNOD: done | an example\n\`\`\``
+  expect(parseReport(failed)).toEqual({ status: 'failed', text: 'real' })
+  // With none out of code, a wrapped report line is the report: "no report" after a blocked stop
+  // would pass a wrapped question or failure for done (settle).
+  for (const status of ['done', 'question', 'failed'] as const) {
+    const wrapped = `Words\n\`\`\`\nNOD: ${status} | wrapped\n\`\`\``
+    expect(parseReport(wrapped)).toEqual({ status, text: 'wrapped' })
+    expect(prText(`# Fix it\n${wrapped}`)?.body).toBe(wrapped)
   }
   // Markdown runs a fence never closed to the end, over the report: it holds nothing back.
   for (const open of ['```sh\nbun test\n', '```\ncode\n```\nwords\n~~~\n']) {
