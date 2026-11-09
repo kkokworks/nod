@@ -41,7 +41,14 @@ import { askToLand, permissionQuestion } from './decisions'
 import { workerEnv } from './env'
 import { collect } from './gc'
 import { onCompact, onPrompt, onStop, onStopFailure } from './hooks'
-import { Ledger, RETRO_STATUS, type RetroOutcome, type Task, type TaskStatus } from './ledger'
+import {
+  Ledger,
+  type NewTask,
+  RETRO_STATUS,
+  type RetroOutcome,
+  type Task,
+  type TaskStatus,
+} from './ledger'
 import { notify } from './notify'
 import { PROMPTED_OPTION, sessionName, socketsDir, workspaceOf } from './place'
 import { AT_ONCE, readAtOnce, spawn } from './proc'
@@ -2977,9 +2984,14 @@ it('background work the Stop hook cannot read still counts, or counts as none, a
 })
 
 // A task nod started whose hooks a test runs itself, with no terminal: its worker's first turn is
-// session `session`. `root`: the Claude session that added it.
-function started(brief: string, session: string, root: string | null = null): number {
-  const id = ledger.add({
+// session `session`. `root`: the Claude session that added it. `add`: how it was added.
+function started(
+  brief: string,
+  session: string,
+  root: string | null = null,
+  add: (task: NewTask) => number = (task) => ledger.add(task),
+): number {
+  const id = add({
     brief,
     repo: null,
     branch: null,
@@ -3706,35 +3718,28 @@ it('the workers of two tasks in one project may tell each other, whichever sessi
   const todos = new Todos(ledger)
   const release = todos.addProject({ title: 'Release', outcome: null }, 'human')
   const health = todos.addProject({ title: 'Health', outcome: null }, 'human')
-  // Puts a task in a project through a todo of its own, as nod add --project does.
-  const inProject = (id: number, projectId: number): number => {
-    const { todo } = todos.capture(
-      { title: `task ${id}`, notes: null, source: 'cli', sourceKey: null, url: null, projectId },
-      'human',
-    )
-    ledger.linkTodoTask(id, todo.id)
-    return id
-  }
+  // Adds a task in a project through a todo of its own, as nod add --project does.
+  const inProject =
+    (projectId: number) =>
+    (task: NewTask): number =>
+      todos.delegateNew(task, projectId, 'human')
   // Not started: a tell nod lets through is kept for its start, so nothing is sent yet.
   const queued = (root: string | null, projectId: number): number =>
-    inProject(
-      ledger.add({
-        brief: 'later',
-        repo: null,
-        branch: null,
-        checkCmd: null,
-        model: null,
-        after: [],
-        issue: null,
-        rootSession: root,
-      }),
-      projectId,
-    )
+    inProject(projectId)({
+      brief: 'later',
+      repo: null,
+      branch: null,
+      checkCmd: null,
+      model: null,
+      after: [],
+      issue: null,
+      rootSession: root,
+    })
   let n = 0
   const reason = async (root: string, projectId: number, to: number): Promise<string> => {
     n += 1
     const session = `in-project-${n}`
-    inProject(started('review', session, root), projectId)
+    started('review', session, root, inProject(projectId))
     const out = await stopped(session, `NOD: tell n${to} hi\nNOD: done | ok`)
     return JSON.parse(out ?? '{}').reason
   }
