@@ -748,7 +748,10 @@ async function landCommand(ids: number[]): Promise<void> {
     leaveToTick(ids.length > 0 ? ids : undefined)
     return
   }
-  const moved = await land(ledger, home, terminals, ids.length > 0 ? { only: ids } : {})
+  const moved = await land(ledger, home, terminals, {
+    sayBusy: true,
+    ...(ids.length > 0 ? { only: ids } : {}),
+  })
   for (const m of moved) console.log(`n${m.id} ${m.did}`)
   if (moved.length === 0) console.log('nothing to land')
 }
