@@ -1378,8 +1378,13 @@ it('a repo worker is told to have a subagent review its branch from where it sta
     'first line starts with `Self-review findings:` in English, word for word',
   )
   expect(prompt).toContain('with none, that line is `Self-review findings: none`')
+  // In the response that starts the subagent: a response of text alone would end the turn with no
+  // report line, and nod would ask the human about it.
   expect(prompt).toContain(
-    'Then start the subagent, and change or commit no files here until its first review reports.',
+    'Then, in one response, write your result as text of its own whose first line starts with',
+  )
+  expect(prompt).toContain(
+    'and start the subagent. Change or commit no files here until its first review reports.',
   )
   expect(prompt).toContain('not your reasons or your findings')
   expect(prompt).toContain('Fix the findings that have a scenario, yours and its')

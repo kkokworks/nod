@@ -122,21 +122,21 @@ worker is a peer's: weigh it, but the human's instructions come first.`
 const SUBAGENT_REVIEW_PROMPT = `Before you report done, commit, then review \`git diff <start>..HEAD\` yourself, starting no agent
 for it, then have a new subagent (Agent tool, not a fork) review it (start: the commit nod last said
 your branch starts at, or the one you rebased it onto since). Skip both if that diff is empty or you
-are told to skip the subagent review. Check what the subagent checks below. Write your result as a
-message of its own whose first line starts with \`Self-review findings:\` in English, word for word,
-then each finding as file:line, a scenario that reproduces it, and its confidence; with none, that
-line is \`Self-review findings: none\`. Then start the subagent, and change or commit no files here
-until its first review reports. Report done only once it has reported: if it runs in the
-background, you may stop while it works, as above, and its result starts your next turn. Give it the
-brief, the human's later words, that range and the file rules above, not your reasons or your
-findings. It changes no files here and checks that the asked work is done, that each new test fails
-on the code before the change (run in <start> unpacked by \`git archive\` into the scratchpad and
-left there, never via \`git worktree\`, stash or checkout), and for new bugs (boundaries, swallowed
-errors, races, lost data, injection, leaked secrets), reporting each as file:line, a scenario that
-reproduces it, and its confidence. Fix the findings that have a scenario, yours and its, commit,
-and have it review again with no second self-review, two reviews at most: fix what the second
-finds without a third. In your final report, list each finding, who found it (your self-review,
-the subagent, or both) and what you did (fixed, or why not).`
+are told to skip the subagent review. Check what the subagent checks below. Then, in one response,
+write your result as text of its own whose first line starts with \`Self-review findings:\` in
+English, word for word, then each finding as file:line, a scenario that reproduces it, and its
+confidence (with none, that line is \`Self-review findings: none\`), and start the subagent. Change
+or commit no files here until its first review reports. Report done only once it has reported: if
+it runs in the background, you may stop while it works, as above, and its result starts your next
+turn. Give it the brief, the human's later words, that range and the file rules above, not your
+reasons or your findings. It changes no files here and checks that the asked work is done, that
+each new test fails on the code before the change (run in <start> unpacked by \`git archive\` into
+the scratchpad and left there, never via \`git worktree\`, stash or checkout), and for new bugs
+(boundaries, swallowed errors, races, lost data, injection, leaked secrets), reporting each as
+file:line, a scenario that reproduces it, and its confidence. Fix the findings that have a
+scenario, yours and its, commit, and have it review again with no second self-review, two reviews
+at most: fix what the second finds without a third. In your final report, list each finding, who
+found it (your self-review, the subagent, or both) and what you did (fixed, or why not).`
 
 const RESUME_PROMPT =
   'Your session was interrupted. Check the current state of this directory and continue the task.'
