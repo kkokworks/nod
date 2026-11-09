@@ -53,9 +53,11 @@ export async function land(
     // Two passes at once would rebase and push the same branches; the other one lands these.
     if (!ledger.claimRepo(repo.path, process.pid, running)) {
       if (opts.sayBusy) {
-        // By its number: a bare nod land leaves out a task added before its repo went up (`lands`).
+        // The call that got here: a bare nod land leaves out a task only naming lands (`lands`), and
+        // naming one lands it even if its landing has been stopped since (landCommand).
         for (const t of due(ledger, terminals, repo, only)) {
-          const did = `another landing is running in its repo: run nod land n${t.id} again once it ends`
+          const call = only === undefined ? 'nod land' : `nod land n${t.id}`
+          const did = `another landing is running in its repo: run ${call} again once it ends`
           moved.push({ id: t.id, did })
         }
       }

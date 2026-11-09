@@ -438,9 +438,10 @@ test('nod land says another landing holds the repo when that kept it from a task
   expect(nodLand()).toEqual(['nothing to land'])
   const id = finished('feat/held', { 'h.txt': 'h\n' })
   hold()
-  const busy = `n${id} another landing is running in its repo: run nod land n${id} again once it ends`
-  expect(nodLand(`n${id}`)).toEqual([busy])
-  expect(nodLand()).toEqual([busy])
+  const busy = (call: string) =>
+    `n${id} another landing is running in its repo: run ${call} again once it ends`
+  expect(nodLand(`n${id}`)).toEqual([busy(`nod land n${id}`)])
+  expect(nodLand()).toEqual([busy('nod land')])
   expect((await tick(ledger, home, Tmux.of(home), new Date(), true)).landed).toEqual([])
 
   // Once that pass ends the same task lands, and with none left a held repo is nothing to land.
