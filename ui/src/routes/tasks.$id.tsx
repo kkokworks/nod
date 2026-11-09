@@ -218,7 +218,14 @@ function TaskPage() {
                   <Url url={url} />
                 </div>
               ))}
-              {last?.report && <Markdown text={last.report} />}
+              {last?.report && (
+                <>
+                  <div className="muted small">
+                    attempt {attempts.indexOf(last) + 1} · {last.kind}
+                  </div>
+                  <Markdown text={last.report} />
+                </>
+              )}
             </div>
           </>
         )}

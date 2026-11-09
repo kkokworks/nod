@@ -745,13 +745,14 @@ test('the last report is the result at the end of the page, and those before it 
   answer = (id) => ({ ...detail(id as number), attempts: turns[id as number] })
   await go('/tasks/12')
   expect(folds()).toEqual(['reportthe work report', 'reportthe retry report'])
-  expect(result()).toBe('the pull request')
+  // Named by its turn, as `nod show` names it: a later turn may have reported nothing.
+  expect(result()).toBe('attempt 4 · landthe pull request')
   await go('/tasks/13')
   expect(folds()).toEqual(['reportthe same report'])
-  expect(result()).toBe('the same report')
+  expect(result()).toBe('attempt 2 · landthe same report')
   await go('/tasks/14')
   expect(folds()).toEqual([])
-  expect(result()).toBe('the only report')
+  expect(result()).toBe('attempt 1 · startthe only report')
 })
 
 test('a change to the todo keeps what is being typed in the form and says so', async () => {
