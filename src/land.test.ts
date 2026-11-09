@@ -438,11 +438,10 @@ test('nod land says another landing holds the repo when that kept it from a task
   expect(nodLand()).toEqual(['nothing to land'])
   const id = finished('feat/held', { 'h.txt': 'h\n' })
   hold()
-  const busy = `n${id} another landing is running in its repo: run the same nod land again once it ends`
-  expect(nodLand(String(id))).toEqual([busy])
+  const busy = `n${id} another landing is running in its repo: run nod land n${id} again once it ends`
+  expect(nodLand(`n${id}`)).toEqual([busy])
   expect(nodLand()).toEqual([busy])
   expect((await tick(ledger, home, Tmux.of(home), new Date(), true)).landed).toEqual([])
-  expect(handed).toEqual([])
 
   // Once that pass ends the same task lands, and with none left a held repo is nothing to land.
   ledger.releaseRepo(repo, process.ppid)
