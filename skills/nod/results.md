@@ -44,6 +44,6 @@ nod 가 보낸 알림이 `task n<작업> … succeeded, attempt <n>: <요약>` �
 
 - 이름 없이 부른 `nod gc` 는 완료 신호가 온 작업을 스스로 정리하고, 정리한 작업마다 이유를 한 줄씩 보여 줍니다. 스케줄을 켰으면(`nod schedule on`) tick 이 5분마다 같은 일을 합니다. 신호와 정리하지 않는 경우는 `nod help`, README, `docs/design.md` 에 있습니다.
 - 신호가 없어도 더 할 일이 없으면 `nod gc <작업…>` 을 제안하고, 사용자가 받아들이면 실행합니다.
-- gc 는 tmux 세션과 작업 폴더(worktree)를 지우고 대화 기록은 남기며, 브랜치가 유일한 사본이면 브랜치도 남깁니다. 정리한 작업은 `nod ls --all` 로만 보이고, `nod resume`·`nod tell` 이 같은 경로에 worktree 를 다시 만들어 이어 갑니다. 레포 없는 작업은 폴더의 파일이 결과물이라 gc 하면 돌아오지 않습니다.
+- gc 는 tmux 세션과 작업 폴더(worktree)를 지우고 대화 기록은 남기며, 브랜치가 유일한 사본이면 브랜치도 남깁니다. 정리한 작업은 `nod ls --all` 로만 보이고, `nod resume`·`nod tell` 이 같은 경로에 worktree 를 다시 만들어 이어 갑니다. 레포 없는 작업은 폴더의 파일이 결과물인데, 끝난 지 7일이 지나면 이름 없는 `nod gc` 와 tick 도 지우고 지운 폴더는 돌아오지 않습니다.
 - 원격 상태는 레포의 마지막 fetch 기준입니다. 머지된 브랜치가 남았으면 레포를 fetch 한 뒤 같은 작업에 gc 를 다시 하면 지워집니다.
 - `skipped … uncommitted changes in worktree` 가 나오면 그 변경을 어떻게 할지 사용자에게 묻습니다.
