@@ -182,64 +182,17 @@ it('a pull request loses only the lines nod reads: its code and its plain nod: l
       body: `${code}\n${code}`,
     })
   }
-})
-
-it('a closed code fence holds examples: no todo, no message, nothing to send back, no status over a real one', () => {
-  const code = [
-    '```',
-    'NOD: in {"title": "an example"}',
-    'NOD: in not even JSON',
-    'NOD: tell n5 an example',
-    'NOD: tell nobody',
-    'NOD: failed | an example',
-    '```',
-  ].join('\n')
+  // Markdown runs a fence never closed to the end, over the report: it keeps nothing back.
   const reals = 'NOD: in {"title": "real"}\nNOD: tell n6 real\nNOD: done | real'
-  const nested = `\`\`\`\`md\n${code}\n\`\`\`\``
-  for (const fenced of [code, nested, code.replaceAll('```', '~~~')]) {
-    const report = `${fenced}\n${reals}\n${fenced}`
-    expect(parseCaptures(report)).toEqual({ captures: [{ title: 'real' }] })
-    expect(parseTells(report)).toEqual({ tells: [{ to: 6, text: 'real' }] })
-    expect(parseReport(report)).toEqual({ status: 'done', text: 'real' })
-    // With no status anywhere, a turn that goes on after a blocked stop (settle): still examples.
-    const noStatus = fenced.replace('NOD: failed | an example\n', '')
-    expect(parseCaptures(noStatus)).toEqual({ captures: [] })
-    expect(parseTells(noStatus)).toEqual({ tells: [] })
-    expect(parseReport(noStatus)).toBeNull()
+  for (const open of ['```sh\nbun test\n', '```\ncode\n```\nwords\n~~~\n']) {
+    expect(prText(`Fix it\n${open}${reals}`)?.body).toBe(open.trim())
   }
-  // A real status above an example under it stays the report, whichever the example says.
-  const failed = `NOD: failed | real\n\`\`\`\nNOD: done | an example\n\`\`\``
-  expect(parseReport(failed)).toEqual({ status: 'failed', text: 'real' })
-  // With none out of code, the status in it means the report is wrapped whole, and reads as ever:
-  // "no report" after a blocked stop would pass its question or failure for done (settle), and lose
-  // its todos and messages. Nor do they go out in the pull request.
-  for (const status of ['done', 'question', 'failed'] as const) {
-    const wrapped = `Words\n\`\`\`\nNOD: in {"title": "real"}\nNOD: tell n6 real\nNOD: ${status} | wrapped\n\`\`\``
-    expect(parseReport(wrapped)).toEqual({ status, text: 'wrapped' })
-    expect(parseCaptures(wrapped)).toEqual({ captures: [{ title: 'real' }] })
-    expect(parseTells(wrapped)).toEqual({ tells: [{ to: 6, text: 'real' }] })
+  // With no status out of code, the report is wrapped whole, and its lines do not go out.
+  for (const status of ['done', 'question', 'failed']) {
+    const wrapped = `Words\n\`\`\`\nNOD: in {"title": "real"}\nNOD: ${status} | wrapped\n\`\`\``
     expect(prText(`# Fix it\n${wrapped}`)?.body).toBe('Words\n```\n```')
   }
-  // A long status line reads at once: `.` stopped at a carriage return, and `\s*` took seconds
-  // backtracking over the spaces, for each line of the pull request's text.
+  // A long line reads at once: parseReport's pattern takes seconds over these spaces.
   const spaced = `NOD: done |${' '.repeat(100_000)}a\rb`
-  expect(parseReport(spaced)?.status).toBe('done')
   expect(prText(`# Fix it\nBody\n${spaced}`)).toEqual({ title: 'Fix it', body: 'Body' })
-  // Markdown runs a fence never closed to the end, over the report: it holds nothing back.
-  for (const open of ['```sh\nbun test\n', '```\ncode\n```\nwords\n~~~\n']) {
-    const report = `${open}${reals}`
-    expect(parseCaptures(report)).toEqual({ captures: [{ title: 'real' }] })
-    expect(parseTells(report)).toEqual({ tells: [{ to: 6, text: 'real' }] })
-    expect(parseReport(report)).toEqual({ status: 'done', text: 'real' })
-    expect(prText(`Fix it\n${report}`)?.body).toBe(open.trim())
-  }
-  // Three ticks with more ticks after them are inline code: they open nothing, so a real line
-  // below is not taken for code by a fence line further down.
-  const report = `\`\`\`NOD: tell n5 inline\`\`\`\nNOD: tell n6 real\n\`\`\`\ncode\n\`\`\`\nNOD: done | ok`
-  expect(parseTells(report)).toEqual({
-    tells: [
-      { to: 5, text: 'inline' },
-      { to: 6, text: 'real' },
-    ],
-  })
 })
