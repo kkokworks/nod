@@ -177,7 +177,7 @@ it('a pull request loses only the lines nod reads: its code and its plain nod: l
   ]
   for (const line of reportLines) {
     expect(prText(`# Fix it\nBody\n${line}\nMore`)).toEqual({ title: 'Fix it', body: 'Body\nMore' })
-    expect(prText(`# Fix it\n${code}\n${line}\n${code}`)).toEqual({
+    expect(prText(`# Fix it\n${code}\n${line}\n${code}\nNOD: done | ok`)).toEqual({
       title: 'Fix it',
       body: `${code}\n${code}`,
     })
@@ -201,19 +201,30 @@ it('a closed code fence holds examples: no todo, no message, nothing to send bac
     expect(parseCaptures(report)).toEqual({ captures: [{ title: 'real' }] })
     expect(parseTells(report)).toEqual({ tells: [{ to: 6, text: 'real' }] })
     expect(parseReport(report)).toEqual({ status: 'done', text: 'real' })
-    expect(parseCaptures(fenced)).toEqual({ captures: [] })
-    expect(parseTells(fenced)).toEqual({ tells: [] })
+    // With no status anywhere, a turn that goes on after a blocked stop (settle): still examples.
+    const noStatus = fenced.replace('NOD: failed | an example\n', '')
+    expect(parseCaptures(noStatus)).toEqual({ captures: [] })
+    expect(parseTells(noStatus)).toEqual({ tells: [] })
+    expect(parseReport(noStatus)).toBeNull()
   }
   // A real status above an example under it stays the report, whichever the example says.
   const failed = `NOD: failed | real\n\`\`\`\nNOD: done | an example\n\`\`\``
   expect(parseReport(failed)).toEqual({ status: 'failed', text: 'real' })
-  // With none out of code, a wrapped report line is the report: "no report" after a blocked stop
-  // would pass a wrapped question or failure for done (settle).
+  // With none out of code, the status in it means the report is wrapped whole, and reads as ever:
+  // "no report" after a blocked stop would pass its question or failure for done (settle), and lose
+  // its todos and messages. Nor do they go out in the pull request.
   for (const status of ['done', 'question', 'failed'] as const) {
-    const wrapped = `Words\n\`\`\`\nNOD: ${status} | wrapped\n\`\`\``
+    const wrapped = `Words\n\`\`\`\nNOD: in {"title": "real"}\nNOD: tell n6 real\nNOD: ${status} | wrapped\n\`\`\``
     expect(parseReport(wrapped)).toEqual({ status, text: 'wrapped' })
-    expect(prText(`# Fix it\n${wrapped}`)?.body).toBe(wrapped)
+    expect(parseCaptures(wrapped)).toEqual({ captures: [{ title: 'real' }] })
+    expect(parseTells(wrapped)).toEqual({ tells: [{ to: 6, text: 'real' }] })
+    expect(prText(`# Fix it\n${wrapped}`)?.body).toBe('Words\n```\n```')
   }
+  // A long status line reads at once: `.` stopped at a carriage return, and `\s*` took seconds
+  // backtracking over the spaces, for each line of the pull request's text.
+  const spaced = `NOD: done |${' '.repeat(100_000)}a\rb`
+  expect(parseReport(spaced)?.status).toBe('done')
+  expect(prText(`# Fix it\nBody\n${spaced}`)).toEqual({ title: 'Fix it', body: 'Body' })
   // Markdown runs a fence never closed to the end, over the report: it holds nothing back.
   for (const open of ['```sh\nbun test\n', '```\ncode\n```\nwords\n~~~\n']) {
     const report = `${open}${reals}`

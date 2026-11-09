@@ -28,18 +28,16 @@ export type Tell = { to: number; text: string }
 type Report = { status: 'done' | 'question' | 'failed'; text: string }
 
 // The last `NOD: <status> | <text>` line out of code (outOfCode), so an example shown under the
-// report line is not it, or with none the last in code: a worker that wraps its report line still
-// reports, where "no report" would pass a question for done after a blocked stop (settle).
-// ponytail: so a worker that only shows the form, with no report line, reports what it shows, as
-// before code counted: the same shape as a wrapped report line, told apart only by guessing.
+// report line is not it.
 export function parseReport(text: string): Report | null {
-  return lastStatus(outOfCode(text)) ?? lastStatus(text.split('\n'))
+  return lastStatus(outOfCode(text))
 }
 
-// The last line of `lines` that is a status, ignoring Markdown emphasis around it.
+// The last line of `lines` that is a status, ignoring Markdown emphasis around it. `.` takes all of
+// the line (the `s`): stopping at a carriage return, it had `\s*` backtrack over every space before.
 function lastStatus(lines: string[]): Report | null {
-  for (const line of lines.reverse()) {
-    const match = /^NOD:\s*(done|question|failed)\s*\|\s*(.*)$/i.exec(
+  for (const line of [...lines].reverse()) {
+    const match = /^NOD:\s*(done|question|failed)\s*\|\s*(.*)$/is.exec(
       line.replace(/[*`]/g, '').trim(),
     )
     const status = match?.[1]?.toLowerCase()
@@ -126,7 +124,7 @@ export function parseTells(text: string): { tells: Tell[] } | { error: string } 
 // without a title.
 export function prText(report: string): { title: string; body: string } | null {
   const all = report.split('\n')
-  const code = closedFences(all)
+  const code = codeLines(all)
   const lines = all.filter((l, i) => code[i] || !nodReads(l))
   const heading = firstHeading(lines)
   const titled = /^ {0,3}#[ \t]/.test(lines[heading] ?? '')
@@ -160,22 +158,28 @@ function firstHeading(lines: string[]): number {
   return lines.findIndex((line, i) => !inside[i] && /^ {0,3}#{1,6}[ \t]+\S/.test(line))
 }
 
-// The lines nod looks for its own in: all but the code of a fence that closes, so what a worker
-// shows there is no todo or message, and no status while there is one out of it. Markdown runs a
-// fence never closed to the end, but a report line under one is still the report: such a fence
-// holds nothing back.
-// ponytail: fences only, with up to three spaces before them and LF line ends: an indented code
-// block, a fence indented further under a list or one in CRLF text still reads as report lines.
-// Tell those apart when one bites.
+// The lines nod looks for its own in: all but its code (codeLines).
 function outOfCode(text: string): string[] {
   const lines = text.split('\n')
-  const code = closedFences(lines)
+  const code = codeLines(lines)
   return lines.filter((_, i) => !code[i])
 }
 
-function closedFences(lines: string[]): boolean[] {
+// Which of a report's lines are code nod does not read: those of a fence that closes, so what a
+// worker shows there is no todo, message or status. Markdown runs a fence never closed to the end,
+// but a report line under one is still the report: such a fence holds nothing back. Nor does any
+// when the only status is in code: that worker wrapped its report, and reading none of it would
+// lose its todos and messages, and pass its question for done after a blocked stop (settle).
+// ponytail: so a worker that only shows the form, with no report line, reports what it shows, as
+// before code counted: the same shape as a wrapped report, told apart only by guessing.
+// ponytail: fences only, with up to three spaces before them and LF line ends: an indented code
+// block, a fence indented further under a list or one in CRLF text still reads as report lines.
+// Tell those apart when one bites.
+function codeLines(lines: string[]): boolean[] {
   const { inside, unclosed } = fences(lines)
-  return inside.map((fenced, i) => fenced && i < unclosed)
+  const code = inside.map((fenced, i) => fenced && i < unclosed)
+  const out = lines.filter((_, i) => !code[i])
+  return lastStatus(out) === null && lastStatus(lines) !== null ? [] : code
 }
 
 // Which lines are in a code fence, its mark lines too, and the line where a fence never closed
