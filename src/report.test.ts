@@ -184,13 +184,16 @@ it('a pull request loses only the lines nod reads: its code and its plain nod: l
   }
   // Markdown runs a fence never closed to the end, over the report: it keeps nothing back.
   const reals = 'NOD: in {"title": "real"}\nNOD: tell n6 real\nNOD: done | real'
-  for (const open of ['```sh\nbun test\n', '```\ncode\n```\nwords\n~~~\n']) {
+  const closedThenOpen = '```\nNOD: tell n5 example\n```\nwords\n~~~\n'
+  for (const open of ['```sh\nbun test\n', '```\ncode\n```\nwords\n~~~\n', closedThenOpen]) {
     expect(prText(`Fix it\n${open}${reals}`)?.body).toBe(open.trim())
   }
-  // With no status out of code, the report is wrapped whole, and its lines do not go out.
+  // With the last status in code, the report is wrapped, and its lines do not go out, even under an
+  // older status out of code.
   for (const status of ['done', 'question', 'failed']) {
     const wrapped = `Words\n\`\`\`\nNOD: in {"title": "real"}\nNOD: ${status} | wrapped\n\`\`\``
     expect(prText(`# Fix it\n${wrapped}`)?.body).toBe('Words\n```\n```')
+    expect(prText(`# Fix it\nNOD: question | older\n${wrapped}`)?.body).toBe('Words\n```\n```')
   }
   // A long line reads at once: parseReport's pattern takes seconds over these spaces.
   const spaced = `NOD: done |${' '.repeat(100_000)}a\rb`

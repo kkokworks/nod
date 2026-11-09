@@ -158,15 +158,15 @@ function firstHeading(lines: string[]): number {
 
 // Which lines of a report are code the pull request's text keeps whole: those of a fence that
 // closes. Markdown runs a fence never closed to the end, but a report line under one is still nod's:
-// such a fence keeps nothing. Nor does any with no status out of code: that worker wrapped its
-// report, whose lines must not go out in the text.
+// such a fence keeps nothing. Nor does any when the last status, the one nod reads, is in code: that
+// worker wrapped its report, whose lines must not go out in the text.
 // ponytail: fences only, with up to three spaces before them and LF line ends: an indented code
 // block, a fence indented further under a list or one in CRLF text loses its lines in a form nod
 // reads. Tell those apart when one bites.
 function keptCode(lines: string[]): boolean[] {
   const { inside, unclosed } = fences(lines)
   const code = inside.map((fenced, i) => fenced && i < unclosed)
-  return lines.some((l, i) => !code[i] && isStatus(l)) ? code : []
+  return code[lines.findLastIndex(isStatus)] ? [] : code
 }
 
 // Which lines are in a code fence, its mark lines too, and the line where a fence never closed
