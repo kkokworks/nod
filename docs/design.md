@@ -652,7 +652,7 @@ nod 는 프로젝트의 알림을 그 프로젝트의 최신 세션에만 보냅
 
 - **트리거**(`nod trigger add·ls·rm`, `c<n>` 번호, `trigger_failed` 알림, 홈 화면의 Triggers 칸, `nod show`·작업 화면의 "added by trigger"). 앞선 한 달 동안 하나도 만들지 않았습니다. 정해진 시각에 할 일은 OS 스케줄러(cron·launchd)에서 `nod add` 를 부릅니다. 목록의 항목마다 한 번씩 받으려면 `nod in --source <이름> --key <키>` 를 씁니다. 같은 키는 한 번만 들어갑니다.
 - **`nod watch`**(`--issue`·`--mine` 거르기 포함). 10/31 이후 작업 105개 가운데 104개의 결과가 세션 알림으로 사람에게 닿았습니다. 폴링하는 `nod watch` 는 같은 일을 하는 두 번째 길이었습니다. 알림을 받을 세션은 `nod open <프로젝트>` 나 `nod session claim <이름> --role orchestrator` 로 둡니다(릴레이는 작업 알림을 받지 않음). 놓친 것은 `nod ls --mine`(작업)과 `nod --mine`(열린 결정)으로 봅니다. 듣는 세션이 없는 프로젝트의 일을 맡기면 stderr 경고가 이 둘을 알려 줍니다(「듣는 세션 없는 프로젝트의 일」).
-- **Mindwtr 가져오기**(`scripts/import-mindwtr.ts`). 10/21 에 한 번 돌고 끝났고, 할 일이 없는 빈 장부에서만 돕니다. 필요하면 git 이력에서 꺼냅니다.
+- **Mindwtr 가져오기**(`scripts/import-mindwtr.ts`). 10/21 에 한 번 돌고 끝났고, 할 일이 없는 빈 장부에서만 돕니다. 필요하면 git 이력에서 꺼냅니다. 이 스크립트가 부르던 `importTodo`·`importProject`·`linkTodoTask` 도 지웠으므로 함께 꺼내야 합니다.
 - **장부 v32.** `triggers`·`trigger_items` 표와 `tasks.trigger_id` 를 지웁니다. 지우기 전에 트리거 행이 하나라도 있으면, 모든 트리거 행과 source 항목 행, 트리거가 넣은 작업을 `<홈>/triggers.json` 에 씁니다. 지우지 않은 트리거가 있으면 받은 일함에 할 일 하나(출처 `nod`)를 넣습니다. 그 트리거들의 일정·지시·source·레포·브랜치 접두어·검사·모델, 대신 쓰는 길, 그 파일의 경로가 들어 있습니다. 돌던 일정이 소리 없이 멈추지 않게 하려는 것입니다. 이 일은 마이그레이션의 트랜잭션 안에서 하므로, 파일 쓰기가 실패하면 장부는 그대로입니다.
 - **내일 준비.** 사람 없이 도는 내일 준비는 트리거의 source 로 데이터를 모았습니다. 이제 `tomorrow.ts` 가 데이터를 모아 `nod add` 까지 하고, 사람이 crontab 에 한 줄로 등록합니다(`skills/gtd/skills/tomorrow/SKILL.md`).
 - **지운 명령의 안내.** `nod watch` 와 `nod trigger` 는 쓰임 전체 대신 지웠다는 것과 대신 쓰는 길을 한 줄로 알리고 실패로 끝납니다(`src/cli.ts`). cron 의 `nod add` 줄에는 `PATH` 말고도 `NOD_HOME`·`CLAUDE_CONFIG_DIR`·`TMUX_TMPDIR` 를 줘야 워커가 사람의 셸에서와 같이 뜹니다(README).
