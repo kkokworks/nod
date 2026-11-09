@@ -41,6 +41,7 @@ import { askToLand, permissionQuestion } from './decisions'
 import { workerEnv } from './env'
 import { collect } from './gc'
 import { onCompact, onPrompt, onStop, onStopFailure } from './hooks'
+import { sendNotices } from './inbox'
 import {
   Ledger,
   type NewTask,
@@ -68,6 +69,7 @@ import { quote, type Terminals, Tmux } from './tmux'
 import { Todos } from './todos'
 import { heardOf, promptMark } from './transcript'
 import { tick } from './triggers'
+import { REVIEW } from './verify'
 import {
   answer,
   cancel,
@@ -131,8 +133,10 @@ let fake: FakeTerminals
 let log: string
 
 const USUAL_SENDING = { ...SENDING }
+const USUAL_REVIEW = { ...REVIEW }
 beforeEach(() => {
   Object.assign(SENDING, USUAL_SENDING)
+  Object.assign(REVIEW, USUAL_REVIEW)
   useHome('nod-worker-')
 })
 
@@ -346,6 +350,60 @@ test('a review that gives no verdict errors the task instead of passing it', asy
   const id = await add('review-mute')
   await until(() => status(id) === 'error')
   expect(ledger.get(id).error).toContain('the review gave no verdict')
+})
+
+it('a review past its time limit errors saying so, and its notice says nod tell goes on, as it does; a review that fails otherwise keeps its words and its notice', async () => {
+  const todos = new Todos(ledger)
+  const p = todos.addProject({ title: 'Release', outcome: null }, 'human')
+  const hearing = 'aaaa1111-0000-4000-8000-00000000000a'
+  todos.addSession(p.id, hearing, '/work/one')
+  todos.setSocket(hearing, '/socks/a')
+  // The turn of a new task ends, and what the project's session hears of that task then.
+  const ended = async (brief: string, session: string): Promise<{ id: number; heard: string }> => {
+    const id = started(brief, session, null, (task) => todos.delegateNew(task, p.id, 'human'))
+    await stopped(session, 'NOD: done | did it')
+    expect(status(id)).toBe('error')
+    expect(ledger.decisions(id)).toEqual([])
+    let heard = ''
+    await sendNotices(ledger, async (_socket, line) => {
+      heard = JSON.parse(line).message.content
+    })
+    return { id, heard }
+  }
+  const settleIt = (id: number): string =>
+    `\nnext: nod show n${id} says why; settle with the person what to do`
+
+  // Killed by something else, as the limit kills: the same code, and no limit in it.
+  const killed = await ended('review-killed: write it', 'killed-review')
+  expect(ledger.get(killed.id).error).toStartWith('the review exited with 137: ')
+  expect(killed.heard).toEndWith(`: the review exited with 137:${settleIt(killed.id)}`)
+  const mute = await ended('review-mute: write it', 'mute-review')
+  expect(ledger.get(mute.id).error).toStartWith('the review gave no verdict: ')
+  expect(mute.heard).toContain(`: the review gave no verdict: Looks fine.${settleIt(mute.id)}`)
+
+  // The fake runs on until killed, so the limit ends it however long it takes to start.
+  REVIEW.timeoutMs = 600
+  const { id, heard } = await ended('review-hang: write it', 'hung-review')
+  const why =
+    'the review hit its time limit of 0.01 minutes and nod killed it, so it gave no verdict'
+  expect(ledger.get(id).error).toStartWith(`${why}\nIts last output: `)
+  expect(heard).toEndWith(
+    `: ${why}\nnext: nod tell n${id} <message> opens it again in the same conversation, and the review runs again on its next done`,
+  )
+
+  // What that next says, in the same conversation, once what held the review up is gone. The next
+  // Stop hook runs in a process of its own, with the usual limit.
+  const cwd = ledger.get(id).workspace ?? ''
+  const sessions = projectFolder(process.env.CLAUDE_CONFIG_DIR ?? '', cwd)
+  mkdirSync(sessions, { recursive: true })
+  writeFileSync(join(sessions, 'hung-review.jsonl'), '{}\n')
+  writeFileSync(join(cwd, 'ok.txt'), '')
+  await tell(ledger, home, terminals, id, 'go on')
+  await reaches(id, 'succeeded')
+  expect(ledger.attempts(id).map((a) => [a.kind, a.sessionId, a.checkResult])).toEqual([
+    ['start', 'hung-review', null],
+    ['followup', 'hung-review', 'passed'],
+  ])
 })
 
 // Shaped like a national ID number, as a masking test's input is; the fake reviewer blocks a first

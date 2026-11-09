@@ -3,6 +3,7 @@ import { z } from 'zod'
 import { Ledger, type Notice, type Task } from './ledger'
 import { message, unbroken } from './proc'
 import { type Project, type Session, Todos } from './todos'
+import { REVIEW_TIMED_OUT } from './verify'
 import { allowedLine, firstLine, indent, oneLine, taskLabel } from './view'
 
 // nod tells a project's session, the one nod open opened for it last, what happens to its work:
@@ -298,7 +299,10 @@ function noticesText(ledger: Ledger, project: Project | null, notices: Notice[])
 // What the session does with each end.
 const NEXT = {
   succeeded: (id: number) => `nod show n${id}, then send its result out`,
-  error: (id: number) => `nod show n${id} says why; settle with the person what to do`,
+  error: (id: number, note: string) =>
+    note.startsWith(REVIEW_TIMED_OUT)
+      ? `nod tell n${id} <message> opens it again in the same conversation, and the review runs again on its next done`
+      : `nod show n${id} says why; settle with the person what to do`,
   cancelled: (id: number) => `tell the person (nod show n${id})`,
 }
 
@@ -330,7 +334,7 @@ function noticeText(ledger: Ledger, n: Notice): string {
   const turn = ledger.attempts(task.id).findIndex((a) => a.id === n.attemptId) + 1
   const attempt = turn === 0 ? '' : `, attempt ${turn}`
   const note = firstLine(n.note || task.brief)
-  return `${taskLabel(task)} ${n.event}${attempt}: ${note}\nnext: ${NEXT[n.event](task.id)}`
+  return `${taskLabel(task)} ${n.event}${attempt}: ${note}\nnext: ${NEXT[n.event](task.id, note)}`
 }
 
 // One line into a session's inbox socket, done once the socket took all of it and nod closed its

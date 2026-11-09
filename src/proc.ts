@@ -80,7 +80,7 @@ export async function runGroup(
     // How long output is waited on once the command has ended; a test sets it.
     graceMs?: number
   },
-): Promise<{ code: number; stdout: string; stderr: string }> {
+): Promise<{ code: number; stdout: string; stderr: string; timedOut: boolean }> {
   const proc = Bun.spawn(cmd, {
     cwd: opts.cwd,
     env: opts.env,
@@ -104,8 +104,14 @@ export async function runGroup(
       read[key] += decoder.decode()
     }),
   )
+  let timedOut = false
   const timer =
-    opts.timeoutMs === undefined ? undefined : setTimeout(() => killGroup(proc.pid), opts.timeoutMs)
+    opts.timeoutMs === undefined
+      ? undefined
+      : setTimeout(() => {
+          timedOut = true
+          killGroup(proc.pid)
+        }, opts.timeoutMs)
   let grace: ReturnType<typeof setTimeout> | undefined
   try {
     const code = await proc.exited
@@ -119,7 +125,7 @@ export async function runGroup(
         grace = setTimeout(resolve, opts.graceMs ?? OUTPUT_GRACE_MS)
       }),
     ])
-    return { code, ...read }
+    return { code, timedOut, ...read }
   } finally {
     clearTimeout(timer)
     clearTimeout(grace)
@@ -128,19 +134,20 @@ export async function runGroup(
 }
 
 // `output` is stdout followed by stderr; their interleaving is lost. A command still running after
-// `timeoutMs` is killed with what it started (runGroup) and exits nonzero.
+// `timeoutMs` is killed with what it started (runGroup) and exits nonzero, with `timedOut` set: the
+// code alone does not tell that kill from any other.
 export async function spawn(
   cmd: string[],
   cwd?: string,
   opts: { stdin?: string; timeoutMs?: number; env?: Record<string, string> } = {},
-): Promise<{ code: number; stdout: string; output: string }> {
-  const { code, stdout, stderr } = await runGroup(cmd, {
+): Promise<{ code: number; timedOut: boolean; stdout: string; output: string }> {
+  const { code, timedOut, stdout, stderr } = await runGroup(cmd, {
     cwd,
     env: opts.env === undefined ? process.env : { ...process.env, ...opts.env },
     stdin: opts.stdin,
     timeoutMs: opts.timeoutMs,
   })
-  return { code, stdout, output: stdout + stderr }
+  return { code, timedOut, stdout, output: stdout + stderr }
 }
 
 // How many tasks ls and doneTasks read at once, each running a command at a time: all of a long
