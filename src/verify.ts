@@ -34,8 +34,10 @@ export const SANDBOX = {
 }
 
 // The check and the review both run inside the Stop hook, so the hook outlasts them
-// (STOP_HOOK_TIMEOUT_SECS in settings.ts).
-const REVIEW_TIMEOUT_MS = 600_000
+// (STOP_HOOK_TIMEOUT_SECS in settings.ts). In the open so a test can shorten it.
+export const REVIEW = { timeoutMs: 600_000 }
+// How the error of a review past that limit starts, which is how its notice knows it (inbox.ts).
+export const REVIEW_TIMED_OUT = 'the review hit its time limit'
 // What `claude -p` prints first when a hook blocks the message it was given (2.1.310).
 const BLOCKED = 'UserPromptSubmit operation blocked by hook:'
 
@@ -100,7 +102,7 @@ async function review(
   const dir = task.repo === null ? null : realpathSync(mkdtempSync(join(tmpdir(), 'nod-review-')))
   try {
     const changes = dir === null ? null : await changesOf(cwd, branchOf(task), base, dir)
-    const { code, stdout, output } = await spawn(
+    const { code, timedOut, stdout, output } = await spawn(
       [
         'claude',
         '-p',
@@ -114,8 +116,16 @@ async function review(
         'NotebookEdit',
       ],
       cwd,
-      { stdin: reviewBrief(ledger, task, report, changes), timeoutMs: REVIEW_TIMEOUT_MS },
+      { stdin: reviewBrief(ledger, task, report, changes), timeoutMs: REVIEW.timeoutMs },
     )
+    // Past the limit, why comes on a line of its own, the one a notice shows: what the review
+    // printed by then is rarely why.
+    if (code !== 0 && timedOut) {
+      const last = output.slice(-OUTPUT_LIMIT) || '(none)'
+      throw new Error(
+        `${REVIEW_TIMED_OUT} of ${REVIEW.timeoutMs / 60_000} minutes and nod killed it, so it gave no verdict\nIts last output: ${last}`,
+      )
+    }
     if (code !== 0) {
       throw new Error(`the review exited with ${code}: ${output.slice(-OUTPUT_LIMIT)}`)
     }

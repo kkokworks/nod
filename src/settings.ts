@@ -8,7 +8,7 @@ import { SANDBOX } from './verify'
 // and todo-cli.ts both start sessions with these, so they are here rather than in either.
 
 // The check and the review both run inside the Stop hook, so the hook outlasts them
-// (REVIEW_TIMEOUT_MS in verify.ts).
+// (REVIEW in verify.ts).
 export const STOP_HOOK_TIMEOUT_SECS = 1800
 // Opening the ledger (its busy_timeout, 5 s) and a send (inbox.ts, 5 s), with room to spare.
 const INBOX_HOOK_SECS = 15

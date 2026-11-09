@@ -70,7 +70,8 @@ const prompt =
 
 // Like `claude -p`, which nod runs as the reviewer: the prompt comes on stdin and the reply is
 // printed once. A brief with `review-strict` fails until ok.txt exists; `review-mute` gives no
-// verdict; `review-slow` takes a while. Like Claude Code under a user's UserPromptSubmit hook that
+// verdict; `review-slow` takes a while; `review-hang` runs on until killed, unless ok.txt exists;
+// `review-killed` is killed outright. Like Claude Code under a user's UserPromptSubmit hook that
 // screens for personal data, a brief with a value shaped like a national ID number is blocked
 // before any model runs: it prints why, then the whole brief, and exits 0 (2.1.310). It logs the
 // diff file its brief names as it reads it then, and the folder it may read (--add-dir), as given
@@ -95,6 +96,9 @@ if (args.includes('-p')) {
     process.exit(0)
   }
   if (stdin.includes('review-slow')) await Bun.sleep(3000)
+  // A sleep, not a promise that never settles: with nothing else to wait on, Bun would just exit.
+  if (stdin.includes('review-hang') && !existsSync('ok.txt')) await Bun.sleep(60_000)
+  if (stdin.includes('review-killed')) process.kill(process.pid, 'SIGKILL')
   let reply = 'NOD: done | looks right'
   if (stdin.includes('review-strict') && !existsSync('ok.txt')) {
     reply = 'ok.txt is missing.\nNOD: failed | ok.txt is missing'

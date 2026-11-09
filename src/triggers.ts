@@ -161,7 +161,7 @@ export function shell(
   cwd: string,
   env: Record<string, string | undefined> = process.env,
   timeoutMs = WATCH_TIMEOUT_MS,
-): Promise<{ code: number; stdout: string; stderr: string }> {
+): Promise<{ code: number; stdout: string; stderr: string; timedOut: boolean }> {
   return runGroup(['sh', '-c', cmd], { cwd, env, timeoutMs })
 }
 

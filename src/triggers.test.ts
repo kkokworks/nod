@@ -92,7 +92,7 @@ test('a command does not wait on what left its group holding its output, and kee
   // Timed out: a limit long enough for perl to have left the group when it passes.
   let started = Date.now()
   const timedOut = await shell(`echo item; ${left}; sleep 5`, dir, process.env, 1000)
-  expect(timedOut).toMatchObject({ stdout: 'item\n' })
+  expect(timedOut).toMatchObject({ stdout: 'item\n', timedOut: true })
   expect(timedOut.code).not.toBe(0)
   expect(Date.now() - started).toBeLessThan(3000)
   // Ended, with it left in the background.
@@ -101,6 +101,7 @@ test('a command does not wait on what left its group holding its output, and kee
     code: 0,
     stdout: 'item\n',
     stderr: '',
+    timedOut: false,
   })
   expect(Date.now() - started).toBeLessThan(2000)
 })
