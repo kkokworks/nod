@@ -27,9 +27,10 @@ export type Tell = { to: number; text: string }
 
 type Report = { status: 'done' | 'question' | 'failed'; text: string }
 
-// The last `NOD: <status> | <text>` line, ignoring Markdown emphasis around it.
+// The last `NOD: <status> | <text>` line out of code (outOfCode), ignoring Markdown emphasis around
+// it.
 export function parseReport(text: string): Report | null {
-  for (const line of text.split('\n').reverse()) {
+  for (const line of outOfCode(text).reverse()) {
     const match = /^NOD:\s*(done|question|failed)\s*\|\s*(.*)$/i.exec(
       line.replace(/[*`]/g, '').trim(),
     )
@@ -41,14 +42,14 @@ export function parseReport(text: string): Report | null {
   return null
 }
 
-// A report's `NOD: <word>` lines, without the code ticks or Markdown emphasis around them.
+// A report's `NOD: <word>` lines out of code (outOfCode), without the code ticks or Markdown
+// emphasis around them.
 export const nodLines = (text: string, word: string): string[] =>
-  text
-    .split('\n')
+  outOfCode(text)
     .map(nodLine)
     .filter((l): l is string => l !== null && new RegExp(`^NOD:\\s*${word}\\b`, 'i').test(l))
 
-// A report line as `NOD:…`, or null for one that is not. The ticks or emphasis it opens with close
+// A line as `NOD:…`, or null for one that does not open so. Ticks or emphasis it opens with close
 // right after its `NOD:` (`**NOD:** tell …`) or at its end (`**NOD: tell …**`), and no more of
 // them goes than opened, so a message that ends in `*` or a tick keeps it. Counted, not matched by
 // a pattern that backtracks: a worker's line may be long.
@@ -113,9 +114,12 @@ export function parseTells(text: string): { tells: Tell[] } | { error: string } 
 // ponytail: under such a first-line title, a body whose first heading is a `# ` one gives that
 // heading as the title: it is the shape of a status line above the title, told apart only by
 // guessing, so PR_TEXT asks for `##` sections.
-// The `NOD:` lines are nod's. Null without a title.
+// The lines nod reads are nod's; any other `nod:` line, and a code fence's, is the text's. Null
+// without a title.
 export function prText(report: string): { title: string; body: string } | null {
-  const lines = report.split('\n').filter((l) => nodLine(l) === null)
+  const all = report.split('\n')
+  const code = closedFences(all)
+  const lines = all.filter((l, i) => code[i] || !nodReads(l))
   const heading = firstHeading(lines)
   const titled = /^ {0,3}#[ \t]/.test(lines[heading] ?? '')
   const at = titled ? heading : lines.findIndex((l) => l.trim() !== '')
@@ -136,19 +140,55 @@ export function prText(report: string): { title: string; body: string } | null {
   }
 }
 
+// Whether one line is what parseReport, parseCaptures or parseTells read: nod acts on it, or sends
+// it back to be fixed, so it is what nod takes out of the text.
+const nodReads = (line: string): boolean =>
+  parseReport(line) !== null || nodLines(line, 'in').length > 0 || nodLines(line, 'tell').length > 0
+
 // The index of the first Markdown heading with words, outside code fences, or -1: an empty one is
-// neither a title nor a section. A fence closes on a line of its own marks, at least as many and
-// nothing after them: a "```sh" line inside it is its code.
+// neither a title nor a section.
 function firstHeading(lines: string[]): number {
+  const { inside } = fences(lines)
+  return lines.findIndex((line, i) => !inside[i] && /^ {0,3}#{1,6}[ \t]+\S/.test(line))
+}
+
+// The lines nod looks for its own in: all but the code of a fence that closes, so what a worker
+// shows there is no todo, message or status of its own. Markdown runs a fence never closed to the
+// end, but a report line under one is still the report: such a fence holds nothing back.
+// ponytail: fences only, with up to three spaces before them: an indented code block, or a fence
+// indented further under a list, still reads as report lines. Tell those apart when one bites.
+function outOfCode(text: string): string[] {
+  const lines = text.split('\n')
+  const code = closedFences(lines)
+  return lines.filter((_, i) => !code[i])
+}
+
+function closedFences(lines: string[]): boolean[] {
+  const { inside, unclosed } = fences(lines)
+  return inside.map((fenced, i) => fenced && i < unclosed)
+}
+
+// Which lines are in a code fence, its mark lines too, and the line where a fence never closed
+// opens (`lines.length` with none). A fence closes on a line of its own marks, at least as many and
+// nothing after them: a "```sh" line inside it is its code. Ticks with more ticks after them on the
+// line are inline code, and open none.
+function fences(lines: string[]): { inside: boolean[]; unclosed: number } {
+  const inside: boolean[] = []
   let fence: string | null = null
+  let unclosed = lines.length
   for (const [i, line] of lines.entries()) {
-    const marks = /^ {0,3}(`{3,}|~{3,})/.exec(line)?.[1]
+    const marks = /^ {0,3}(`{3,}(?=[^`]*$)|~{3,})/.exec(line)?.[1]
     const closes = marks?.startsWith(fence ?? '\n') && /^ {0,3}(`+|~+)[ \t]*$/.test(line)
-    if (fence === null && marks !== undefined) fence = marks
-    else if (closes) fence = null
-    else if (fence === null && /^ {0,3}#{1,6}[ \t]+\S/.test(line)) return i
+    inside.push(fence !== null || marks !== undefined)
+    if (fence === null && marks !== undefined) {
+      fence = marks
+      unclosed = i
+    } else if (closes) {
+      fence = null
+      unclosed = lines.length
+    }
   }
-  return -1
+  return { inside, unclosed }
 }
 
 // What a worker is asked when nod needs the pull request's text (land.ts), in a turn with nothing
