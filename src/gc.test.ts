@@ -153,7 +153,7 @@ test('gc collects the tasks the human names, however recent, and leaves unfinish
   expect(existsSync(workspaceOf(home, ledger.get(running)))).toBe(true)
 })
 
-test('gc deletes a branch once a remote branch holds it or the default branch has its changes', async () => {
+test('gc deletes a branch once the default branch has its changes, and keeps one only pushed', async () => {
   const home = tmp.make('nod-gc-')
   process.env.CLAUDE_CONFIG_DIR = tmp.make('nod-gc-claude-')
   const ledger = new Ledger(home)
@@ -184,9 +184,12 @@ test('gc deletes a branch once a remote branch holds it or the default branch ha
     return id
   }
   const pushed = task('feat/pushed')
+  const merged = task('feat/merged')
   const squashed = task('feat/squashed')
   const unmerged = task('feat/unmerged')
+  // Only pushed: the remote branch may go unmerged, which leaves the branch the only copy.
   git(repo, 'update-ref', 'refs/remotes/origin/feat/pushed', 'feat/pushed')
+  git(repo, 'merge', '-q', '--no-ff', '-m', 'merged', 'feat/merged')
   // A squash merge: the default branch gets the same file in a commit of its own.
   writeFileSync(join(repo, 'feat-squashed.txt'), 'feat/squashed')
   git(repo, 'add', '.')
@@ -194,14 +197,67 @@ test('gc deletes a branch once a remote branch holds it or the default branch ha
   git(repo, 'update-ref', 'refs/remotes/origin/main', 'HEAD')
   git(repo, 'symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main')
 
-  const report = await collect(ledger, home, Tmux.of(home), { ids: [pushed, squashed, unmerged] })
+  const report = await collect(ledger, home, Tmux.of(home), {
+    ids: [pushed, merged, squashed, unmerged],
+  })
 
-  expect(report.removed).toEqual([pushed, squashed, unmerged])
+  expect(report.removed).toEqual([pushed, merged, squashed, unmerged])
   expect(git(repo, 'branch', '--list', 'feat/*').split('\n').filter(Boolean)).toEqual([
+    '  feat/pushed',
     '  feat/unmerged',
   ])
   // The folders named after the repo and branch prefix went with the last worktree in them.
   expect(existsSync(join(home, 'work', 'repo'))).toBe(false)
+})
+
+test('gc keeps a pushed branch the default branch lacks, so its commits outlive the remote branch', async () => {
+  const home = tmp.make('nod-gc-')
+  const claude = tmp.make('nod-gc-claude-')
+  process.env.CLAUDE_CONFIG_DIR = claude
+  const ledger = new Ledger(home)
+  const repo = join(home, 'repo')
+  const remote = join(home, 'remote.git')
+  mkdirSync(repo)
+  const git = (cwd: string, ...args: string[]): string =>
+    sh(['git', '-c', 'user.email=t@t', '-c', 'user.name=t', ...args], cwd)
+  git(home, 'init', '-q', '--bare', remote)
+  git(repo, 'init', '-q', '-b', 'main')
+  git(repo, 'commit', '-q', '--allow-empty', '-m', 'init')
+  git(repo, 'remote', 'add', 'origin', remote)
+  git(repo, 'push', '-q', 'origin', 'main')
+  git(repo, 'remote', 'set-head', 'origin', 'main')
+  const id = ledger.add({
+    brief: 'pushed',
+    repo,
+    branch: 'feat/x',
+    checkCmd: null,
+    model: null,
+    after: [],
+    issue: null,
+  })
+  const cwd = workspaceOf(home, ledger.get(id))
+  git(repo, 'worktree', 'add', '-q', '-b', 'feat/x', cwd)
+  writeFileSync(join(cwd, 'x.txt'), 'x')
+  git(cwd, 'add', '.')
+  git(cwd, 'commit', '-q', '-m', 'x')
+  git(repo, 'push', '-q', 'origin', 'feat/x')
+  ledger.setRunning(id, cwd)
+  ledger.startAttempt({ taskId: id, kind: 'start', decisionId: null, sessionId: 's', prompt: 'x' })
+  ledger.succeed(id)
+  mkdirSync(projectFolder(claude, cwd), { recursive: true })
+  writeFileSync(join(projectFolder(claude, cwd), 's.jsonl'), '{}\n')
+  const head = git(repo, 'rev-parse', 'feat/x').trim()
+
+  await collect(ledger, home, Tmux.of(home), { ids: [id] })
+  // The remote branch goes unmerged, and a fetch --prune, as landing's, takes origin/feat/x too;
+  // then git gc drops what no ref reaches.
+  git(remote, 'branch', '-D', 'feat/x')
+  git(repo, 'fetch', '-q', '--prune', 'origin')
+  git(repo, 'gc', '-q', '--prune=now')
+  await restore(ledger, home, id)
+
+  expect(git(repo, 'rev-parse', 'feat/x').trim()).toBe(head)
+  expect(readFileSync(join(cwd, 'x.txt'), 'utf8')).toBe('x')
 })
 
 test('resume brings a collected task back: the worktree returns at the same path from the commit gc recorded', async () => {
@@ -242,8 +298,9 @@ test('resume brings a collected task back: the worktree returns at the same path
   writeFileSync(join(cwd, 'x.txt'), 'x')
   git(cwd, 'add', '.')
   git(cwd, 'commit', '-q', '-m', 'x')
-  // Pushed, so gc deletes the branch; then the remote branch goes too, as after a merge.
-  git(repo, 'update-ref', 'refs/remotes/origin/feat/x', 'feat/x')
+  // Merged, so gc deletes the branch.
+  git(repo, 'update-ref', 'refs/remotes/origin/main', 'feat/x')
+  git(repo, 'symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main')
   const head = git(repo, 'rev-parse', 'feat/x').trim()
   await collect(ledger, home, Tmux.of(home), { ids: [id] })
   expect(ledger.get(id).head).toBe(head)
@@ -251,7 +308,9 @@ test('resume brings a collected task back: the worktree returns at the same path
   // A second gc that finds the branch gone keeps the commit the first one recorded.
   ledger.collected(id, null)
   expect(ledger.get(id).head).toBe(head)
-  git(repo, 'update-ref', '-d', 'refs/remotes/origin/feat/x')
+  // The default branch moves on without it, so only the recorded commit has the work.
+  git(repo, 'commit', '-q', '--allow-empty', '-m', 'later')
+  git(repo, 'update-ref', 'refs/remotes/origin/main', 'HEAD')
 
   await restore(ledger, home, id)
 
@@ -470,18 +529,19 @@ test('gc removes nothing of a task told to go on while it checks the worktree', 
   git(repo, 'init', '-q', '-b', 'main')
   git(repo, 'commit', '-q', '--allow-empty', '-m', 'init')
   const id = ledger.add({
-    brief: 'pushed',
+    brief: 'merged',
     repo,
-    branch: 'feat/pushed',
+    branch: 'feat/merged',
     checkCmd: null,
     model: null,
     after: [],
     issue: null,
   })
   const cwd = workspaceOf(home, ledger.get(id))
-  git(repo, 'worktree', 'add', '-q', '-b', 'feat/pushed', cwd)
+  git(repo, 'worktree', 'add', '-q', '-b', 'feat/merged', cwd)
   git(cwd, 'commit', '-q', '--allow-empty', '-m', 'work')
-  git(repo, 'update-ref', 'refs/remotes/origin/feat/pushed', 'feat/pushed')
+  git(repo, 'update-ref', 'refs/remotes/origin/main', 'feat/merged')
+  git(repo, 'symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main')
   ledger.setRunning(id, cwd)
   ledger.succeed(id)
   // `nod tell` comes as gc runs the git command named in `tellAt`: the message sets the task
@@ -507,7 +567,7 @@ test('gc removes nothing of a task told to go on while it checks the worktree', 
     })
     expect(markedMidway).toBeNull()
     expect(existsSync(cwd)).toBe(true)
-    expect(git(repo, 'branch', '--list', 'feat/pushed')).toContain('feat/pushed')
+    expect(git(repo, 'branch', '--list', 'feat/merged')).toContain('feat/merged')
     expect(ledger.get(id).collectedAt).toBeNull()
 
     // While the worktree goes: the folder is gone, but the task stays listed and keeps its branch.
@@ -518,7 +578,7 @@ test('gc removes nothing of a task told to go on while it checks the worktree', 
       clean: [],
       skipped: [{ id, reason: 'told to go on while gc ran' }],
     })
-    expect(git(repo, 'branch', '--list', 'feat/pushed')).toContain('feat/pushed')
+    expect(git(repo, 'branch', '--list', 'feat/merged')).toContain('feat/merged')
     expect(ledger.get(id).collectedAt).toBeNull()
   } finally {
     spy.mockRestore()
@@ -536,27 +596,30 @@ test('a task gc cannot finish after its worktree went stays listed, and a later 
   git(repo, 'init', '-q', '-b', 'main')
   git(repo, 'commit', '-q', '--allow-empty', '-m', 'init')
   const id = ledger.add({
-    brief: 'pushed',
+    brief: 'merged',
     repo,
-    branch: 'feat/pushed',
+    branch: 'feat/merged',
     checkCmd: null,
     model: null,
     after: [],
     issue: null,
   })
   const cwd = workspaceOf(home, ledger.get(id))
-  git(repo, 'worktree', 'add', '-q', '-b', 'feat/pushed', cwd)
+  git(repo, 'worktree', 'add', '-q', '-b', 'feat/merged', cwd)
   git(cwd, 'commit', '-q', '--allow-empty', '-m', 'work')
-  git(repo, 'update-ref', 'refs/remotes/origin/feat/pushed', 'feat/pushed')
+  git(repo, 'update-ref', 'refs/remotes/origin/main', 'feat/merged')
+  git(repo, 'symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main')
   ledger.setRunning(id, cwd)
   ledger.succeed(id)
-  // Looking for the remote branches that hold the branch fails, so it cannot be deleted.
-  const spawn = Bun.spawn
-  const spy = spyOn(Bun, 'spawn').mockImplementation(((...args: Parameters<typeof spawn>) => {
+  // Comparing the branch with the default branch fails, so it cannot be deleted.
+  const spawnSync = Bun.spawnSync
+  const spy = spyOn(Bun, 'spawnSync').mockImplementation(((
+    ...args: Parameters<typeof spawnSync>
+  ) => {
     const [cmd] = args
-    if (Array.isArray(cmd) && cmd.includes('--contains')) throw new Error('for-each-ref failed')
-    return spawn.apply(Bun, args)
-  }) as typeof spawn)
+    if (Array.isArray(cmd) && cmd.includes('--name-only')) throw new Error('git diff failed')
+    return spawnSync.apply(Bun, args)
+  }) as typeof spawnSync)
 
   const failed = await collect(ledger, home, Tmux.of(home), { ids: [id] }).finally(() =>
     spy.mockRestore(),
@@ -565,7 +628,7 @@ test('a task gc cannot finish after its worktree went stays listed, and a later 
   expect(failed).toEqual({
     removed: [],
     clean: [],
-    skipped: [{ id, reason: 'for-each-ref failed' }],
+    skipped: [{ id, reason: 'git diff failed' }],
   })
   expect(existsSync(cwd)).toBe(false)
   expect(ledger.get(id).collectedAt).toBeNull()
@@ -576,7 +639,7 @@ test('a task gc cannot finish after its worktree went stays listed, and a later 
     clean: [id],
     skipped: [],
   })
-  expect(git(repo, 'branch', '--list', 'feat/pushed')).toBe('')
+  expect(git(repo, 'branch', '--list', 'feat/merged')).toBe('')
   expect(ledger.get(id).collectedAt).not.toBeNull()
 })
 
