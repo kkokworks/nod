@@ -71,7 +71,7 @@ export type LsTask = {
   note: string
   issue: string | null
   links: string[]
-  // The remote branches holding its branch while it has no link (unlinkedPushes in cli.ts).
+  // The remote branches holding its own commits while it has no link (unlinkedPushes in cli.ts).
   pushed: string[]
 }
 

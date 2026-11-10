@@ -4,6 +4,7 @@ import { join, resolve } from 'node:path'
 import { parseArgs } from 'node:util'
 import { accountRule, configDir, describeRule, openedIn, setAccountRule } from './account'
 import { ALLOW, onPermissionRequest, PermissionEvent } from './allow'
+import { createdFrom } from './branch'
 import { finished, NO_PERSON } from './decisions'
 import { followWork, sweep } from './done'
 import { AUTOCOMPACT_PCT } from './env'
@@ -184,7 +185,8 @@ const USAGE = `usage:
   nod peek <task>                  print what the worker's terminal shows right now
   nod link <task> <url...>         record where the task's result went (a pull request, a posted
                                    review), so ls and show list it next to the task. Until then
-                                   they list the remote branches that hold the task's branch
+                                   they list the remote branches that hold the task's own
+                                   commits, none for a task that made none
   nod ls [--all] [--mine] [--plain | --json]
                                    tasks not yet collected by gc (--all: every task; --mine: only
                                    this Claude session's: those it added, or, in a session nod
@@ -1299,18 +1301,27 @@ async function printTask(
 }
 
 // The remote branches holding a succeeded task's branch, while it has no link: its result was
-// pushed, maybe under another name, and is waiting to be linked. Only as fresh as the repo's last
-// fetch; nod fetches only as it lands a repo's tasks (land.ts). Not waited on in turn: ls asks of
-// several tasks at once (readAtOnce).
+// pushed, maybe under another name, and is waiting to be linked. None while the branch has no
+// commits of its own past where they start (where landing recorded them to start, else where the
+// branch was created): it sits on others' commits, which every remote branch made since may hold.
+// Only as fresh as the repo's last fetch; nod fetches only as it lands a repo's tasks (land.ts).
+// Not waited on in turn: ls asks of several tasks at once (readAtOnce).
+// ponytail: a branch with no commits of its own moved onto a later default branch (a rebase onto
+// it) shows the remote branches holding that. ownStart would tell those apart, but it counts the
+// task's commits merged into the default branch as the default branch's, hiding where it went.
 async function unlinkedPushes(t: Task): Promise<string[]> {
   const { repo } = t
   if (repo === null || t.status !== 'succeeded' || ledger.links(t.id).length > 0) return []
-  const branch = `refs/heads/${branchOf(t)}`
+  const branch = branchOf(t)
+  const ref = `refs/heads/${branch}`
+  const git = (...args: string[]) => spawn(['git', '-C', repo, ...args])
   // The repo or the branch is gone: nothing left to look in.
-  if ((await spawn(['git', '-C', repo, 'rev-parse', '--verify', '-q', branch])).code !== 0) {
-    return []
-  }
-  return remotesHolding(repo, branch)
+  if ((await git('rev-parse', '--verify', '-q', ref)).code !== 0) return []
+  // With the branch's reflog gone, the default branch stands in for where its commits start.
+  const start =
+    ledger.landing(t.id)?.base ?? (await createdFrom(repo, branch)) ?? 'refs/remotes/origin/HEAD'
+  if ((await git('merge-base', '--is-ancestor', ref, start)).code === 0) return []
+  return remotesHolding(repo, ref)
 }
 
 function printAttempt(a: Attempt): void {

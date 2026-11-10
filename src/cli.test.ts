@@ -694,7 +694,10 @@ test('ls shows where an unlinked task was pushed, under any name, until it is li
   })
   ledger.setRunning(task, repo)
   ledger.succeed(task)
-  git('branch', 'local/work')
+  // A commit of its own: the one its branch was made on is others'.
+  git('checkout', '-q', '-b', 'local/work')
+  git('commit', '-q', '--allow-empty', '-m', 'work')
+  git('checkout', '-q', '-')
   git('update-ref', 'refs/remotes/origin/feat/work', 'local/work')
   git('symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/feat/work')
   // The issue and results, the last field.
@@ -708,6 +711,81 @@ test('ls shows where an unlinked task was pushed, under any name, until it is li
   ledger.link(task, ['https://example.com/pr/1'])
   expect(await ls()).toBe('https://example.com/pr/1')
 })
+
+test('ls and show list only the remote branches holding a task’s own commits, none for a task that made none', async () => {
+  const home = tmp.make('nod-pushed-own-')
+  const repo = tmp.make('nod-pushed-own-repo-')
+  const git = (...args: string[]): void => {
+    const r = Bun.spawnSync([
+      'git',
+      '-C',
+      repo,
+      '-c',
+      'user.email=t@t',
+      '-c',
+      'user.name=t',
+      ...args,
+    ])
+    if (r.exitCode !== 0) throw new Error(r.stderr.toString())
+  }
+  const ledger = new Ledger(home)
+  const succeeded = (branch: string): number => {
+    const id = ledger.add({
+      brief: branch,
+      repo,
+      branch,
+      checkCmd: null,
+      model: null,
+      after: [],
+      issue: null,
+    })
+    ledger.setRunning(id, repo)
+    ledger.succeed(id)
+    return id
+  }
+  git('init', '-q', '-b', 'main')
+  git('commit', '-q', '--allow-empty', '-m', 'init')
+  // Reports only: its branch stays on the default branch's old commit.
+  const report = succeeded('local/report')
+  git('branch', 'local/report')
+  git('commit', '-q', '--allow-empty', '-m', 'later')
+  const work = succeeded('local/work')
+  git('checkout', '-q', '-b', 'local/work')
+  git('commit', '-q', '--allow-empty', '-m', 'work')
+  git('checkout', '-q', 'main')
+  // Comes after work and makes no commit: its branch starts on work's.
+  const next = succeeded('local/next')
+  git('branch', 'local/next', 'local/work')
+  git('update-ref', 'refs/remotes/origin/main', 'main')
+  git('symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main')
+  // Others' branches, all on the default branch, so all holding report's commit.
+  for (const name of ['a', 'b', 'c']) git('update-ref', `refs/remotes/origin/feat/${name}`, 'main')
+  git('update-ref', 'refs/remotes/origin/feat/work', 'local/work')
+  const nod = async (...args: string[]): Promise<string> => {
+    const p = Bun.spawn(['bun', cli, ...args], { env: { ...process.env, NOD_HOME: home } })
+    expect(await p.exited).toBe(0)
+    return new Response(p.stdout).text()
+  }
+  // Each task's results, the last field, by its id.
+  const results = Object.fromEntries(
+    // Only the last newline: a line ends in a tab when its results are empty.
+    (await nod('ls'))
+      .replace(/\n$/, '')
+      .split('\n')
+      .map((l) => l.split('\t'))
+      .map((f) => [Number(f[0]), f.at(-1)]),
+  )
+  const pushedLines = async (id: number): Promise<string[]> =>
+    (await nod('show', `n${id}`)).split('\n').filter((l) => /^ +pushed[: ]/.test(l))
+
+  expect(results).toEqual({ [report]: '', [work]: 'origin/feat/work', [next]: '' })
+  expect(await pushedLines(report)).toEqual([])
+  expect(await pushedLines(next)).toEqual([])
+  expect(await pushedLines(work)).toEqual([
+    '      pushed origin/feat/work',
+    '  pushed: origin/feat/work',
+  ])
+}, 20_000)
 
 test('ls asks git where each unlinked task was pushed at once, not waiting on one task before the next', async () => {
   const home = tmp.make('nod-pushed-at-once-')
