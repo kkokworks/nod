@@ -421,14 +421,22 @@ async function fetchTip(repo: string): Promise<Tip> {
       throw new Error(`git ${args[0]} failed: ${r.output.trim().slice(-OUTPUT_LIMIT)}`)
     return r.output
   }
-  await reach(['fetch', '-q', 'origin'])
+  // Before the fetch, so nothing after its --prune can fail on the network and leave origin/HEAD
+  // pointing at nothing until the next pass (below).
   const head = await reach(['ls-remote', '--symref', 'origin', 'HEAD'])
   const branch = /^ref: refs\/heads\/(\S+)\s+HEAD/m.exec(head)?.[1]
   if (branch === undefined) throw new Error('origin names no default branch')
-  return {
-    branch,
-    commit: await git(repo, 'rev-parse', '--verify', `refs/remotes/origin/${branch}^{commit}`),
+  // --prune: a branch the remote deleted would otherwise stay as origin/<branch>, which the push
+  // reads as commits nod did not push, and asks again after the person removed them.
+  await reach(['fetch', '-q', '--prune', 'origin'])
+  const commit = await git(repo, 'rev-parse', '--verify', `refs/remotes/origin/${branch}^{commit}`)
+  // Once the remote renames its default branch, --prune deletes the old one and leaves origin/HEAD
+  // pointing at nothing, which done.ts and gc.ts would read as tasks with no commits.
+  const tracked = await maybe(git(repo, 'symbolic-ref', '-q', 'refs/remotes/origin/HEAD'))
+  if (tracked !== null && !hasRef(repo, tracked)) {
+    await git(repo, 'symbolic-ref', 'refs/remotes/origin/HEAD', `refs/remotes/origin/${branch}`)
   }
+  return { branch, commit }
 }
 
 function landingMessage(m: {
