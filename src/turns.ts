@@ -196,13 +196,15 @@ export const noTurn = (a: Attempt): boolean =>
 
 // A turn that ended without its Stop hook, because its Claude Code or terminal went. It may have
 // done part of its work, so the person decides how it goes on instead of nod running it again. A
-// permission or trust prompt it was showing went with it. Returns whether it raised the decision.
+// permission or trust prompt it was showing went with it. `done`: what of it may be done, for one
+// that never took its message. Returns whether it raised the decision.
 export async function cutOff(
   ledger: Ledger,
   home: string,
   taskId: number,
   attempt: Attempt,
   why: string,
+  done = 'The turn did not finish, and part of it may be done.',
 ): Promise<boolean> {
   // Taken first, in one statement: of two that find the turn open at once (ticks, say), one raises
   // the decision. A message sent while Claude Code started again may have run it to its end since.
@@ -218,7 +220,7 @@ export async function cutOff(
     taskId,
     attempt.id,
     'interrupted',
-    `${why}\nThe turn did not finish, and part of it may be done. It was on:\n> ${oneLine(attempt.prompt, 200)}\nAnswer with how to go on, such as to check what is done and carry on; the answer goes into the same conversation.${owes}`,
+    `${why}\n${done} It was on:\n> ${oneLine(attempt.prompt, 200)}\nAnswer with how to go on, such as to check what is done and carry on; the answer goes into the same conversation.${owes}`,
   )
   return true
 }

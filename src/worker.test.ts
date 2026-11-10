@@ -3019,7 +3019,8 @@ test('a terminal that keeps ending before Claude Code takes the message opens ag
   const decision = ledger.decisions(id).find((d) => d.reason === 'interrupted')
   if (decision === undefined) throw new Error('no interrupted decision')
   expect(decision.question).toContain('before Claude Code took the message, 3 times in a row')
-  expect(decision.question).toContain('> go on')
+  expect(decision.question).toContain('Nothing of the turn is done. It was on:\n> go on')
+  expect(decision.question).not.toContain('part of it may be done')
 
   // Fixed, nod runs again: the message that never went in goes, ahead of the answer.
   await answer(ledger, home, terminals, decision.id, 'carry on', 'human')

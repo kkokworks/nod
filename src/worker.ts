@@ -1961,7 +1961,7 @@ async function lostTurn(
   }
   rmSync(reopened, { force: true })
   // The message stays in the prompt file, and goes to the worker ahead of the answer.
-  return cutOff(ledger, home, t.id, open, NEVER_TOOK)
+  return cutOff(ledger, home, t.id, open, NEVER_TOOK, 'Nothing of the turn is done.')
 }
 
 // How often lostTurns opened a turn's terminal again, as `<turn> <times>`.
