@@ -277,9 +277,11 @@ async function landTask(
   // Out: what nod checks itself and the person's gate, then the push, before anyone else sees it.
   // The branch as origin has it now, not origin/<branch>: a clone that fetches only the default
   // branch has none, and the remote may have deleted the branch since nod pushed it. Where the push
-  // goes, which remote.origin.pushurl may set apart from where origin fetches from.
+  // goes, which remote.origin.pushurl may set apart from where origin fetches from; by its name
+  // otherwise, as a bare URL leaves out remote.origin.* (its uploadpack, say).
   const ref = `refs/heads/${branch}`
-  const to = await git(ws, 'remote', 'get-url', '--push', 'origin')
+  const pushUrl = await git(ws, 'remote', 'get-url', '--push', 'origin')
+  const to = pushUrl === (await git(ws, 'remote', 'get-url', 'origin')) ? 'origin' : pushUrl
   const listed = await reach(ws, ['ls-remote', to, ref])
   const remote =
     listed

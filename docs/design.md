@@ -891,7 +891,9 @@ nod add --after <작업> ─▶ 대기(queued) ─▶ 앞 작업이 모두 성�
   그 밖이면 남의 커밋이 있는 것이라 결정으로 올립니다.
   브랜치가 시작된 커밋 자체나 그보다 앞은 남의 것으로 칩니다.
   처음에는 reflog 의 가장 오래된 항목(시작 커밋)의 조상이기만 하면 자기 것으로 봐서, 남의 브랜치에서 같은 이름으로 시작한 작업이 그 브랜치의 커밋을 원격에서 지웠습니다(리뷰에서 재현).
-  원격에 있는지와 그 커밋은 push 직전에 push 가 가는 주소(`git remote get-url --push origin`, `remote.origin.pushurl` 이 있으면 그것)에 `git ls-remote` 로 묻습니다.
+  원격에 있는지와 그 커밋은 push 직전에 push 가 가는 곳에 `git ls-remote` 로 묻습니다.
+  `remote.origin.pushurl` 이 fetch 주소와 다르면 그 주소(`git remote get-url --push origin`)에, 아니면 `origin` 이라는 이름으로 묻습니다.
+  주소로 물으면 `remote.origin.uploadpack` 같은 원격별 설정이 빠지기 때문입니다(리뷰에서 재현).
   원격 추적 ref(`origin/<브랜치>`)는 기본 브랜치만 fetch 하는 클론(`--single-branch`, 얕은 클론)에는 없어서, 그것이 없을 때 빈 값을 기대하면 그런 클론에서는 브랜치를 바꾸는 다음 push(rebase 뒤 등)부터 거절됩니다.
   처음에는 원격 추적 ref 로 보고 fetch 를 `--prune` 없이 해서 원격에서 지운 브랜치가 남았고, 결정대로 사람이 원격 브랜치를 지우고 yes 해도 같은 결정이 다시 열렸습니다(리뷰에서 재현, 레포에 `fetch.prune` 이 꺼져 있을 때).
   fetch 는 지금도 `--prune` 으로 합니다.
