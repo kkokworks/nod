@@ -190,8 +190,8 @@ export async function workLeft(ledger: Ledger, task: Task, prs: PrLookup | null)
   const { repo } = task
   if (repo === null || task.branch === null || task.workspace === null) return { status: 'done' }
   const branch = branchState(task)
-  // gc deletes the branch once a remote has its commits or the default branch its changes; the
-  // head it recorded tells which.
+  // gc deletes the branch only once the default branch has its changes; once the branch is gone,
+  // the head gc recorded is read in its place.
   const inMain =
     branch === null
       ? task.head !== null && landed(repo, task.head)

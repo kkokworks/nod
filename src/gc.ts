@@ -19,7 +19,7 @@ export type GcReport = {
 export type GcPick = { before: Date } | { ids: number[] } | { seen: Task[] }
 
 // Removes what the picked finished tasks left behind: the worker's tmux session, the workspace or
-// worktree, and the task's branch once its work is safe elsewhere (see dropBranch). Ledger rows
+// worktree, and the task's branch once the default branch has its work (dropBranch). Ledger rows
 // stay, so stats survive, and so does Claude Code's session folder, so resume can bring the task
 // back (restore in worker.ts). A plain workspace's files are the task's output, hence the age
 // cutoff unless the human names the task. Every task gc gets through is marked collected, so ls
@@ -244,20 +244,20 @@ function submoduleNames(dir: string, name = ''): string[] {
     .flatMap((entry) => submoduleNames(join(dir, entry.name), join(name, entry.name)))
 }
 
-// Deletes a finished task's branch once its work is safe elsewhere: a remote branch holds its
-// commits, or the remote's default branch already has what it changed (a squash merge whose remote
-// branch was deleted leaves no remote branch holding them). Otherwise the branch stays, as the only
-// copy of the work. So does a branch still checked out somewhere, which git refuses to delete.
+// Deletes a finished task's branch once the remote's default branch already has what it changed.
+// Otherwise the branch stays, even when a remote branch holds its commits: that branch may be
+// deleted unmerged, a fetch --prune (land.ts) then takes the last ref to them, and git gc the
+// commits, so resume would rebuild the branch without its work. So does a branch still checked out
+// somewhere, which git refuses to delete.
 // A task that never started keeps no branch of its own, since a start that fails after making one
 // takes it back (prepareWorkspace in worker.ts): one by its name is someone else's.
 async function dropBranch(task: Task): Promise<void> {
   const { repo, branch } = task
   if (repo === null || branch === null || task.workspace === null) return
   const ref = `refs/heads/${branch}`
-  const git = (...args: string[]) => Bun.spawnSync(['git', '-C', repo, ...args])
   // The repo or the branch is gone: nothing to delete.
   if (!hasRef(repo, ref)) return
-  if ((await remotesHolding(repo, ref)).length > 0 || landed(repo, ref)) git('branch', '-D', branch)
+  if (landed(repo, ref)) Bun.spawnSync(['git', '-C', repo, 'branch', '-D', branch])
 }
 
 // Whether ref names something in repo; false once the repo is gone too.
