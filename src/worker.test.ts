@@ -2966,6 +2966,81 @@ test('a turn whose terminal went (the machine or tmux restarted) becomes a decis
   expect(entries('turn').at(-1)?.message).toContain('Human decision: carry on')
 }, 30_000)
 
+// A finished task whose terminal was closed, and whose next `breaks` terminals run a nod that is not
+// there, as the UI server's build did (its src/cli.ts beside the bundle): each ends at once.
+async function closedWithBrokenStarts(
+  breaks: number,
+): Promise<{ id: number; starts: () => number }> {
+  const id = await add('first')
+  await reaches(id, 'succeeded')
+  await settled(id)
+  await terminals.close(sessionName(id))
+  const start = fake.start.bind(fake)
+  let left = breaks
+  const spy = spyOn(fake, 'start').mockImplementation((name, cwd, argv, env) => {
+    const nod = left-- > 0 ? [argv[0] ?? '', join(home, 'cli.ts'), ...argv.slice(2)] : argv
+    start(name, cwd, nod, env)
+  })
+  return { id, starts: () => spy.mock.calls.length }
+}
+
+test('a turn whose terminal ended before Claude Code took its message goes on with it in a terminal opened again, not as a decision', async () => {
+  const { id, starts } = await closedWithBrokenStarts(1)
+  await tell(ledger, home, terminals, id, 'go on', null)
+  await until(() => !terminals.alive(sessionName(id)))
+
+  expect(await lostTurns(ledger, home, terminals, new Date(Date.now() + 60_000))).toEqual([])
+  await reaches(id, 'succeeded')
+  expect(starts()).toBe(2)
+  expect(ledger.decisions(id).filter((d) => d.reason === 'interrupted')).toEqual([])
+  expect(ledger.attempts(id).map((a) => [a.kind, a.outcome])).toEqual([
+    ['start', 'succeeded'],
+    ['followup', 'succeeded'],
+  ])
+  expect(entries('launch').map((l) => [l.resumed, l.prompt])).toEqual([
+    [false, expect.stringContaining('first')],
+    [true, 'go on'],
+  ])
+}, 30_000)
+
+test('a terminal that keeps ending before Claude Code takes the message opens again until it ended as often as a Claude Code that exits as it starts, then the message goes with the answer', async () => {
+  // MAX_QUICK_EXITS (3) terminals in a row: the tell's and two opened again.
+  const { id, starts } = await closedWithBrokenStarts(3)
+  await tell(ledger, home, terminals, id, 'go on', null)
+  const later = new Date(Date.now() + 60_000)
+  for (let opened = 1; opened <= 2; opened++) {
+    await until(() => !terminals.alive(sessionName(id)))
+    expect(await lostTurns(ledger, home, terminals, later)).toEqual([])
+    expect(starts()).toBe(1 + opened)
+  }
+  await until(() => !terminals.alive(sessionName(id)))
+  expect(await lostTurns(ledger, home, terminals, later)).toEqual([id])
+  expect(starts()).toBe(3)
+  const decision = ledger.decisions(id).find((d) => d.reason === 'interrupted')
+  if (decision === undefined) throw new Error('no interrupted decision')
+  expect(decision.question).toContain('before Claude Code took the message, 3 times in a row')
+  expect(decision.question).toContain('Nothing of the turn is done. It was on:\n> go on')
+  expect(decision.question).not.toContain('part of it may be done')
+
+  // Fixed, nod runs again: the message that never went in goes, ahead of the answer.
+  await answer(ledger, home, terminals, decision.id, 'carry on', 'human')
+  await reaches(id, 'succeeded')
+  const said = entries('turn').at(-1)?.message ?? ''
+  expect(said.startsWith('go on\n\n')).toBe(true)
+  expect(said).toContain('Human decision: carry on')
+}, 30_000)
+
+test('a lost turn that took its message is a decision, though a message left since has its words inside', async () => {
+  const id = await add('hang until ended')
+  await until(() => entries('turn')[0])
+  fake.killAll()
+  // A later message waiting for the next start, which holds the turn's words but is not them.
+  const words = ledger.openAttempt(id)?.prompt ?? ''
+  writeFileSync(join(home, 'work', `.prompt-${id}`), `before ${words} after`)
+  expect(await lostTurns(ledger, home, terminals, new Date(Date.now() + 60_000))).toEqual([id])
+  expect(ledger.decisions(id).map((d) => d.reason)).toEqual(['interrupted'])
+}, 30_000)
+
 // A todo the person delegated to a task (`nod add --todo`), which has not started yet.
 function delegated(
   todos: Todos,

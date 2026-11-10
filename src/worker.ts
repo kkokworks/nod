@@ -1705,7 +1705,9 @@ export async function keepWorker(
 
 const RESTARTED =
   'Claude Code ended in the middle of a turn, and nod started it again in the same terminal and conversation.'
-const LOST = 'Its terminal went in the middle of a turn: the machine restarted, or tmux stopped.'
+const LOST =
+  'Its terminal went in the middle of a turn: the machine restarted, tmux stopped or something closed the terminal, or `nod run` in it failed as it started.'
+const NEVER_TOOK = `Its terminal ended before Claude Code took the message, ${MAX_QUICK_EXITS} times in a row as nod opened it again: \`nod run\` in it fails as it starts (bun, or nod's files, gone from where they were), or tmux keeps stopping. The message waits, and goes to the worker ahead of the answer.`
 
 // A start of a worker's Claude Code. `started`: the file its SessionStart hook creates in a repo,
 // where Claude Code may ask about trust first (trustOnStart); null for the first start, whose trust
@@ -1897,7 +1899,12 @@ async function giveUp(
 
 // Raises a decision for each turn whose terminal is gone (keepWorker went with it), as after a
 // restart of the machine or of tmux. A task between turns needs nothing: the next message starts
-// it again in its conversation.
+// it again in its conversation. A turn whose message still waits in the prompt file never reached
+// Claude Code: its terminal ended before keepWorker started one with it (a `nod run` that could not
+// run there, say). It did nothing, so its terminal opens again in the same conversation to take the
+// message, as deliver opened it, until MAX_QUICK_EXITS terminals in a row have ended so, as
+// keepWorker starts again a Claude Code that exits as it starts; then the person hears of it.
+// Returns the tasks asked about.
 export async function lostTurns(
   ledger: Ledger,
   home: string,
@@ -1909,14 +1916,58 @@ export async function lostTurns(
   for (const t of ledger.list()) {
     if (t.status !== 'running' && t.status !== 'needs_decision') continue
     if (live.has(sessionName(t.id))) continue
-    // A turn a person typed that had ended before its terminal went was not cut off.
-    endTurnWithoutStop(ledger, home, t.id)
-    const open = ledger.openAttempt(t.id)
-    if (open === null || Date.parse(open.startedAt) > now.getTime() - LAUNCH_GRACE_MS) continue
-    if (await cutOff(ledger, home, t.id, open, LOST)) lost.push(t.id)
+    // One that fails (its prompt file taken meanwhile, a tell opening its terminal) must not keep
+    // the rest from being asked about; the next tick tries it again.
+    try {
+      if (await lostTurn(ledger, home, terminals, t, now)) lost.push(t.id)
+    } catch (error) {
+      console.error(`nod: could not ask about task n${t.id}'s lost turn: ${message(error)}`)
+    }
   }
   return lost
 }
+
+// lostTurns for a task whose terminal is gone: whether it raised the decision.
+async function lostTurn(
+  ledger: Ledger,
+  home: string,
+  terminals: Terminals,
+  t: Task,
+  now: Date,
+): Promise<boolean> {
+  // A turn a person typed that had ended before its terminal went was not cut off.
+  endTurnWithoutStop(ledger, home, t.id)
+  const open = ledger.openAttempt(t.id)
+  if (open === null || Date.parse(open.startedAt) > now.getTime() - LAUNCH_GRACE_MS) return false
+  const prompt = promptFile(home, t.id)
+  // The turn's message is one of those leavePrompt keeps there, each a paragraph of its own.
+  // ponytail: another message that has the turn's message as a paragraph of its own counts too.
+  const waiting =
+    existsSync(prompt) &&
+    `\n\n${readFileSync(prompt, 'utf8')}\n\n`.includes(`\n\n${open.prompt}\n\n`)
+  if (!waiting || t.status !== 'running' || t.workspace === null) {
+    return cutOff(ledger, home, t.id, open, LOST)
+  }
+  const reopened = reopenedFile(home, t.id)
+  const [turn, times = 0] = existsSync(reopened)
+    ? readFileSync(reopened, 'utf8').split(' ').map(Number)
+    : []
+  // The terminals of the turn that ended so in a row: deliver's, and those opened again since.
+  const ended = (turn === open.id ? times : 0) + 1
+  if (ended < MAX_QUICK_EXITS) {
+    writeFileSync(reopened, `${open.id} ${ended}`)
+    launch(home, terminals, t.id, t.workspace, [])
+    return false
+  }
+  rmSync(reopened, { force: true })
+  // The message stays in the prompt file, and goes to the worker ahead of the answer.
+  return cutOff(ledger, home, t.id, open, NEVER_TOOK, 'Nothing of the turn is done.')
+}
+
+// How often lostTurns opened a turn's terminal again, as `<turn> <times>`.
+// ponytail: left behind once the turn goes on; another turn counts from 0.
+const reopenedFile = (home: string, taskId: number): string =>
+  join(home, 'work', `.reopened-${taskId}`)
 
 // Closes the terminals of the finished tasks gc has not collected once they have sat this long: each
 // keeps a Claude Code (70–300MB) that a message can start again in the same conversation (deliver),

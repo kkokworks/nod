@@ -16,7 +16,8 @@ const INBOX_HOOK_SECS = 15
 // (10 s). The dialog shows while it runs, so its time holds up no one.
 const PERMISSION_HOOK_SECS = 30
 // The standard `dirname`, not Bun's `dir`: the UI server loads this module through Vite, which
-// gives only the standard names.
+// gives only the standard names. Its build bundles this module elsewhere, and keeps this folder for
+// it (ownFolders in ui/vite.config.ts).
 export const CLI = join(import.meta.dirname, 'cli.ts')
 
 // `started`: a file the SessionStart hook creates, so nod knows the session got past the trust
