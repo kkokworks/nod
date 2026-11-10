@@ -3003,24 +3003,41 @@ test('a turn whose terminal ended before Claude Code took its message goes on wi
   ])
 }, 30_000)
 
-test('a terminal that keeps ending before Claude Code takes the message opens again as often as a Claude Code that exits as it starts, then becomes a decision', async () => {
-  const { id, starts } = await closedWithBrokenStarts(Infinity)
+test('a terminal that keeps ending before Claude Code takes the message opens again until it ended as often as a Claude Code that exits as it starts, then the message goes with the answer', async () => {
+  // MAX_QUICK_EXITS (3) terminals in a row: the tell's and two opened again.
+  const { id, starts } = await closedWithBrokenStarts(3)
   await tell(ledger, home, terminals, id, 'go on', null)
   const later = new Date(Date.now() + 60_000)
-  // MAX_QUICK_EXITS (3) times.
-  for (let opened = 1; opened <= 3; opened++) {
+  for (let opened = 1; opened <= 2; opened++) {
     await until(() => !terminals.alive(sessionName(id)))
     expect(await lostTurns(ledger, home, terminals, later)).toEqual([])
     expect(starts()).toBe(1 + opened)
   }
   await until(() => !terminals.alive(sessionName(id)))
   expect(await lostTurns(ledger, home, terminals, later)).toEqual([id])
-  expect(starts()).toBe(4)
+  expect(starts()).toBe(3)
   const decision = ledger.decisions(id).find((d) => d.reason === 'interrupted')
-  expect(decision?.question).toContain('before Claude Code took the message')
-  expect(decision?.question).toContain('> go on')
-  // The question carries the message, and the answer goes in its place.
-  expect(existsSync(join(home, 'work', `.prompt-${id}`))).toBe(false)
+  if (decision === undefined) throw new Error('no interrupted decision')
+  expect(decision.question).toContain('before Claude Code took the message, 3 times in a row')
+  expect(decision.question).toContain('> go on')
+
+  // Fixed, nod runs again: the message that never went in goes, ahead of the answer.
+  await answer(ledger, home, terminals, decision.id, 'carry on', 'human')
+  await reaches(id, 'succeeded')
+  const said = entries('turn').at(-1)?.message ?? ''
+  expect(said.startsWith('go on\n\n')).toBe(true)
+  expect(said).toContain('Human decision: carry on')
+}, 30_000)
+
+test('a lost turn that took its message is a decision, though a message left since has its words inside', async () => {
+  const id = await add('hang until ended')
+  await until(() => entries('turn')[0])
+  fake.killAll()
+  // A later message waiting for the next start, which holds the turn's words but is not them.
+  const words = ledger.openAttempt(id)?.prompt ?? ''
+  writeFileSync(join(home, 'work', `.prompt-${id}`), `before ${words} after`)
+  expect(await lostTurns(ledger, home, terminals, new Date(Date.now() + 60_000))).toEqual([id])
+  expect(ledger.decisions(id).map((d) => d.reason)).toEqual(['interrupted'])
 }, 30_000)
 
 // A todo the person delegated to a task (`nod add --todo`), which has not started yet.

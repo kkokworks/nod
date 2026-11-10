@@ -20,8 +20,8 @@ export function reopenCommand({ session, project, latest }: SessionPlace): strin
 }
 
 // How ls and the UI name a task's state. A running task without a session lost its terminal (a
-// restart of the machine or of tmux): the tick asks about the turn it was in (lostTurns), and
-// `nod resume` reopens it. `live`: the sessions there are (Terminals.sessions), read once for all
+// restart of the machine or of tmux): the tick asks about the turn it was in, or opens the terminal
+// again for a message the turn never took (lostTurns), and `nod resume` reopens it. `live`: the sessions there are (Terminals.sessions), read once for all
 // the tasks shown.
 export function taskStatus(t: Task, live: ReadonlySet<string>): string {
   return t.status === 'running' && !live.has(sessionName(t.id)) ? 'session ended' : t.status
