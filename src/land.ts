@@ -275,9 +275,15 @@ async function landTask(
   const body = l.body ?? ''
 
   // Out: what nod checks itself and the person's gate, then the push, before anyone else sees it.
-  const remote = await maybe(
-    git(task.repo, 'rev-parse', '--verify', '-q', `refs/remotes/origin/${branch}`),
-  )
+  // The branch as origin has it now, not origin/<branch>: a clone that fetches only the default
+  // branch has none, and the remote may have deleted the branch since nod pushed it.
+  const ref = `refs/heads/${branch}`
+  const listed = await reach(ws, ['ls-remote', 'origin', ref])
+  const remote =
+    listed
+      .split('\n')
+      .find((line) => line.endsWith(`\t${ref}`))
+      ?.split('\t')[0] ?? null
   if (remote !== head) {
     const merges = await git(ws, 'rev-list', '--merges', `${l.base ?? base}..${head}`)
     if (merges !== '') {
@@ -287,10 +293,11 @@ async function landTask(
       const gate = await runGate(home, task, repo.gateCmd, l.base ?? base, head, title, body)
       if (gate !== null) return gateFailed(pass, task, repo.gateCmd, gate)
     }
-    // Over what nod pushed last; the first time, over nothing, or over the task's own commits
-    // someone pushed before (the way results went out before nod landed them).
+    // Over nothing while origin has no such branch; else over what nod pushed last, or the first
+    // time over the task's own commits someone pushed before (the way results went out before nod
+    // landed them).
     const expected =
-      l.pushed ?? (remote === null ? '' : (await ownPush(ws, branch, remote)) ? remote : null)
+      remote === null ? '' : (l.pushed ?? ((await ownPush(ws, branch, remote)) ? remote : null))
     if (expected === null) {
       return ask(
         `origin/${branch} has commits nod did not push. Fold them in or remove them, then answer yes; answer no to stop landing it.`,
@@ -301,9 +308,9 @@ async function landTask(
     const push = await onRemote(ws, [
       'push',
       '--porcelain',
-      `--force-with-lease=refs/heads/${branch}:${expected}`,
+      `--force-with-lease=${ref}:${expected}`,
       'origin',
-      `${head}:refs/heads/${branch}`,
+      `${head}:${ref}`,
     ])
     if (push.code !== 0) {
       return ask(`The push of ${branch} was refused:\n${push.output.trim().slice(-OUTPUT_LIMIT)}`)
@@ -415,20 +422,14 @@ function claim(ledger: Ledger, taskId: number): boolean {
 }
 
 async function fetchTip(repo: string): Promise<Tip> {
-  const reach = async (args: string[]): Promise<string> => {
-    const r = await onRemote(repo, args)
-    if (r.code !== 0)
-      throw new Error(`git ${args[0]} failed: ${r.output.trim().slice(-OUTPUT_LIMIT)}`)
-    return r.output
-  }
   // Before the fetch, so nothing after its --prune can fail on the network and leave origin/HEAD
   // pointing at nothing until the next pass (below).
-  const head = await reach(['ls-remote', '--symref', 'origin', 'HEAD'])
+  const head = await reach(repo, ['ls-remote', '--symref', 'origin', 'HEAD'])
   const branch = /^ref: refs\/heads\/(\S+)\s+HEAD/m.exec(head)?.[1]
   if (branch === undefined) throw new Error('origin names no default branch')
-  // --prune: a branch the remote deleted would otherwise stay as origin/<branch>, which the push
-  // reads as commits nod did not push, and asks again after the person removed them.
-  await reach(['fetch', '-q', '--prune', 'origin'])
+  // --prune: a branch the remote deleted would otherwise stay as origin/<branch>, which gc reads as
+  // a copy of the task's commits on the remote (remotesHolding) and deletes the local branch.
+  await reach(repo, ['fetch', '-q', '--prune', 'origin'])
   const commit = await git(repo, 'rev-parse', '--verify', `refs/remotes/origin/${branch}^{commit}`)
   // Once the remote renames its default branch, --prune deletes the old one and leaves origin/HEAD
   // pointing at nothing, which done.ts and gc.ts would read as tasks with no commits.
@@ -514,6 +515,14 @@ function onRemote(cwd: string, args: string[]): Promise<{ code: number; output: 
     env: { GIT_TERMINAL_PROMPT: '0' },
     timeoutMs: GIT_TIMEOUT_MS,
   })
+}
+
+// onRemote that throws when git fails; what it printed otherwise.
+async function reach(cwd: string, args: string[]): Promise<string> {
+  const r = await onRemote(cwd, args)
+  if (r.code !== 0)
+    throw new Error(`git ${args[0]} failed: ${r.output.trim().slice(-OUTPUT_LIMIT)}`)
+  return r.output
 }
 
 async function git(cwd: string, ...args: string[]): Promise<string> {

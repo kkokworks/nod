@@ -4,6 +4,7 @@ import {
   existsSync,
   readdirSync,
   readFileSync,
+  rmSync,
   symlinkSync,
   writeFileSync,
 } from 'node:fs'
@@ -398,6 +399,57 @@ test('a remote branch the person removed as asked is not asked about again: yes 
   ])
   expect(ledger.decisions(id).filter((d) => d.answer === null)).toEqual([])
   expect(git(origin, 'rev-parse', 'refs/heads/feat/y')).toBe(head(id))
+}, 30_000)
+
+test('a branch nod pushed that the remote deleted since is pushed again, and its pull request opens', async () => {
+  setRepo('pr')
+  const id = finished('feat/r', { 'r.txt': 'r\n' })
+  await land(ledger, home, Tmux.of(home), { send })
+  await stops(id, 'Add r\n\nNOD: done | wrote it')
+  // Pushed, but the service will not open the pull request.
+  writeFileSync(join(service, 'refuse'), 'not now')
+  expect((await land(ledger, home, Tmux.of(home), { send }))[0]?.did).toStartWith(
+    'asked: nod could not open its pull request',
+  )
+  expect(git(origin, 'rev-parse', 'refs/heads/feat/r')).toBe(head(id))
+
+  // The remote deletes the branch before the person answers yes.
+  git(origin, 'branch', '-D', 'feat/r')
+  rmSync(join(service, 'refuse'))
+  const asked = ledger.decisions(id).find((d) => d.answer === null)
+  expect(await answer(ledger, home, Tmux.of(home), asked?.id ?? 0, 'yes', 'human')).toBe(true)
+  expect(await land(ledger, home, Tmux.of(home), { send })).toEqual([
+    { id, did: 'pull request open, waiting for its merge: https://github.com/o/r/pull/1' },
+  ])
+  expect(ledger.decisions(id).filter((d) => d.answer === null)).toEqual([])
+  expect(git(origin, 'rev-parse', 'refs/heads/feat/r')).toBe(head(id))
+}, 30_000)
+
+test('a clone that fetches only the default branch pushes its branch again over what nod pushed', async () => {
+  setRepo('pr')
+  // As `git clone --single-branch` (and a shallow clone) leaves it: no origin/<branch> ever.
+  git(repo, 'config', 'remote.origin.fetch', '+refs/heads/main:refs/remotes/origin/main')
+  const id = finished('feat/s', { 's.txt': 's\n' })
+  await land(ledger, home, Tmux.of(home), { send })
+  await stops(id, 'Add s\n\nNOD: done | wrote it')
+  const open = {
+    id,
+    did: 'pull request open, waiting for its merge: https://github.com/o/r/pull/1',
+  }
+  expect(await land(ledger, home, Tmux.of(home), { send })).toEqual([open])
+  expect(
+    Bun.spawnSync(['git', '-C', repo, 'rev-parse', '-q', '--verify', 'refs/remotes/origin/feat/s'])
+      .exitCode,
+  ).toBe(1)
+  // Landing again, as is, and once the pull request falls behind, rebased.
+  expect(await land(ledger, home, Tmux.of(home), { send })).toEqual([open])
+  const first = head(id)
+  mainMoves('n.txt', 'n\n')
+  writeFileSync(join(service, 'merge-state'), 'BEHIND')
+  expect(await land(ledger, home, Tmux.of(home), { send })).toEqual([open])
+  expect(head(id)).not.toBe(first)
+  expect(git(origin, 'rev-parse', 'refs/heads/feat/s')).toBe(head(id))
+  expect(ledger.decisions(id).filter((d) => d.answer === null)).toEqual([])
 }, 30_000)
 
 test('once the remote renames its default branch, origin/HEAD follows it rather than the pruned one', async () => {
