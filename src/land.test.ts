@@ -452,6 +452,26 @@ test('a clone that fetches only the default branch pushes its branch again over 
   expect(ledger.decisions(id).filter((d) => d.answer === null)).toEqual([])
 }, 30_000)
 
+test('a remote that pushes elsewhere than it fetches from is asked where the push goes', async () => {
+  setRepo('pr')
+  const mirror = tmp.make('nod-push-')
+  git(mirror, 'init', '-q', '--bare', '-b', 'main')
+  git(repo, 'config', 'remote.origin.pushurl', mirror)
+  const id = finished('feat/p', { 'p.txt': 'p\n' })
+  await land(ledger, home, Tmux.of(home), { send })
+  await stops(id, 'Add p\n\nNOD: done | wrote it')
+  const open = {
+    id,
+    did: 'pull request open, waiting for its merge: https://github.com/o/r/pull/1',
+  }
+  expect(await land(ledger, home, Tmux.of(home), { send })).toEqual([open])
+  // Rebased once the pull request falls behind, and pushed over what nod pushed there.
+  mainMoves('n.txt', 'n\n')
+  writeFileSync(join(service, 'merge-state'), 'BEHIND')
+  expect(await land(ledger, home, Tmux.of(home), { send })).toEqual([open])
+  expect(git(mirror, 'rev-parse', 'refs/heads/feat/p')).toBe(head(id))
+}, 30_000)
+
 test('once the remote renames its default branch, origin/HEAD follows it rather than the pruned one', async () => {
   setRepo('pr')
   git(repo, 'config', 'fetch.prune', 'false')
