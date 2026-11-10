@@ -1302,7 +1302,7 @@ async function printTask(
 
 // The remote branches holding a succeeded task's branch, while it has no link: its result was
 // pushed, maybe under another name, and is waiting to be linked. None while the branch has no
-// commits of its own past where they start (where landing last rebased them to, else where the
+// commits of its own past where they start (where landing recorded them to start, else where the
 // branch was created): it sits on others' commits, which every remote branch made since may hold.
 // Only as fresh as the repo's last fetch; nod fetches only as it lands a repo's tasks (land.ts).
 // Not waited on in turn: ls asks of several tasks at once (readAtOnce).

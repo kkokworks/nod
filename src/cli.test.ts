@@ -768,8 +768,9 @@ test('ls and show list only the remote branches holding a task’s own commits, 
   }
   // Each task's results, the last field, by its id.
   const results = Object.fromEntries(
+    // Only the last newline: a line ends in a tab when its results are empty.
     (await nod('ls'))
-      .trim()
+      .replace(/\n$/, '')
       .split('\n')
       .map((l) => l.split('\t'))
       .map((f) => [Number(f[0]), f.at(-1)]),
