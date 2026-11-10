@@ -400,6 +400,25 @@ test('a remote branch the person removed as asked is not asked about again: yes 
   expect(git(origin, 'rev-parse', 'refs/heads/feat/y')).toBe(head(id))
 }, 30_000)
 
+test('once the remote renames its default branch, origin/HEAD follows it rather than the pruned one', async () => {
+  setRepo('pr')
+  git(repo, 'config', 'fetch.prune', 'false')
+  git(repo, 'config', 'remote.origin.prune', 'false')
+  const id = finished('feat/t', { 't.txt': 't\n' })
+  git(origin, 'branch', '-m', 'main', 'trunk')
+  git(origin, 'symbolic-ref', 'HEAD', 'refs/heads/trunk')
+  const other = tmp.make('nod-other-')
+  git(other, 'clone', '-q', origin, '.')
+  git(other, 'commit', '-q', '--allow-empty', '-m', 'on trunk')
+  git(other, 'push', '-q', 'origin', 'trunk')
+
+  expect(await land(ledger, home, Tmux.of(home), { send })).toEqual([
+    { id, did: 'its worker writes the pull request' },
+  ])
+  // What done.ts and gc.ts compare a task's branch with: the default branch as the remote has it.
+  expect(git(repo, 'rev-parse', 'refs/remotes/origin/HEAD')).toBe(git(other, 'rev-parse', 'HEAD'))
+}, 30_000)
+
 test('only tasks added after the repo went up land on their own; nod land names older ones, and a task someone linked is left alone', async () => {
   const older = finished('feat/old', { 'o.txt': 'o\n' })
   setRepo('pr')
