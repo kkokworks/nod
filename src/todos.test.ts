@@ -1125,7 +1125,8 @@ test('in a repo nod lands, the todo waits on the landing, done once merged and n
 
 test('a todo whose branch gc deleted is read by the head gc recorded', async () => {
   const b = repoBooks()
-  // Pushed, its pull request merged, and gc deleted the branch, as a remote holds it.
+  // Pushed, its pull request merged, and the branch deleted: by hand, or by a gc from before gc
+  // kept a branch only a remote branch holds.
   const gone = (mergedAt: string) => {
     const t = b.handOver(true)
     b.git(b.repo, 'update-ref', `refs/remotes/origin/${t.branch}`, t.branch)

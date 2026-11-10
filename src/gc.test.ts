@@ -308,7 +308,7 @@ test('resume brings a collected task back: the worktree returns at the same path
   // A second gc that finds the branch gone keeps the commit the first one recorded.
   ledger.collected(id, null)
   expect(ledger.get(id).head).toBe(head)
-  // The default branch moves on without it, so only the recorded commit has the work.
+  // The default branch now points at a commit without it, so only the recorded commit has the work.
   git(repo, 'commit', '-q', '--allow-empty', '-m', 'later')
   git(repo, 'update-ref', 'refs/remotes/origin/main', 'HEAD')
 

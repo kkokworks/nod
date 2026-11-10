@@ -214,8 +214,8 @@ const USAGE = `usage:
                                    remote has only once a linked pull request of its branch in
                                    the repo origin pushes to merged after its last commit and no
                                    other linked one waits, and only if it succeeded). Branches go
-                                   once the remote's default branch has the changes (pushed is not
-                                   enough); ledger rows and session transcripts
+                                   once the remote's default branch has the changes, as a pushed
+                                   branch may go unmerged; ledger rows and session transcripts
                                    stay, ls stops listing the tasks, and resume or tell brings one
                                    back. With neither, it first moves the todos nod left open on
                                    their tasks' commits: done once the commits are in the default
