@@ -781,7 +781,7 @@ nod add --after <작업> ─▶ 대기(queued) ─▶ 앞 작업이 모두 성�
   리뷰 중인 PR 을 main 이 움직일 때마다 다시 쓰지 않으려는 것입니다.
   사람이 `nod tell` 로 더 고친 작업은 head 가 검증을 통과한 head(`ready`)와 달라졌으므로 검증부터 다시 합니다.
 - **nod 가 하는 것과 워커가 하는 것.**
-  fetch, 기본 브랜치 읽기(`git ls-remote --symref`), rebase, 검증 명령, 점검, push, PR, 머지는 nod 가 샌드박스 밖에서 합니다.
+  기본 브랜치 읽기(`git ls-remote --symref`), fetch, rebase, 검증 명령, 점검, push, PR, 머지는 nod 가 샌드박스 밖에서 합니다.
   워커 샌드박스에는 네트워크가 없고, `.claude/settings.json` 을 바꾼 main 위로 rebase 하다 반쯤 적용된 채 실패한 기록이 있습니다(「실사용에서 고친 것」).
   충돌 풀기, rebase 뒤 실패한 검증 고치기, PR 제목·본문 쓰기는 워커가 합니다.
   넘기는 길은 `nod tell` 과 같은 `deliver` 이고(새 시도 종류 `land`), 끝난 세션은 대화 기록에서, gc 한 작업은 폴더부터 되살립니다.
@@ -891,6 +891,7 @@ nod add --after <작업> ─▶ 대기(queued) ─▶ 앞 작업이 모두 성�
   처음에는 `--prune` 없이 해서 원격에서 지운 브랜치가 남았고, 결정대로 사람이 원격 브랜치를 지우고 yes 해도 같은 결정이 다시 열렸습니다(리뷰에서 재현, 레포에 `fetch.prune` 이 꺼져 있을 때).
   원격이 기본 브랜치 이름을 바꾸면 `--prune` 이 옛 브랜치를 지워 `origin/HEAD` 가 아무것도 가리키지 않게 되므로, 그때는 `ls-remote` 로 읽은 기본 브랜치를 가리키게 고칩니다.
   그대로 두면 `origin/HEAD` 와 비교하는 할 일·gc 가 작업을 커밋이 없는 것으로 읽습니다.
+  `ls-remote` 는 fetch 앞에 해서, prune 뒤에 네트워크로 실패해 고치기 전에 멈추는 단계가 없게 합니다.
   기본 브랜치에는 push 하지 않습니다.
   fetch·push 는 2분이 지나면 끊고, 비밀번호를 묻지 않게 합니다(`GIT_TERMINAL_PROMPT=0`).
   아무도 답할 수 없는 tick 에서 멈추지 않게 하려는 것입니다.
