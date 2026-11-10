@@ -372,6 +372,34 @@ test('a remote branch with commits nod did not push asks the person: no stops la
   expect(git(origin, 'rev-parse', 'feat/x')).toBe(theirs)
 }, 30_000)
 
+test('a remote branch the person removed as asked is not asked about again: yes pushes and opens the pull request', async () => {
+  setRepo('pr')
+  // Off, as git leaves it: a fetch alone then keeps origin/feat/y once the remote deletes it.
+  git(repo, 'config', 'fetch.prune', 'false')
+  git(repo, 'config', 'remote.origin.prune', 'false')
+  const id = finished('feat/y', { 'y.txt': 'y\n' })
+  await land(ledger, home, Tmux.of(home), { send })
+  await stops(id, 'Add y\n\nNOD: done | wrote it')
+  const other = tmp.make('nod-other-')
+  git(other, 'clone', '-q', origin, '.')
+  git(other, 'checkout', '-qb', 'feat/y')
+  git(other, 'commit', '-q', '--allow-empty', '-m', 'theirs')
+  git(other, 'push', '-q', 'origin', 'feat/y')
+  expect((await land(ledger, home, Tmux.of(home), { send }))[0]?.did).toStartWith(
+    'asked: origin/feat/y has commits',
+  )
+
+  // The person removes it, as the question says, then answers yes.
+  git(other, 'push', '-q', 'origin', '--delete', 'feat/y')
+  const asked = ledger.decisions(id).find((d) => d.answer === null)
+  expect(await answer(ledger, home, Tmux.of(home), asked?.id ?? 0, 'yes', 'human')).toBe(true)
+  expect(await land(ledger, home, Tmux.of(home), { send })).toEqual([
+    { id, did: 'pull request open, waiting for its merge: https://github.com/o/r/pull/1' },
+  ])
+  expect(ledger.decisions(id).filter((d) => d.answer === null)).toEqual([])
+  expect(git(origin, 'rev-parse', 'refs/heads/feat/y')).toBe(head(id))
+}, 30_000)
+
 test('only tasks added after the repo went up land on their own; nod land names older ones, and a task someone linked is left alone', async () => {
   const older = finished('feat/old', { 'o.txt': 'o\n' })
   setRepo('pr')

@@ -421,7 +421,9 @@ async function fetchTip(repo: string): Promise<Tip> {
       throw new Error(`git ${args[0]} failed: ${r.output.trim().slice(-OUTPUT_LIMIT)}`)
     return r.output
   }
-  await reach(['fetch', '-q', 'origin'])
+  // --prune: a branch the remote deleted would otherwise stay as origin/<branch>, which the push
+  // reads as commits nod did not push, and asks again after the person removed them.
+  await reach(['fetch', '-q', '--prune', 'origin'])
   const head = await reach(['ls-remote', '--symref', 'origin', 'HEAD'])
   const branch = /^ref: refs\/heads\/(\S+)\s+HEAD/m.exec(head)?.[1]
   if (branch === undefined) throw new Error('origin names no default branch')
