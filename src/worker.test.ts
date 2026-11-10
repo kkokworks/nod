@@ -2966,6 +2966,63 @@ test('a turn whose terminal went (the machine or tmux restarted) becomes a decis
   expect(entries('turn').at(-1)?.message).toContain('Human decision: carry on')
 }, 30_000)
 
+// A finished task whose terminal was closed, and whose next `breaks` terminals run a nod that is not
+// there, as the UI server's build did (its src/cli.ts beside the bundle): each ends at once.
+async function closedWithBrokenStarts(
+  breaks: number,
+): Promise<{ id: number; starts: () => number }> {
+  const id = await add('first')
+  await reaches(id, 'succeeded')
+  await settled(id)
+  await terminals.close(sessionName(id))
+  const start = fake.start.bind(fake)
+  let left = breaks
+  const spy = spyOn(fake, 'start').mockImplementation((name, cwd, argv, env) => {
+    const nod = left-- > 0 ? [argv[0] ?? '', join(home, 'cli.ts'), ...argv.slice(2)] : argv
+    start(name, cwd, nod, env)
+  })
+  return { id, starts: () => spy.mock.calls.length }
+}
+
+test('a turn whose terminal ended before Claude Code took its message goes on with it in a terminal opened again, not as a decision', async () => {
+  const { id, starts } = await closedWithBrokenStarts(1)
+  await tell(ledger, home, terminals, id, 'go on', null)
+  await until(() => !terminals.alive(sessionName(id)))
+
+  expect(await lostTurns(ledger, home, terminals, new Date(Date.now() + 60_000))).toEqual([])
+  await reaches(id, 'succeeded')
+  expect(starts()).toBe(2)
+  expect(ledger.decisions(id).filter((d) => d.reason === 'interrupted')).toEqual([])
+  expect(ledger.attempts(id).map((a) => [a.kind, a.outcome])).toEqual([
+    ['start', 'succeeded'],
+    ['followup', 'succeeded'],
+  ])
+  expect(entries('launch').map((l) => [l.resumed, l.prompt])).toEqual([
+    [false, expect.stringContaining('first')],
+    [true, 'go on'],
+  ])
+}, 30_000)
+
+test('a terminal that keeps ending before Claude Code takes the message opens again as often as a Claude Code that exits as it starts, then becomes a decision', async () => {
+  const { id, starts } = await closedWithBrokenStarts(Infinity)
+  await tell(ledger, home, terminals, id, 'go on', null)
+  const later = new Date(Date.now() + 60_000)
+  // MAX_QUICK_EXITS (3) times.
+  for (let opened = 1; opened <= 3; opened++) {
+    await until(() => !terminals.alive(sessionName(id)))
+    expect(await lostTurns(ledger, home, terminals, later)).toEqual([])
+    expect(starts()).toBe(1 + opened)
+  }
+  await until(() => !terminals.alive(sessionName(id)))
+  expect(await lostTurns(ledger, home, terminals, later)).toEqual([id])
+  expect(starts()).toBe(4)
+  const decision = ledger.decisions(id).find((d) => d.reason === 'interrupted')
+  expect(decision?.question).toContain('before Claude Code took the message')
+  expect(decision?.question).toContain('> go on')
+  // The question carries the message, and the answer goes in its place.
+  expect(existsSync(join(home, 'work', `.prompt-${id}`))).toBe(false)
+}, 30_000)
+
 // A todo the person delegated to a task (`nod add --todo`), which has not started yet.
 function delegated(
   todos: Todos,

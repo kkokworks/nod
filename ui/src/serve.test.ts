@@ -1,11 +1,37 @@
 import { afterAll, expect, test } from 'bun:test'
+import { existsSync, symlinkSync, writeFileSync } from 'node:fs'
 import { createServer as createHttpServer } from 'node:http'
-import { createServer, isRunnableDevEnvironment, resolveConfig } from 'vite'
+import { join, resolve } from 'node:path'
+import { build, createServer, isRunnableDevEnvironment, resolveConfig } from 'vite'
 import { tempDirs } from '../../test/tmp'
 
 const root = `${import.meta.dir}/..`
 const tmp = tempDirs()
 afterAll(tmp.removeAll)
+
+// The server's build moves the modules it bundles into dist/server/assets, where a worker's terminal
+// ran `bun dist/server/assets/cli.ts run`, which is not there: the terminal ended at once.
+test('the built server runs nod from src/cli.ts, not from beside its bundle', async () => {
+  const config = { root, configFile: `${root}/vite.config.ts`, logLevel: 'silent' } as const
+  const { plugins } = await resolveConfig(config, 'build', 'production', 'production')
+  const dir = tmp.make('nod-ui-build-')
+  const entry = join(dir, 'entry.ts')
+  const settings = resolve(root, '../src/settings.ts')
+  writeFileSync(entry, `export { CLI } from ${JSON.stringify(settings)}\n`)
+  // As the server's build: its plugins, but TanStack Start's, which build the whole app.
+  await build({
+    configFile: false,
+    root: dir,
+    logLevel: 'silent',
+    plugins: plugins.filter((p) => p.name.startsWith('nod-')),
+    build: { ssr: entry, outDir: join(dir, 'out') },
+  })
+  // Where the bundle's own packages (zod) are found, as ui/dist's are from the repo's.
+  symlinkSync(resolve(root, '../node_modules'), join(dir, 'node_modules'))
+  const { CLI } = await import(join(dir, 'out', 'entry.mjs'))
+  expect(CLI).toBe(resolve(root, '../src/cli.ts'))
+  expect(existsSync(CLI)).toBe(true)
+}, 30_000)
 
 // Vite answers a CORS request from any localhost or 127.0.0.1 origin by default, and the CSRF
 // middleware guards only the server functions, so another page on this computer could read the
