@@ -355,11 +355,12 @@ test('a check that keeps failing where the branch starts too says so, run beside
   const repo = ignoringRepo()
   const start = git(repo, 'rev-parse', 'HEAD')
   // A wrong command, which no work passes. It says where it ran, and anywhere but the task's
-  // worktree it clears the dependencies, as a check that installs them again might.
+  // worktree it clears the dependencies, as a check that installs them again might, and leaves a
+  // folder read-only, as a module cache is.
   const wrong = installing(
     repo,
     'feat/wrong',
-    'echo "ran in $PWD"; case "$PWD" in */feat/wrong) ;; *) rm -rf node_modules/*;; esac; test -f missing.txt',
+    'echo "ran in $PWD"; case "$PWD" in */feat/wrong) ;; *) rm -rf node_modules/*; mkdir -p cache/mod && touch cache/mod/f && chmod 555 cache/mod;; esac; test -f missing.txt',
   )
   // One the start passes, with the dependency the worker installed, and the worker's ok.txt fails.
   const fair = installing(repo, 'feat/fair', 'test -f node_modules/dep.js && test ! -f ok.txt')
@@ -376,6 +377,8 @@ test('a check that keeps failing where the branch starts too says so, run beside
   // With what it printed there, in a folder of its own.
   expect(atStart).toStartWith('ran in /')
   expect(atStart).not.toContain('/feat/wrong')
+  const ranIn = atStart.slice('ran in '.length).split('\n')[0] ?? ''
+  expect(existsSync(ranIn)).toBe(false)
   expect(atStart).toContain(`nod cancel n${wrong} and add it again with that --check`)
   expect(asked(fair)).toStartWith('Still failing after 2 retries:\n')
   expect(asked(fair)).not.toContain('starts at, too')

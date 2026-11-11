@@ -2459,8 +2459,8 @@ async function initSubmodules(repo: string, worktree: string): Promise<void> {
 // run and the decision). It runs in a worktree of its own, so the task's stays as its worker left
 // it: its submodules filled as the task's were, and the task's ignored files (the dependencies its
 // worker installed, say) copied in, as a new worktree has none and the check would fail for that
-// alone. Copied, not linked, so what the check writes there does not reach the task's; a clone
-// where the file system has them (cp -c falls back to a copy, --reflink=auto too).
+// alone. Copied, not linked, so what the check writes there does not reach the task's; on macOS a
+// clone where the file system has them (cp -c falls back to a copy).
 async function failsAtStart(ledger: Ledger, task: Task, cmd: string): Promise<string> {
   const { repo, workspace: ws } = task
   const left = STOP_HOOK_TIMEOUT_SECS * 1000 - process.uptime() * 1000 - 60_000
@@ -2468,9 +2468,17 @@ async function failsAtStart(ledger: Ledger, task: Task, cmd: string): Promise<st
   const deadline = Date.now() + Math.min(REVIEW.timeoutMs, left)
   const timeoutMs = (): number => Math.max(deadline - Date.now(), 0)
   const dir = realpathSync(mkdtempSync(join(tmpdir(), 'nod-start-')))
+  // What the check left read-only (a module cache, say) is made writable first, or neither git nor
+  // rmSync could remove it, and what still cannot go is told rather than thrown: the decision needs
+  // this to return. chmod -R follows no link it meets.
   const clean = (): void => {
+    Bun.spawnSync(['chmod', '-R', 'u+w', dir])
     Bun.spawnSync(['git', '-C', repo, 'worktree', 'remove', '--force', dir])
-    rmSync(dir, { recursive: true, force: true })
+    try {
+      rmSync(dir, { recursive: true, force: true })
+    } catch (error) {
+      console.error(`nod: could not remove ${dir}: ${message(error)}`)
+    }
   }
   // A signal that ends the hook meanwhile (nod cancel closes its terminal) ends it past finally (end
   // in proc.ts), which would leave the worktree registered in the repo: it goes first, then the
@@ -2504,7 +2512,8 @@ async function failsAtStart(ledger: Ledger, task: Task, cmd: string): Promise<st
       ws,
     )
     if (ignored.code !== 0) throw new Error(`git ls-files failed: ${ignored.output.trim()}`)
-    const copy = process.platform === 'darwin' ? ['cp', '-cR'] : ['cp', '-R', '--reflink=auto']
+    // Not --reflink=auto elsewhere: a cp without it (BusyBox) would refuse every copy.
+    const copy = process.platform === 'darwin' ? ['cp', '-cR'] : ['cp', '-R']
     for (const path of ignored.stdout.split('\0').map((p) => p.replace(/\/$/, ''))) {
       const to = join(dir, path)
       if (path === '' || existsSync(to) || !existsSync(dirname(to))) continue

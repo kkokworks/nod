@@ -2760,10 +2760,10 @@ ponytail 로 남긴 틈은 `src/sending.ts` 에 적었습니다.
   또 시작 커밋에서 실패하는 것이 정상인 작업이 있어, 그때 알려도 판단할 거리가 되지 못합니다.
 - **작업의 worktree 는 건드리지 않습니다.**
   시작 커밋을 임시 폴더에 `git worktree add --detach` 로 따로 꺼내고, 서브모듈은 작업을 시작할 때처럼 레포의 체크아웃에서 채웁니다.
-  새 worktree 에는 무시된 파일이 없으므로, 작업 worktree 의 무시된 파일(`git ls-files --others --ignored --exclude-standard --directory`)을 복사해 둡니다(macOS 는 `cp -cR`, 그 밖은 `cp -R --reflink=auto`. 파일 시스템이 되면 clone 이고, 안 되면 보통 복사).
+  새 worktree 에는 무시된 파일이 없으므로, 작업 worktree 의 무시된 파일(`git ls-files --others --ignored --exclude-standard --directory`)을 복사해 둡니다(macOS 는 `cp -cR` 로, 파일 시스템이 되면 clone 이고 안 되면 보통 복사. 그 밖은 `cp -R`. `--reflink` 를 모르는 cp 도 있어서 붙이지 않음).
   처음에는 링크로 걸었는데, 시작 커밋에서 도는 검사가 `node_modules` 를 비우거나 다시 깔면 작업 쪽 파일이 바뀌거나 사라졌습니다(리뷰에서 재현).
   `node_modules` 236MB·파일 1만 3천 개를 복사하는 데 1.5~3초 걸렸습니다.
-  끝나면 worktree 와 그 폴더를 지웁니다.
+  끝나면 worktree 와 그 폴더를 지웁니다. 검사가 읽기 전용으로 남긴 폴더(모듈 캐시 등)는 쓰기 권한을 준 뒤 지우고, 그래도 지우지 못하면 알리기만 하고 결정은 그대로 엽니다(리뷰에서 재현: 지우다 던진 오류로 작업이 error 가 됐음).
   `nod cancel` 이 워커 칸을 닫아 훅이 신호로 끝날 때도 먼저 지우고 끝납니다. 신호로 끝나는 프로세스는 `finally` 를 돌지 않아, 그대로 두면 레포에 worktree 등록이 남았습니다(리뷰에서 찾음).
 - **시간.**
   검사가 실패하면 독립 리뷰가 돌지 않으므로, 리뷰의 몫(10분, `REVIEW.timeoutMs`)을 시작 커밋 검사의 제한으로 씁니다.
