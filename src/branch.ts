@@ -57,6 +57,19 @@ export async function headOf(worktree: string): Promise<string> {
 // run outside the sandbox. A rebase going on takes its messages as they are.
 export const NOD_GIT = ['git', '-c', 'core.hooksPath=/dev/null', '-c', 'core.editor=true']
 
+// fetch and push reach the remote: a network that hangs, or a login that would ask for a password
+// no one is there to type, must not hold the tick. They run in a process group of their own, so the
+// timeout also ends the remote helper or ssh git starts, which would hold the output open.
+const GIT_TIMEOUT_MS = 2 * 60_000
+
+// git on the remote, which may never answer and must not ask (GIT_TIMEOUT_MS).
+export function onRemote(cwd: string, args: string[]): Promise<{ code: number; output: string }> {
+  return spawn([...NOD_GIT, ...args], cwd, {
+    env: { GIT_TERMINAL_PROMPT: '0' },
+    timeoutMs: GIT_TIMEOUT_MS,
+  })
+}
+
 export const gitPath = (ws: string, path: string): string =>
   resolve(
     ws,

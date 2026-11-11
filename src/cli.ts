@@ -217,12 +217,14 @@ const USAGE = `usage:
                                    the repo origin pushes to merged after its last commit and no
                                    other linked one waits, and only if it succeeded). Branches go
                                    once the remote's default branch has the changes, as a pushed
-                                   branch may go unmerged; ledger rows and session transcripts
-                                   stay, ls stops listing the tasks, and resume or tell brings one
-                                   back. With neither, it first moves the todos nod left open on
-                                   their tasks' commits: done once the commits are in the default
-                                   branch, waiting while the branch's pull request is open, next
-                                   once none is. The schedule runs both every 5 minutes
+                                   branch may go unmerged; with neither, gc also fetches the repos
+                                   of the branches it kept and deletes those merged since. Ledger
+                                   rows and session transcripts stay, ls stops listing the tasks,
+                                   and resume or tell brings one back. With neither, it first moves
+                                   the todos nod left open on their tasks' commits: done once the
+                                   commits are in the default branch, waiting while the branch's
+                                   pull request is open, next once none is. The schedule runs both
+                                   every 5 minutes
   nod rule ls                      the rules every worker gets after the built-in ones: each one's
                                    number, on or off, the retrospective r<n> it came from, and
                                    the rule. Answering yes to a rule decision adds one
@@ -1304,7 +1306,8 @@ async function printTask(
 // pushed, maybe under another name, and is waiting to be linked. None while the branch has no
 // commits of its own past where they start (where landing recorded them to start, else where the
 // branch was created): it sits on others' commits, which every remote branch made since may hold.
-// Only as fresh as the repo's last fetch; nod fetches only as it lands a repo's tasks (land.ts).
+// Only as fresh as the repo's last fetch; nod fetches only as it lands a repo's tasks (land.ts) and
+// as gc looks again at the branches it kept (dropMerged in gc.ts).
 // Not waited on in turn: ls asks of several tasks at once (readAtOnce).
 // ponytail: a branch with no commits of its own moved onto a later default branch (a rebase onto
 // it) shows the remote branches holding that. ownStart would tell those apart, but it counts the

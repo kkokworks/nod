@@ -399,6 +399,100 @@ test('sweep collects a task only as its signal read it: one that ran again and f
   expect(ledger.get(old).collectedAt).toBeNull()
 })
 
+test('sweep fetches and deletes a branch gc kept once the remote merged it, so a new task can take its name', async () => {
+  const home = tmp.make('nod-done-')
+  process.env.CLAUDE_CONFIG_DIR = tmp.make('nod-done-claude-')
+  const ledger = new Ledger(home)
+  const git = (cwd: string, ...args: string[]): string =>
+    sh(['git', '-c', 'user.email=t@t', '-c', 'user.name=t', ...args], cwd)
+  // A repo and its remote, with origin/HEAD or, as after git init and remote add, without it.
+  const setup = (name: string, head: boolean): { repo: string; remote: string } => {
+    const repo = join(home, name)
+    const remote = join(home, `${name}.git`)
+    mkdirSync(repo)
+    git(home, 'init', '-q', '--bare', '-b', 'main', remote)
+    git(repo, 'init', '-q', '-b', 'main')
+    git(repo, 'commit', '-q', '--allow-empty', '-m', 'init')
+    git(repo, 'remote', 'add', 'origin', remote)
+    git(repo, 'push', '-q', 'origin', 'main')
+    if (head) git(repo, 'remote', 'set-head', 'origin', 'main')
+    return { repo, remote }
+  }
+  // A task that pushed its branch and that the human collected: gc keeps the branch, as the
+  // default branch the repo last fetched lacks its changes.
+  const pushed = (repo: string, branch: string): number => {
+    const id = ledger.add({
+      brief: branch,
+      repo,
+      branch,
+      checkCmd: null,
+      model: null,
+      after: [],
+      issue: null,
+    })
+    const cwd = workspaceOf(home, ledger.get(id))
+    git(repo, 'worktree', 'add', '-q', '-b', branch, cwd)
+    writeFileSync(join(cwd, `${branch.replace('/', '-')}.txt`), branch)
+    git(cwd, 'add', '.')
+    git(cwd, 'commit', '-q', '-m', branch)
+    git(repo, 'push', '-q', 'origin', branch)
+    ledger.setRunning(id, cwd)
+    ledger.succeed(id)
+    return id
+  }
+  // A squash merge on the remote, as a git service makes it; the repo has not fetched it.
+  const merge = (remote: string, branch: string): void => {
+    const clone = join(home, `merge-${branch.replace('/', '-')}`)
+    git(home, 'clone', '-q', remote, clone)
+    git(clone, 'merge', '-q', '--squash', `origin/${branch}`)
+    git(clone, 'commit', '-q', '-m', `squash ${branch}`)
+    git(clone, 'push', '-q', 'origin', 'main')
+  }
+  const branches = (repo: string): string[] =>
+    git(repo, 'branch', '--list', 'feat/*').split('\n').filter(Boolean)
+  const stale = setup('stale', true)
+  const headless = setup('headless', false)
+  const merged = pushed(stale.repo, 'feat/merged')
+  const open = pushed(stale.repo, 'feat/open')
+  const base = pushed(stale.repo, 'feat/base')
+  const reused = pushed(stale.repo, 'feat/reused')
+  const nohead = pushed(headless.repo, 'feat/x')
+  const report = await collect(ledger, home, Tmux.of(home), {
+    ids: [merged, open, base, reused, nohead],
+  })
+  expect(report.removed).toEqual([merged, open, base, reused, nohead])
+  expect(branches(stale.repo)).toEqual([
+    '  feat/base',
+    '  feat/merged',
+    '  feat/open',
+    '  feat/reused',
+  ])
+  expect(branches(headless.repo)).toEqual(['  feat/x'])
+  merge(stale.remote, 'feat/merged')
+  merge(stale.remote, 'feat/base')
+  merge(headless.remote, 'feat/x')
+  // The person made a branch of their own by that name, which the default branch has all of as it
+  // has no commit yet: not the one gc kept.
+  git(stale.repo, 'branch', '-f', 'feat/reused', 'main')
+  // A queued task starts from feat/base, so it stays until that task starts.
+  ledger.add({
+    brief: 'after the base',
+    repo: stale.repo,
+    branch: 'feat/next',
+    checkCmd: null,
+    model: null,
+    after: [base],
+    issue: null,
+  })
+
+  await sweep(ledger, home, Tmux.of(home), async () => null, NOW)
+
+  expect(branches(stale.repo)).toEqual(['  feat/base', '  feat/open', '  feat/reused'])
+  expect(branches(headless.repo)).toEqual([])
+  // A new task by the same name starts: worktree add -b no longer finds the branch there.
+  git(stale.repo, 'worktree', 'add', '-q', '-b', 'feat/merged', join(home, 'again'))
+}, 30_000)
+
 test("an errored repo task goes once a task added after the error does its todo, its error still shown, unless it keeps the only copy of commits or a queued task's start", async () => {
   const home = tmp.make('nod-done-')
   process.env.CLAUDE_CONFIG_DIR = tmp.make('nod-done-claude-')
@@ -498,6 +592,11 @@ function unpushedTasks() {
     sh(['git', '-c', 'user.email=t@t', '-c', 'user.name=t', ...args], cwd)
   git(repo, 'init', '-q', '-b', 'main')
   git(repo, 'remote', 'add', 'origin', 'git@git.example.com:O/R.git')
+  // What sweep fetches (dropMerged in gc.ts) is an empty repo here, not that host; nod reads
+  // origin's address as written (pushUrls), so insteadOf leaves the pull requests' heads to match.
+  const remote = join(home, 'remote.git')
+  git(home, 'init', '-q', '--bare', remote)
+  git(repo, 'config', `url.${remote}.insteadOf`, 'git@git.example.com:O/R.git')
   git(repo, 'commit', '-q', '--allow-empty', '-m', 'init')
   git(repo, 'update-ref', 'refs/remotes/origin/main', 'HEAD')
   git(repo, 'symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main')

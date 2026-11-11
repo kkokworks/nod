@@ -1,5 +1,6 @@
 import { existsSync, readdirSync, rmdirSync, rmSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
+import { onRemote } from './branch'
 import { FINISHED, type Ledger, type Task } from './ledger'
 import { branchOf, sessionName, settling } from './place'
 import { message, spawn } from './proc'
@@ -260,6 +261,62 @@ async function dropBranch(task: Task): Promise<void> {
   if (landed(repo, ref)) Bun.spawnSync(['git', '-C', repo, 'branch', '-D', branch])
 }
 
+// Looks again at the branches dropBranch kept of the tasks gc collected, so one merged since goes
+// and a new task can take its name: pushed and merged later, or kept as the repo's last fetch was
+// old or left it no origin/HEAD. Each such repo is fetched first, which also makes origin/HEAD
+// where it is missing (git 2.48 and later). Only a branch still at the commit gc recorded: one that
+// moved since is someone's work, or a later task's by the same name. A branch a queued task starts
+// from stays, as in sweep (done.ts); so does one a task brought back works on, which git refuses to
+// delete as checked out.
+// ponytail: fetches such a repo on every pass, for as long as a branch in it stays unmerged.
+export async function dropMerged(ledger: Ledger): Promise<void> {
+  const left = (t: Task, tip: (t: Task) => string | null): boolean =>
+    t.collectedAt !== null &&
+    t.workspace !== null &&
+    t.head !== null &&
+    tip(t) === t.head &&
+    ledger.waiting(t.id).length === 0
+  // Each repo's branches read at once, as the ledger keeps every task gc ever collected.
+  const tips = new Map<string, Map<string, string>>()
+  const tipOf = ({ repo, branch }: Task): string | null => {
+    if (repo === null || branch === null) return null
+    let refs = tips.get(repo)
+    if (refs === undefined) {
+      const out = Bun.spawnSync([
+        'git',
+        '-C',
+        repo,
+        'for-each-ref',
+        '--format=%(refname) %(objectname)',
+        'refs/heads',
+      ])
+      const lines = out.exitCode === 0 ? out.stdout.toString().split('\n').filter(Boolean) : []
+      refs = new Map(lines.map((l) => l.split(' ') as [string, string]))
+      tips.set(repo, refs)
+    }
+    return refs.get(`refs/heads/${branch}`) ?? null
+  }
+  const kept = ledger.list().filter((t) => left(t, tipOf))
+  for (const repo of new Set(kept.map((t) => t.repo))) {
+    // A repo with no origin has nothing to fetch, nor a default branch to compare with.
+    if (repo === null || !hasOrigin(repo)) continue
+    const { code, output } = await onRemote(repo, ['fetch', '-q', 'origin'])
+    if (code !== 0) console.error(`nod: could not fetch ${repo}: ${output.trim()}`)
+  }
+  for (const { id } of kept) {
+    try {
+      // Read again, as fetching takes a while: one brought back meanwhile is not collected.
+      const task = ledger.get(id)
+      if (left(task, headOf)) await dropBranch(task)
+    } catch (error) {
+      console.error(`nod: could not look at task n${id}'s branch again: ${message(error)}`)
+    }
+  }
+}
+
+const hasOrigin = (repo: string): boolean =>
+  Bun.spawnSync(['git', '-C', repo, 'remote', 'get-url', 'origin']).exitCode === 0
+
 // Whether ref names something in repo; false once the repo is gone too.
 export const hasRef = (repo: string, ref: string): boolean =>
   Bun.spawnSync(['git', '-C', repo, 'rev-parse', '--verify', '-q', ref]).exitCode === 0
@@ -297,7 +354,8 @@ export function landed(repo: string, ref: string): boolean {
 }
 
 // The remote branches holding `ref`'s commits. Only as fresh as the repo's last fetch; nod fetches
-// only as it lands a repo's tasks (land.ts). Async, so ls can ask for each of its tasks at once.
+// only as it lands a repo's tasks (land.ts) and as gc looks again at the branches it kept
+// (dropMerged). Async, so ls can ask for each of its tasks at once.
 export async function remotesHolding(repo: string, ref: string): Promise<string[]> {
   const refs = await spawn([
     'git',

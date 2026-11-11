@@ -1,6 +1,6 @@
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { conflictBrief, createdFrom, NOD_GIT, ownStart, rebasing } from './branch'
+import { conflictBrief, createdFrom, NOD_GIT, onRemote, ownStart, rebasing } from './branch'
 import { askToLand } from './decisions'
 import { lands } from './done'
 import { hasRef, landed } from './gc'
@@ -28,10 +28,6 @@ import { baseOf, handOff, restore, type Send } from './worker'
 // ponytail: one cap per step; land in a process of its own if checks run longer than ticks may wait.
 const CHECK_TIMEOUT_MS = 30 * 60_000
 const GATE_TIMEOUT_MS = 5 * 60_000
-// fetch and push reach the remote: a network that hangs, or a login that would ask for a password
-// no one is there to type, must not hold the tick. They run in a process group of their own, so the
-// timeout also ends the remote helper or ssh git starts, which would hold the output open.
-const GIT_TIMEOUT_MS = 2 * 60_000
 const GIT = NOD_GIT
 
 // What a pass did with a task, or what it waits on, for `nod land` to print.
@@ -511,14 +507,6 @@ async function ownPush(ws: string, branch: string, remote: string): Promise<bool
     if (r.code === 0) return true
   }
   return false
-}
-
-// git on the remote, which may never answer and must not ask (GIT_TIMEOUT_MS).
-function onRemote(cwd: string, args: string[]): Promise<{ code: number; output: string }> {
-  return spawn([...GIT, ...args], cwd, {
-    env: { GIT_TERMINAL_PROMPT: '0' },
-    timeoutMs: GIT_TIMEOUT_MS,
-  })
 }
 
 // onRemote that throws when git fails; what it printed otherwise.

@@ -1663,7 +1663,13 @@ test('a resume that takes over a cut-off start clears the worktree and branch it
   git(repo, 'checkout', '-q', '-')
   expect(await failure(resume(ledger, home, terminals, id))).toContain('already exists')
   expect(branch()).toBe('  feat/lib\n')
-})
+
+  // Nor one whose commit only a remote branch has: that may go unmerged (dropBranch in gc.ts).
+  git(repo, 'update-ref', 'refs/remotes/origin/feat/lib', 'feat/lib')
+  cutOff()
+  expect(await failure(resume(ledger, home, terminals, id))).toContain('already exists')
+  expect(branch()).toBe('  feat/lib\n')
+}, 30_000)
 
 test('a resume that takes over a cut-off start keeps a worktree at the task’s path that is not that start’s', async () => {
   const { repo, id } = unfilledLib()
