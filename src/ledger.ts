@@ -972,16 +972,20 @@ export class Ledger {
     ).map((t) => t.id)
   }
 
-  // The tasks that come after this one and have not started: queued, or failed before they started,
-  // which `nod resume` starts again (claimRestart), and from this one's branch (baseOf in worker.ts).
+  // The tasks in this one's repo that come after it and have not started, so would start from its
+  // branch (baseOf in worker.ts): queued, or failed before they started, which `nod resume` starts
+  // again (claimRestart). Not one gc collected, as the person has dealt with it.
   notStartedAfter(id: number): number[] {
     return this.run(
       q
         .selectFrom('taskDeps as d')
         .innerJoin('tasks as t', 't.id', 'd.taskId')
+        .innerJoin('tasks as a', 'a.id', 'd.afterId')
         .select('t.id')
         .where('d.afterId', '=', id)
+        .whereRef('t.repo', '=', 'a.repo')
         .where('t.workspace', 'is', null)
+        .where('t.collectedAt', 'is', null)
         .where('t.status', 'not in', ['succeeded', 'cancelled']),
     ).map((t) => t.id)
   }

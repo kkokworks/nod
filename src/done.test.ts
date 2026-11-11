@@ -456,14 +456,16 @@ test('sweep fetches and deletes a branch gc kept once the remote merged it, so a
   const open = pushed(stale.repo, 'feat/open')
   const base = pushed(stale.repo, 'feat/base')
   const failedBase = pushed(stale.repo, 'feat/failed-base')
+  const dealtBase = pushed(stale.repo, 'feat/dealt-base')
   const reused = pushed(stale.repo, 'feat/reused')
   const nohead = pushed(headless.repo, 'feat/x')
   const report = await collect(ledger, home, Tmux.of(home), {
-    ids: [merged, open, base, failedBase, reused, nohead],
+    ids: [merged, open, base, failedBase, dealtBase, reused, nohead],
   })
-  expect(report.removed).toEqual([merged, open, base, failedBase, reused, nohead])
+  expect(report.removed).toEqual([merged, open, base, failedBase, dealtBase, reused, nohead])
   expect(branches(stale.repo)).toEqual([
     '  feat/base',
+    '  feat/dealt-base',
     '  feat/failed-base',
     '  feat/merged',
     '  feat/open',
@@ -473,16 +475,17 @@ test('sweep fetches and deletes a branch gc kept once the remote merged it, so a
   merge(stale.remote, 'feat/merged')
   merge(stale.remote, 'feat/base')
   merge(stale.remote, 'feat/failed-base')
+  merge(stale.remote, 'feat/dealt-base')
   merge(headless.remote, 'feat/x')
   // The person made a branch of their own by that name, which the default branch has all of as it
   // has no commit yet: not the one gc kept.
   git(stale.repo, 'branch', '-f', 'feat/reused', 'main')
   // Tasks start from feat/base and feat/failed-base, so they stay until those tasks start: one
   // queued, and one that failed before it started, which `nod resume` starts again.
-  const after = (id: number, branch: string): number =>
+  const after = (id: number, branch: string, repo = stale.repo): number =>
     ledger.add({
       brief: `after ${id}`,
-      repo: stale.repo,
+      repo,
       branch,
       checkCmd: null,
       model: null,
@@ -491,6 +494,11 @@ test('sweep fetches and deletes a branch gc kept once the remote merged it, so a
     })
   after(base, 'feat/next')
   ledger.error(after(failedBase, 'feat/next-failed'), 'submodule lib failed')
+  // Not one in another repo, which does not start from it, nor one gc collected since.
+  ledger.error(after(merged, 'feat/elsewhere', headless.repo), 'submodule lib failed')
+  const dealt = after(dealtBase, 'feat/next-dealt')
+  ledger.error(dealt, 'submodule lib failed')
+  ledger.collectedAsRead(ledger.get(dealt), null)
 
   await sweep(ledger, home, Tmux.of(home), async () => null, NOW)
 

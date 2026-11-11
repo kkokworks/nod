@@ -302,12 +302,13 @@ export async function dropMerged(ledger: Ledger): Promise<void> {
   const repos = [...new Set(kept.map((t) => t.repo))].filter(
     (r): r is string => r !== null && hasOrigin(r),
   )
-  // All at once and cut off as a git service's read is (prs.ts), sooner than landing's fetch: this
-  // one only lets a merged branch go a pass sooner, and a remote that does not answer must hold the
-  // tick for one wait, not one for each repo. One that fails holds back no other.
+  // Several at once, so remotes that do not answer hold the tick for one wait, not one for each
+  // repo; one that fails holds back no other. Cut off as landing's fetch is, not sooner: a fetch cut
+  // off leaves the pack it was taking (tmp_pack_*, for git to delete two weeks on) and starts over
+  // at the next pass.
   await readAtOnce(repos, async (repo) => {
     try {
-      const { code, output } = await onRemote(repo, ['fetch', '-q', 'origin'], FETCH_TIMEOUT_MS)
+      const { code, output } = await onRemote(repo, ['fetch', '-q', 'origin'])
       if (code !== 0) console.error(`nod: could not fetch ${repo}: ${output.trim()}`)
     } catch (error) {
       console.error(`nod: could not fetch ${repo}: ${message(error)}`)
@@ -323,8 +324,6 @@ export async function dropMerged(ledger: Ledger): Promise<void> {
     }
   }
 }
-
-const FETCH_TIMEOUT_MS = 30_000
 
 const hasOrigin = (repo: string): boolean =>
   Bun.spawnSync(['git', '-C', repo, 'remote', 'get-url', 'origin']).exitCode === 0
