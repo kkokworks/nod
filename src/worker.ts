@@ -1,8 +1,21 @@
-import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import {
+  appendFileSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs'
+import { tmpdir } from 'node:os'
+import { dirname, join } from 'node:path'
 import { z } from 'zod'
 import { accountChanged, accountRule, configDir } from './account'
-import { headOf, NOD_GIT, rebasing } from './branch'
+import { headOf, NOD_GIT, ownStart, rebasing } from './branch'
 import {
   ASKED,
   announce,
@@ -61,7 +74,7 @@ import {
   stoppedDialogs,
   typedHere,
 } from './turns'
-import { type Check, verify, verifyLanding } from './verify'
+import { type Check, REVIEW, runCheck, verify, verifyLanding } from './verify'
 import { oneLine } from './view'
 
 // Each worker is an interactive Claude Code session in tmux. It reports when it stops through
@@ -1042,13 +1055,17 @@ export async function settle(
   }
   // The next conflict of a rebase going on is the landing going on, not a failure to fix.
   if (!check.next && trailingRetries(ledger, task.id) >= CHECK_RETRIES) {
+    // Only as it goes to the person: the work may be to make a check pass that fails where it starts.
+    const atStart =
+      check.failedCheck === undefined ? '' : await failsAtStart(ledger, task, check.failedCheck)
+    if (newer()) return null
     await decide(
       ledger,
       home,
       task.id,
       attemptId,
       'check_failed',
-      `Still failing after ${CHECK_RETRIES} retries:\n${check.output}`,
+      `Still failing after ${CHECK_RETRIES} retries:\n${check.output}${atStart}`,
     )
     return null
   }
@@ -2433,5 +2450,74 @@ async function initSubmodules(repo: string, worktree: string): Promise<void> {
         `submodule ${path} from ${repo} failed: ${output.trim()}\nnod fills it from the repo's own checkout of it, so check that out first: git -C ${quote(repo)} submodule update --init ${quote(path)}`,
       )
     }
+  }
+}
+
+// What a repo task's check that keeps failing (`cmd`) adds to its decision when it fails at the
+// commit the branch starts at too (where its review reads it from, changesOf in verify.ts): no work
+// passes it then, so the command itself may be wrong. '' when it passes there, or when nod stopped
+// it past the review's time limit, which the Stop hook has to spare as no review runs on a failed
+// check, or past what is left of the hook's own, so the hook still opens the decision (`nod hook
+// stop` is a process of its own, so its uptime is the hook's time; a minute for the git around the
+// run and the decision). It runs in a worktree of its own, so the task's stays as its worker left
+// it: its submodules filled as the task's were, and the task's ignored files (the dependencies its
+// worker installed, say) linked in, as a new worktree has none and the check would fail for that
+// alone.
+// ponytail: links, not copies, so what a check writes to ignored files (a cache, a build) lands in
+// the task's; copy them if that bites.
+async function failsAtStart(ledger: Ledger, task: Task, cmd: string): Promise<string> {
+  const { repo, workspace: ws } = task
+  const left = STOP_HOOK_TIMEOUT_SECS * 1000 - process.uptime() * 1000 - 60_000
+  if (repo === null || ws === null || left <= 0) return ''
+  const deadline = Date.now() + Math.min(REVIEW.timeoutMs, left)
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'nod-start-')))
+  const links: string[] = []
+  try {
+    const base = ledger.landing(task.id)?.base ?? null
+    const branch = branchOf(task)
+    const start = await ownStart(ws, branch, await headOf(ws), 'refs/remotes/origin/HEAD', base)
+    if (start === null) throw new Error(`${branch}'s reflog no longer says where it was created`)
+    const add = await spawn([
+      ...NOD_GIT,
+      '-C',
+      repo,
+      'worktree',
+      'add',
+      '-q',
+      '--detach',
+      dir,
+      start,
+    ])
+    if (add.code !== 0) throw new Error(`git worktree add failed: ${add.output.trim()}`)
+    await initSubmodules(repo, dir)
+    const ignored = await spawn(
+      ['git', 'ls-files', '-z', '--others', '--ignored', '--exclude-standard', '--directory'],
+      ws,
+    )
+    if (ignored.code !== 0) throw new Error(`git ls-files failed: ${ignored.output.trim()}`)
+    for (const path of ignored.stdout.split('\0').map((p) => p.replace(/\/$/, ''))) {
+      const to = join(dir, path)
+      if (path === '' || existsSync(to) || !existsSync(dirname(to))) continue
+      symlinkSync(join(ws, path), to)
+      links.push(to)
+    }
+    const run = await runCheck(cmd, dir, Math.max(deadline - Date.now(), 0))
+    if (run.passed || run.timedOut) return ''
+    // A landing task's worker has its landing work, and nod cancel refuses it.
+    const redo =
+      ledger.landing(task.id)?.handedAt != null
+        ? ''
+        : ` To judge the work by another, nod cancel n${task.id} and add it again with that --check, telling its worker to take up the commits of branch ${branch}.`
+    return `\n\nIt fails at ${start}, the commit this branch starts at, too: the check command may be wrong.\n${run.output}\nAn answer does not change the check.${redo}`
+  } catch (error) {
+    return `\n\nnod could not run the check at the commit this branch starts at: ${message(error)}`
+  } finally {
+    // The links first, so nothing that removes the worktree reaches the task's files through them;
+    // only those still links, as the check may have removed one or put a folder in its place.
+    for (const link of links) {
+      if (lstatSync(link, { throwIfNoEntry: false })?.isSymbolicLink()) unlinkSync(link)
+    }
+    await spawn(['git', '-C', repo, 'worktree', 'remove', '--force', dir])
+    rmSync(dir, { recursive: true, force: true })
   }
 }

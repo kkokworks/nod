@@ -314,6 +314,11 @@ async function turn(message: string, continuing: boolean): Promise<void> {
       'NOD: done | captured',
     ].join('\n')
   }
+  // Like a package manager, `install` puts a dependency where the repo's git ignores it.
+  if (head.includes('install')) {
+    mkdirSync('node_modules', { recursive: true })
+    writeFileSync('node_modules/dep.js', 'dep')
+  }
   // A worker that fixes things once told what is wrong, or once a human says yes.
   if (head.includes('failed:') || head.includes('Human decision: yes')) {
     writeFileSync('ok.txt', 'ok')

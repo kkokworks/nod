@@ -135,5 +135,9 @@ test("a check that is not bun's test runner keeps the end of its output alone, w
   const check = await verify(ledger, taskIn(tmp.make('nod-verify-')), 'NOD: done | did it', cmd)
   const lines = Array.from({ length: 300 }, (_, i) => `Warning: a noisy render ${i + 1}\n`)
   const all = `(fail) the one that fails\nerror: it failed\n${lines.join('')}`
-  expect(check).toEqual({ passed: false, output: said(cmd) + all.slice(-OUTPUT_LIMIT) })
+  expect(check).toEqual({
+    passed: false,
+    output: said(cmd) + all.slice(-OUTPUT_LIMIT),
+    failedCheck: cmd,
+  })
 })

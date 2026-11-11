@@ -46,8 +46,15 @@ const BLOCKED = 'UserPromptSubmit operation blocked by hook:'
 // an independent review. Null for a retrospective, whose rule the human decides on instead.
 // What a check of a done came to. `next`: the landing goes on with more work for the worker, not a
 // failure (verifyLanding): a rebase nod went on with stopped at another conflict, or the pull
-// request's text is due; `head`: the head that passed.
-export type Check = { passed: boolean; output: string; next?: boolean; head?: string }
+// request's text is due; `head`: the head that passed; `failedCheck`: the check command that failed,
+// which nod runs where the branch starts once it keeps failing (failsAtStart in worker.ts).
+export type Check = {
+  passed: boolean
+  output: string
+  next?: boolean
+  head?: string
+  failedCheck?: string
+}
 
 // `checkCmd`: the task's, or as it lands the repo's (verifyLanding).
 export async function verify(
@@ -61,10 +68,11 @@ export async function verify(
   // ponytail: the check runs unsandboxed because a human wrote it; sandbox it once the planner
   // starts generating checks.
   const check = checkCmd === null ? null : await runCheck(checkCmd, task.workspace)
-  if (check !== null && !check.passed) {
+  if (checkCmd !== null && check?.passed === false) {
     return {
       passed: false,
       output: `The acceptance check \`${checkCmd}\` failed:\n${check.output}`,
+      failedCheck: checkCmd,
     }
   }
   const uncommitted = task.repo === null ? '' : await uncommittedChanges(task.workspace)
@@ -254,11 +262,12 @@ export async function runCheck(
   cmd: string,
   cwd: string,
   timeoutMs?: number,
-): Promise<{ passed: boolean; output: string }> {
-  const { code, output } = await spawn(['sh', '-c', cmd], cwd, { timeoutMs })
+): Promise<{ passed: boolean; output: string; timedOut: boolean }> {
+  const { code, output, timedOut } = await spawn(['sh', '-c', cmd], cwd, { timeoutMs })
   return {
     passed: code === 0,
     output: code === 0 ? output.slice(-OUTPUT_LIMIT) : failedOutput(output),
+    timedOut,
   }
 }
 

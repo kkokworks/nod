@@ -329,6 +329,55 @@ test('a check that keeps failing becomes a decision after the retry budget', asy
   expect(ledger.attempts(id).map((a) => a.kind)).toEqual(['start', 'retry', 'retry'])
 })
 
+test('a check that keeps failing where the branch starts too says so, run beside the worktree', async () => {
+  const repo = newRepo()
+  writeFileSync(join(repo, '.gitignore'), 'node_modules/\n')
+  git(repo, 'add', '-A')
+  git(repo, 'commit', '-qm', 'ignore dependencies')
+  const start = git(repo, 'rev-parse', 'HEAD')
+  const added = (branch: string, checkCmd: string): number =>
+    ledger.add({
+      brief: 'install, then write ok.txt as failed: says',
+      repo,
+      branch,
+      checkCmd,
+      model: null,
+      after: [],
+      issue: null,
+    })
+  // A wrong command, which no work passes. It says where it ran, and where the dependency is a link
+  // (the folder nod runs it in), it removes that, as `rm -rf node_modules` would.
+  const wrong = added(
+    'feat/wrong',
+    'echo "ran in $PWD"; test -L node_modules && rm node_modules; test -f missing.txt',
+  )
+  // One the start passes, with the dependency the worker installed, and the worker's ok.txt fails.
+  const fair = added('feat/fair', 'test -f node_modules/dep.js && test ! -f ok.txt')
+  await startTask(ledger, home, terminals, wrong)
+  await startTask(ledger, home, terminals, fair)
+  await reaches(wrong, 'needs_decision')
+  await reaches(fair, 'needs_decision')
+  const asked = (id: number): string => ledger.decisions(id)[0]?.question ?? ''
+  const [atHead, atStart = ''] = asked(wrong).split(
+    `\n\nIt fails at ${start}, the commit this branch starts at, too: the check command may be wrong.\n`,
+  )
+  expect(atHead).toStartWith('Still failing after 2 retries:\n')
+  expect(atHead).toContain('/feat/wrong\n')
+  // With what it printed there, in a folder of its own.
+  expect(atStart).toStartWith('ran in /')
+  expect(atStart).not.toContain('/feat/wrong')
+  expect(atStart).toContain(`nod cancel n${wrong} and add it again with that --check`)
+  expect(asked(fair)).toStartWith('Still failing after 2 retries:\n')
+  expect(asked(fair)).not.toContain('starts at, too')
+  // Each worktree is as its worker left it, and the one nod ran the check in is gone.
+  for (const id of [wrong, fair]) {
+    const ws = ledger.get(id).workspace ?? ''
+    expect(readFileSync(join(ws, 'node_modules', 'dep.js'), 'utf8')).toBe('dep')
+    expect(git(ws, 'status', '--porcelain')).toBe('?? ok.txt')
+  }
+  expect(git(repo, 'worktree', 'list', '--porcelain').match(/^worktree /gm)).toHaveLength(3)
+}, 30_000)
+
 test('an independent review that finds a problem sends it back into the same turn', async () => {
   const id = await add('review-strict: write the file')
   await reaches(id, 'succeeded')
