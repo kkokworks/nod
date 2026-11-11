@@ -329,30 +329,40 @@ test('a check that keeps failing becomes a decision after the retry budget', asy
   expect(ledger.attempts(id).map((a) => a.kind)).toEqual(['start', 'retry', 'retry'])
 })
 
-test('a check that keeps failing where the branch starts too says so, run beside the worktree', async () => {
+// A repo that ignores the dependency a worker installs (`install`, test/fake-agent.ts), and a task in
+// it that installs it, then writes ok.txt once its check fails.
+function ignoringRepo(): string {
   const repo = newRepo()
   writeFileSync(join(repo, '.gitignore'), 'node_modules/\n')
   git(repo, 'add', '-A')
   git(repo, 'commit', '-qm', 'ignore dependencies')
+  return repo
+}
+const installing = (repo: string, branch: string, checkCmd: string): number =>
+  ledger.add({
+    brief: 'install, then write ok.txt as failed: says',
+    repo,
+    branch,
+    checkCmd,
+    model: null,
+    after: [],
+    issue: null,
+  })
+const worktrees = (repo: string): number =>
+  git(repo, 'worktree', 'list', '--porcelain').match(/^worktree /gm)?.length ?? 0
+
+test('a check that keeps failing where the branch starts too says so, run beside the worktree', async () => {
+  const repo = ignoringRepo()
   const start = git(repo, 'rev-parse', 'HEAD')
-  const added = (branch: string, checkCmd: string): number =>
-    ledger.add({
-      brief: 'install, then write ok.txt as failed: says',
-      repo,
-      branch,
-      checkCmd,
-      model: null,
-      after: [],
-      issue: null,
-    })
-  // A wrong command, which no work passes. It says where it ran, and where the dependency is a link
-  // (the folder nod runs it in), it removes that, as `rm -rf node_modules` would.
-  const wrong = added(
+  // A wrong command, which no work passes. It says where it ran, and anywhere but the task's
+  // worktree it clears the dependencies, as a check that installs them again might.
+  const wrong = installing(
+    repo,
     'feat/wrong',
-    'echo "ran in $PWD"; test -L node_modules && rm node_modules; test -f missing.txt',
+    'echo "ran in $PWD"; case "$PWD" in */feat/wrong) ;; *) rm -rf node_modules/*;; esac; test -f missing.txt',
   )
   // One the start passes, with the dependency the worker installed, and the worker's ok.txt fails.
-  const fair = added('feat/fair', 'test -f node_modules/dep.js && test ! -f ok.txt')
+  const fair = installing(repo, 'feat/fair', 'test -f node_modules/dep.js && test ! -f ok.txt')
   await startTask(ledger, home, terminals, wrong)
   await startTask(ledger, home, terminals, fair)
   await reaches(wrong, 'needs_decision')
@@ -375,7 +385,23 @@ test('a check that keeps failing where the branch starts too says so, run beside
     expect(readFileSync(join(ws, 'node_modules', 'dep.js'), 'utf8')).toBe('dep')
     expect(git(ws, 'status', '--porcelain')).toBe('?? ok.txt')
   }
-  expect(git(repo, 'worktree', 'list', '--porcelain').match(/^worktree /gm)).toHaveLength(3)
+  expect(worktrees(repo)).toBe(3)
+}, 30_000)
+
+test('the worktree nod runs a check in where the branch starts goes when a signal ends the hook', async () => {
+  const repo = ignoringRepo()
+  const signalled = join(tmp.make('nod-signal-'), 'signalled')
+  // Where the branch starts, it ends the Stop hook running it ($PPID), as nod cancel does by closing
+  // the worker's terminal, and waits to be killed with it.
+  const id = installing(
+    repo,
+    'feat/cut',
+    `case "$PWD" in */feat/cut) ;; *) touch ${quote(signalled)}; kill -HUP $PPID; sleep 30;; esac; false`,
+  )
+  await startTask(ledger, home, terminals, id)
+  await until(() => existsSync(signalled), 20_000)
+  // The repo has its own worktree and the task's again.
+  await until(() => worktrees(repo) === 2)
 }, 30_000)
 
 test('an independent review that finds a problem sends it back into the same turn', async () => {

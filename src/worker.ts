@@ -1,14 +1,11 @@
 import {
   appendFileSync,
   existsSync,
-  lstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   realpathSync,
   rmSync,
-  symlinkSync,
-  unlinkSync,
   writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -55,7 +52,7 @@ import {
   socketsDir,
   workspaceOf,
 } from './place'
-import { message, spawn } from './proc'
+import { ENDING, message, spawn } from './proc'
 import { type Capture, nodLines, parseCaptures, parseReport, parseTells, type Tell } from './report'
 import { activeRules, hadTrouble, isNoRule, retroBrief } from './rules'
 import { listen, owed, sendUnsent, sendWatched, unsent, type Worker, watchStart } from './sending'
@@ -2461,17 +2458,29 @@ async function initSubmodules(repo: string, worktree: string): Promise<void> {
 // stop` is a process of its own, so its uptime is the hook's time; a minute for the git around the
 // run and the decision). It runs in a worktree of its own, so the task's stays as its worker left
 // it: its submodules filled as the task's were, and the task's ignored files (the dependencies its
-// worker installed, say) linked in, as a new worktree has none and the check would fail for that
-// alone.
-// ponytail: links, not copies, so what a check writes to ignored files (a cache, a build) lands in
-// the task's; copy them if that bites.
+// worker installed, say) copied in, as a new worktree has none and the check would fail for that
+// alone. Copied, not linked, so what the check writes there does not reach the task's; a clone
+// where the file system has them (cp -c falls back to a copy, --reflink=auto too).
 async function failsAtStart(ledger: Ledger, task: Task, cmd: string): Promise<string> {
   const { repo, workspace: ws } = task
   const left = STOP_HOOK_TIMEOUT_SECS * 1000 - process.uptime() * 1000 - 60_000
   if (repo === null || ws === null || left <= 0) return ''
   const deadline = Date.now() + Math.min(REVIEW.timeoutMs, left)
+  const timeoutMs = (): number => Math.max(deadline - Date.now(), 0)
   const dir = realpathSync(mkdtempSync(join(tmpdir(), 'nod-start-')))
-  const links: string[] = []
+  const clean = (): void => {
+    Bun.spawnSync(['git', '-C', repo, 'worktree', 'remove', '--force', dir])
+    rmSync(dir, { recursive: true, force: true })
+  }
+  // A signal that ends the hook meanwhile (nod cancel closes its terminal) ends it past finally (end
+  // in proc.ts), which would leave the worktree registered in the repo: it goes first, then the
+  // signal goes on.
+  const ending = (signal: NodeJS.Signals): void => {
+    for (const s of ENDING) process.off(s, ending)
+    clean()
+    process.kill(process.pid, signal)
+  }
+  for (const s of ENDING) process.on(s, ending)
   try {
     const base = ledger.landing(task.id)?.base ?? null
     const branch = branchOf(task)
@@ -2495,13 +2504,17 @@ async function failsAtStart(ledger: Ledger, task: Task, cmd: string): Promise<st
       ws,
     )
     if (ignored.code !== 0) throw new Error(`git ls-files failed: ${ignored.output.trim()}`)
+    const copy = process.platform === 'darwin' ? ['cp', '-cR'] : ['cp', '-R', '--reflink=auto']
     for (const path of ignored.stdout.split('\0').map((p) => p.replace(/\/$/, ''))) {
       const to = join(dir, path)
       if (path === '' || existsSync(to) || !existsSync(dirname(to))) continue
-      symlinkSync(join(ws, path), to)
-      links.push(to)
+      const copied = await spawn([...copy, join(ws, path), to], undefined, {
+        timeoutMs: timeoutMs(),
+      })
+      if (copied.timedOut) return ''
+      if (copied.code !== 0) throw new Error(`copying ${path} failed: ${copied.output.trim()}`)
     }
-    const run = await runCheck(cmd, dir, Math.max(deadline - Date.now(), 0))
+    const run = await runCheck(cmd, dir, timeoutMs())
     if (run.passed || run.timedOut) return ''
     // A landing task's worker has its landing work, and nod cancel refuses it.
     const redo =
@@ -2512,12 +2525,7 @@ async function failsAtStart(ledger: Ledger, task: Task, cmd: string): Promise<st
   } catch (error) {
     return `\n\nnod could not run the check at the commit this branch starts at: ${message(error)}`
   } finally {
-    // The links first, so nothing that removes the worktree reaches the task's files through them;
-    // only those still links, as the check may have removed one or put a folder in its place.
-    for (const link of links) {
-      if (lstatSync(link, { throwIfNoEntry: false })?.isSymbolicLink()) unlinkSync(link)
-    }
-    await spawn(['git', '-C', repo, 'worktree', 'remove', '--force', dir])
-    rmSync(dir, { recursive: true, force: true })
+    for (const s of ENDING) process.off(s, ending)
+    clean()
   }
 }

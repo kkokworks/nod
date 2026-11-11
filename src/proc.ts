@@ -9,7 +9,7 @@ const OUTPUT_GRACE_MS = 500
 // a signal that ends it, and their limit with it: a Stop hook's check ran on after its session
 // closed (review). Such a signal goes to them first, as it did in this process's group.
 const running = new Set<number>()
-const ENDING = ['SIGHUP', 'SIGTERM', 'SIGINT'] as const
+export const ENDING = ['SIGHUP', 'SIGTERM', 'SIGINT'] as const
 
 function killGroup(pid: number, signal: NodeJS.Signals = 'SIGKILL'): void {
   try {
