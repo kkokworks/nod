@@ -96,7 +96,7 @@ test('ls drops the turns column, then the todo column, as the terminal narrows',
   expect(head(60)).toEqual(['작업', '상태', '지남', '요약', '이슈 · 결과'])
 })
 
-test('ls groups what needs you, running, queued, unsent, then ended, the latest first in each', () => {
+test('ls groups what needs you, running, queued, not dealt with, then ended, the latest first in each', () => {
   const sessionEnded = task({
     id: 21,
     status: 'running',
@@ -128,13 +128,13 @@ test('ls groups what needs you, running, queued, unsent, then ended, the latest 
     ['결정 대기 · 오류', [21, 22, 3]],
     ['진행 중', [9]],
     ['차례 기다림', [11]],
-    ['끝남 · 내보내기 전', [6]],
+    ['끝남 · 처리 전', [6]],
     ['끝남', [24, 25, 23, 26, 8]],
   ])
   // No task queued or running: those groups are not drawn.
   const ended = lsTable([pushed, cancelled], 80, false, now)
   expect(ended).toContain('│ 끝남 (2) ')
-  for (const name of ['결정 대기', '진행 중', '차례 기다림', '내보내기 전']) {
+  for (const name of ['결정 대기', '진행 중', '차례 기다림', '처리 전']) {
     expect(ended).not.toContain(name)
   }
   // Equal times: the later task first.

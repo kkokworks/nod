@@ -191,8 +191,8 @@ const USAGE = `usage:
                                    tasks not yet collected by gc (--all: every task; --mine: only
                                    this Claude session's: those it added, or, in a session nod
                                    open opened, its project's), as a table the terminal's width:
-                                   what needs you, running, queued, ended with nothing sent
-                                   anywhere, then ended; the latest first in each, with its
+                                   what needs you, running, queued, ended but not dealt with (no
+                                   link, no push), then ended; the latest first in each, with its
                                    issue, links and the remote branches it was pushed to.
                                    Into a pipe or with --plain, a tab-separated line a task (its
                                    number, todo, status, turns, the time its age counts from,
