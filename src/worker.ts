@@ -1043,9 +1043,9 @@ export async function settle(
   // The next conflict of a rebase going on is the landing going on, not a failure to fix.
   if (!check.next && trailingRetries(ledger, task.id) >= CHECK_RETRIES) {
     // When the check is what failed (as verify words it): an answer goes to the worker and leaves the
-    // check as it is, so judging the work by another command takes another task. A landing task's
-    // worker has its landing work, which nod cancel refuses.
-    const redo = lands
+    // check as it is, so judging the work by another command takes another task. A landing task is
+    // left out, as nod cancel refuses it (landingOn).
+    const redo = landingOn(ledger, task.id)
       ? ''
       : ` To judge the work by another, nod cancel n${task.id} and add it again with that --check${task.repo === null ? '' : `, telling its worker to take up the commits of branch ${branchOf(task)}`}.`
     const unchanged = check.output.startsWith('The acceptance check ')
