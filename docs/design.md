@@ -40,7 +40,7 @@ nod 는 여러 에이전트를 동시에 돌려 일을 처리하고, 사람에�
 | `src/transcript.ts` | Claude Code 가 남기는 워커 세션의 대화 기록(JSONL) 읽기. 기록이 있는지(`hasTranscript`), 전체 줄(`transcriptLines`)과 끝 부분(`transcriptTail`), 마지막 차례가 Stop 없이 끝났는지(`endedWithoutStop`: 사람이 Escape 로 멈춤 `STOPPED_TURN`, 훅이 메시지를 막음 `HELD_BACK`), 차례 도중 붙여 넣은 메시지가 어떻게 됐는지(`heardOf`). 읽기만 하고, 그 결과로 장부를 바꾸는 일은 `turns.ts`(`endTurnWithoutStop`·`forgetHeldBack`·`stoppedDialogs`)와 `worker.ts`(`carryUnheard`)에 있습니다. `worker.ts`·`hooks.ts`·`land.ts` 를 부르지 않습니다. |
 | `src/decisions.ts` | 결정 장부. 결정 열기(`decide`, 착지 결정 `askToLand`), 기다릴 것이 없어진 결정 닫기(`closeDecisions`)와 그 뒤 작업을 다시 도는 상태로 돌리기(`goesOn`), 열린 결정을 따라 보이는 할 일 목록에 닫혔다고 알리기(`announce`), 사람이 닫은 결정을 프로젝트 세션에 알리기(`noticeAnswered`), 작업이 끝났는지(`ended`·`finished`·`refuseEnded`). 장부와 알림(`notify.ts`)만 다루고 터미널은 받지 않습니다. 답이 워커의 칸에서 하는 일(`answer`)은 `worker.ts` 에 있습니다. `worker.ts`·`hooks.ts`·`land.ts` 를 부르지 않습니다. |
 | `src/turns.ts` | 워커의 차례(시도) 장부. 훅이 온 차례 찾기·열기(`currentTurn`·`openTurn`)와 사람이 칸에 친 차례의 표지(`TYPED`), Stop 훅 없이 끝난 차례 닫기: 사람이 Escape 로 멈췄거나 훅이 메시지를 막은 차례(`endTurnWithoutStop`·`stoppedDialogs`·`forgetHeldBack`, 대화 기록으로 판정), Claude Code 나 칸이 사라져 끊긴 차례(`cutOff`, 결정으로). 장부·대화 기록(`transcript.ts`)·결정(`decisions.ts`)과 질문에 넣을 한 줄 요약(`view.ts` 의 `oneLine`)만 쓰고 터미널은 받지 않습니다. 칸에 메시지를 넣는 일(`deliver`·`carryUnheard`)은 `worker.ts` 에 있습니다. `worker.ts`·`hooks.ts`·`land.ts` 를 부르지 않습니다. |
-| `src/worker.ts` | 워커 생명주기. 띄우기, 칸 안에서 Claude Code 를 지켜 다시 띄우기(`keepWorker`), 끝난 차례 판정(`settle`: 보고 읽기 → 검증(`verify.ts`) → 다시 시키거나 결정 열기(재시도를 다 쓴 검증 명령은 브랜치 시작 커밋에서도 돌려 봄, `failsAtStart`), 백그라운드 작업이 남았으면 기다리기, `NOD: tell` 을 다른 작업에 보내기), 답·후속 지시를 같은 세션에 보내기, 끝난 세션을 대화 기록에서 다시 열기, 앞 작업이 끝나면 기다리던 작업 띄우기, 계정이 바뀐 워커 다시 띄우기, 칸째 사라진 차례와 너무 오래 기다린 작업을 결정으로, 끝난 지 한 시간이 지난 작업의 칸 닫기. 터미널을 받지 않는 차례·결정 장부 일은 `turns.ts`·`decisions.ts` 에 있습니다. `hooks.ts` 를 부르지 않습니다. |
+| `src/worker.ts` | 워커 생명주기. 띄우기, 칸 안에서 Claude Code 를 지켜 다시 띄우기(`keepWorker`), 끝난 차례 판정(`settle`: 보고 읽기 → 검증(`verify.ts`) → 다시 시키거나 결정 열기, 백그라운드 작업이 남았으면 기다리기, `NOD: tell` 을 다른 작업에 보내기), 답·후속 지시를 같은 세션에 보내기, 끝난 세션을 대화 기록에서 다시 열기, 앞 작업이 끝나면 기다리던 작업 띄우기, 계정이 바뀐 워커 다시 띄우기, 칸째 사라진 차례와 너무 오래 기다린 작업을 결정으로, 끝난 지 한 시간이 지난 작업의 칸 닫기. 터미널을 받지 않는 차례·결정 장부 일은 `turns.ts`·`decisions.ts` 에 있습니다. `hooks.ts` 를 부르지 않습니다. |
 | `src/hooks.ts` | 워커의 Claude Code 훅이 왔을 때 하는 일(`nod hook <사건>`). 훅이 넘기는 사건의 모양과 그 처리: Stop(`onStop`, 판정은 `settle`), StopFailure(API 오류 표시, 사용량 한도가 아닌 오류는 끊긴 차례로 결정), UserPromptSubmit(사람이 칸에 친 차례를 시작할 때 그 글과 함께 장부에 열기), nod 가 허락하지 않은 PermissionRequest(그 자리에서 결정, `onPermissionAsk`), 도구가 돈 뒤(칸에서 허락한 확인의 결정 닫기, `onToolRan`), Notification(권한 확인 → 결정), 압축 뒤 SessionStart(지시 원문 다시 넣기, `onCompact`). Stop 사건의 모양(`StopEvent`)은 `settle` 이 받으므로 `worker.ts` 에 있습니다. |
 | `src/settings.ts` | 워커 세션과 `nod open` 세션의 Claude Code 설정(`--settings`). 워커의 샌드박스와 훅(`workerSettings`), `nod open` 세션의 훅(`openSettings`), 훅이 부르는 명령(`nod hook <사건>`)과 훅마다의 제한 시간. 독립 리뷰어(`verify.ts`)와 폴더 신뢰 확인 세션(`worker.ts` 의 `trustWork`)의 설정은 각자 만듭니다. `worker.ts` 와 `todo-cli.ts` 가 함께 씁니다. nod 의 모듈 가운데 `tmux.ts`(`quote`)와 `verify.ts`(`SANDBOX`)만 부릅니다. |
 | `src/allow.ts` | 워커의 권한 확인 가운데 nod 가 스스로 허락하는 것. PermissionRequest 훅 처리(그 작업의 폴더 안에서만 영향이 있고 다시 만들 수 있는 Bash 명령인지 코드로 판정 → 허락을 돌려주고 장부·프로젝트 세션 알림에 남김, 아니면 아무것도 돌려주지 않고 그 자리에서 결정을 엶, `hooks.ts` 의 `onPermissionAsk`). |
@@ -201,7 +201,7 @@ nod add ─▶ tmux 에 워커 세션 (지시가 첫 메시지)
 워커가 멈춤 ─▶ Stop 훅이 마지막 메시지의 보고 줄(NOD: done|question|failed)을 읽음
    ├─ done ─▶ 회고 작업이면 검증 없이 ─▶ 규칙 결정(rule), 규칙이 없으면 완료 (어느 쪽이든 `NOD: in` 할 일은 받은 일함에)
    │          검증 통과 (검증 명령, 레포면 커밋, 독립 리뷰) ─▶ 완료 ─▶ `NOD: tell` 의 메시지를 받는 작업에 보냄 (끝난 작업도) ─▶ 기다리던 작업 중 앞 작업이 모두 성공한 것을 띄움
-   │          검증 실패 ─▶ 훅이 멈춤을 막고(block) 실패 출력을 돌려줌 ─▶ 같은 턴이 이어짐 (최대 2회) ─▶ 그래도 실패면 결정 (검증 명령이 시작 커밋에서도 실패하면 그렇다고 적음)
+   │          검증 실패 ─▶ 훅이 멈춤을 막고(block) 실패 출력을 돌려줌 ─▶ 같은 턴이 이어짐 (최대 2회) ─▶ 그래도 실패면 결정 (검증 명령이 실패했으면 답으로는 그 명령이 바뀌지 않는다는 안내와 다시 넣는 길을 붙임)
    │          읽을 수 없거나 보낼 수 없는 `NOD: in`·`NOD: tell` ─▶ 검증 전에 검증 실패처럼 돌려줌
    │          `NOD: tell` 이 두 작업 사이 4번째 메시지를 넘김 ─▶ 보내지 않고 검증 전에 결정(question)
    │          검증하는 사이 nod tell 로 다음 차례가 열림 ─▶ 성공·재시도 없이 그 차례의 멈춤에 맡김
@@ -2738,45 +2738,6 @@ ponytail 로 남긴 틈은 `src/sending.ts` 에 적었습니다.
 모르는 창에 막힌 뒤 같은 칸으로 메시지가 하나 더 가는 틈도 있습니다(첫 메시지가 기다리는 15초 안에 온 것).
 그 Enter 는 그 창이 받습니다.
 차례가 끊겼을 때 `stuck` 이 없던 메시지가 사라지는 것은 이 변경 전부터 있던 일로, 그대로 뒀습니다.
-
-## 시작 커밋에서도 실패하는 검사 (2026-11-11)
-
-서브모듈이 있는 레포의 작업에 `./` 없이 폴더 이름만 준 `bun test <이름>…` 을 수락 검사로 주었더니, bun 이 경로에 그 이름이 든 서브모듈의 시험까지 잡아 브랜치의 시작 커밋에서도 실패했습니다.
-워커가 질문으로 묻자 사람은 `./` 를 붙인 명령으로 판정하라고 답했습니다.
-그런데 답은 워커의 대화로만 가고 작업의 검사는 그대로라, 옛 검사가 계속 실패로 판정했고 재시도 끝에 작업이 취소됐습니다.
-
-- **결정으로 올릴 때 시작 커밋에서 한 번 더 돌립니다.**
-  재시도를 다 써도 수락 검사(착지 중이면 레포의 검사)가 실패해 `check_failed` 결정을 열 때, nod 가 같은 명령을 브랜치의 시작 커밋에서 돌립니다.
-  시작 커밋은 독립 리뷰가 diff 를 읽는 시작과 같습니다(`ownStart`).
-  거기서도 실패하면 결정에 `It fails at <커밋>, the commit this branch starts at, too: the check command may be wrong.` 과 그 출력을 싣고, 답으로는 검사가 바뀌지 않는다는 것과 다른 검사로 판정하는 길(아래)을 붙입니다.
-  거기서 통과하면 결정은 예전과 같습니다.
-- **첫 실패 때가 아니라 결정 때.**
-  실패하는 시험을 통과시키는 일처럼, 시작 커밋에서 실패하는 것이 정상인 작업도 있습니다.
-  그래서 그 사실로 워커를 멈추지 않고, 사람에게 갈 때만 한 번 돌립니다.
-  더 드는 시간은 결정 하나에 검사 한 번입니다.
-- **`nod add` 때 미리 돌리지 않은 이유.**
-  모든 작업이 검사 시간만큼 늦게 시작합니다.
-  그때 worktree 에는 워커가 아직 깔지 않은 의존성(`node_modules` 등)이 없어, 대부분의 검사가 그것만으로 실패합니다.
-  또 시작 커밋에서 실패하는 것이 정상인 작업이 있어, 그때 알려도 판단할 거리가 되지 못합니다.
-- **작업의 worktree 는 건드리지 않습니다.**
-  시작 커밋을 임시 폴더에 `git worktree add --detach` 로 따로 꺼내고, 서브모듈은 작업을 시작할 때처럼 레포의 체크아웃에서 채웁니다.
-  새 worktree 에는 무시된 파일이 없으므로, 작업 worktree 의 무시된 파일(`git ls-files --others --ignored --exclude-standard --directory`)을 복사해 둡니다(macOS 는 `cp -cR` 로, 파일 시스템이 되면 clone 이고 안 되면 보통 복사. 그 밖은 `cp -R`. `--reflink` 를 모르는 cp 도 있어서 붙이지 않음).
-  처음에는 링크로 걸었는데, 시작 커밋에서 도는 검사가 `node_modules` 를 비우거나 다시 깔면 작업 쪽 파일이 바뀌거나 사라졌습니다(리뷰에서 재현).
-  `node_modules` 236MB·파일 1만 3천 개를 복사하는 데 1.5~3초 걸렸습니다.
-  끝나면 worktree 와 그 폴더를 지웁니다. 검사가 읽기 전용으로 남긴 폴더(모듈 캐시 등)는 쓰기 권한을 준 뒤 지우고, 그래도 지우지 못하면 알리기만 하고 결정은 그대로 엽니다(리뷰에서 재현: 지우다 던진 오류로 작업이 error 가 됐음).
-  `nod cancel` 이 워커 칸을 닫아 훅이 신호로 끝날 때도 먼저 지우고 끝납니다. 신호로 끝나는 프로세스는 `finally` 를 돌지 않아, 그대로 두면 레포에 worktree 등록이 남았습니다(리뷰에서 찾음).
-- **시간.**
-  검사가 실패하면 독립 리뷰가 돌지 않으므로, 리뷰의 몫(10분, `REVIEW.timeoutMs`)을 시작 커밋 검사의 제한으로 씁니다.
-  다만 Stop 훅에 남은 시간에서 1분을 뺀 것이 그보다 짧으면 그만큼만 씁니다. 훅이 끊기면 결정이 열리지 않기 때문입니다. 남은 시간은 `nod hook stop` 프로세스가 뜬 뒤 지난 시간으로 셉니다.
-  복사와 검사가 그 시간을 넘기면 아무것도 붙이지 않습니다.
-  worktree 를 만들지 못하는 등 돌리지 못하면 그 까닭을 한 줄 붙입니다.
-- **진행 중에 검사를 바꾸는 명령은 두지 않았습니다.**
-  다른 검사로 판정하려면 지금 있는 길로 됩니다.
-  `nod cancel <작업>` 한 뒤 새 `--check` 로 `nod add` 하고, 지시에 옛 브랜치의 커밋을 이어 받으라고 씁니다.
-  worktree 들은 ref 를 함께 쓰므로 새 워커가 `git merge`·`git cherry-pick` 으로 가져올 수 있습니다.
-  잃는 것은 옛 워커의 대화 맥락이고, 옛 작업의 보고는 `nod show` 에 남습니다.
-  `nod resume` 과 결정의 답은 검사를 바꾸지 않습니다.
-  착지 중인 작업은 `nod cancel` 이 거절하므로 이 안내를 붙이지 않습니다.
 
 ## 할 일 (G1, 2026-10-20)
 
