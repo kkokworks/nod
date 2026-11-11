@@ -62,12 +62,13 @@ export const NOD_GIT = ['git', '-c', 'core.hooksPath=/dev/null', '-c', 'core.edi
 // timeout also ends the remote helper or ssh git starts, which would hold the output open.
 const GIT_TIMEOUT_MS = 2 * 60_000
 
-// git on the remote, which may never answer and must not ask (GIT_TIMEOUT_MS).
-export function onRemote(cwd: string, args: string[]): Promise<{ code: number; output: string }> {
-  return spawn([...NOD_GIT, ...args], cwd, {
-    env: { GIT_TERMINAL_PROMPT: '0' },
-    timeoutMs: GIT_TIMEOUT_MS,
-  })
+// git on the remote, which may never answer and must not ask (GIT_TIMEOUT_MS, unless `timeoutMs`).
+export function onRemote(
+  cwd: string,
+  args: string[],
+  timeoutMs = GIT_TIMEOUT_MS,
+): Promise<{ code: number; output: string }> {
+  return spawn([...NOD_GIT, ...args], cwd, { env: { GIT_TERMINAL_PROMPT: '0' }, timeoutMs })
 }
 
 export const gitPath = (ws: string, path: string): string =>

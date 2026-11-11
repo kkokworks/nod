@@ -455,14 +455,16 @@ test('sweep fetches and deletes a branch gc kept once the remote merged it, so a
   const merged = pushed(stale.repo, 'feat/merged')
   const open = pushed(stale.repo, 'feat/open')
   const base = pushed(stale.repo, 'feat/base')
+  const failedBase = pushed(stale.repo, 'feat/failed-base')
   const reused = pushed(stale.repo, 'feat/reused')
   const nohead = pushed(headless.repo, 'feat/x')
   const report = await collect(ledger, home, Tmux.of(home), {
-    ids: [merged, open, base, reused, nohead],
+    ids: [merged, open, base, failedBase, reused, nohead],
   })
-  expect(report.removed).toEqual([merged, open, base, reused, nohead])
+  expect(report.removed).toEqual([merged, open, base, failedBase, reused, nohead])
   expect(branches(stale.repo)).toEqual([
     '  feat/base',
+    '  feat/failed-base',
     '  feat/merged',
     '  feat/open',
     '  feat/reused',
@@ -470,24 +472,34 @@ test('sweep fetches and deletes a branch gc kept once the remote merged it, so a
   expect(branches(headless.repo)).toEqual(['  feat/x'])
   merge(stale.remote, 'feat/merged')
   merge(stale.remote, 'feat/base')
+  merge(stale.remote, 'feat/failed-base')
   merge(headless.remote, 'feat/x')
   // The person made a branch of their own by that name, which the default branch has all of as it
   // has no commit yet: not the one gc kept.
   git(stale.repo, 'branch', '-f', 'feat/reused', 'main')
-  // A queued task starts from feat/base, so it stays until that task starts.
-  ledger.add({
-    brief: 'after the base',
-    repo: stale.repo,
-    branch: 'feat/next',
-    checkCmd: null,
-    model: null,
-    after: [base],
-    issue: null,
-  })
+  // Tasks start from feat/base and feat/failed-base, so they stay until those tasks start: one
+  // queued, and one that failed before it started, which `nod resume` starts again.
+  const after = (id: number, branch: string): number =>
+    ledger.add({
+      brief: `after ${id}`,
+      repo: stale.repo,
+      branch,
+      checkCmd: null,
+      model: null,
+      after: [id],
+      issue: null,
+    })
+  after(base, 'feat/next')
+  ledger.error(after(failedBase, 'feat/next-failed'), 'submodule lib failed')
 
   await sweep(ledger, home, Tmux.of(home), async () => null, NOW)
 
-  expect(branches(stale.repo)).toEqual(['  feat/base', '  feat/open', '  feat/reused'])
+  expect(branches(stale.repo)).toEqual([
+    '  feat/base',
+    '  feat/failed-base',
+    '  feat/open',
+    '  feat/reused',
+  ])
   expect(branches(headless.repo)).toEqual([])
   // A new task by the same name starts: worktree add -b no longer finds the branch there.
   git(stale.repo, 'worktree', 'add', '-q', '-b', 'feat/merged', join(home, 'again'))

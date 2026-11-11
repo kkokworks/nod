@@ -3,7 +3,7 @@ import { dirname, join, resolve } from 'node:path'
 import { onRemote } from './branch'
 import { FINISHED, type Ledger, type Task } from './ledger'
 import { branchOf, sessionName, settling } from './place'
-import { message, spawn } from './proc'
+import { message, readAtOnce, spawn } from './proc'
 import { forgetStuck } from './sending'
 import type { Terminals } from './tmux'
 import { endTurnWithoutStop } from './turns'
@@ -111,7 +111,7 @@ export async function collect(
           skip('told to go on while gc ran')
           continue
         }
-        await afterMark(() => dropBranch(task))
+        await afterMark(() => dropBranch(ledger, task))
         report.clean.push(task.id)
         continue
       }
@@ -168,7 +168,7 @@ export async function collect(
       forgetStuck(home, task.id)
       const { workspace } = task
       await afterMark(async () => {
-        await dropBranch(task)
+        await dropBranch(ledger, task)
         // A worktree sits in folders named after its repo and branch; drop the ones it leaves
         // empty.
         for (
@@ -249,15 +249,16 @@ function submoduleNames(dir: string, name = ''): string[] {
 // Otherwise the branch stays, even when a remote branch holds its commits: that branch may be
 // deleted unmerged, a fetch --prune (land.ts) then takes the last ref to them, and git gc the
 // commits, so resume would rebuild the branch without its work. So does a branch still checked out
-// somewhere, which git refuses to delete.
+// somewhere, which git refuses to delete, and one a task that has not started yet starts from.
 // A task that never started keeps no branch of its own, since a start that fails after making one
 // takes it back (prepareWorkspace in worker.ts): one by its name is someone else's.
-async function dropBranch(task: Task): Promise<void> {
+async function dropBranch(ledger: Ledger, task: Task): Promise<void> {
   const { repo, branch } = task
   if (repo === null || branch === null || task.workspace === null) return
   const ref = `refs/heads/${branch}`
   // The repo or the branch is gone: nothing to delete.
   if (!hasRef(repo, ref)) return
+  if (ledger.notStartedAfter(task.id).length > 0) return
   if (landed(repo, ref)) Bun.spawnSync(['git', '-C', repo, 'branch', '-D', branch])
 }
 
@@ -265,9 +266,9 @@ async function dropBranch(task: Task): Promise<void> {
 // and a new task can take its name: pushed and merged later, or kept as the repo's last fetch was
 // old or left it no origin/HEAD. Each such repo is fetched first, which also makes origin/HEAD
 // where it is missing (git 2.48 and later). Only a branch still at the commit gc recorded: one that
-// moved since is someone's work, or a later task's by the same name. A branch a queued task starts
-// from stays, as in sweep (done.ts); so does one a task brought back works on, which git refuses to
-// delete as checked out.
+// moved since is someone's work, or a later task's by the same name. One a task brought back works
+// on stays, which git refuses to delete as checked out, and so does one a task not started yet
+// starts from (dropBranch).
 // ponytail: fetches such a repo on every pass, for as long as a branch in it stays unmerged.
 export async function dropMerged(ledger: Ledger): Promise<void> {
   const left = (t: Task, tip: (t: Task) => string | null): boolean =>
@@ -275,7 +276,7 @@ export async function dropMerged(ledger: Ledger): Promise<void> {
     t.workspace !== null &&
     t.head !== null &&
     tip(t) === t.head &&
-    ledger.waiting(t.id).length === 0
+    ledger.notStartedAfter(t.id).length === 0
   // Each repo's branches read at once, as the ledger keeps every task gc ever collected.
   const tips = new Map<string, Map<string, string>>()
   const tipOf = ({ repo, branch }: Task): string | null => {
@@ -297,22 +298,33 @@ export async function dropMerged(ledger: Ledger): Promise<void> {
     return refs.get(`refs/heads/${branch}`) ?? null
   }
   const kept = ledger.list().filter((t) => left(t, tipOf))
-  for (const repo of new Set(kept.map((t) => t.repo))) {
-    // A repo with no origin has nothing to fetch, nor a default branch to compare with.
-    if (repo === null || !hasOrigin(repo)) continue
-    const { code, output } = await onRemote(repo, ['fetch', '-q', 'origin'])
-    if (code !== 0) console.error(`nod: could not fetch ${repo}: ${output.trim()}`)
-  }
+  // A repo with no origin has nothing to fetch, nor a default branch to compare with.
+  const repos = [...new Set(kept.map((t) => t.repo))].filter(
+    (r): r is string => r !== null && hasOrigin(r),
+  )
+  // All at once and cut off as a git service's read is (prs.ts), sooner than landing's fetch: this
+  // one only lets a merged branch go a pass sooner, and a remote that does not answer must hold the
+  // tick for one wait, not one for each repo. One that fails holds back no other.
+  await readAtOnce(repos, async (repo) => {
+    try {
+      const { code, output } = await onRemote(repo, ['fetch', '-q', 'origin'], FETCH_TIMEOUT_MS)
+      if (code !== 0) console.error(`nod: could not fetch ${repo}: ${output.trim()}`)
+    } catch (error) {
+      console.error(`nod: could not fetch ${repo}: ${message(error)}`)
+    }
+  })
   for (const { id } of kept) {
     try {
       // Read again, as fetching takes a while: one brought back meanwhile is not collected.
       const task = ledger.get(id)
-      if (left(task, headOf)) await dropBranch(task)
+      if (left(task, headOf)) await dropBranch(ledger, task)
     } catch (error) {
       console.error(`nod: could not look at task n${id}'s branch again: ${message(error)}`)
     }
   }
 }
+
+const FETCH_TIMEOUT_MS = 30_000
 
 const hasOrigin = (repo: string): boolean =>
   Bun.spawnSync(['git', '-C', repo, 'remote', 'get-url', 'origin']).exitCode === 0
