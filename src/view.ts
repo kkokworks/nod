@@ -75,10 +75,11 @@ export type LsTask = {
   pushed: string[]
 }
 
-// What needs the person first, then work going on, work waiting its turn, results not yet sent
-// anywhere (no link, no push), and the rest of what ended. What gc collected (--all) the person has
-// dealt with, whatever its status; bringing it back (restore in worker.ts) uncollects it.
-const GROUPS = ['결정 대기 · 오류', '진행 중', '차례 기다림', '끝남 · 내보내기 전', '끝남']
+// What needs the person first, then work going on, work waiting its turn, results not yet dealt
+// with (no link, no push: commits not sent anywhere, or a report only), and the rest of what ended.
+// What gc collected (--all) the person has dealt with, whatever its status; bringing it back
+// (restore in worker.ts) uncollects it.
+const GROUPS = ['결정 대기 · 오류', '진행 중', '차례 기다림', '끝남 · 처리 전', '끝남']
 
 function groupOf(t: LsTask): number {
   if (t.collectedAt !== null) return 4
