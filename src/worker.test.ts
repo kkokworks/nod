@@ -329,6 +329,23 @@ test('a check that keeps failing becomes a decision after the retry budget', asy
   expect(ledger.attempts(id).map((a) => a.kind)).toEqual(['start', 'retry', 'retry'])
 })
 
+test('a check that keeps failing says an answer leaves it as it is, and how to judge by another', async () => {
+  const id = ledger.add({
+    brief: 'never good enough',
+    repo: newRepo(),
+    branch: 'feat/wrong',
+    checkCmd: 'false',
+    model: null,
+    after: [],
+    issue: null,
+  })
+  await startTask(ledger, home, terminals, id)
+  await reaches(id, 'needs_decision')
+  expect(ledger.decisions(id).map((d) => d.question)).toEqual([
+    `Still failing after 2 retries:\nThe acceptance check \`false\` failed:\n\nAn answer does not change the check. To judge the work by another, nod cancel n${id} and add it again with that --check, telling its worker to take up the commits of branch feat/wrong.`,
+  ])
+})
+
 test('an independent review that finds a problem sends it back into the same turn', async () => {
   const id = await add('review-strict: write the file')
   await reaches(id, 'succeeded')
