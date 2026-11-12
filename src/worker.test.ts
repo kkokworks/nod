@@ -346,6 +346,24 @@ test('a check that keeps failing says an answer leaves it as it is, and how to j
   ])
 })
 
+test("a question on a task with a check says an answer leaves it as it is, so a check changed first spares the old one's retries", async () => {
+  // A check that fails whatever the worker changes, which it asks about first.
+  const id = await add('ask-first, then take it as it is', 'false')
+  const decision = await until(() => ledger.decisions(id)[0])
+  expect(decision.question).toBe(
+    `Should I go ahead?\n**NOD: question | May I proceed?**\n\nAn answer does not change the acceptance check \`false\`. To judge the work by another, run nod check n${id} '<command>' before you answer: nod runs it once the turn your answer starts ends.`,
+  )
+  // nod check n<id> '' before the answer: the answer's turn ends with no check, not three of `false`.
+  ledger.setCheck(id, null, 'human')
+  await answer(ledger, home, terminals, decision.id, 'take it as it is', 'human')
+  await reaches(id, 'succeeded')
+  expect(ledger.attempts(id).map((a) => [a.kind, a.checkResult])).toEqual([
+    ['start', null],
+    ['answer', 'passed'],
+  ])
+  expect(ledger.decisions(id).map((d) => d.reason)).toEqual(['question'])
+})
+
 test('a check changed before the answer to its check_failed decision is the one the turn the answer starts ends with', async () => {
   const id = await add('never good enough', 'false')
   await reaches(id, 'needs_decision')
@@ -3790,6 +3808,7 @@ it('a retry that stops with no report while background work it started still run
 
 it('a task that has waited on background work past the limit asks the person, at its next stop or at the tick', async () => {
   const id = started('review it', 'waits-long')
+  ledger.setCheck(id, 'false', 'human')
   await stopped('waits-long', 'NOD: question | Waiting for the review', ['review'])
   const minutes = (n: number): Date => new Date(Date.now() + n * 60_000)
   expect(await overdueWaits(ledger, home, minutes(59))).toEqual([])
@@ -3804,6 +3823,9 @@ it('a task that has waited on background work past the limit asks the person, at
   expect(asked.map((d) => d.reason)).toEqual(['question'])
   expect(asked[0]?.question).toContain("past nod's limit of 60. No turn has come since it stopped.")
   expect(asked[0]?.question).toContain('NOD: question | Waiting for the review')
+  expect(asked[0]?.question).toEndWith(
+    `\n\nAn answer does not change the acceptance check \`false\`. To judge the work by another, run nod check n${id} '<command>' before you answer: nod runs it once the turn your answer starts ends.`,
+  )
   expect(status(id)).toBe('needs_decision')
   expect(ledger.attempts(id).map((x) => x.outcome)).toEqual(['needs_decision'])
 
