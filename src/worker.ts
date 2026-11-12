@@ -497,7 +497,7 @@ export async function answer(
   }
   if (decision.reason !== 'permission') {
     await reply(
-      `${decision.reason === 'interrupted' ? `${CUT_OFF_PROMPT}\n` : ''}Human decision: ${text}`,
+      `${decision.reason === 'interrupted' ? `${CUT_OFF_PROMPT}\n` : ''}Human decision: ${text}${checkNow(ledger, decision)}`,
     )
     return true
   }
@@ -669,6 +669,19 @@ export async function cancel(
     },
     said: reason ? { by, reason } : { by },
   })
+}
+
+// The check nod check set since the turn the decision is on began, as the check_failed hint has the
+// person do before answering: the worker heard the old one in its first message, which compaction
+// gives it again, so the answer, which the review and compaction give word for word too, says the
+// one nod runs now.
+function checkNow(ledger: Ledger, decision: Decision): string {
+  const since = ledger.attempt(decision.attemptId).startedAt
+  if (!ledger.taskChanges(decision.taskId).some((c) => c.at >= since)) return ''
+  const { checkCmd } = ledger.get(decision.taskId)
+  return checkCmd === null
+    ? '\n\nnod check took the acceptance check away: nod runs none when you stop.'
+    : `\n\nnod check changed the acceptance check: when you stop, nod runs \`${checkCmd}\`.`
 }
 
 // Landing work given to the worker, or a decision on landing it (land.ts): the task's work succeeded,

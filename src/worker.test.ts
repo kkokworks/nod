@@ -359,6 +359,10 @@ test('a check changed before the answer to its check_failed decision is the one 
     ['retry', 'failed'],
     ['answer', 'passed'],
   ])
+  // The worker heard the old check in its first message; the answer tells it the new one.
+  expect(ledger.attempts(id)[3]?.prompt).toBe(
+    'Human decision: the check changed; finish\n\nnod check changed the acceptance check: when you stop, nod runs `true`.',
+  )
 })
 
 test('a check changed while the old one runs leaves that run as it is, and the retry it sends back ends with the new one', async () => {

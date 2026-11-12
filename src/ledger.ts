@@ -1329,7 +1329,8 @@ export class Ledger {
 
   // Sets a task's acceptance check after nod add and records who did, as setRepo does; the check it
   // has already is not a change. Each stop reads the task again (settle), as each landing does, so a
-  // check running now goes on with the old one, and the next uses this.
+  // check running now goes on with the old one, and the next uses this. A head its landing checked
+  // with the old one (`ready`) is checked again, unless the repo's own check is what lands it.
   setCheck(id: number, checkCmd: string | null, actor: string): Task {
     return this.db.transaction(() => {
       const before = this.get(id)
@@ -1337,6 +1338,8 @@ export class Ledger {
       this.run(q.updateTable('tasks').set({ checkCmd }).where('id', '=', id))
       const change = JSON.stringify({ checkCmd: [before.checkCmd, checkCmd] })
       this.run(q.insertInto('taskChanges').values({ taskId: id, actor, change, at: now() }))
+      const repoCheck = before.repo === null ? null : this.repo(before.repo)?.checkCmd
+      if (repoCheck == null && this.landing(id) !== null) this.setLanding(id, { ready: null })
       return this.get(id)
     })()
   }

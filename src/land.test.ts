@@ -741,6 +741,21 @@ test("a check that keeps failing as the branch lands names nod check only when i
   )
 }, 30_000)
 
+test('a check nod check changes as the branch lands runs on the head the old one passed', async () => {
+  setRepo('pr')
+  const id = finished('feat/cc', { 'c.txt': 'c\n' })
+  ledger.setCheck(id, 'true', 'human')
+  expect((await land(ledger, home, Tmux.of(home), { send, only: [id] }))[0]?.did).toBe(
+    'its worker writes the pull request',
+  )
+  expect(ledger.landing(id)?.ready).toBe(head(id))
+  ledger.setCheck(id, 'test -f ok.txt', 'human')
+  const back = await stops(id, 'Add c\n\nAdds c.\nNOD: done | wrote it')
+  expect(JSON.parse(back ?? '{}').reason).toStartWith(
+    'The acceptance check `test -f ok.txt` failed',
+  )
+}, 30_000)
+
 test("a remote branch at the task's start is someone else's, not the task's own push", async () => {
   setRepo('pr')
   const theirs = theirBranch('feat/s')
