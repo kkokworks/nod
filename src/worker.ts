@@ -693,6 +693,24 @@ const repoChecks = (ledger: Ledger, task: Task): boolean =>
   task.repo !== null &&
   ledger.repo(task.repo)?.checkCmd != null
 
+// How the person has the work judged by another check than the one an answer leaves as it is: nod
+// check changes the task's for the stop after the answer's turn. None for the repo's (repoChecks),
+// which nod check does not change.
+const byAnother = (ledger: Ledger, task: Task): string =>
+  repoChecks(ledger, task)
+    ? ''
+    : ` To judge the work by another, run nod check n${task.id} '<command>' before you answer: nod runs it once the turn your answer starts ends.`
+
+// What a worker's question says after its words when the task's own check judges its next done: an
+// answer goes to the worker and leaves that check as it is. A worker that asked as the check failed
+// whatever it changed, answered to take the work as it is, had the same check run again, with its
+// retries and a check_failed decision. On every question of such a task, as nothing tells a
+// question about the check from another.
+const checkStays = (ledger: Ledger, task: Task): string =>
+  task.checkCmd === null || repoChecks(ledger, task)
+    ? ''
+    : `\n\nAn answer does not change the acceptance check \`${task.checkCmd}\`.${byAnother(ledger, task)}`
+
 // Landing work given to the worker, or a decision on landing it (land.ts): the task's work succeeded,
 // and what goes on is its landing.
 const landingOn = (ledger: Ledger, taskId: number): boolean =>
@@ -978,7 +996,8 @@ export async function settle(
     if (waiting || newer()) return null
     const still = work.map((w) => w.description ?? w.type ?? '?').join(', ')
     const note = work.length > 0 ? `${waitedNote(wait)} Still running: ${still}.\n` : ''
-    await decide(ledger, home, task.id, attemptId, 'question', note + text.slice(-QUESTION_LIMIT))
+    const asked = note + text.slice(-QUESTION_LIMIT) + checkStays(ledger, task)
+    await decide(ledger, home, task.id, attemptId, 'question', asked)
     return null
   }
   ledger.endAttempt(attemptId, { outcome: 'succeeded', summary, report: text })
@@ -1071,13 +1090,9 @@ export async function settle(
   // The next conflict of a rebase going on is the landing going on, not a failure to fix.
   if (!check.next && trailingRetries(ledger, task.id) >= CHECK_RETRIES) {
     // When the check is what failed (as verify words it): an answer goes to the worker and leaves the
-    // check as it is, and nod check changes the task's for the stop after the answer's turn. Landing
-    // or not: only the repo's check is left out (repoChecks), as nod check does not change it.
-    const redo = repoChecks(ledger, task)
-      ? ''
-      : ` To judge the work by another, run nod check n${task.id} '<command>' before you answer: nod runs it once the turn your answer starts ends.`
+    // check as it is.
     const unchanged = check.output.startsWith('The acceptance check ')
-      ? `\nAn answer does not change the check.${redo}`
+      ? `\nAn answer does not change the check.${byAnother(ledger, task)}`
       : ''
     await decide(
       ledger,
@@ -2094,7 +2109,8 @@ export async function overdueWaits(ledger: Ledger, home: string, now: Date): Pro
     const past = turns.filter((a) => a.id > last.id && noTurn(a)).map((a) => a.id)
     if (!ledger.endWait(last.id, 'needs_decision', past)) continue
     const note = `${waitedNote(wait)} No turn has come since it stopped.\n`
-    await decide(ledger, home, t.id, last.id, 'question', note + report.slice(-QUESTION_LIMIT))
+    const question = note + report.slice(-QUESTION_LIMIT) + checkStays(ledger, t)
+    await decide(ledger, home, t.id, last.id, 'question', question)
     asked.push(t.id)
   }
   return asked

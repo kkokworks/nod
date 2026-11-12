@@ -346,6 +346,24 @@ test('a check that keeps failing says an answer leaves it as it is, and how to j
   ])
 })
 
+test("a question on a task with a check says an answer leaves it as it is, so a check changed first spares the old one's retries", async () => {
+  // A check that fails whatever the worker changes, which it asks about first.
+  const id = await add('ask-first, then take it as it is', 'false')
+  const decision = await until(() => ledger.decisions(id)[0])
+  expect(decision.question).toBe(
+    `Should I go ahead?\n**NOD: question | May I proceed?**\n\nAn answer does not change the acceptance check \`false\`. To judge the work by another, run nod check n${id} '<command>' before you answer: nod runs it once the turn your answer starts ends.`,
+  )
+  // nod check n<id> '' before the answer: the answer's turn ends with no check, not three of `false`.
+  ledger.setCheck(id, null, 'human')
+  await answer(ledger, home, terminals, decision.id, 'take it as it is', 'human')
+  await reaches(id, 'succeeded')
+  expect(ledger.attempts(id).map((a) => [a.kind, a.checkResult])).toEqual([
+    ['start', null],
+    ['answer', 'passed'],
+  ])
+  expect(ledger.decisions(id).map((d) => d.reason)).toEqual(['question'])
+})
+
 test('a check changed before the answer to its check_failed decision is the one the turn the answer starts ends with', async () => {
   const id = await add('never good enough', 'false')
   await reaches(id, 'needs_decision')
