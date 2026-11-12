@@ -1369,8 +1369,10 @@ async function deliver(
 ): Promise<void> {
   // What the worker gets: the message, after REBUILT when restore made the folder again. `text`
   // stays the sender's, for the questions it goes on past.
+  // A message that goes again (a stuck one) has it already.
   const rebuilt = rebuiltFile(home, taskId)
-  const words = existsSync(rebuilt) ? `${REBUILT}\n\n${text}` : text
+  const notice = existsSync(rebuilt)
+  const words = notice && !text.includes(REBUILT) ? `${REBUILT}\n\n${text}` : text
   // A turn the person stopped takes no message: the message starts a turn of its own.
   const stopped = stoppedDialogs(ledger, home, taskId)
   endTurnWithoutStop(ledger, home, taskId)
@@ -1489,7 +1491,7 @@ async function deliver(
         told,
       )
     }
-    if (words !== text) rmSync(rebuilt, { force: true })
+    if (notice) rmSync(rebuilt, { force: true })
     return
   }
   await announce(home, task, turn.cut, CUT)
@@ -1513,7 +1515,7 @@ async function deliver(
     throw error
   }
   // Only the one this deliver read: one restore left since is for the next message.
-  if (words !== text) rmSync(rebuilt, { force: true })
+  if (notice) rmSync(rebuilt, { force: true })
 }
 
 // Opens the task's terminal, which keeps its Claude Code running (`nod run`, keepWorker). `first`:

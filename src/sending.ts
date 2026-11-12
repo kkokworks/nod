@@ -6,6 +6,7 @@ import type { Decision, Ledger } from './ledger'
 import { notifyError } from './notify'
 import { PROMPTED_OPTION, sessionName } from './place'
 import { message } from './proc'
+import { withoutRebuilt } from './review'
 import { pasted, type Terminals } from './tmux'
 import { heardOf, holds, promptMark, transcriptSince, transcriptSize } from './transcript'
 import { oneLine } from './view'
@@ -251,7 +252,7 @@ async function stuck(
   const then = started
     ? '. Claude Code has this message from its start and takes it once it can, so nod types nothing, and asks again if it has not gone in'
     : ', and nod sends the message again if it has not gone in. Into a screen that has not changed nod types nothing, and asks again; you may type the message there yourself'
-  const question = `A message nod sent did not reach the worker: something on its screen is in the way. Look with nod attach n${taskId} and clear it, and do not pick anything in a dialog you do not know, as that may change the person's Claude Code settings. Then answer yes${then}. Anything else you answer goes to the worker as well.\nThe message: ${oneLine(text, WORDS_SHOWN)}${SCREEN_HEAD}${lastLines(terminals, taskId)}`
+  const question = `A message nod sent did not reach the worker: something on its screen is in the way. Look with nod attach n${taskId} and clear it, and do not pick anything in a dialog you do not know, as that may change the person's Claude Code settings. Then answer yes${then}. Anything else you answer goes to the worker as well.\nThe message: ${oneLine(withoutRebuilt(text), WORDS_SHOWN)}${SCREEN_HEAD}${lastLines(terminals, taskId)}`
   await decide(ledger, home, taskId, attemptId, 'stuck', question, () => {
     const file = stuckFile(home, taskId, question)
     writeFileSync(file, JSON.stringify({ text, from, started }), { mode: 0o600 })

@@ -1,11 +1,11 @@
 import type { Ledger, Task } from './ledger'
 
 // Goes ahead of the next message once restore made a collected task's worktree again (rebuiltFile
-// in worker.ts). It is nod's, so laterWords leaves it out of what the human said.
+// in worker.ts). It is nod's, so what shows the message to the reviewer or the person leaves it out:
+// it would take the place of the message in a line cut short.
 export const REBUILT =
   'nod made this folder again after gc collected it, so it has none of the files git ignores (dependencies, build output). Before you stop, install the dependencies as the lock file pins them and run the acceptance check, if you have one, once.'
-const withoutRebuilt = (text: string): string =>
-  text.startsWith(`${REBUILT}\n\n`) ? text.slice(REBUILT.length + 2) : text
+export const withoutRebuilt = (text: string): string => text.replaceAll(`${REBUILT}\n\n`, '')
 
 // A repo task's work: its commits from `start` to `head`, their `git diff --stat`, and the file nod
 // saved their diff in (`saved`).
