@@ -241,7 +241,18 @@ async function landTask(
       ledger.setLanding(task.id, { busy: null })
       if (!run.passed) failed = run.output
     }
-    if (failed === null) l = ledger.setLanding(task.id, { ready: head })
+    if (failed === null) {
+      // Not when nod check changed the task's check as this one ran (setCheck): the head goes out
+      // only once the new one passed it, at the next pass.
+      const same = ledger.db
+        .transaction(() => {
+          if ((repo.checkCmd ?? ledger.get(task.id).checkCmd) !== check) return false
+          l = ledger.setLanding(task.id, { ready: head })
+          return true
+        })
+        .immediate()
+      if (!same) return noteFor(pass, task, 'its check changed as it ran')
+    }
   }
 
   // A text written on another head is about another branch: a turn since (a follow-up, an answer, a

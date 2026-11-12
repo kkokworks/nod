@@ -181,6 +181,12 @@ const USAGE = `usage:
   nod resume <task>                reopen a task whose session ended, from its transcript; one that
                                    failed before its worker started starts again under the same
                                    number and branch, once you fixed what stopped it
+  nod check <task> [<command>]     the task's acceptance check and who changed it when; with a
+                                   command (one quoted argument, run with sh -c), its check from
+                                   then on: the worker's next stop runs it (as the task lands, the
+                                   repo's check runs instead when it has one), a check running now
+                                   goes on, and an ended task takes it for nod resume. '' takes
+                                   the check away. A worker cannot change one
   nod attach <task>                open the worker's terminal (tmux)
   nod peek <task>                  print what the worker's terminal shows right now
   nod link <task> <url...>         record where the task's result went (a pull request, a posted
@@ -396,6 +402,9 @@ switch (command) {
     console.log(await resume(ledger, home, terminals, id))
     break
   }
+  case 'check':
+    checkCommand(rest)
+    break
   case 'attach':
     attach(taskRef(rest[0]))
     break
@@ -667,6 +676,36 @@ function rule([sub, ...args]: string[]): void {
   } else {
     throw new Error(USAGE)
   }
+}
+
+// The check runs outside the sandbox, so a worker cannot set its own (or another's): only the person
+// or a Claude session, which nod add --check already lets set one. The sandbox is what keeps a
+// worker off the ledger; this refuses plainly, as rule does.
+function checkCommand([ref, ...cmd]: string[]): void {
+  if (ref === undefined) throw new Error(USAGE)
+  // One shell command, as account's is: words joined back would lose their quotes.
+  if (cmd.length > 1) {
+    throw new Error(
+      `give the check as one quoted argument: nod check ${ref} 'bun test && bun run lint'`,
+    )
+  }
+  const id = taskRef(ref)
+  if (cmd[0] !== undefined) {
+    if (process.env.NOD_TASK !== undefined) throw new Error("a worker cannot change a task's check")
+    // An empty command takes it away, as nod repo --check '' does.
+    ledger.setCheck(id, cmd[0].trim() || null, actorFromEnv())
+  }
+  const { checkCmd } = ledger.get(id)
+  console.log(checkCmd === null ? `n${id} has no check` : `n${id} check: ${checkCmd}`)
+  for (const line of checkChanges(id)) console.log(`  ${line}`)
+}
+
+// Each change to the task's check, with when and who made it.
+function checkChanges(id: number): string[] {
+  return ledger.taskChanges(id).map((c) => {
+    const [from, to] = c.change.checkCmd ?? []
+    return `${c.at} ${c.actor}: ${String(from ?? '—')} → ${String(to ?? '—')}`
+  })
 }
 
 function ruleId(ref: string | undefined): number {
@@ -1157,6 +1196,7 @@ async function show(id: number): Promise<void> {
   if (task.workspace) console.log(`  workspace: ${task.workspace}`)
   if (task.account !== null) console.log(`  account: ${task.account || "Claude Code's default"}`)
   if (task.checkCmd) console.log(`  check: ${task.checkCmd}`)
+  for (const line of checkChanges(id)) console.log(`  check changed ${line}`)
   if (task.retroId !== null) {
     const r = ledger.retro(task.retroId)
     console.log(`  retrospective: r${r.id} of n${r.ofTaskId}${r.outcome ? `, ${r.outcome}` : ''}`)

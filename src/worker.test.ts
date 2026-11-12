@@ -342,9 +342,59 @@ test('a check that keeps failing says an answer leaves it as it is, and how to j
   await startTask(ledger, home, terminals, id)
   await reaches(id, 'needs_decision')
   expect(ledger.decisions(id).map((d) => d.question)).toEqual([
-    `Still failing after 2 retries:\nThe acceptance check \`false\` failed:\n\nAn answer does not change the check. To judge the work by another, nod cancel n${id} and add it again with that --check, telling its worker to take up the commits of branch feat/wrong.`,
+    `Still failing after 2 retries:\nThe acceptance check \`false\` failed:\n\nAn answer does not change the check. To judge the work by another, run nod check n${id} '<command>' before you answer: nod runs it once the turn your answer starts ends.`,
   ])
 })
+
+test('a check changed before the answer to its check_failed decision is the one the turn the answer starts ends with', async () => {
+  const id = await add('never good enough', 'false')
+  await reaches(id, 'needs_decision')
+  const [decision] = ledger.decisions(id)
+  ledger.setCheck(id, 'true', 'human')
+  await answer(ledger, home, terminals, decision?.id ?? 0, 'the check changed; finish', 'human')
+  await reaches(id, 'succeeded')
+  expect(ledger.attempts(id).map((a) => [a.kind, a.checkResult])).toEqual([
+    ['start', 'failed'],
+    ['retry', 'failed'],
+    ['retry', 'failed'],
+    ['answer', 'passed'],
+  ])
+  // The worker heard the old check in its first message; the answer tells it the new one.
+  expect(ledger.attempts(id)[3]?.prompt).toBe(
+    'Human decision: the check changed; finish\n\nnod check changed the acceptance check: when you stop, nod runs `true`.',
+  )
+})
+
+test('a check changed while the old one runs leaves that run as it is, and the retry it sends back ends with the new one', async () => {
+  // The old check changes the task's as it runs, with the nod check a person would run, then fails.
+  const cli = resolve(import.meta.dir, 'cli.ts')
+  const id = ledger.add({
+    brief: 'write it',
+    repo: null,
+    branch: null,
+    checkCmd: null,
+    model: null,
+    after: [],
+    issue: null,
+  })
+  ledger.setCheck(
+    id,
+    `env -u NOD_TASK -u NOD_ACTOR -u CLAUDECODE NOD_HOME=${quote(home)} bun ${quote(cli)} check n${id} true && false`,
+    'human',
+  )
+  const old = ledger.get(id).checkCmd
+  await startTask(ledger, home, terminals, id)
+  await reaches(id, 'succeeded')
+  expect(ledger.attempts(id).map((a) => [a.kind, a.checkResult])).toEqual([
+    ['start', 'failed'],
+    ['retry', 'passed'],
+  ])
+  expect(ledger.attempts(id)[1]?.prompt).toStartWith(`The acceptance check \`${old}\` failed:`)
+  expect(ledger.taskChanges(id).map((c) => [c.actor, c.change])).toEqual([
+    ['human', { checkCmd: [null, old] }],
+    ['human', { checkCmd: [old, 'true'] }],
+  ])
+}, 20_000)
 
 test('an independent review that finds a problem sends it back into the same turn', async () => {
   const id = await add('review-strict: write the file')

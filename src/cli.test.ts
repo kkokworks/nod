@@ -1150,6 +1150,73 @@ test('nod cancel ends a task as whoever runs it, with the reason given, and refu
   })
 })
 
+test("nod check shows a task's check, changes it as whoever runs it, ended or not, records each change, and refuses a worker", () => {
+  const home = tmp.make('nod-check-')
+  const ledger = new Ledger(home)
+  // Not as the worker or Claude session this test may itself run in.
+  const {
+    NOD_TASK: _,
+    NOD_ACTOR: __,
+    CLAUDECODE: ___,
+    CLAUDE_CODE_SESSION_ID: ____,
+    ...env
+  } = process.env
+  const run = (extra: Record<string, string>, ...args: string[]) => {
+    const p = Bun.spawnSync(['bun', cli, ...args], { env: { ...env, NOD_HOME: home, ...extra } })
+    return { code: p.exitCode, out: p.stdout.toString(), err: p.stderr.toString() }
+  }
+  const id = ledger.add({
+    brief: 'write the notes',
+    repo: null,
+    branch: null,
+    checkCmd: 'false',
+    model: null,
+    after: [],
+    issue: null,
+  })
+  // An ended task takes a check too, for nod resume.
+  ledger.error(id, 'it stopped')
+  // When each change was made is left out here.
+  const lines = (out: string): string[] =>
+    out
+      .trimEnd()
+      .split('\n')
+      .map((l) => l.replace(/ \d{4}-\d\d-\d\dT\S+ /, ' <at> '))
+
+  const seen = run({}, 'check', `n${id}`)
+  expect([seen.code, seen.out]).toEqual([0, `n${id} check: false\n`])
+  // One quoted argument, run as sh -c would, with its quotes and &&.
+  const cmd = `test -f 'a b.txt' && bun run lint`
+  const set = run({ NOD_ACTOR: 'claude:aaaa1111' }, 'check', String(id), cmd)
+  expect([set.code, set.err]).toEqual([0, ''])
+  expect(lines(set.out)).toEqual([`n${id} check: ${cmd}`, `  <at> claude:aaaa1111: false → ${cmd}`])
+  expect(ledger.get(id)).toMatchObject({ checkCmd: cmd, status: 'error' })
+  // The same check again is no change; words not quoted as one are refused, changing nothing.
+  expect(run({}, 'check', `n${id}`, cmd).code).toBe(0)
+  const split = run({}, 'check', `n${id}`, 'bun', 'test')
+  expect(split.code).not.toBe(0)
+  expect(split.err).toContain('give the check as one quoted argument')
+  // A worker sees a check but cannot change one, its own included.
+  const worker = run({ NOD_TASK: String(id) }, 'check', `n${id}`, 'true')
+  expect(worker.code).not.toBe(0)
+  expect(worker.err).toContain("a worker cannot change a task's check")
+  expect(run({ NOD_TASK: String(id) }, 'check', `n${id}`).code).toBe(0)
+  expect(ledger.get(id).checkCmd).toBe(cmd)
+  // Empty takes it away.
+  expect(lines(run({}, 'check', `n${id}`, ' ').out)).toEqual([
+    `n${id} has no check`,
+    `  <at> claude:aaaa1111: false → ${cmd}`,
+    `  <at> human: ${cmd} → —`,
+  ])
+  expect(ledger.get(id).checkCmd).toBeNull()
+  // nod show keeps the changes with the task.
+  expect(lines(run({}, 'show', `n${id}`).out).filter((l) => l.includes('check'))).toEqual([
+    `  check changed <at> claude:aaaa1111: false → ${cmd}`,
+    `  check changed <at> human: ${cmd} → —`,
+  ])
+  expect(run({}, 'check').code).not.toBe(0)
+})
+
 test('hook stop waits on the background work Claude Code says still runs, and tick asks once that has taken an hour', () => {
   const home = tmp.make('nod-wait-')
   const ledger = new Ledger(home)
