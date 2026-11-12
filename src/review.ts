@@ -1,5 +1,12 @@
 import type { Ledger, Task } from './ledger'
 
+// Goes ahead of the next message once restore made a collected task's worktree again (rebuiltFile
+// in worker.ts). It is nod's, so laterWords leaves it out of what the human said.
+export const REBUILT =
+  'nod made this folder again after gc collected it, so it has none of the files git ignores (dependencies, build output). Before you stop, install the dependencies as the lock file pins them and run the acceptance check, if you have one, once.'
+const withoutRebuilt = (text: string): string =>
+  text.startsWith(`${REBUILT}\n\n`) ? text.slice(REBUILT.length + 2) : text
+
 // A repo task's work: its commits from `start` to `head`, their `git diff --stat`, and the file nod
 // saved their diff in (`saved`).
 export type Changes = { start: string; head: string; stat: string; saved: string }
@@ -79,7 +86,9 @@ function laterWords(ledger: Ledger, task: Task): string[] {
         .map((m) => ({ text: m.text, from: m.fromTask })),
     ])
   const lines = (peer: boolean): string[] =>
-    said.filter((s) => (s.from !== null) === peer).map((s) => `- ${s.text.replaceAll('\n', ' ')}`)
+    said
+      .filter((s) => (s.from !== null) === peer)
+      .map((s) => `- ${withoutRebuilt(s.text).replaceAll('\n', ' ')}`)
   const later = lines(false)
   const peers = lines(true)
   // What nod asked as it landed the branch (land.ts): the rebase onto the default branch, and how
@@ -87,7 +96,7 @@ function laterWords(ledger: Ledger, task: Task): string[] {
   const landing = ledger
     .attempts(task.id)
     .filter((a) => a.kind === 'land')
-    .map((a) => `- ${a.prompt.replaceAll('\n', ' ')}`)
+    .map((a) => `- ${withoutRebuilt(a.prompt).replaceAll('\n', ' ')}`)
   return [
     'What the human said later, in order; later words win:',
     ...(later.length > 0 ? later : ['- nothing']),

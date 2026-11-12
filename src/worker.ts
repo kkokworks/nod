@@ -44,6 +44,7 @@ import {
 } from './place'
 import { message, spawn } from './proc'
 import { type Capture, nodLines, parseCaptures, parseReport, parseTells, type Tell } from './report'
+import { REBUILT } from './review'
 import { activeRules, hadTrouble, isNoRule, retroBrief } from './rules'
 import { listen, owed, sendUnsent, sendWatched, unsent, type Worker, watchStart } from './sending'
 import { CLI, STOP_HOOK_TIMEOUT_SECS, workerSettings } from './settings'
@@ -147,9 +148,6 @@ const restartHint = (taskId: number): string =>
 // What a worker hears with the answer to an `interrupted` decision.
 const CUT_OFF_PROMPT =
   'Your last turn was cut off before it finished. Check what it already did before you do any of it again.'
-// Goes ahead of the next message once restore made a collected task's worktree again (rebuiltFile).
-const REBUILT =
-  'nod made this folder again after gc collected it, so it has none of the files git ignores (dependencies, build output). Before you stop, install the dependencies as the lock file pins them and run the acceptance check, if you have one, once.'
 
 // A Claude Code that exits sooner than this after it starts did not get going (a login it lacks, a
 // folder it cannot read); after this many such exits in a row its terminal stops starting it.
@@ -1491,7 +1489,7 @@ async function deliver(
         told,
       )
     }
-    rmSync(rebuilt, { force: true })
+    if (words !== text) rmSync(rebuilt, { force: true })
     return
   }
   await announce(home, task, turn.cut, CUT)
@@ -1514,7 +1512,8 @@ async function deliver(
     ledger.error(taskId, message(error))
     throw error
   }
-  rmSync(rebuilt, { force: true })
+  // Only the one this deliver read: one restore left since is for the next message.
+  if (words !== text) rmSync(rebuilt, { force: true })
 }
 
 // Opens the task's terminal, which keeps its Claude Code running (`nod run`, keepWorker). `first`:
@@ -1952,7 +1951,8 @@ async function giveUp(
   cut: Attempt | null,
   failure: string,
 ): Promise<void> {
-  rmSync(promptFile(home, taskId), { force: true })
+  // The message goes, but the next one still tells that restore made the folder again.
+  if (takePrompt(home, taskId)?.includes(REBUILT)) writeFileSync(rebuiltFile(home, taskId), '')
   const screen = terminals
     .screen(sessionName(taskId))
     .replace(/\n\s*\n/g, '\n')
@@ -2443,6 +2443,7 @@ export async function restore(ledger: Ledger, home: string, taskId: number): Pro
     if (task.repo === null) mkdirSync(task.workspace, { recursive: true })
     else {
       // First, so a rebuild that fails partway, its folder made, still tells the next message.
+      mkdirSync(join(home, 'work'), { recursive: true })
       writeFileSync(rebuiltFile(home, taskId), '')
       await rebuildWorktree(task.repo, branchOf(task), task.workspace, task.head)
     }

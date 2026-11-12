@@ -5095,13 +5095,17 @@ test('the first message after gc collected a repo task tells its worker the work
   expect(second).toContain('install the dependencies as the lock file pins them')
   expect(second).toEndWith('\n\nsecond')
   expect(third).toBe('third')
-  // The turn keeps what its worker got, for its review.
+  // The turn keeps what its worker got; its review reads the human's words alone, nod's notice not
+  // among them.
   expect(ledger.attempts(id).map((a) => a.prompt.split('\n\n').at(-1))).toEqual([
     expect.any(String),
     'second',
     'third',
   ])
   expect(ledger.attempts(id)[1]?.prompt).toBe(second)
+  const review = entries('review').at(-1)?.message
+  expect(review).toContain('later words win:\n- second\n- third\n')
+  expect(review).not.toContain('nod made this folder again')
 }, 20_000)
 
 it('the review hears what the human told the worker in the middle of a turn, in order with the rest', () => {
