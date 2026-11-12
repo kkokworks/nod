@@ -1,8 +1,9 @@
 import { existsSync, readdirSync, rmdirSync, rmSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
+import { onRemote } from './branch'
 import { FINISHED, type Ledger, type Task } from './ledger'
 import { branchOf, sessionName, settling } from './place'
-import { message, spawn } from './proc'
+import { message, readAtOnce, spawn } from './proc'
 import { forgetStuck } from './sending'
 import type { Terminals } from './tmux'
 import { endTurnWithoutStop } from './turns'
@@ -110,7 +111,7 @@ export async function collect(
           skip('told to go on while gc ran')
           continue
         }
-        await afterMark(() => dropBranch(task))
+        await afterMark(() => dropBranch(ledger, task))
         report.clean.push(task.id)
         continue
       }
@@ -167,7 +168,7 @@ export async function collect(
       forgetStuck(home, task.id)
       const { workspace } = task
       await afterMark(async () => {
-        await dropBranch(task)
+        await dropBranch(ledger, task)
         // A worktree sits in folders named after its repo and branch; drop the ones it leaves
         // empty.
         for (
@@ -248,17 +249,84 @@ function submoduleNames(dir: string, name = ''): string[] {
 // Otherwise the branch stays, even when a remote branch holds its commits: that branch may be
 // deleted unmerged, a fetch --prune (land.ts) then takes the last ref to them, and git gc the
 // commits, so resume would rebuild the branch without its work. So does a branch still checked out
-// somewhere, which git refuses to delete.
+// somewhere, which git refuses to delete, and one a task that has not started yet starts from.
 // A task that never started keeps no branch of its own, since a start that fails after making one
 // takes it back (prepareWorkspace in worker.ts): one by its name is someone else's.
-async function dropBranch(task: Task): Promise<void> {
+async function dropBranch(ledger: Ledger, task: Task): Promise<void> {
   const { repo, branch } = task
   if (repo === null || branch === null || task.workspace === null) return
   const ref = `refs/heads/${branch}`
   // The repo or the branch is gone: nothing to delete.
   if (!hasRef(repo, ref)) return
+  if (ledger.notStartedAfter(task.id).length > 0) return
   if (landed(repo, ref)) Bun.spawnSync(['git', '-C', repo, 'branch', '-D', branch])
 }
+
+// Looks again at the branches dropBranch kept of the tasks gc collected, so one merged since goes
+// and a new task can take its name: pushed and merged later, or kept as the repo's last fetch was
+// old or left it no origin/HEAD. Each such repo is fetched first, which also makes origin/HEAD
+// where it is missing (git 2.48 and later). Only a branch still at the commit gc recorded: one that
+// moved since is someone's work, or a later task's by the same name. One a task brought back works
+// on stays, which git refuses to delete as checked out, and so does one a task not started yet
+// starts from (dropBranch).
+// ponytail: fetches such a repo on every pass, for as long as a branch in it stays unmerged.
+export async function dropMerged(ledger: Ledger): Promise<void> {
+  const left = (t: Task, tip: (t: Task) => string | null): boolean =>
+    t.collectedAt !== null &&
+    t.workspace !== null &&
+    t.head !== null &&
+    tip(t) === t.head &&
+    ledger.notStartedAfter(t.id).length === 0
+  // Each repo's branches read at once, as the ledger keeps every task gc ever collected.
+  const tips = new Map<string, Map<string, string>>()
+  const tipOf = ({ repo, branch }: Task): string | null => {
+    if (repo === null || branch === null) return null
+    let refs = tips.get(repo)
+    if (refs === undefined) {
+      const out = Bun.spawnSync([
+        'git',
+        '-C',
+        repo,
+        'for-each-ref',
+        '--format=%(refname) %(objectname)',
+        'refs/heads',
+      ])
+      const lines = out.exitCode === 0 ? out.stdout.toString().split('\n').filter(Boolean) : []
+      refs = new Map(lines.map((l) => l.split(' ') as [string, string]))
+      tips.set(repo, refs)
+    }
+    return refs.get(`refs/heads/${branch}`) ?? null
+  }
+  const kept = ledger.list().filter((t) => left(t, tipOf))
+  // A repo with no origin has nothing to fetch, nor a default branch to compare with.
+  const repos = [...new Set(kept.map((t) => t.repo))].filter(
+    (r): r is string => r !== null && hasOrigin(r),
+  )
+  // Several at once, so remotes that do not answer hold the tick for one wait, not one for each
+  // repo; one that fails holds back no other. Cut off as landing's fetch is, not sooner: a fetch cut
+  // off leaves the pack it was taking (tmp_pack_*, for git to delete two weeks on) and starts over
+  // at the next pass.
+  await readAtOnce(repos, async (repo) => {
+    try {
+      const { code, output } = await onRemote(repo, ['fetch', '-q', 'origin'])
+      if (code !== 0) console.error(`nod: could not fetch ${repo}: ${output.trim()}`)
+    } catch (error) {
+      console.error(`nod: could not fetch ${repo}: ${message(error)}`)
+    }
+  })
+  for (const { id } of kept) {
+    try {
+      // Read again, as fetching takes a while: one brought back meanwhile is not collected.
+      const task = ledger.get(id)
+      if (left(task, headOf)) await dropBranch(ledger, task)
+    } catch (error) {
+      console.error(`nod: could not look at task n${id}'s branch again: ${message(error)}`)
+    }
+  }
+}
+
+const hasOrigin = (repo: string): boolean =>
+  Bun.spawnSync(['git', '-C', repo, 'remote', 'get-url', 'origin']).exitCode === 0
 
 // Whether ref names something in repo; false once the repo is gone too.
 export const hasRef = (repo: string, ref: string): boolean =>
@@ -297,7 +365,8 @@ export function landed(repo: string, ref: string): boolean {
 }
 
 // The remote branches holding `ref`'s commits. Only as fresh as the repo's last fetch; nod fetches
-// only as it lands a repo's tasks (land.ts). Async, so ls can ask for each of its tasks at once.
+// only as it lands a repo's tasks (land.ts) and as gc looks again at the branches it kept
+// (dropMerged). Async, so ls can ask for each of its tasks at once.
 export async function remotesHolding(repo: string, ref: string): Promise<string[]> {
   const refs = await spawn([
     'git',

@@ -1,4 +1,4 @@
-import { collect, type GcReport, hasRef, landed } from './gc'
+import { collect, dropMerged, type GcReport, hasRef, landed } from './gc'
 import { FINISHED, type Ledger, type Task } from './ledger'
 import { sessionName } from './place'
 import { message, readAtOnce } from './proc'
@@ -67,7 +67,8 @@ export async function doneTasks(
 
 // Collects the finished tasks a signal says are done with, each only while it is as the signal read
 // it: reading the git service takes a while, and a task told to go on meanwhile may have finished
-// again with commits no remote has.
+// again with commits no remote has. Then deletes the branches gc kept that have merged since
+// (dropMerged).
 export async function sweep(
   ledger: Ledger,
   home: string,
@@ -79,6 +80,7 @@ export async function sweep(
   const { done, unchecked } = await doneTasks(ledger, terminals, prs, now, tasks)
   const seen = tasks.filter((t) => done.some((d) => d.id === t.id))
   const report = await collect(ledger, home, terminals, { seen })
+  await dropMerged(ledger)
   return { report, done, unchecked }
 }
 
