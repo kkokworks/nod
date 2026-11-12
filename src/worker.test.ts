@@ -3808,6 +3808,7 @@ it('a retry that stops with no report while background work it started still run
 
 it('a task that has waited on background work past the limit asks the person, at its next stop or at the tick', async () => {
   const id = started('review it', 'waits-long')
+  ledger.setCheck(id, 'false', 'human')
   await stopped('waits-long', 'NOD: question | Waiting for the review', ['review'])
   const minutes = (n: number): Date => new Date(Date.now() + n * 60_000)
   expect(await overdueWaits(ledger, home, minutes(59))).toEqual([])
@@ -3822,6 +3823,9 @@ it('a task that has waited on background work past the limit asks the person, at
   expect(asked.map((d) => d.reason)).toEqual(['question'])
   expect(asked[0]?.question).toContain("past nod's limit of 60. No turn has come since it stopped.")
   expect(asked[0]?.question).toContain('NOD: question | Waiting for the review')
+  expect(asked[0]?.question).toEndWith(
+    `\n\nAn answer does not change the acceptance check \`false\`. To judge the work by another, run nod check n${id} '<command>' before you answer: nod runs it once the turn your answer starts ends.`,
+  )
   expect(status(id)).toBe('needs_decision')
   expect(ledger.attempts(id).map((x) => x.outcome)).toEqual(['needs_decision'])
 

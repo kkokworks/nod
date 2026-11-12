@@ -752,6 +752,19 @@ test("a check that keeps failing as the branch lands names nod check only when i
   )
 }, 30_000)
 
+test("a question in landing work names the check its done runs: the repo's, which nod check does not change", async () => {
+  setRepo('pr', { checkCmd: 'test -f ok.txt' })
+  const id = finished('feat/rq', { 'r.txt': 'r\n' })
+  ledger.setCheck(id, 'true', 'human')
+  expect((await land(ledger, home, Tmux.of(home), { send, only: [id] }))[0]?.did).toBe(
+    'its worker fixes the check',
+  )
+  await stops(id, 'The check fails before my change too.\nNOD: question | Take it as it is?')
+  expect(ledger.decisions(id).find((d) => d.answer === null)?.question).toEndWith(
+    'NOD: question | Take it as it is?\n\nAn answer does not change the acceptance check `test -f ok.txt`.',
+  )
+})
+
 test('a head the landing checked while nod check changed its check does not go out: the next pass checks it with the new one', async () => {
   setRepo('pr')
   const id = finished('feat/cr', { 'r.txt': 'r\n' })

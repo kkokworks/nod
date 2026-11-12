@@ -701,15 +701,18 @@ const byAnother = (ledger: Ledger, task: Task): string =>
     ? ''
     : ` To judge the work by another, run nod check n${task.id} '<command>' before you answer: nod runs it once the turn your answer starts ends.`
 
-// What a worker's question says after its words when the task's own check judges its next done: an
-// answer goes to the worker and leaves that check as it is. A worker that asked as the check failed
-// whatever it changed, answered to take the work as it is, had the same check run again, with its
-// retries and a check_failed decision. On every question of such a task, as nothing tells a
-// question about the check from another.
-const checkStays = (ledger: Ledger, task: Task): string =>
-  task.checkCmd === null || repoChecks(ledger, task)
-    ? ''
-    : `\n\nAn answer does not change the acceptance check \`${task.checkCmd}\`.${byAnother(ledger, task)}`
+// What a worker's question says after its words when a check judges its next done: an answer goes to
+// the worker and leaves that check as it is. A worker that asked as the check failed whatever it
+// changed, answered to take the work as it is, had the same check run again, with its retries and a
+// check_failed decision. On every question of such a task, as nothing tells a question about the
+// check from another. The check is the one that done runs: in landing work the repo's, if it has one
+// (verifyLanding); none for a retrospective (verify).
+const checkStays = (ledger: Ledger, task: Task): string => {
+  const lands = ledger.landing(task.id)?.handedAt != null && task.repo !== null
+  const cmd = (lands ? ledger.repo(task.repo ?? '')?.checkCmd : null) ?? task.checkCmd
+  if (cmd === null || task.retroId !== null) return ''
+  return `\n\nAn answer does not change the acceptance check \`${cmd}\`.${byAnother(ledger, task)}`
+}
 
 // Landing work given to the worker, or a decision on landing it (land.ts): the task's work succeeded,
 // and what goes on is its landing.
