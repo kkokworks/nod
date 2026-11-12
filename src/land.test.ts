@@ -713,6 +713,34 @@ test('a rebase that will not go on for anything but a conflict counts as a failu
   expect(ledger.decisions(id).find((d) => d.answer === null)?.reason).toBe('check_failed')
 }, 30_000)
 
+test("a check that keeps failing as the branch lands names nod check only when it is the task's own, not the repo's", async () => {
+  // Asked for the pull request's text first, then two retries, then the person.
+  const keepsFailing = async (id: number): Promise<string | undefined> => {
+    expect((await land(ledger, home, Tmux.of(home), { send, only: [id] }))[0]?.did).toBe(
+      'its worker fixes the check',
+    )
+    await stops(id, 'I looked at it.\nNOD: done | looked')
+    for (const _ of [1, 2]) {
+      expect(await stops(id, 'Add it\n\nAdds it.\nNOD: done | tried', true)).not.toBeNull()
+    }
+    expect(await stops(id, 'Add it\n\nAdds it.\nNOD: done | tried', true)).toBeNull()
+    return ledger.decisions(id).find((d) => d.answer === null && d.reason === 'check_failed')
+      ?.question
+  }
+  setRepo('pr', { checkCmd: 'test -f ok.txt' })
+  const repos = await keepsFailing(finished('feat/rc', { 'r.txt': 'r\n' }))
+  expect(repos).toContain('The acceptance check `test -f ok.txt` failed')
+  expect(repos).toContain('An answer does not change the check.')
+  expect(repos).not.toContain('nod check')
+
+  ledger.setRepo(repo, { checkCmd: null }, 'human')
+  const own = finished('feat/tc', { 't.txt': 't\n' })
+  ledger.setCheck(own, 'test -f ok.txt', 'human')
+  expect(await keepsFailing(own)).toContain(
+    `An answer does not change the check. To judge the work by another, run nod check n${own} '<command>' before you answer`,
+  )
+}, 30_000)
+
 test("a remote branch at the task's start is someone else's, not the task's own push", async () => {
   setRepo('pr')
   const theirs = theirBranch('feat/s')

@@ -131,7 +131,8 @@ export type Repo = {
   changedAt: string
 }
 export type RepoEdit = Partial<Pick<Repo, 'land' | 'checkCmd' | 'gateCmd'>>
-export type RepoChange = { actor: string; change: Changed; at: string }
+// A change to a repo's setting (setRepo) or a task's check (setCheck).
+export type Change = { actor: string; change: Changed; at: string }
 // How far a task's landing has got (land.ts). `base`: the commit its own work sits on, moved by
 // each rebase; `ready`: the head that passed the check on that base; `title`, `body`: the pull
 // request's text the worker wrote, on the head `textHead` (moved by nod's rebases that keep the
@@ -752,6 +753,18 @@ export const MIGRATIONS = [
   update attempts set outcome = 'needs_decision' where outcome = 'failed';
   update decisions set reason = 'question' where reason = 'failed';
   `,
+  // v34: who changed a task's check after nod add, and when (nod check), as repo_changes keeps a
+  // repo's.
+  `
+  create table task_changes (
+    id integer primary key,
+    task_id integer not null references tasks(id),
+    actor text not null,
+    change text not null,
+    at text not null
+  );
+  create index task_changes_task on task_changes(task_id);
+  `,
 ]
 // The migration that moves <home>/rules.md into the ledger, numbered as user_version counts.
 const RULES_FILE_MIGRATION = 17
@@ -773,6 +786,7 @@ type Tables = {
   ruleChanges: { id: Generated<number>; ruleId: number; actor: string; change: string; at: string }
   repos: Repo & { lander: number | null }
   repoChanges: { id: Generated<number>; repo: string; actor: string; change: string; at: string }
+  taskChanges: { id: Generated<number>; taskId: number; actor: string; change: string; at: string }
   landings: Landing
   notices: Omit<Notice, 'id'> & { id: Generated<number> }
 }
@@ -1303,12 +1317,36 @@ export class Ledger {
     })()
   }
 
-  repoChanges(path: string): RepoChange[] {
+  repoChanges(path: string): Change[] {
     return this.run(
       q
         .selectFrom('repoChanges')
         .select(['actor', 'change', 'at'])
         .where('repo', '=', path)
+        .orderBy('id'),
+    ).map((c) => ({ ...c, change: JSON.parse(c.change) as Changed }))
+  }
+
+  // Sets a task's acceptance check after nod add and records who did, as setRepo does; the check it
+  // has already is not a change. Each stop reads the task again (settle), as each landing does, so a
+  // check running now goes on with the old one, and the next uses this.
+  setCheck(id: number, checkCmd: string | null, actor: string): Task {
+    return this.db.transaction(() => {
+      const before = this.get(id)
+      if (before.checkCmd === checkCmd) return before
+      this.run(q.updateTable('tasks').set({ checkCmd }).where('id', '=', id))
+      const change = JSON.stringify({ checkCmd: [before.checkCmd, checkCmd] })
+      this.run(q.insertInto('taskChanges').values({ taskId: id, actor, change, at: now() }))
+      return this.get(id)
+    })()
+  }
+
+  taskChanges(id: number): Change[] {
+    return this.run(
+      q
+        .selectFrom('taskChanges')
+        .select(['actor', 'change', 'at'])
+        .where('taskId', '=', id)
         .orderBy('id'),
     ).map((c) => ({ ...c, change: JSON.parse(c.change) as Changed }))
   }
