@@ -10,6 +10,7 @@ import {
   WENT_ON,
 } from './decisions'
 import type { Attempt, Decision, Ledger } from './ledger'
+import { withoutRebuilt } from './review'
 import {
   endedWithoutStop,
   HELD_BACK,
@@ -220,7 +221,7 @@ export async function cutOff(
     taskId,
     attempt.id,
     'interrupted',
-    `${why}\n${done} It was on:\n> ${oneLine(attempt.prompt, 200)}\nAnswer with how to go on, such as to check what is done and carry on; the answer goes into the same conversation.${owes}`,
+    `${why}\n${done} It was on:\n> ${oneLine(withoutRebuilt(attempt.prompt), 200)}\nAnswer with how to go on, such as to check what is done and carry on; the answer goes into the same conversation.${owes}`,
   )
   return true
 }

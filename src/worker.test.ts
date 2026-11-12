@@ -5069,6 +5069,45 @@ test('an answer to a decision left open on a task gc collected brings its folder
   expect(ledger.get(id).collectedAt).toBeNull()
 })
 
+test('the first message after gc collected a repo task tells its worker the worktree was made again without what git ignores, and later ones do not', async () => {
+  const id = ledger.add({
+    brief: 'first',
+    repo: newRepo(),
+    branch: 'feat/rebuilt',
+    checkCmd: null,
+    model: null,
+    after: [],
+    issue: null,
+  })
+  await startTask(ledger, home, terminals, id)
+  await reaches(id, 'succeeded')
+  await settled(id)
+  expect((await collect(ledger, home, terminals, { ids: [id] })).removed).toEqual([id])
+
+  await tell(ledger, home, terminals, id, 'second')
+  await reaches(id, 'succeeded')
+  await settled(id)
+  await tell(ledger, home, terminals, id, 'third')
+  await reaches(id, 'succeeded')
+
+  const [, second, third] = turnsOf(id)
+  expect(second).toStartWith('nod made this folder again after gc collected it')
+  expect(second).toContain('install the dependencies as the lock file pins them')
+  expect(second).toEndWith('\n\nsecond')
+  expect(third).toBe('third')
+  // The turn keeps what its worker got; its review reads the human's words alone, nod's notice not
+  // among them.
+  expect(ledger.attempts(id).map((a) => a.prompt.split('\n\n').at(-1))).toEqual([
+    expect.any(String),
+    'second',
+    'third',
+  ])
+  expect(ledger.attempts(id)[1]?.prompt).toBe(second)
+  const review = entries('review').at(-1)?.message
+  expect(review).toContain('later words win:\n- second\n- third\n')
+  expect(review).not.toContain('nod made this folder again')
+}, 20_000)
+
 it('the review hears what the human told the worker in the middle of a turn, in order with the rest', () => {
   const id = ledger.add({
     brief: 'write it',

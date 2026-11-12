@@ -44,6 +44,7 @@ import {
 } from './place'
 import { message, spawn } from './proc'
 import { type Capture, nodLines, parseCaptures, parseReport, parseTells, type Tell } from './report'
+import { REBUILT } from './review'
 import { activeRules, hadTrouble, isNoRule, retroBrief } from './rules'
 import { listen, owed, sendUnsent, sendWatched, unsent, type Worker, watchStart } from './sending'
 import { CLI, STOP_HOOK_TIMEOUT_SECS, workerSettings } from './settings'
@@ -1366,6 +1367,12 @@ async function deliver(
   from: number | null = null,
   by: string | null = NO_PERSON,
 ): Promise<void> {
+  // What the worker gets: the message, after REBUILT when restore made the folder again. `text`
+  // stays the sender's, for the questions it goes on past.
+  // A message that goes again (a stuck one) has it already.
+  const rebuilt = rebuiltFile(home, taskId)
+  const notice = existsSync(rebuilt)
+  const words = notice && !text.includes(REBUILT) ? `${REBUILT}\n\n${text}` : text
   // A turn the person stopped takes no message: the message starts a turn of its own.
   const stopped = stoppedDialogs(ledger, home, taskId)
   endTurnWithoutStop(ledger, home, taskId)
@@ -1452,7 +1459,7 @@ async function deliver(
         kind,
         decisionId,
         sessionId: last.sessionId,
-        prompt: text,
+        prompt: words,
         fromTask: from,
       })
       // A new turn: what the worker asked before it waits on nothing.
@@ -1472,33 +1479,34 @@ async function deliver(
       )
     }
     const told = (): void => {
-      ledger.addMessage(taskId, turn.attemptId, text, from)
+      ledger.addMessage(taskId, turn.attemptId, words, from)
     }
     if (restarting) {
-      leavePrompt(home, taskId, text)
+      leavePrompt(home, taskId, words)
       told()
     } else {
       await sendWatched(
         workerOf(ledger, home, terminals, ledger.attempt(turn.attemptId)),
-        text,
+        words,
         told,
       )
     }
+    if (notice) rmSync(rebuilt, { force: true })
     return
   }
   await announce(home, task, turn.cut, CUT)
   await announce(home, task, turn.closed, WENT_ON)
   try {
     if (restarting) {
-      leavePrompt(home, taskId, text)
+      leavePrompt(home, taskId, words)
     } else if (restart) {
-      leavePrompt(home, taskId, text)
+      leavePrompt(home, taskId, words)
       startAgain(terminals, name)
     } else if (live) {
-      await sendWatched(workerOf(ledger, home, terminals, ledger.attempt(turn.attemptId)), text)
+      await sendWatched(workerOf(ledger, home, terminals, ledger.attempt(turn.attemptId)), words)
     } else {
       // keepWorker starts it as any later start: the current account, trust, the message.
-      leavePrompt(home, taskId, text)
+      leavePrompt(home, taskId, words)
       launch(home, terminals, taskId, workspace, [])
     }
   } catch (error) {
@@ -1506,6 +1514,8 @@ async function deliver(
     ledger.error(taskId, message(error))
     throw error
   }
+  // Only the one this deliver read: one restore left since is for the next message.
+  if (notice) rmSync(rebuilt, { force: true })
 }
 
 // Opens the task's terminal, which keeps its Claude Code running (`nod run`, keepWorker). `first`:
@@ -1573,6 +1583,11 @@ export function claudeArgs(
 
 // A message deliver leaves for the worker's next start of Claude Code.
 const promptFile = (home: string, taskId: number): string => join(home, 'work', `.prompt-${taskId}`)
+
+// Left by restore when it made the task's worktree again; deliver puts REBUILT ahead of the next
+// message, whoever sends it, and takes this away once that message went in.
+const rebuiltFile = (home: string, taskId: number): string =>
+  join(home, 'work', `.rebuilt-${taskId}`)
 
 // Messages that arrive before the next start each go in, in order; one a start gave back goes
 // `ahead` of those.
@@ -1938,7 +1953,8 @@ async function giveUp(
   cut: Attempt | null,
   failure: string,
 ): Promise<void> {
-  rmSync(promptFile(home, taskId), { force: true })
+  // The message goes, but the next one still tells that restore made the folder again.
+  if (takePrompt(home, taskId)?.includes(REBUILT)) writeFileSync(rebuiltFile(home, taskId), '')
   const screen = terminals
     .screen(sessionName(taskId))
     .replace(/\n\s*\n/g, '\n')
@@ -2427,7 +2443,12 @@ export async function restore(ledger: Ledger, home: string, taskId: number): Pro
   }
   if (!existsSync(task.workspace)) {
     if (task.repo === null) mkdirSync(task.workspace, { recursive: true })
-    else await rebuildWorktree(task.repo, branchOf(task), task.workspace, task.head)
+    else {
+      // First, so a rebuild that fails partway, its folder made, still tells the next message.
+      mkdirSync(join(home, 'work'), { recursive: true })
+      writeFileSync(rebuiltFile(home, taskId), '')
+      await rebuildWorktree(task.repo, branchOf(task), task.workspace, task.head)
+    }
   }
   ledger.uncollected(taskId)
 }
