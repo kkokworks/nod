@@ -675,14 +675,23 @@ export async function cancel(
 // person do before answering: the worker heard the old one in its first message, which compaction
 // gives it again, so the answer, which the review and compaction give word for word too, says the
 // one nod runs now.
-function checkNow(ledger: Ledger, decision: Decision): string {
+export function checkNow(ledger: Ledger, decision: Decision): string {
   const since = ledger.attempt(decision.attemptId).startedAt
   if (!ledger.taskChanges(decision.taskId).some((c) => c.at >= since)) return ''
-  const { checkCmd } = ledger.get(decision.taskId)
+  const task = ledger.get(decision.taskId)
+  if (repoChecks(ledger, task)) return ''
+  const { checkCmd } = task
   return checkCmd === null
     ? '\n\nnod check took the acceptance check away: nod runs none when you stop.'
     : `\n\nnod check changed the acceptance check: when you stop, nod runs \`${checkCmd}\`.`
 }
+
+// Whether the check the task's next stop runs is the repo's, which nod check does not change: a
+// turn of landing work runs the repo's check before the task's when the repo has one (verifyLanding).
+const repoChecks = (ledger: Ledger, task: Task): boolean =>
+  ledger.landing(task.id)?.handedAt != null &&
+  task.repo !== null &&
+  ledger.repo(task.repo)?.checkCmd != null
 
 // Landing work given to the worker, or a decision on landing it (land.ts): the task's work succeeded,
 // and what goes on is its landing.
@@ -1040,8 +1049,12 @@ export async function settle(
           ledger.endRetro(task.retroId, captures.length > 0 ? 'todo' : 'none')
         const left = closeDecisions(ledger, task.id, () => true, without)
         ledger.succeed(task.id)
-        // The head that passed, which the next landing pass takes up from.
-        if (lands) ledger.setLanding(task.id, { ready: check?.head ?? null, handedAt: null })
+        // The head that passed, which the next landing pass takes up from; none when nod check
+        // changed the task's check as this one ran (setCheck), so that pass checks it with the new.
+        const ran = ledger.get(task.id).checkCmd === task.checkCmd
+        if (lands) {
+          ledger.setLanding(task.id, { ready: ran ? (check?.head ?? null) : null, handedAt: null })
+        }
         return left
       })
       .immediate()
@@ -1057,10 +1070,8 @@ export async function settle(
   if (!check.next && trailingRetries(ledger, task.id) >= CHECK_RETRIES) {
     // When the check is what failed (as verify words it): an answer goes to the worker and leaves the
     // check as it is, and nod check changes the task's for the stop after the answer's turn. Landing
-    // or not: only the repo's check, which a landing turn ran instead when the repo has one
-    // (verifyLanding), is left out, as nod check does not change it.
-    const repoCheck = lands && task.repo !== null && ledger.repo(task.repo)?.checkCmd != null
-    const redo = repoCheck
+    // or not: only the repo's check is left out (repoChecks), as nod check does not change it.
+    const redo = repoChecks(ledger, task)
       ? ''
       : ` To judge the work by another, run nod check n${task.id} '<command>' before you answer: nod runs it once the turn your answer starts ends.`
     const unchanged = check.output.startsWith('The acceptance check ')

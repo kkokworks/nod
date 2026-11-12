@@ -15,11 +15,11 @@ import { tempDirs } from '../test/tmp'
 import { testTmux } from '../test/tmux'
 import { onStop } from './hooks'
 import { land } from './land'
-import { type LandLevel, Ledger } from './ledger'
+import { type Decision, type LandLevel, Ledger } from './ledger'
 import { workspaceOf } from './place'
 import { Tmux } from './tmux'
 import { tick } from './triggers'
-import { answer, drop, type Send, tell } from './worker'
+import { answer, checkNow, drop, type Send, tell } from './worker'
 
 // Landing runs without a terminal here: what nod hands the worker (`send`) starts its turn as
 // deliver does, and each test ends that turn itself through the Stop hook, as the worker would.
@@ -713,9 +713,9 @@ test('a rebase that will not go on for anything but a conflict counts as a failu
   expect(ledger.decisions(id).find((d) => d.answer === null)?.reason).toBe('check_failed')
 }, 30_000)
 
-test("a check that keeps failing as the branch lands names nod check only when it is the task's own, not the repo's", async () => {
+test("a check that keeps failing as the branch lands names nod check only when it is the task's own, not the repo's, and so does the answer", async () => {
   // Asked for the pull request's text first, then two retries, then the person.
-  const keepsFailing = async (id: number): Promise<string | undefined> => {
+  const keepsFailing = async (id: number): Promise<Decision> => {
     expect((await land(ledger, home, Tmux.of(home), { send, only: [id] }))[0]?.did).toBe(
       'its worker fixes the check',
     )
@@ -724,20 +724,72 @@ test("a check that keeps failing as the branch lands names nod check only when i
       expect(await stops(id, 'Add it\n\nAdds it.\nNOD: done | tried', true)).not.toBeNull()
     }
     expect(await stops(id, 'Add it\n\nAdds it.\nNOD: done | tried', true)).toBeNull()
-    return ledger.decisions(id).find((d) => d.answer === null && d.reason === 'check_failed')
-      ?.question
+    const asked = ledger.decisions(id).find((d) => d.answer === null)
+    expect(asked?.reason).toBe('check_failed')
+    return asked as Decision
   }
   setRepo('pr', { checkCmd: 'test -f ok.txt' })
-  const repos = await keepsFailing(finished('feat/rc', { 'r.txt': 'r\n' }))
-  expect(repos).toContain('The acceptance check `test -f ok.txt` failed')
-  expect(repos).toContain('An answer does not change the check.')
-  expect(repos).not.toContain('nod check')
+  const repoChecked = finished('feat/rc', { 'r.txt': 'r\n' })
+  const repos = await keepsFailing(repoChecked)
+  expect(repos.question).toContain('The acceptance check `test -f ok.txt` failed')
+  expect(repos.question).toContain('An answer does not change the check.')
+  expect(repos.question).not.toContain('nod check')
+  // The repo's check runs at the next stop still, so the answer names no check of the task's.
+  ledger.setCheck(repoChecked, 'true', 'human')
+  expect(checkNow(ledger, repos)).toBe('')
 
   ledger.setRepo(repo, { checkCmd: null }, 'human')
   const own = finished('feat/tc', { 't.txt': 't\n' })
   ledger.setCheck(own, 'test -f ok.txt', 'human')
-  expect(await keepsFailing(own)).toContain(
+  const owns = await keepsFailing(own)
+  expect(owns.question).toContain(
     `An answer does not change the check. To judge the work by another, run nod check n${own} '<command>' before you answer`,
+  )
+  expect(checkNow(ledger, owns)).toBe('')
+  ledger.setCheck(own, 'true', 'human')
+  expect(checkNow(ledger, owns)).toBe(
+    '\n\nnod check changed the acceptance check: when you stop, nod runs `true`.',
+  )
+}, 30_000)
+
+test('a head the landing checked while nod check changed its check does not go out: the next pass checks it with the new one', async () => {
+  setRepo('pr')
+  const id = finished('feat/cr', { 'r.txt': 'r\n' })
+  // The old check changes the task's as it runs, with the nod check a person would run, then passes.
+  const cli = resolve(import.meta.dir, 'cli.ts')
+  ledger.setCheck(
+    id,
+    `env -u NOD_TASK -u NOD_ACTOR -u CLAUDECODE NOD_HOME=${JSON.stringify(home)} ${JSON.stringify(process.execPath)} ${JSON.stringify(cli)} check n${id} 'test -f ok.txt'`,
+    'human',
+  )
+  expect((await land(ledger, home, Tmux.of(home), { send, only: [id] }))[0]?.did).toBe(
+    'its check changed as it ran',
+  )
+  expect(ledger.landing(id)?.ready).toBeNull()
+  expect(handed).toEqual([])
+  expect((await land(ledger, home, Tmux.of(home), { send, only: [id] }))[0]?.did).toBe(
+    'its worker fixes the check',
+  )
+}, 30_000)
+
+test('a landing turn whose check nod check changed as it ran leaves no head ready: the next pass checks it with the new one', async () => {
+  setRepo('pr')
+  const id = finished('feat/ct', { 't.txt': 't\n' })
+  expect((await land(ledger, home, Tmux.of(home), { send, only: [id] }))[0]?.did).toBe(
+    'its worker writes the pull request',
+  )
+  // The check the worker's stop runs changes the task's as it runs, then passes.
+  const cli = resolve(import.meta.dir, 'cli.ts')
+  ledger.setCheck(
+    id,
+    `env -u NOD_TASK -u NOD_ACTOR -u CLAUDECODE NOD_HOME=${JSON.stringify(home)} ${JSON.stringify(process.execPath)} ${JSON.stringify(cli)} check n${id} 'test -f ok.txt'`,
+    'human',
+  )
+  expect(await stops(id, 'Add t\n\nAdds t.\nNOD: done | wrote it')).toBeNull()
+  expect(ledger.get(id)).toMatchObject({ status: 'succeeded', checkCmd: 'test -f ok.txt' })
+  expect(ledger.landing(id)?.ready).toBeNull()
+  expect((await land(ledger, home, Tmux.of(home), { send, only: [id] }))[0]?.did).toBe(
+    'its worker fixes the check',
   )
 }, 30_000)
 
