@@ -125,7 +125,7 @@ const USAGE = `usage:
           [--after <task,...>] [--issue <key>] [--todo <todo> | --project <project>]
                                    start a worker on the task now, or once the tasks it comes
                                    after have succeeded. A brief of one line naming a file is
-                                   that file's text; an empty one is refused. In a repo it works
+                                   that file's text; an empty file is refused. In a repo it works
                                    on a new branch <name> in the worktree
                                    <home>/work/<repo folder>/<name>, started from the earlier
                                    task's branch in the same repo.
@@ -670,11 +670,15 @@ function briefFile(brief: string): string {
   if (brief.includes('\n')) return brief
   try {
     if (!statSync(brief).isFile()) return brief
-  } catch {
+  } catch (error) {
+    // Denied a look, it may well be the file: say so rather than keep its path as the brief.
+    const code = (error as { code?: unknown }).code
+    if (code === 'EACCES' || code === 'EPERM') throw error
     // No such file, or a line too long or odd for a path (ENAMETOOLONG, ENOTDIR): plain words.
     return brief
   }
-  const text = readFileSync(brief, 'utf8').trim()
+  // A file written on Windows would leave a \r ending the todo's title.
+  const text = readFileSync(brief, 'utf8').replaceAll('\r\n', '\n').trim()
   if (text === '') throw new Error(`the brief file ${brief} is empty`)
   return text
 }

@@ -164,7 +164,7 @@ test("add given one line naming a file takes the file's text as the brief, and o
   })
   const add = (brief: string): number => Number(nod('add', brief, '--after', String(never)).out)
   const file = join(home, 'brief.md')
-  writeFileSync(file, '\nSummarise the notes\n\nKeep it short.\n')
+  writeFileSync(file, '\r\nSummarise the notes\r\n\r\nKeep it short.\r\n')
 
   const fromFile = ledger.get(add(` ${file} `))
   expect(fromFile.brief).toBe('Summarise the notes\n\nKeep it short.')
