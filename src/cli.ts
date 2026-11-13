@@ -671,9 +671,12 @@ function briefFile(brief: string): string {
   try {
     if (!statSync(brief).isFile()) return brief
   } catch (error) {
-    // Denied a look, it may well be the file: say so rather than keep its path as the brief.
+    // Denied a look at what reads as one path: say so rather than keep the path as the brief. Words
+    // with spaces stay words, as before, wherever the first of them leads.
     const code = (error as { code?: unknown }).code
-    if (code === 'EACCES' || code === 'EPERM') throw error
+    if ((code === 'EACCES' || code === 'EPERM') && !/\s/.test(brief)) {
+      throw new Error(`cannot look at the brief file ${brief}: ${code}`)
+    }
     // No such file, or a line too long or odd for a path (ENAMETOOLONG, ENOTDIR): plain words.
     return brief
   }
