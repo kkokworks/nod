@@ -136,6 +136,49 @@ test('each root session sees in show the tasks it added, and with --mine lists o
   expect(out).not.toContain('for the shell')
 }, 30_000)
 
+test("add given one line naming a file takes the file's text as the brief, and other words as they are", () => {
+  const home = tmp.make('nod-brief-file-')
+  const ledger = new Ledger(home)
+  const todos = new Todos(ledger)
+  const {
+    CLAUDECODE: _,
+    CLAUDE_CODE_SESSION_ID: __,
+    NOD_TASK: ___,
+    NOD_ACTOR: ____,
+    CLAUDE_CODE_MESSAGING_SOCKET: _____,
+    ...shell
+  } = process.env
+  const nod = (...args: string[]) => {
+    const r = Bun.spawnSync(['bun', cli, ...args], { env: { ...shell, NOD_HOME: home } })
+    return { code: r.exitCode, out: r.stdout.toString(), err: r.stderr.toString() }
+  }
+  // Each comes after a task that never starts here, so no worker runs.
+  const never = ledger.add({
+    brief: 'never starts',
+    repo: null,
+    branch: null,
+    checkCmd: null,
+    model: null,
+    after: [],
+    issue: null,
+  })
+  const add = (brief: string): number => Number(nod('add', brief, '--after', String(never)).out)
+  const file = join(home, 'brief.md')
+  writeFileSync(file, '\r\nSummarise the notes\r\n\r\nKeep it short.\r\n')
+
+  const fromFile = ledger.get(add(` ${file} `))
+  expect(fromFile.brief).toBe('Summarise the notes\n\nKeep it short.')
+  expect(todos.get(fromFile.todoId ?? 0).title).toBe('Summarise the notes')
+  const plain = ledger.get(add(`look at ${file}`))
+  expect(plain.brief).toBe(`look at ${file}`)
+  expect(todos.get(plain.todoId ?? 0).title).toBe(`look at ${file}`)
+
+  writeFileSync(file, ' \n')
+  const empty = nod('add', file, '--after', String(never))
+  expect(empty.code).not.toBe(0)
+  expect(empty.err).toContain(`the brief file ${file} is empty`)
+}, 20_000)
+
 test("in a session nod open opened, add hands over its project's work only, show names it by its project; another session adds a project's work and none in no project, and a shell adds as before", () => {
   const home = tmp.make('nod-open-add-')
   const ledger = new Ledger(home)

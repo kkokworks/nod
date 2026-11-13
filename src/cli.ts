@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync, statSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { parseArgs } from 'node:util'
 import { accountRule, configDir, describeRule, openedIn, setAccountRule } from './account'
@@ -124,9 +124,11 @@ const USAGE = `usage:
   nod add <brief> [--repo <path> --branch <name>] [--check <command>] [--model <model>]
           [--after <task,...>] [--issue <key>] [--todo <todo> | --project <project>]
                                    start a worker on the task now, or once the tasks it comes
-                                   after have succeeded. In a repo it works on a new branch
-                                   <name> in the worktree <home>/work/<repo folder>/<name>,
-                                   started from the earlier task's branch in the same repo.
+                                   after have succeeded. A brief of one line naming a file is
+                                   that file's text; an empty file is refused. In a repo it works
+                                   on a new branch <name> in the worktree
+                                   <home>/work/<repo folder>/<name>, started from the earlier
+                                   task's branch in the same repo.
                                    --issue names the issue it works on, so ls, decisions and
                                    notify events show it. --todo delegates that todo to the
                                    task: it waits on the task, is a next action again if it is
@@ -637,7 +639,7 @@ async function add(args: string[]): Promise<void> {
   const brief =
     todo !== null && positionals.length === 0
       ? [todo.title, todo.notes].filter((x) => x !== null).join('\n\n')
-      : words(positionals)
+      : briefFile(words(positionals))
   const after = (values.after ?? '').split(',').filter(Boolean).map(taskRef)
   const repo = repoPath(values.repo)
   const task = {
@@ -660,6 +662,28 @@ async function add(args: string[]): Promise<void> {
   if (after.length === 0) await startTask(ledger, home, terminals, id)
   else await startReady(ledger, home, terminals)
   console.log(id)
+}
+
+// A brief of one line naming a file is that file's text, so the todo, show and decisions say what
+// the work is, not where its brief was written.
+function briefFile(brief: string): string {
+  if (brief.includes('\n')) return brief
+  try {
+    if (!statSync(brief).isFile()) return brief
+  } catch (error) {
+    // Denied a look at what reads as one path: say so rather than keep the path as the brief. Words
+    // with spaces stay words, as before, wherever the first of them leads.
+    const code = (error as { code?: unknown }).code
+    if ((code === 'EACCES' || code === 'EPERM') && !/\s/.test(brief)) {
+      throw new Error(`cannot look at the brief file ${brief}: ${code}`)
+    }
+    // No such file, or a line too long or odd for a path (ENAMETOOLONG, ENOTDIR): plain words.
+    return brief
+  }
+  // A file written on Windows would leave a \r ending the todo's title.
+  const text = readFileSync(brief, 'utf8').replaceAll('\r\n', '\n').trim()
+  if (text === '') throw new Error(`the brief file ${brief} is empty`)
+  return text
 }
 
 function rule([sub, ...args]: string[]): void {
