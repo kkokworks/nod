@@ -57,6 +57,8 @@ import {
   actorFromEnv,
   capture,
   checkTell,
+  helperLine,
+  namedSeat,
   openSession,
   placeWork,
   projectCommand,
@@ -66,7 +68,7 @@ import {
   todayCommand,
   todoCommand,
 } from './todo-cli'
-import { type Found, NAMED_ROLES, OPEN_ROLES, oneOf, parseRef, Todos } from './todos'
+import { type Found, NAMED_ROLES, oneOf, parseRef, Todos } from './todos'
 import { scheduleEnv, scheduleOff, scheduleOn, tick } from './triggers'
 import {
   clean,
@@ -184,10 +186,12 @@ const USAGE = `usage:
                                    relay passes what comes from outside to the project session it
                                    is for, hands over no task, and nod tells it of no task
   nod session claim <name> --role orchestrator|relay
+  nod session claim <name> --role helper --project <project>
                                    give the Claude session this runs in that role and name, its
                                    conversation going on: nod records it if it did not know it,
                                    with the folder its transcript says it was opened in, a project
-                                   session leaves its project, and it says where it takes messages
+                                   session leaves its project, and it says where it takes messages.
+                                   A helper's name is checked as nod open's, which opens it again
   nod hand <task> [<helper>]       hand a task in a project to the project's helper of that name,
                                    or with none back to the project's session: what nod has not
                                    told of it yet, and all after, goes there
@@ -1108,19 +1112,20 @@ function open(args: string[]): void {
 async function sessionCommand([sub, ...args]: string[]): Promise<void> {
   const { values, positionals } = parseArgs({
     args,
-    options: { role: { type: 'string' } },
+    options: { role: { type: 'string' }, project: { type: 'string' } },
     allowPositionals: true,
   })
   const [name, ...extra] = positionals
-  if (sub !== 'claim' || name === undefined || extra.length > 0 || values.role === undefined) {
-    throw new Error(USAGE)
-  }
-  const role = oneOf('session role', values.role, OPEN_ROLES)
+  if (sub !== 'claim' || name === undefined || extra.length > 0) throw new Error(USAGE)
+  const todos = new Todos(ledger)
+  const role =
+    values.role === undefined ? undefined : oneOf('session role', values.role, NAMED_ROLES)
+  const seat = namedSeat(todos, 'nod session claim', name, role, values.project)
+  if (seat === null) throw new Error(USAGE)
   const session = sessionFromEnv()
   if (session === null) {
     throw new Error('nod session claim names the Claude session it runs in; run it in one')
   }
-  const todos = new Todos(ledger)
   const cwd =
     todos.session(session)?.cwd ?? openedIn(process.env.CLAUDE_CONFIG_DIR || null, session)
   if (cwd === null) {
@@ -1128,11 +1133,13 @@ async function sessionCommand([sub, ...args]: string[]): Promise<void> {
       `nod: no transcript of this session says where it was opened, so nod records ${process.cwd()}, where nod open goes back to it`,
     )
   }
-  todos.claimSession(session, role, name, cwd ?? process.cwd())
+  todos.claimSession(seat, session, cwd ?? process.cwd())
   await sayInbox()
   // Its role may be what a notice waited for, though its socket is the one nod knew.
   await tellSessions(home)
-  console.log(`this session is ${roleLine(role, name)}`)
+  const line =
+    'project' in seat ? helperLine(todos.project(seat.project), name) : roleLine(seat.role, name)
+  console.log(`this session is ${line}`)
 }
 
 // What the worker shows right now, for a Claude session that cannot attach a terminal.

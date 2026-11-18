@@ -754,6 +754,112 @@ test('nod session claim gives the Claude session it runs in a role and a name, i
   expect(behind.err).toContain("nod tells south's latest session, which nod open south opens")
 }, 30_000)
 
+test("nod session claim <name> --role helper --project makes the Claude session it runs in that project's helper, which nod open then goes back to, and refuses what nod open would", () => {
+  const home = tmp.make('nod-claim-helper-')
+  const account = join(home, 'account')
+  const here = realpathSync(tmp.make('nod-claim-helper-here-'))
+  const opened = realpathSync(tmp.make('nod-claim-helper-opened-'))
+  const bin = tmp.make('nod-claim-helper-bin-')
+  // Stands in for claude: says where it ran and with what.
+  writeFileSync(join(bin, 'claude'), '#!/bin/sh\necho "$(pwd -P) | $*"\n', { mode: 0o755 })
+  const todos = new Todos(new Ledger(home))
+  const p = todos.addProject({ title: 'Release', outcome: null }, 'human')
+  const q = todos.addProject({ title: 'Health', outcome: null }, 'human')
+  const {
+    CLAUDECODE: _,
+    CLAUDE_CODE_SESSION_ID: __,
+    NOD_TASK: ___,
+    NOD_ACTOR: ____,
+    CLAUDE_CODE_MESSAGING_SOCKET: _____,
+    ...shell
+  } = process.env
+  const env = {
+    ...shell,
+    NOD_HOME: home,
+    CLAUDE_CONFIG_DIR: account,
+    PATH: `${bin}:${process.env.PATH}`,
+  }
+  const nod = (session: string | null, ...args: string[]) => {
+    const inSession = {
+      CLAUDECODE: '1',
+      CLAUDE_CODE_SESSION_ID: `${session}`,
+      CLAUDE_CODE_MESSAGING_SOCKET: `/socks/${session}`,
+    }
+    const r = Bun.spawnSync(['bun', cli, ...args], {
+      cwd: here,
+      env: session === null ? env : { ...env, ...inSession },
+    })
+    return { code: r.exitCode, out: r.stdout.toString(), err: r.stderr.toString() }
+  }
+  const claim = (session: string, ...args: string[]) => nod(session, 'session', 'claim', ...args)
+  const [A, B, D] = ['key-a', 'key-b', 'key-d']
+  const refused = (session: string, args: string[], error: string): void => {
+    const r = claim(session, ...args)
+    expect(r.code).not.toBe(0)
+    expect(r.err).toContain(error)
+    expect(todos.session(session)).toBeNull()
+  }
+
+  // A helper needs its project, and no other role takes one.
+  refused(
+    A,
+    ['review', '--role', 'helper'],
+    "a helper is a project's: nod session claim review --role helper --project <project>",
+  )
+  const notHelper =
+    '--project names the project of a helper: nod session claim <name> --role helper --project <project>'
+  refused(A, ['review', '--role', 'relay', '--project', `p${p.id}`], notHelper)
+  refused(A, ['review', '--project', `p${p.id}`], notHelper)
+  refused(A, ['review', '--role', 'helper', '--project', 'p9'], 'no project p9')
+
+  // A session nod does not know: the project's helper, opened where its transcript says.
+  const folder = projectFolder(account, opened)
+  mkdirSync(folder, { recursive: true })
+  writeFileSync(join(folder, `${A}.jsonl`), `${JSON.stringify({ type: 'user', cwd: opened })}\n`)
+  const claimed = claim(A, 'review', '--role', 'helper', '--project', `p${p.id}`)
+  expect(claimed).toMatchObject({ code: 0, err: '' })
+  expect(claimed.out).toBe(
+    `this session is the helper review of project p${p.id} Release: nod add here puts work in that project, and nod tells this session of the project's tasks it adds or is handed (nod hand) while it takes messages; the project's own session hears of the rest, and of these while this one is off.\n`,
+  )
+  expect(todos.session(A)).toMatchObject({
+    role: 'helper',
+    name: 'review',
+    cwd: opened,
+    socket: `/socks/${A}`,
+  })
+  expect(todos.sessionPlace(A)).toMatchObject({ project: { id: p.id }, latest: true })
+  expect(todos.latestSession(p.id)).toBeNull()
+  // nod open goes back to the same conversation, by its role and project or by its name alone.
+  const resumed = `${opened} | --resume ${A} --name Release · review `
+  expect(nod(null, 'open', 'review', '--role', 'helper', '--project', `p${p.id}`).out).toStartWith(
+    resumed,
+  )
+  expect(nod(null, 'open', 'review').out).toStartWith(resumed)
+
+  // Another project's session leaves it for the helper's, in the folder it was opened in.
+  const own = todos.addSession(q.id, B, '/work/health')
+  const left = claim(B, 'docs', '--role', 'helper', '--project', `p${p.id}`)
+  expect(left).toMatchObject({ code: 0, err: '' })
+  expect(left.out).toStartWith(`this session is the helper docs of project p${p.id} Release: `)
+  expect(todos.session(B)).toEqual({ ...own, role: 'helper', name: 'docs', socket: `/socks/${B}` })
+  expect(todos.sessionPlace(B)).toMatchObject({ project: { id: p.id }, latest: true })
+  expect(todos.latestSession(q.id)).toBeNull()
+
+  // A name nod open would refuse goes in nowhere.
+  refused(
+    D,
+    ['review', '--role', 'helper', '--project', `p${q.id}`],
+    `the name review is taken by a helper of p${p.id}`,
+  )
+  todos.addSession({ role: 'relay', name: 'gate' }, 'key-e', '/work/e')
+  refused(
+    D,
+    ['gate', '--role', 'helper', '--project', `p${p.id}`],
+    'the name gate is taken by role relay',
+  )
+  refused(D, ['Health', '--role', 'helper', '--project', `p${p.id}`], 'Health names a project')
+}, 30_000)
+
 test('nod open has claude compact at 60% of its window, unless the shell says how early', () => {
   const home = tmp.make('nod-open-compact-')
   const bin = tmp.make('nod-open-compact-bin-')

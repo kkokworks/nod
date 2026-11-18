@@ -457,7 +457,7 @@ test('a task in no project is heard by the latest of the orchestrator that added
 test('claiming a role puts in a session nod does not know, takes a project session out of its project, and refuses a name it cannot tell apart', () => {
   const { ledger, todos } = books()
   const [A, B, C, D] = ['key-a', 'key-b', 'key-c', 'key-d']
-  const made = todos.claimSession(A, 'orchestrator', 'north', '/work/one')
+  const made = todos.claimSession({ role: 'orchestrator', name: 'north' }, A, '/work/one')
   expect(made).toMatchObject({
     role: 'orchestrator',
     name: 'north',
@@ -471,7 +471,7 @@ test('claiming a role puts in a session nod does not know, takes a project sessi
   const had = todos.addSession(p.id, B, '/work/two')
   todos.setSocket(B, '/socks/b')
   // A folder only goes in for a new row: this one keeps where nod open opened it.
-  const claimed = todos.claimSession(B, 'relay', 'gate', '/somewhere/else')
+  const claimed = todos.claimSession({ role: 'relay', name: 'gate' }, B, '/somewhere/else')
   expect(claimed).toEqual({ ...had, role: 'relay', name: 'gate', socket: '/socks/b' })
   expect(todos.session(B)).toEqual(claimed)
   expect(todos.sessionPlace(B)).toBeNull()
@@ -481,7 +481,7 @@ test('claiming a role puts in a session nod does not know, takes a project sessi
 
   // Another role's name, a project's title or what reads as a project go in nowhere.
   const refused = (name: string, error: string): void => {
-    expect(() => todos.claimSession(D, 'relay', name, '/x')).toThrow(error)
+    expect(() => todos.claimSession({ role: 'relay', name }, D, '/x')).toThrow(error)
     expect(todos.session(D)).toBeNull()
   }
   refused('north', 'the name north is taken by role orchestrator')
@@ -489,8 +489,67 @@ test('claiming a role puts in a session nod does not know, takes a project sessi
   refused('p7', 'p7 names a project')
   refused(' ', 'empty name')
   // A session may give up its own name for another role, and take a name its role has.
-  expect(todos.claimSession(B, 'orchestrator', 'gate', '/x').role).toBe('orchestrator')
-  expect(todos.claimSession(D, 'orchestrator', 'gate', '/x').name).toBe('gate')
+  expect(todos.claimSession({ role: 'orchestrator', name: 'gate' }, B, '/x').role).toBe(
+    'orchestrator',
+  )
+  expect(todos.claimSession({ role: 'orchestrator', name: 'gate' }, D, '/x').name).toBe('gate')
+})
+
+test("claiming a helper puts in a session nod does not know as the project's, moves one of another project or role to it, and refuses a name nod open would", () => {
+  const { ledger, todos } = books()
+  const p = project(todos, 'Release')
+  const q = project(todos, 'Health')
+  const [A, B, C, D, E] = ['key-a', 'key-b', 'key-c', 'key-d', 'key-e']
+  const helper = (name: string, of: number) => ({ role: 'helper' as const, name, project: of })
+  const rows = () =>
+    ledger.db
+      .query('select session_id as s, project_id as p from project_sessions order by s')
+      .all()
+
+  const made = todos.claimSession(helper('review', p.id), A, '/work/one')
+  expect(made).toMatchObject({ role: 'helper', name: 'review', cwd: '/work/one', socket: null })
+  expect(todos.sessionPlace(A)).toMatchObject({ project: { id: p.id }, latest: true })
+  // Beside its project's session, which it does not stand for.
+  expect(todos.latestSession(p.id)).toBeNull()
+
+  // Another project's session leaves it for the helper's, keeping its folder and socket.
+  const own = todos.addSession(q.id, B, '/work/two')
+  todos.setSocket(B, '/socks/b')
+  const moved = todos.claimSession(helper('docs', p.id), B, '/somewhere/else')
+  expect(moved).toEqual({ ...own, role: 'helper', name: 'docs', socket: '/socks/b' })
+  expect(todos.session(B)).toEqual(moved)
+  expect(todos.latestSession(q.id)).toBeNull()
+  expect(rows()).toEqual([
+    { s: made.id, p: p.id },
+    { s: own.id, p: p.id },
+  ])
+  // So does a session of no project, and back: a helper leaving for a role leaves its project.
+  const north = todos.addSession({ role: 'orchestrator', name: 'north' }, C, '/work/three')
+  expect(todos.claimSession(helper('ops', q.id), C, '/x')).toMatchObject({ id: north.id })
+  expect(todos.sessionPlace(C)?.project.id).toBe(q.id)
+  todos.claimSession({ role: 'orchestrator', name: 'north' }, C, '/x')
+  expect(todos.sessionPlace(C)).toBeNull()
+  expect(rows()).toHaveLength(2)
+
+  // A name nod open would refuse goes in nowhere.
+  const refused = (name: string, of: number, error: string): void => {
+    expect(() => todos.claimSession(helper(name, of), D, '/x')).toThrow(error)
+    expect(todos.session(D)).toBeNull()
+  }
+  refused('review', q.id, `the name review is taken by a helper of p${p.id}`)
+  refused('north', p.id, 'the name north is taken by role orchestrator')
+  refused('Health', p.id, 'Health names a project')
+  refused('p7', p.id, 'p7 names a project')
+  refused(' ', p.id, 'empty name')
+  // A helper may take its own name to another project, when no other session helps by it.
+  expect(todos.claimSession(helper('docs', q.id), B, '/x')).toMatchObject({ name: 'docs' })
+  expect(todos.sessionPlace(B)?.project.id).toBe(q.id)
+  // But not while another session still helps its project by that name.
+  todos.claimSession(helper('review', p.id), E, '/x')
+  expect(() => todos.claimSession(helper('review', q.id), A, '/x')).toThrow(
+    `the name review is taken by a helper of p${p.id}`,
+  )
+  expect(todos.sessionPlace(A)?.project.id).toBe(p.id)
 })
 
 for (const role of OPEN_ROLES) {
