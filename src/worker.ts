@@ -144,7 +144,7 @@ found it (your self-review, the subagent, or both) and what you did (fixed, or w
 // login, asked the person to run them or open the sandbox: a decision and the person's check for
 // what nod does anyway. In the system prompt, so a resumed or compacted conversation keeps it.
 const landingPrompt = (merge: boolean): string =>
-  `Once nod accepts your done, it lands this branch itself: it rebases it onto the default branch, checks it, pushes it and opens a pull request${merge ? ', then squash merges it' : ''}. So commit on the current branch and stop there: do not push, set an upstream or open a pull request, and do not ask anyone to do any of it.`
+  `Once nod accepts your done, it lands this branch itself: it rebases it onto the default branch, checks it, pushes it and opens a pull request${merge ? ', then squash merges it' : ''}. So commit on the current branch and leave the rest to nod: do not push, set an upstream or open a pull request, and do not ask anyone to do any of it.`
 
 const RESUME_PROMPT =
   'Your session was interrupted. Check the current state of this directory and continue the task.'
@@ -736,7 +736,7 @@ function landingRefused(ledger: Ledger, taskId: number): string {
   const instead =
     decision !== undefined
       ? `nod drop d${decision.id} stops its landing, and the task stays succeeded`
-      : `its worker has its landing work; once that turn ends, nod land n${taskId} goes on landing it, and dropping a decision it opens (nod drop) stops that`
+      : `its worker has its landing work; once that turn ends, nod goes on landing it, and dropping a decision it opens (nod drop) stops that`
   return `task n${taskId} succeeded and is landing, so it is not cancelled: ${instead}`
 }
 

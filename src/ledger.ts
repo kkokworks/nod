@@ -1436,14 +1436,18 @@ export class Ledger {
   // Takes the repo for the process `pid` to land its tasks, unless a live one has it: two ticks at
   // once would rebase and push the same branches. One that died (a killed tick) leaves it to take.
   // ponytail: a pid the OS gave out again reads as alive until that process ends.
+  // Immediate: two Stop hooks' landings (landSoon) start at once, and a read that then writes after
+  // the other's write would fail at once (SQLITE_BUSY) rather than wait its turn.
   claimRepo(path: string, pid: number, alive: (pid: number) => boolean): boolean {
-    return this.db.transaction(() => {
-      const row = this.first(q.selectFrom('repos').select('lander').where('path', '=', path))
-      if (row === null) return false
-      if (row.lander !== null && row.lander !== pid && alive(row.lander)) return false
-      this.run(q.updateTable('repos').set({ lander: pid }).where('path', '=', path))
-      return true
-    })()
+    return this.db
+      .transaction(() => {
+        const row = this.first(q.selectFrom('repos').select('lander').where('path', '=', path))
+        if (row === null) return false
+        if (row.lander !== null && row.lander !== pid && alive(row.lander)) return false
+        this.run(q.updateTable('repos').set({ lander: pid }).where('path', '=', path))
+        return true
+      })
+      .immediate()
   }
 
   releaseRepo(path: string, pid: number): void {

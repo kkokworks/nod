@@ -610,7 +610,7 @@ test('a message while nod works in the worktree waits, so the worker does not ed
 test('a worker whose task nod lands hears that nod pushes and opens the pull request (at merge, merges it), and to only commit; others hear nothing of it', () => {
   const said = (id: number): string => workerPrompt(ledger, ledger.get(id)).replaceAll('\n', ' ')
   const only =
-    'So commit on the current branch and stop there: do not push, set an upstream or open a pull request, and do not ask anyone to do any of it.'
+    'So commit on the current branch and leave the rest to nod: do not push, set an upstream or open a pull request, and do not ask anyone to do any of it.'
   const older = finished('feat/older', { 'o.txt': 'o\n' })
   expect(said(older)).not.toContain('lands this branch')
   setRepo('pr')

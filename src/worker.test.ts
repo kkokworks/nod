@@ -886,7 +886,7 @@ it('nod cancel refuses a task that is landing, says to drop its decision or let 
   ledger.setLanding(handed, { handedAt: new Date().toISOString() })
   for (const [id, instead] of [
     [asking, `nod drop d${asked} stops its landing`],
-    [handed, `nod land n${handed} goes on landing it`],
+    [handed, 'once that turn ends, nod goes on landing it'],
   ] as const) {
     const [task, landing, decisions] = [ledger.get(id), ledger.landing(id), ledger.decisions(id)]
     const refused = cancel(ledger, home, terminals, id, 'human', 'merged by hand')

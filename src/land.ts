@@ -99,9 +99,11 @@ function landingRepos(ledger: Ledger, only: number[] | undefined, path?: string)
 // Lands the repo's tasks due now, as the tick would, in a process of its own (`nod land --repo`):
 // the Stop hook of a worker whose task just succeeded, or whose landing turn just ended, starts it
 // (onStop), so the landing goes on without waiting for the tick's next fifth minute or a person's
-// nod land, and the hook waits out no rebase or check. Its own process group and session, so the
-// end of the hook or of the worker's terminal does not end it. A pass holding the repo already
-// lands the task before it lets go (landRepo); one that does not start leaves it to the tick.
+// nod land, and the hook waits out no rebase or check. Its own process group and session (Bun's
+// `detached` calls setsid), so the end of the hook or of the worker's terminal does not end it. A
+// tick's or another landSoon's pass holding the repo lands the task before it lets go (landRepo); a
+// pass that names its tasks (nod land <task>) does not, and one that does not start leaves it to the
+// tick.
 // ponytail: what it prints goes nowhere; what it did is in the ledger (nod show) and was notified.
 export function landSoon(home: string, repo: string): Subprocess {
   const proc = Bun.spawn([process.execPath, CLI, 'land', '--repo', repo], {
@@ -138,8 +140,11 @@ function due(ledger: Ledger, terminals: Terminals, repo: Repo, only: number[] | 
 // Again once those are looked at, for the tasks due since: a turn of their worker ended meanwhile
 // (its first done, or the landing work this pass handed it), and its own pass (landSoon) found this
 // one holding the repo, so it lands here rather than at the tick's next fifth minute. Told apart by
-// their last turn, so a task that waits (on a review, say) is looked at once.
-// ponytail: one whose turn ends between the last look and the release waits for the tick.
+// their last turn, so a task that waits (on a review, say) is looked at once. A pass that names its
+// tasks (`only`) looks again at those alone.
+// ponytail: one whose turn ends between the last look and the release waits for the tick; and a
+// tick's pass holds its watches and sweep for as long as turns keep ending in the repo, work the
+// next tick would do anyway.
 async function landRepo(pass: Pass, only: number[] | undefined): Promise<void> {
   const looked = new Set<string>()
   const turn = (t: Task): string => `${t.id} ${pass.ledger.lastAttempt(t.id)?.id}`
