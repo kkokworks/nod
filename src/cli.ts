@@ -69,6 +69,8 @@ import {
 import { type Found, NAMED_ROLES, OPEN_ROLES, oneOf, parseRef, Todos } from './todos'
 import { scheduleEnv, scheduleOff, scheduleOn, tick } from './triggers'
 import {
+  clean,
+  helperOpens,
   indent,
   type LsTask,
   lsGroups,
@@ -751,24 +753,30 @@ function checkCommand([ref, ...cmd]: string[]): void {
 
 // `nod hand`: a task in a project goes to the project's helper of that name, or with none back to
 // the project's own session. What nod has not told of it yet goes there too, at once to one that
-// takes messages (Todos.listener reads it as it sends). When the session that hears of it now cannot
-// either, stderr says so, as for work set going (warnUnheard).
+// takes messages (Todos.listener reads it as it sends). It says who hears of it while the one it
+// went to takes no messages, to a shell too.
 async function hand([ref, helper, ...extra]: string[]): Promise<void> {
   if (ref === undefined || extra.length > 0) throw new Error(USAGE)
   const id = taskRef(ref)
   const todos = new Todos(ledger)
   todos.handTask(id, helper ?? null)
   await tellSessions(home)
-  const p = `p${todos.projectOf(ledger.get(id))}`
+  const project = todos.projectOf(ledger.get(id)) ?? 0
+  const p = `p${project}`
+  const mainOn = takesMessages(todos.latestSession(project))
+  const waits = (opens: string): string => `what comes of n${id} waits until nod open ${opens}`
   if (helper === undefined) {
-    console.log(`n${id} goes to ${p}'s session`)
-  } else {
-    const off = takesMessages(todos.latestNamed(helper))
-      ? ''
-      : `; it takes no messages now, so ${p}'s session hears of n${id} until nod open ${helper} --role helper --project ${p} opens it`
-    console.log(`n${id} goes to the helper ${helper} of ${p}${off}`)
+    const off = mainOn ? '' : `; it takes no messages now, so ${waits(p)} opens it`
+    console.log(`n${id} goes to ${p}'s session${off}`)
+    return
   }
-  warnUnheard([id])
+  const opens = helperOpens(helper, project)
+  const off = takesMessages(todos.latestNamed(helper))
+    ? ''
+    : mainOn
+      ? `; it takes no messages now, so ${p}'s session hears of n${id} until nod open ${opens} opens it`
+      : `; neither it nor ${p}'s session takes messages now, so ${waits(`${opens} or nod open ${p}`)} opens one`
+  console.log(`n${id} goes to the helper ${clean(helper)} of ${p}${off}`)
 }
 
 // Each change to the task's check, with when and who made it.

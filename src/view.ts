@@ -12,14 +12,19 @@ export function taskLabel(t: Task): string {
   return ['task', `n${t.id}`, owner(t), t.issue ?? ''].filter((x) => x !== '').join(' ')
 }
 
+// What nod open takes to open a project's helper, as nod shows it: its name, role and project, as a
+// project titled so since goes first by the name alone; what would break a terminal kept out.
+// ponytail: a name with such characters shows as one nod open does not find; such a name is made by
+// the person alone.
+export const helperOpens = (name: string, projectId: number): string =>
+  `${clean(quote(name))} --role helper --project p${projectId}`
+
 // The command that goes back into a project's session: nod open for the project's latest, or a
-// helper's by its name, role and project (a project titled so since goes first by the name alone),
-// what would break a terminal kept out of it; else claude --resume in the folder it was opened in,
-// where Claude Code keeps its transcript.
+// helper's (helperOpens); else claude --resume in the folder it was opened in, where Claude Code
+// keeps its transcript.
 export function reopenCommand({ session, project, latest }: SessionPlace): string {
-  if (latest && session.role === 'helper') {
-    return `nod open ${clean(quote(session.name))} --role helper --project p${project.id}`
-  }
+  if (latest && session.role === 'helper')
+    return `nod open ${helperOpens(session.name, project.id)}`
   if (latest) return `nod open p${project.id}`
   return `cd ${quote(session.cwd)} && claude --resume ${session.sessionKey}`
 }

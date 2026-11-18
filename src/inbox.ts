@@ -4,7 +4,7 @@ import { Ledger, type Notice, type Task } from './ledger'
 import { message, unbroken } from './proc'
 import { type Project, type Session, Todos, takesMessages } from './todos'
 import { REVIEW_TIMED_OUT } from './verify'
-import { allowedLine, firstLine, indent, oneLine, taskLabel } from './view'
+import { allowedLine, clean, firstLine, helperOpens, indent, oneLine, taskLabel } from './view'
 
 // nod tells a project's session, the one nod open opened for it last, what happens to its work:
 // each of the project's tasks that ends (once its check and review are done) and each of
@@ -48,18 +48,16 @@ export async function onInbox(
 }
 
 // What a session nod knows hears for: `ref`, what nod names it by, and `opens`, what nod open opens
-// it by (a helper's with its role and project, as a project titled so since goes first by the
-// name); its project, none in a role of no project; and whether it is the latest of those (of its
-// name, for a helper), which alone hears. Null for any other session.
+// it by (a helper's: helperOpens); its project, none in a role of no project; and whether it is the
+// latest of those (of its name, for a helper), which alone hears. Null for any other session.
 function hearing(todos: Todos, sessionKey: string) {
   const session = todos.session(sessionKey)
   if (session === null) return null
   const place = todos.sessionPlace(sessionKey)
-  const ref = place === null || session.role === 'helper' ? session.name : `p${place.project.id}`
-  const opens =
-    place !== null && session.role === 'helper'
-      ? `${ref} --role helper --project p${place.project.id}`
-      : ref
+  const helps = session.role === 'helper' ? place : null
+  const ref =
+    place === null ? session.name : helps !== null ? clean(session.name) : `p${place.project.id}`
+  const opens = helps === null ? ref : helperOpens(session.name, helps.project.id)
   const latest = place?.latest ?? todos.latestNamed(session.name)?.id === session.id
   return { session, projectId: place?.project.id ?? null, ref, opens, latest }
 }

@@ -209,18 +209,26 @@ test("in a helper session add hands over its project's work as the helper's, whi
   expect(nod(null, 'show', String(ofA)).out).toContain(
     `  root: p${p.id} Release · nod open 'review' --role helper --project p${p.id} · added from ${A}\n`,
   )
-  // A helper that takes no messages now: the project's session hears of the task meanwhile, and as
-  // that takes none either, a Claude session handing it hears so (a shell hears no such line).
+  // A helper that takes no messages now: the project's session hears of the task meanwhile, and what
+  // neither takes waits; a shell hears it as a Claude session does.
   rmSync(socket)
-  const deaf = `nod: p${p.id}'s session hears nothing from nod (it takes no messages now)`
-  const off = nod(H, 'hand', `n${ofH}`, 'review')
-  expect(off.out).toBe(
-    `n${ofH} goes to the helper review of p${p.id}; it takes no messages now, so p${p.id}'s session hears of n${ofH} until nod open review --role helper --project p${p.id} opens it\n`,
+  const opens = `nod open 'review' --role helper --project p${p.id}`
+  const mainSocket = join(home, 'a.sock')
+  writeFileSync(mainSocket, '')
+  todos.setSocket(A, mainSocket)
+  expect(nod(null, 'hand', `n${ofH}`, 'review')).toMatchObject({
+    err: '',
+    out: `n${ofH} goes to the helper review of p${p.id}; it takes no messages now, so p${p.id}'s session hears of n${ofH} until ${opens} opens it\n`,
+  })
+  expect(nod(null, 'hand', `n${ofH}`).out).toBe(`n${ofH} goes to p${p.id}'s session\n`)
+  rmSync(mainSocket)
+  expect(nod(null, 'hand', `n${ofH}`, 'review').out).toBe(
+    `n${ofH} goes to the helper review of p${p.id}; neither it nor p${p.id}'s session takes messages now, so what comes of n${ofH} waits until ${opens} or nod open p${p.id} opens one\n`,
   )
-  expect(off.err).toContain(deaf)
-  const back = nod(H, 'hand', `n${ofH}`)
-  expect(back.out).toBe(`n${ofH} goes to p${p.id}'s session\n`)
-  expect(back.err).toContain(deaf)
+  expect(nod(null, 'hand', `n${ofH}`)).toMatchObject({
+    err: '',
+    out: `n${ofH} goes to p${p.id}'s session; it takes no messages now, so what comes of n${ofH} waits until nod open p${p.id} opens it\n`,
+  })
   expect(nod(H, 'ls', '--mine').out).not.toContain('from the helper')
 
   const loose = add(null, 'in no project').out.trim()

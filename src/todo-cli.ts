@@ -32,7 +32,7 @@ import {
 } from './todos'
 import { SCHEDULE_OFF, scheduleEnv, tryWatch } from './triggers'
 import { nudgeLine, STALE_DAYS, type Trust } from './trust'
-import { changeText, clean, cutLine, indent, oneLine } from './view'
+import { changeText, clean, cutLine, helperOpens, indent, oneLine } from './view'
 
 // How much of a description a list shows: a sentence or two, enough to pick a project by.
 const DESCRIPTION_CUT = 100
@@ -188,7 +188,7 @@ const HELPER_DUTIES =
 // All nod open tells apart by what it opens: a session of no project with `role`, a project's
 // helper, or by its name when no project goes by `ref`, else a project. `of`: how nod names it,
 // `owner`: whose a new session is, `name`: the session's, `line`: what Claude in it hears,
-// `latest`: the one that stands for it.
+// `opens`: what nod open takes to open it again, `latest`: the one that stands for it.
 function opening(
   todos: Todos,
   ref: string,
@@ -197,13 +197,15 @@ function opening(
 ) {
   const named = (r: OpenRole, latest: Session | null) => ({
     of: ref,
+    opens: ref,
     owner: { role: r, name: ref },
     name: ref,
     line: `nod open opened this session as ${roleLine(r, ref)}`,
     latest,
   })
   const helping = (p: Project, latest: Session | null) => ({
-    of: ref,
+    of: clean(ref),
+    opens: helperOpens(ref, p.id),
     owner: { role: 'helper' as const, name: ref, project: p.id },
     name: helperTitle(p, ref),
     line: `nod open opened this session as the helper ${ref} of project p${p.id} ${p.title}: ${HELPER_DUTIES}`,
@@ -240,6 +242,7 @@ function opening(
   const p = todos.findProject(ref)
   return {
     of: `p${p.id}`,
+    opens: `p${p.id}`,
     owner: p.id,
     name: sessionTitle(p),
     line: `nod open opened this session for project p${p.id} ${p.title}: nod add here puts work in that project, and the project's tasks and decisions are this session's.`,
@@ -274,7 +277,7 @@ export function openSession(
   role?: NamedRole,
   project?: string,
 ): { argv: string[]; cwd: string } {
-  const { of, owner, name, line, latest } = opening(todos, ref, role, project)
+  const { of, opens, owner, name, line, latest } = opening(todos, ref, role, project)
   // The session's name is for the person; Claude in it learns its project or role from this line
   // alone. Claude Code keeps a conversation's first system prompt on resume until it compacts, so a
   // resume passes it too. Its hooks tell nod where it takes its notices (inbox.ts).
@@ -286,7 +289,7 @@ export function openSession(
   const again = last !== null && (said || kept === null) ? last : null
   if (again !== null && !existsSync(again.cwd)) {
     throw new Error(
-      `${of}'s session was opened in ${again.cwd}, which is gone; nod open ${of} --new opens a new one here`,
+      `${of}'s session was opened in ${again.cwd}, which is gone; nod open ${opens} --new opens a new one here`,
     )
   }
   // A named session's name is what nod open knows it by, kept; a project's follows the title.

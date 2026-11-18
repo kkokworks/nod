@@ -772,6 +772,14 @@ test("nod open <name> --role helper --project opens a project's helper beside it
   expect(shown && reopenCommand(shown)).toBe(
     `nod open 'ev [31mil' --role helper --project p${p.id}`,
   )
+  // Its folder gone, the way to a new one names its role and project the same way.
+  const gone = tmp.make('nod-open-gone-')
+  open('review', true, gone, 'helper', `p${p.id}`)
+  keep(key('review'), gone, said)
+  rmSync(gone, { recursive: true })
+  expect(() => open('review', false, here, 'helper', `p${p.id}`)).toThrow(
+    `review's session was opened in ${gone}, which is gone; nod open 'review' --role helper --project p${p.id} --new opens a new one here`,
+  )
 })
 
 test('orchestrators of two names each go back to their own session, side by side, and a new one of a name leaves the other as it is', () => {

@@ -1468,10 +1468,10 @@ test('a helper hears nothing-from-nod warnings only when it cannot hear, and non
   // An older session of the name, and one with no socket, hear nothing, and say how to open it.
   todos.addSession({ role: 'helper', name: 'review', project: p.id }, B, '/work/three')
   expect(await onCommand(ledger, B, undefined, send)).toBe(
-    'nod: this session of review hears nothing from nod: Claude Code gave it no inbox socket (CLAUDE_CODE_MESSAGING_SOCKET); nod open review --role helper --project p1 opens it again',
+    "nod: this session of review hears nothing from nod: Claude Code gave it no inbox socket (CLAUDE_CODE_MESSAGING_SOCKET); nod open 'review' --role helper --project p1 opens it again",
   )
   expect(await onCommand(ledger, C, socket, send)).toBe(
-    "nod: this session of review hears nothing from nod: nod tells review's latest session, which nod open review --role helper --project p1 opens",
+    "nod: this session of review hears nothing from nod: nod tells review's latest session, which nod open 'review' --role helper --project p1 opens",
   )
   // A helper's own warning does not stand for its project's session, which does not hear either.
   const told = new Set<number>()
