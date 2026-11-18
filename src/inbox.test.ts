@@ -298,7 +298,8 @@ test('each notice is read for who hears it as its turn comes, so one another ses
   ended(A, 'Of north')
   // The older north takes another name as south's line goes, and so its own work.
   await sendNotices(ledger, async (socket, line) => {
-    if (socket === '/socks/b') todos.claimSession(C, 'orchestrator', 'west', '/work/three')
+    if (socket === '/socks/b')
+      todos.claimSession({ role: 'orchestrator', name: 'west' }, C, '/work/three')
     await send(socket, line)
   })
   const heard = sent.map((s) => [s.socket, /task n\d+ t\d+/.exec(s.message.content)?.[0]])

@@ -12,6 +12,7 @@ import {
   cleared,
   helperTitle,
   type NamedRole,
+  type NamedSeat,
   OPEN,
   OPEN_ROLES,
   type OpenRole,
@@ -181,9 +182,35 @@ const ROLE_DUTIES: Record<OpenRole, string> = {
 }
 export const roleLine = (role: OpenRole, name: string): string =>
   `the ${role} ${name}: ${ROLE_DUTIES[role]}`
-// What Claude in a helper session hears of it, after its name and project.
+// What Claude in a helper session hears of it, as it opens or claims it.
 const HELPER_DUTIES =
   "nod add here puts work in that project, and nod tells this session of the project's tasks it adds or is handed (nod hand) while it takes messages; the project's own session hears of the rest, and of these while this one is off."
+export const helperLine = (p: Project, name: string): string =>
+  `the helper ${name} of project p${p.id} ${p.title}: ${HELPER_DUTIES}`
+
+// The session of `name` that `role` and `project` give, as nod open and nod session claim take
+// them: `project` names a helper's project, which it needs, and no other role takes. Null for no
+// role. `how`: the command, for the way to give them.
+export function namedSeat(
+  todos: Todos,
+  how: string,
+  name: string,
+  role: NamedRole | undefined,
+  project: string | undefined,
+): NamedSeat | null {
+  if (role === 'helper') {
+    if (project === undefined) {
+      throw new Error(`a helper is a project's: ${how} ${name} --role helper --project <project>`)
+    }
+    return { role, name, project: todos.findProject(project).id }
+  }
+  if (project !== undefined) {
+    throw new Error(
+      `--project names the project of a helper: ${how} <name> --role helper --project <project>`,
+    )
+  }
+  return role === undefined ? null : { role, name }
+}
 
 // All nod open tells apart by what it opens: a session of no project with `role`, a project's
 // helper, or by its name when no project goes by `ref`, else a project. `of`: how nod names it,
@@ -208,25 +235,16 @@ function opening(
     opens: helperOpens(ref, p.id),
     owner: { role: 'helper' as const, name: ref, project: p.id },
     name: helperTitle(p, ref),
-    line: `nod open opened this session as the helper ${ref} of project p${p.id} ${p.title}: ${HELPER_DUTIES}`,
+    line: `nod open opened this session as ${helperLine(p, ref)}`,
     latest,
   })
-  if (role === 'helper') {
-    if (project === undefined) {
-      throw new Error(`a helper is a project's: nod open ${ref} --role helper --project <project>`)
-    }
-    const p = todos.findProject(project)
-    todos.checkName(ref, role, '', p.id)
-    return helping(p, todos.latestNamed(ref))
-  }
-  if (project !== undefined) {
-    throw new Error(
-      '--project names the project of a helper: nod open <name> --role helper --project <project>',
-    )
-  }
-  if (role !== undefined) {
-    todos.checkName(ref, role)
-    return named(role, todos.latestNamed(ref))
+  const seat = namedSeat(todos, 'nod open', ref, role, project)
+  if (seat !== null) {
+    todos.checkName(ref, seat.role, '', 'project' in seat ? seat.project : null)
+    const latest = todos.latestNamed(ref)
+    return 'project' in seat
+      ? helping(todos.project(seat.project), latest)
+      : named(seat.role, latest)
   }
   if (!todos.namesProject(ref)) {
     const latest = todos.latestNamed(ref)

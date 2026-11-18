@@ -49,6 +49,10 @@ export const OPEN_ROLES = SESSION_ROLES.filter(
 // What nod open --role opens: a role of no project, or a project's helper, each by a name of its own.
 export type NamedRole = Exclude<SessionRole, 'project'>
 export const NAMED_ROLES = SESSION_ROLES.filter((r): r is NamedRole => r !== 'project')
+// A session of a named role, with the project of a helper.
+export type NamedSeat =
+  | { role: OpenRole; name: string }
+  | { role: 'helper'; name: string; project: number }
 // Todos that still ask something of the person.
 export const OPEN: TodoStatus[] = ['inbox', 'next', 'waiting']
 const FINISHED: TodoStatus[] = ['done', 'dropped']
@@ -862,14 +866,7 @@ export class Todos {
   // Records a Claude session opened in `cwd`, for the project, in a role of no project, or as the
   // project's helper; from now on it is that one's. Its role and its project_sessions row go in here
   // alone, so they agree.
-  addSession(
-    of:
-      | number
-      | { role: OpenRole; name: string }
-      | { role: 'helper'; name: string; project: number },
-    sessionKey: string,
-    cwd: string,
-  ): Session {
+  addSession(of: number | NamedSeat, sessionKey: string, cwd: string): Session {
     return this.db.transaction(() => {
       const seat =
         typeof of === 'number'
@@ -885,19 +882,24 @@ export class Todos {
     })()
   }
 
-  // Gives the Claude session running now `role` and `name`, its conversation going on: one nod does
-  // not know goes in as opened in `cwd`, and a project session leaves its project. Its id stays, so
-  // the latest of the name may still be another.
+  // Gives the Claude session running now the role and name of `of`, its conversation going on: one
+  // nod does not know goes in as opened in `cwd`, and one of a project, its own or as a helper,
+  // leaves it for the helper's project or none. Its id stays, so the latest of the name may still be
+  // another.
   // ponytail: a session claiming a name another holds under a higher id does not stand for it;
   // renumbering it would take the notices sent to it along.
-  claimSession(sessionKey: string, role: OpenRole, name: string, cwd: string): Session {
+  claimSession(of: NamedSeat, sessionKey: string, cwd: string): Session {
     return this.db.transaction(() => {
-      this.checkName(name, role, sessionKey)
+      const projectId = 'project' in of ? of.project : null
+      this.checkName(of.name, of.role, sessionKey, projectId)
       const had = this.session(sessionKey)
-      if (had === null) return this.addSession({ role, name }, sessionKey, cwd)
+      if (had === null) return this.addSession(of, sessionKey, cwd)
       this.run(q.deleteFrom('projectSessions').where('sessionId', '=', had.id))
-      const seat = { role, name }
+      const seat = { role: of.role, name: of.name }
       this.run(q.updateTable('sessions').set(seat).where('id', '=', had.id))
+      if (projectId !== null) {
+        this.run(q.insertInto('projectSessions').values({ sessionId: had.id, projectId }))
+      }
       return { ...had, ...seat }
     })()
   }
@@ -907,7 +909,7 @@ export class Todos {
   // nod open looks for first. A project session's own name does not count, as nod open finds those
   // by the project: an old one goes on after a retitle. A name the role already goes by stays
   // usable, whatever project took that title since. `sessionKey`: the session asking, which may give
-  // up the name for another role itself.
+  // up the name for another role, or take it to another project's helper, itself.
   checkName(name: string, role: NamedRole, sessionKey = '', project: number | null = null): void {
     filled('name', name)
     const latest = this.latestNamed(name)
@@ -925,8 +927,19 @@ export class Todos {
         .where('sessionKey', '!=', sessionKey),
     )
     if (taken !== null) throw new Error(`the name ${name} is taken by role ${taken.role}`)
-    if (latest?.role === 'helper' && role === 'helper') {
-      throw new Error(`the name ${name} is taken by a helper of p${helps}`)
+    if (role !== 'helper') return
+    const helping = this.first(
+      q
+        .selectFrom('sessions')
+        .innerJoin('projectSessions', 'projectSessions.sessionId', 'sessions.id')
+        .select('projectSessions.projectId')
+        .where('sessions.name', '=', name)
+        .where('sessions.role', '=', 'helper')
+        .where('sessions.sessionKey', '!=', sessionKey)
+        .where('projectSessions.projectId', 'is not', project),
+    )
+    if (helping !== null) {
+      throw new Error(`the name ${name} is taken by a helper of p${helping.projectId}`)
     }
   }
 
