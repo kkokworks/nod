@@ -283,9 +283,12 @@ const USAGE = `usage:
                                    exit 0. With a path only, the setting and who changed it when;
                                    with none, every repo set. A worker cannot change it, and a
                                    Claude session can only turn a repo off
-  nod land [<task...>]             land now what the repos let nod land (the schedule does it every
-                                   fifth minute), or only these tasks, ones added before their repo
-                                   went up and ones whose landing stopped too. What needs judgment
+  nod land [<task...> | --repo <path>]
+                                   land now what the repos let nod land (a worker's Stop hook does
+                                   it for its repo once its task succeeds or its landing work is
+                                   done, and the schedule every fifth minute), of that repo only,
+                                   or only these tasks, ones added before their repo went up and
+                                   ones whose landing stopped too. What needs judgment
                                    (a conflict, a check that fails once rebased, the pull request's
                                    text) goes to the task's worker, and what only you can clear
                                    becomes a decision. Inside a sandbox (SANDBOX_RUNTIME=1) it
@@ -545,9 +548,17 @@ switch (command) {
   case 'repo':
     repoCommand(rest)
     break
-  case 'land':
-    await landCommand(rest.map(taskRef))
+  case 'land': {
+    const { values, positionals } = parseArgs({
+      args: rest,
+      options: { repo: { type: 'string' } },
+      allowPositionals: true,
+    })
+    if (values.repo !== undefined && positionals.length > 0) throw new Error(USAGE)
+    const repo = values.repo === undefined ? undefined : (repoPath(values.repo) ?? values.repo)
+    await landCommand(positionals.map(taskRef), repo)
     break
+  }
   case 'schedule':
     await schedule(rest)
     break
@@ -860,13 +871,19 @@ function repoCommand(args: string[]): void {
   const r = ledger.setRepo(repo, edit, actorFromEnv())
   printRepo(r)
   if (r.land !== 'off' && scheduleEnv(home) === null) {
-    console.log('the schedule is off, so tasks land only when you run nod land (nod schedule on)')
+    console.log(
+      "the schedule is off: a task lands as its worker's turns end, and what that misses (another landing held the repo, say) only when you run nod land (nod schedule on)",
+    )
   }
 }
 
-// Lands now what the schedule would on its next fifth minute, or the tasks named, ones added
-// before their repo went up from off too, and one whose landing stopped again.
-async function landCommand(ids: number[]): Promise<void> {
+// Lands now what the schedule would on its next fifth minute, of one repo if given (as a worker's
+// Stop hook has it, landSoon), or the tasks named, ones added before their repo went up from off
+// too, and one whose landing stopped again.
+async function landCommand(ids: number[], repo?: string): Promise<void> {
+  if (repo !== undefined && (ledger.repo(repo)?.land ?? 'off') === 'off') {
+    throw new Error(`${repo} does not let nod land its tasks: nod repo ${repo} pr`)
+  }
   for (const id of ids) {
     const { repo } = ledger.get(id)
     if (repo === null || (ledger.repo(repo)?.land ?? 'off') === 'off') {
@@ -877,12 +894,13 @@ async function landCommand(ids: number[]): Promise<void> {
     if (ledger.landing(id)?.stopped) ledger.setLanding(id, { stopped: null, note: null })
   }
   if (process.env.SANDBOX_RUNTIME === '1') {
-    leaveToTick(ids.length > 0 ? ids : undefined)
+    leaveToTick(ids.length > 0 ? ids : undefined, repo)
     return
   }
   const moved = await land(ledger, home, terminals, {
     sayBusy: true,
     ...(ids.length > 0 ? { only: ids } : {}),
+    ...(repo === undefined ? {} : { repo }),
   })
   for (const m of moved) console.log(`n${m.id} ${m.did}`)
   if (moved.length === 0) console.log('nothing to land')
@@ -893,8 +911,8 @@ async function landCommand(ids: number[]): Promise<void> {
 // check passes all the same. So nod land lands nothing there and says what the tick, outside it,
 // lands. One named that only nod land would look at (added before its repo went up) gets its
 // landing row, from which on the tick lands it too.
-function leaveToTick(only: number[] | undefined): void {
-  const tasks = dueTasks(ledger, terminals, only)
+function leaveToTick(only: number[] | undefined, repo: string | undefined): void {
+  const tasks = dueTasks(ledger, terminals, only, repo)
   if (tasks.length === 0) {
     console.log('nothing to land')
     return

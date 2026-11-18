@@ -1,5 +1,6 @@
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import type { Subprocess } from 'bun'
 import { conflictBrief, createdFrom, NOD_GIT, onRemote, ownStart, rebasing } from './branch'
 import { askToLand } from './decisions'
 import { lands } from './done'
@@ -10,6 +11,7 @@ import { sessionName } from './place'
 import { message, OUTPUT_LIMIT, spawn } from './proc'
 import { type GitService, type OwnPr, serviceOf } from './prs'
 import { PR_TEXT, TEXT_ONLY } from './report'
+import { CLI } from './settings'
 import { running, type Terminals } from './tmux'
 import { runCheck } from './verify'
 import { baseOf, handOff, restore, type Send } from './worker'
@@ -20,8 +22,9 @@ import { baseOf, handOff, restore, type Send } from './worker'
 // the person's gate, push, the pull request, and at `merge` its squash merge. The worker, in its
 // own conversation, does what needs judgment: a conflict, a check that fails after the rebase, the
 // pull request's text (handOff in worker.ts, a `land` turn). What only the person can clear is a
-// decision (askToLand). The tick runs it every fifth minute, and `nod land` now, but not from inside
-// a sandbox (landCommand in cli.ts).
+// decision (askToLand). A worker's Stop hook starts it once its task succeeds or its landing turn
+// ends (landSoon), the tick runs it every fifth minute, and `nod land` now, but not from inside a
+// sandbox (landCommand in cli.ts).
 
 // The tick lands last but for its sweep, and the scheduler starts no tick while one runs, so a long
 // check holds back the sweep and the next ticks' watches.
@@ -34,6 +37,7 @@ const GIT = NOD_GIT
 export type Moved = { id: number; did: string }
 
 // `only`: these tasks, whenever they were added (nod land <task>); every task due otherwise.
+// `repo`: that repo's alone (nod land --repo).
 // `send`: how a landing turn reaches the worker, `deliver` but in tests.
 // `sayBusy`: a task due in a repo another pass holds gets a row, for `nod land`, whose caller would
 // otherwise read nothing done as nothing to land. The tick has no one to tell and comes round again.
@@ -41,11 +45,11 @@ export async function land(
   ledger: Ledger,
   home: string,
   terminals: Terminals,
-  opts: { only?: number[]; send?: Send; sayBusy?: boolean } = {},
+  opts: { only?: number[]; repo?: string; send?: Send; sayBusy?: boolean } = {},
 ): Promise<Moved[]> {
   const moved: Moved[] = []
   const { only } = opts
-  for (const repo of landingRepos(ledger, only)) {
+  for (const repo of landingRepos(ledger, only, opts.repo)) {
     // Two passes at once would rebase and push the same branches; the other one lands these.
     if (!ledger.claimRepo(repo.path, process.pid, running)) {
       if (opts.sayBusy) {
@@ -68,16 +72,46 @@ export async function land(
   return moved
 }
 
-// The tasks a pass would look at now (`only` as for land), landing none: what `nod land` leaves to
-// the tick from inside a sandbox (cli.ts).
-export function dueTasks(ledger: Ledger, terminals: Terminals, only?: number[]): Task[] {
-  return landingRepos(ledger, only).flatMap((repo) => due(ledger, terminals, repo, only))
+// The tasks a pass would look at now (`only` and `repo` as for land), landing none: what `nod land`
+// leaves to the tick from inside a sandbox (cli.ts).
+export function dueTasks(
+  ledger: Ledger,
+  terminals: Terminals,
+  only?: number[],
+  repo?: string,
+): Task[] {
+  return landingRepos(ledger, only, repo).flatMap((r) => due(ledger, terminals, r, only))
 }
 
-// The repos that let nod land, of the tasks `only` names if it names any.
-function landingRepos(ledger: Ledger, only: number[] | undefined): Repo[] {
+// The repos that let nod land, of the tasks `only` names if it names any, and `path` if given.
+function landingRepos(ledger: Ledger, only: number[] | undefined, path?: string): Repo[] {
   const paths = only === undefined ? null : new Set(only.map((id) => ledger.get(id).repo))
-  return ledger.repos().filter((r) => r.land !== 'off' && (paths === null || paths.has(r.path)))
+  return ledger
+    .repos()
+    .filter(
+      (r) =>
+        r.land !== 'off' &&
+        (paths === null || paths.has(r.path)) &&
+        (path === undefined || r.path === path),
+    )
+}
+
+// Lands the repo's tasks due now, as the tick would, in a process of its own (`nod land --repo`):
+// the Stop hook of a worker whose task just succeeded, or whose landing turn just ended, starts it
+// (onStop), so the landing goes on without waiting for the tick's next fifth minute or a person's
+// nod land, and the hook waits out no rebase or check. Its own process group and session, so the
+// end of the hook or of the worker's terminal does not end it. A pass holding the repo already
+// lands the task before it lets go (landRepo); one that does not start leaves it to the tick.
+// ponytail: what it prints goes nowhere; what it did is in the ledger (nod show) and was notified.
+export function landSoon(home: string, repo: string): Subprocess {
+  const proc = Bun.spawn([process.execPath, CLI, 'land', '--repo', repo], {
+    cwd: home,
+    env: { ...process.env, NOD_HOME: home },
+    stdio: ['ignore', 'ignore', 'ignore'],
+    detached: true,
+  })
+  proc.unref()
+  return proc
 }
 
 type Pass = {
@@ -101,17 +135,34 @@ function due(ledger: Ledger, terminals: Terminals, repo: Repo, only: number[] | 
   })
 }
 
+// Again once those are looked at, for the tasks due since: a turn of their worker ended meanwhile
+// (its first done, or the landing work this pass handed it), and its own pass (landSoon) found this
+// one holding the repo, so it lands here rather than at the tick's next fifth minute. Told apart by
+// their last turn, so a task that waits (on a review, say) is looked at once.
+// ponytail: one whose turn ends between the last look and the release waits for the tick.
 async function landRepo(pass: Pass, only: number[] | undefined): Promise<void> {
-  const { ledger, terminals, repo } = pass
-  const tasks = due(ledger, terminals, repo, only)
-  if (tasks.length === 0) return
+  const looked = new Set<string>()
+  const turn = (t: Task): string => `${t.id} ${pass.ledger.lastAttempt(t.id)?.id}`
+  for (;;) {
+    const tasks = due(pass.ledger, pass.terminals, pass.repo, only).filter(
+      (t) => !looked.has(turn(t)),
+    )
+    if (tasks.length === 0) return
+    for (const t of tasks) looked.add(turn(t))
+    if (!(await landTasks(pass, tasks))) return
+  }
+}
+
+// False when it could not fetch.
+async function landTasks(pass: Pass, tasks: Task[]): Promise<boolean> {
+  const { ledger, repo } = pass
   let tip: Tip
   try {
     tip = await fetchTip(repo.path)
   } catch (error) {
     // Most often the network, on a laptop: the next pass fetches again.
     for (const t of tasks) await noteFor(pass, t, `could not fetch: ${message(error)}`)
-    return
+    return false
   }
   let service: GitService | null = null
   const serviceNow = (): GitService => {
@@ -138,6 +189,7 @@ async function landRepo(pass: Pass, only: number[] | undefined): Promise<void> {
       pass.moved.push({ id: t.id, did })
     }
   }
+  return true
 }
 
 async function landTask(

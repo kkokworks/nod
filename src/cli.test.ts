@@ -1830,7 +1830,7 @@ test('repo sets how far nod lands a repo, records who changed what, and refuses 
   expect(await ok('repo', repo, 'pr', '--check', 'bun test')).toEqual([
     `${repo}  pr`,
     '  check: bun test',
-    'the schedule is off, so tasks land only when you run nod land (nod schedule on)',
+    "the schedule is off: a task lands as its worker's turns end, and what that misses (another landing held the repo, say) only when you run nod land (nod schedule on)",
   ])
   const raised = ledger.repo(repo)?.raisedAt
   expect(raised).toEqual(expect.any(String))

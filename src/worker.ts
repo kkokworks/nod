@@ -18,7 +18,7 @@ import {
   refuseEnded,
   WENT_ON,
 } from './decisions'
-import { followWork } from './done'
+import { followWork, lands } from './done'
 import { workerEnv } from './env'
 import { hasRef, onlyCopy } from './gc'
 import {
@@ -138,6 +138,13 @@ file:line, a scenario that reproduces it, and its confidence. Fix the findings t
 scenario, yours and its, commit, and have it review again with no second self-review, two reviews
 at most: fix what the second finds without a third. In your final report, list each finding, who
 found it (your self-review, the subagent, or both) and what you did (fixed, or why not).`
+
+// A worker whose task nod lands (land.ts) leaves the push and the pull request to nod. Untold, one
+// did them itself, and as its sandbox refused the upstream in .git/config and the git service's
+// login, asked the person to run them or open the sandbox: a decision and the person's check for
+// what nod does anyway. In the system prompt, so a resumed or compacted conversation keeps it.
+const landingPrompt = (merge: boolean): string =>
+  `Once nod accepts your done, it lands this branch itself: it rebases it onto the default branch, checks it, pushes it and opens a pull request${merge ? ', then squash merges it' : ''}. So commit on the current branch and stop there: do not push, set an upstream or open a pull request, and do not ask anyone to do any of it.`
 
 const RESUME_PROMPT =
   'Your session was interrupted. Check the current state of this directory and continue the task.'
@@ -2215,9 +2222,12 @@ export async function restartDue(
 }
 
 // The built-in rules, then the ledger's rules that are on. `task`: null for what every worker gets,
-// which leaves out a repo worker's subagent review.
+// which leaves out a repo worker's subagent review and what nod lands.
 export function workerPrompt(ledger: Ledger, task: Task | null): string {
-  const built = task?.repo == null ? WORKER_PROMPT : `${WORKER_PROMPT}\n${SUBAGENT_REVIEW_PROMPT}`
+  let built = task?.repo == null ? WORKER_PROMPT : `${WORKER_PROMPT}\n${SUBAGENT_REVIEW_PROMPT}`
+  if (task !== null && lands(ledger, task)) {
+    built += `\n${landingPrompt(ledger.repo(task.repo ?? '')?.land === 'merge')}`
+  }
   const rules = activeRules(ledger)
   if (rules === '') return built
   return `${built}\nRules the human approved for every task:\n${rules}`
