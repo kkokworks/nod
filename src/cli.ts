@@ -253,7 +253,8 @@ const USAGE = `usage:
                                    neither, of the finished tasks a signal says are done with:
                                    dropped, taken over by a newer task on the same todo, merged
                                    into the default branch, a linked pull request merged, closed or
-                                   approved by you, or finished 7+ days ago (one with commits no
+                                   approved by you, or finished 7+ days ago (not one nod is to
+                                   resume once its usage limit resets; one with commits no
                                    remote has only once a linked pull request of its branch in
                                    the repo origin pushes to merged after its last commit and no
                                    other linked one waits, and only if it succeeded). Branches go

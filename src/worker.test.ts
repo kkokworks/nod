@@ -6319,12 +6319,10 @@ it('a review a usage limit stopped waits for the reset, then the tick has its wo
   expect(terminals.alive(sessionName(id))).toBe(true)
   writeFileSync(join(ledger.get(id).workspace ?? '', 'lifted'), '')
   // The tick, which closes the terminals of tasks that ended an hour before: it resumes first, into
-  // the terminal still open, which no new launch replaces.
-  expect((await tick(ledger, home, terminals, new Date(LIMIT_RESUME_AT), false)).resumed).toEqual([
-    id,
-  ])
-  const session = ledger.attempts(id)[0]?.sessionId
-  expect(entries('launch').filter((l) => l.sessionId === session)).toHaveLength(1)
+  // the terminal still open, which no new launch replaces (counted once the task succeeded, below).
+  // Its closing may still close that terminal once the fast fake has finished.
+  const ticked = await tick(ledger, home, terminals, new Date(LIMIT_RESUME_AT), false)
+  expect(ticked.resumed).toEqual([id])
   expect(ledger.lastAttempt(id)?.kind).toBe('resume')
   expect(ledger.lastAttempt(id)?.prompt).toStartWith(
     "nod's check of your last report stopped on a Claude usage limit, which has reset now",
@@ -6334,6 +6332,8 @@ it('a review a usage limit stopped waits for the reset, then the tick has its wo
     ['start', null],
     ['resume', 'passed'],
   ])
+  const session = ledger.attempts(id)[0]?.sessionId
+  expect(entries('launch').filter((l) => l.sessionId === session)).toHaveLength(1)
   expect(await resumeDue(ledger, home, terminals, new Date('2099-02-01T00:00:00Z'))).toEqual([])
   expect(ledger.limitWait(id)).toEqual({ resumeAt: null, resumed: 1 })
   await hear()
