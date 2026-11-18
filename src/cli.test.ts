@@ -6,6 +6,7 @@ import {
   openSync,
   readFileSync,
   realpathSync,
+  rmSync,
   writeFileSync,
 } from 'node:fs'
 import { join, resolve } from 'node:path'
@@ -135,6 +136,112 @@ test('each root session sees in show the tasks it added, and with --mine lists o
   expect(out).not.toContain('for b')
   expect(out).not.toContain('for the shell')
 }, 30_000)
+
+test("in a helper session add hands over its project's work as the helper's, which --mine and show name; nod hand moves a task to a helper and back, and refuses one no helper of its project can take", () => {
+  const home = tmp.make('nod-helper-')
+  const ledger = new Ledger(home)
+  const todos = new Todos(ledger)
+  // Made-up session ids: the project's own session, and its helper.
+  const [A, H] = ['aaaa1111-0000-4000-8000-00000000000a', 'bbbb2222-0000-4000-8000-00000000000b']
+  const p = todos.addProject({ title: 'Release', outcome: null }, 'human')
+  const q = todos.addProject({ title: 'Health', outcome: null }, 'human')
+  todos.addSession(p.id, A, home)
+  todos.addSession({ role: 'helper', name: 'review', project: p.id }, H, home)
+  // The helper's socket is there, so it takes messages; nothing is sent to it here.
+  const socket = join(home, 'h.sock')
+  writeFileSync(socket, '')
+  const {
+    CLAUDECODE: _,
+    CLAUDE_CODE_SESSION_ID: __,
+    NOD_TASK: ___,
+    NOD_ACTOR: ____,
+    CLAUDE_CODE_MESSAGING_SOCKET: _____,
+    ...shell
+  } = process.env
+  const envOf = (session: string | null): Record<string, string | undefined> => {
+    if (session === null) return { ...shell, NOD_HOME: home }
+    const claude = { ...shell, NOD_HOME: home, CLAUDECODE: '1', CLAUDE_CODE_SESSION_ID: session }
+    return session === H ? { ...claude, CLAUDE_CODE_MESSAGING_SOCKET: socket } : claude
+  }
+  const nod = (session: string | null, ...args: string[]) => {
+    const r = Bun.spawnSync(['bun', cli, ...args], { env: envOf(session) })
+    return { code: r.exitCode, out: r.stdout.toString(), err: r.stderr.toString() }
+  }
+  // Each comes after a task that never starts here, so no worker runs and nothing ends.
+  const never = ledger.add({
+    brief: 'never starts',
+    repo: null,
+    branch: null,
+    checkCmd: null,
+    model: null,
+    after: [],
+    issue: null,
+  })
+  const add = (session: string | null, brief: string, ...more: string[]) =>
+    nod(session, 'add', brief, '--after', String(never), ...more)
+
+  const byHelper = add(H, 'from the helper')
+  expect(byHelper).toMatchObject({ code: 0, err: '' })
+  const ofH = Number(byHelper.out.trim())
+  expect(todos.projectOf(ledger.get(ofH))).toBe(p.id)
+  expect(add(H, 'elsewhere', '--project', `p${q.id}`).err).toContain(
+    `this session is for p${p.id} Release`,
+  )
+  const ofA = Number(add(A, 'from the project session').out.trim())
+  expect(nod(H, 'show', String(ofH)).out).toContain(
+    `  root: p${p.id} Release · nod open 'review' --role helper --project p${p.id}\n`,
+  )
+  expect(nod(H, 'show', String(ofA)).out).toContain(
+    `  root: p${p.id} Release · nod open p${p.id}\n`,
+  )
+  const mine = nod(H, 'ls', '--mine')
+  expect(mine).toMatchObject({ code: 0, err: '' })
+  expect(mine.out).toContain('from the helper')
+  expect(mine.out).not.toContain('from the project session')
+  // The project's session has the helper's work as its own too.
+  expect(nod(A, 'ls', '--mine').out).toContain('from the helper')
+
+  expect(nod(null, 'hand', `n${ofA}`, 'review')).toMatchObject({
+    code: 0,
+    out: `n${ofA} goes to the helper review of p${p.id}\n`,
+  })
+  expect(nod(H, 'ls', '--mine').out).toContain('from the project session')
+  expect(nod(null, 'show', String(ofA)).out).toContain(
+    `  root: p${p.id} Release · nod open 'review' --role helper --project p${p.id} · added from ${A}\n`,
+  )
+  // A helper that takes no messages now: the project's session hears of the task meanwhile, and what
+  // neither takes waits; a shell hears it as a Claude session does.
+  rmSync(socket)
+  const opens = `nod open 'review' --role helper --project p${p.id}`
+  const mainSocket = join(home, 'a.sock')
+  writeFileSync(mainSocket, '')
+  todos.setSocket(A, mainSocket)
+  expect(nod(null, 'hand', `n${ofH}`, 'review')).toMatchObject({
+    err: '',
+    out: `n${ofH} goes to the helper review of p${p.id}; it takes no messages now, so p${p.id}'s session hears of n${ofH} until ${opens} opens it\n`,
+  })
+  expect(nod(null, 'hand', `n${ofH}`).out).toBe(`n${ofH} goes to p${p.id}'s session\n`)
+  rmSync(mainSocket)
+  expect(nod(null, 'hand', `n${ofH}`, 'review').out).toBe(
+    `n${ofH} goes to the helper review of p${p.id}; neither it nor p${p.id}'s session takes messages now, so what comes of n${ofH} waits until ${opens} or nod open p${p.id} opens one\n`,
+  )
+  expect(nod(null, 'hand', `n${ofH}`)).toMatchObject({
+    err: '',
+    out: `n${ofH} goes to p${p.id}'s session; it takes no messages now, so what comes of n${ofH} waits until nod open p${p.id} opens it\n`,
+  })
+  expect(nod(H, 'ls', '--mine').out).not.toContain('from the helper')
+
+  const loose = add(null, 'in no project').out.trim()
+  expect(nod(null, 'hand', `n${loose}`, 'review').err).toContain(
+    `n${loose} is in no project, so no project's session or helper takes it`,
+  )
+  expect(nod(null, 'hand', `n${ofA}`, 'docs').err).toContain(`p${p.id} has no helper named docs`)
+  for (const args of [[], [`n${ofA}`, 'review', 'docs']]) {
+    const r = nod(null, 'hand', ...args)
+    expect(r.code).not.toBe(0)
+    expect(r.err).toContain('nod hand <task> [<helper>]')
+  }
+}, 60_000)
 
 test("add given one line naming a file takes the file's text as the brief, and other words as they are", () => {
   const home = tmp.make('nod-brief-file-')

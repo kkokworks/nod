@@ -149,7 +149,7 @@ export function noticeAnswered(
     try {
       const todos = new Todos(ledger)
       const task = ledger.get(d.taskId)
-      const hears = todos.listener(todos.projectOf(task), task.rootSession)
+      const hears = todos.listener(todos.projectOf(task), task)
       if (by !== null && hears?.sessionKey === by) continue
       ledger.addNotice({
         taskId: d.taskId,

@@ -6,7 +6,8 @@ import { tempDirs } from '../test/tmp'
 import { Ledger } from './ledger'
 import { openSettings } from './settings'
 import { actorFromEnv, checkTell, openSession, roleLine, sessionFromEnv } from './todo-cli'
-import { OPEN_ROLES, type OpenRole, Todos } from './todos'
+import { type NamedRole, OPEN_ROLES, type OpenRole, Todos } from './todos'
+import { reopenCommand } from './view'
 
 const tmp = tempDirs()
 afterAll(tmp.removeAll)
@@ -682,6 +683,104 @@ for (const role of OPEN_ROLES) {
     expect(key()).not.toBe(titled)
   })
 }
+
+test("nod open <name> --role helper --project opens a project's helper beside its session, which stays the project's latest; the name opens it again, and a name another role or project has is refused", () => {
+  const { todos, config, here, there, keep, said } = opener()
+  const p = todos.addProject({ title: 'Release', outcome: null }, 'human')
+  const q = todos.addProject({ title: 'Health', outcome: null }, 'human')
+  const open = (ref: string, fresh: boolean, cwd: string, role?: NamedRole, project?: string) =>
+    openSession(todos, ref, fresh, cwd, config, role, project)
+  const key = (name: string): string => todos.latestNamed(name)?.sessionKey ?? ''
+  open(`p${p.id}`, false, here)
+  const main = todos.latestSession(p.id)
+  if (main === null) throw new Error('nod open opened no session for the project')
+  const told = [
+    '--append-system-prompt',
+    `nod open opened this session as the helper review of project p${p.id} Release: nod add here puts work in that project, and nod tells this session of the project's tasks it adds or is handed (nod hand) while it takes messages; the project's own session hears of the rest, and of these while this one is off.`,
+    '--settings',
+    openSettings(),
+  ]
+
+  expect(() => open('review', false, here, 'helper')).toThrow(
+    "a helper is a project's: nod open review --role helper --project <project>",
+  )
+  expect(() => open('review', false, here, 'relay', `p${p.id}`)).toThrow(
+    '--project names the project of a helper',
+  )
+  expect(() => open('review', false, here, 'helper', 'p9')).toThrow('no project p9')
+  const first = open('review', false, there, 'helper', `p${p.id}`)
+  const opened = key('review')
+  expect(first).toEqual({
+    argv: ['claude', '--name', 'Release · review', '--session-id', opened, ...told],
+    cwd: there,
+  })
+  expect(todos.session(opened)).toMatchObject({ role: 'helper', name: 'review', cwd: there })
+  expect(todos.sessionPlace(opened)).toMatchObject({ project: { id: p.id }, latest: true })
+  // The project's own session still stands for it, beside two helpers.
+  open('docs', false, here, 'helper', `p${p.id}`)
+  expect(todos.latestSession(p.id)).toEqual(main)
+  expect(todos.sessionPlace(main.sessionKey)?.latest).toBe(true)
+  expect(open(`p${p.id}`, false, here).argv).toContain(main.sessionKey)
+
+  // Its name alone opens the same conversation, as its role and project do; the name stays what
+  // nod open knows it by, the project's title going before it in Claude Code.
+  keep(opened, there, said)
+  const resumed = (title: string) => ({
+    argv: ['claude', '--resume', opened, '--name', title, ...told],
+    cwd: there,
+  })
+  expect(open('review', false, here)).toEqual(resumed('Release · review'))
+  expect(open('review', false, here, 'helper', `p${p.id}`)).toEqual(resumed('Release · review'))
+  todos.setProject(p.id, { title: 'Ship' }, 'human')
+  expect(open('review', false, here).argv[4]).toBe('Ship · review')
+  expect(todos.session(opened)?.name).toBe('review')
+  // --new: another of the name, which stands for it from now on; still not the project's latest.
+  open('review', true, here)
+  expect(key('review')).not.toBe(opened)
+  expect(todos.latestSession(p.id)).toEqual(main)
+
+  // A name another project's helper, another role or a project has.
+  expect(() => open('review', false, here, 'helper', `p${q.id}`)).toThrow(
+    `the name review is taken by a helper of p${p.id}`,
+  )
+  expect(() => open('review', false, here, 'relay')).toThrow(
+    'the name review is taken by role helper',
+  )
+  open('north', false, here, 'orchestrator')
+  expect(() => open('north', false, here, 'helper', `p${p.id}`)).toThrow(
+    'the name north is taken by role orchestrator',
+  )
+  expect(() => open('Health', false, here, 'helper', `p${p.id}`)).toThrow('Health names a project')
+  // A long title is cut so that the helper's name stays whole.
+  const long = todos.addProject(
+    { title: 'Migrate every billing service to the new ledger format', outcome: null },
+    'human',
+  )
+  expect(open('billing-review', false, here, 'helper', `p${long.id}`).argv[2]).toBe(
+    `p${long.id} Migrate every billin · billing-review`,
+  )
+
+  // A project titled as the helper since goes first by the name alone, so the command nod shows for
+  // it names its role and project, with what would break a terminal kept out.
+  const helper = todos.sessionPlace(key('review'))
+  todos.addProject({ title: 'review', outcome: null }, 'human')
+  expect(helper && reopenCommand(helper)).toBe(`nod open 'review' --role helper --project p${p.id}`)
+  expect(open('review', false, here, 'helper', `p${p.id}`).argv).toContain(key('review'))
+  const evil = 'ev\x1b[31mil'
+  open(evil, false, here, 'helper', `p${p.id}`)
+  const shown = todos.sessionPlace(key(evil))
+  expect(shown && reopenCommand(shown)).toBe(
+    `nod open 'ev [31mil' --role helper --project p${p.id}`,
+  )
+  // Its folder gone, the way to a new one names its role and project the same way.
+  const gone = tmp.make('nod-open-gone-')
+  open('review', true, gone, 'helper', `p${p.id}`)
+  keep(key('review'), gone, said)
+  rmSync(gone, { recursive: true })
+  expect(() => open('review', false, here, 'helper', `p${p.id}`)).toThrow(
+    `review's session was opened in ${gone}, which is gone; nod open 'review' --role helper --project p${p.id} --new opens a new one here`,
+  )
+})
 
 test('orchestrators of two names each go back to their own session, side by side, and a new one of a name leaves the other as it is', () => {
   const { todos, config, here, there, keep, said } = opener()
