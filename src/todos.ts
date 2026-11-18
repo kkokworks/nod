@@ -189,6 +189,9 @@ export type Session = {
 // The project a session was opened for, and whether it is still the one `nod open` goes back into:
 // the project's latest session, for a helper the latest of its name.
 export type SessionPlace = { session: Session; project: Project; latest: boolean }
+// A project's helper as nod project shows it: the latest session of its name, what it is for (null
+// for nothing said), and how many of its tasks are UNFINISHED.
+export type ProjectHelper = { session: Session; description: string | null; unfinished: number }
 // What a day holds besides its events, each todo once, in the first group it is in.
 export type DayTodos = { overdue: Todo[]; scheduled: Todo[]; due: Todo[]; focus: Todo[] }
 
@@ -204,6 +207,7 @@ type Tables = {
   projectSessions: { sessionId: number; projectId: number }
   projectOrchestrators: { projectId: number; orchestrator: string }
   taskHands: { taskId: number; helper: string | null }
+  helperDescriptions: { projectId: number; name: string; description: string }
 }
 
 const q = queryBuilder<Tables>()
@@ -1081,6 +1085,56 @@ export class Todos {
         .values({ taskId, helper })
         .onConflict((c) => c.column('taskId').doUpdateSet({ helper })),
     )
+  }
+
+  // Says what the project's helper of that name is for, or nothing (null). It goes by the name, so
+  // a new session of it has it too.
+  describeHelper(projectId: number, name: string, description: string | null): void {
+    const row = q
+      .deleteFrom('helperDescriptions')
+      .where('projectId', '=', projectId)
+      .where('name', '=', name)
+    if (description === null) {
+      this.run(row)
+      return
+    }
+    this.run(
+      q
+        .insertInto('helperDescriptions')
+        .values({ projectId, name, description })
+        .onConflict((c) => c.columns(['projectId', 'name']).doUpdateSet({ description })),
+    )
+  }
+
+  // The project's helpers by name, each by the latest session of it as helperOf finds it: one whose
+  // latest session went to another project or role since is not the project's any more.
+  helpers(projectId: number): ProjectHelper[] {
+    const names = this.run(
+      q
+        .selectFrom('sessions')
+        .innerJoin('projectSessions', 'projectSessions.sessionId', 'sessions.id')
+        .select('sessions.name')
+        .distinct()
+        .where('projectSessions.projectId', '=', projectId)
+        .where('sessions.role', '=', 'helper')
+        .orderBy('sessions.name'),
+    )
+    const tasks = this.ledger
+      .list()
+      .filter((t) => UNFINISHED.includes(t.status) && this.projectOf(t) === projectId)
+    return names.flatMap(({ name }) => {
+      const session = this.latestNamed(name)
+      if (session?.role !== 'helper' || this.sessionProject(session.id) !== projectId) return []
+      const said = this.first(
+        q
+          .selectFrom('helperDescriptions')
+          .select('description')
+          .where('projectId', '=', projectId)
+          .where('name', '=', name),
+      )
+      const unfinished = tasks.filter((t) => this.helperOf(t, projectId)?.id === session.id).length
+      return [{ session, description: said?.description ?? null, unfinished }]
+    })
   }
 
   // Where a Claude session belongs, a project's own or its helper; null for one of no project.

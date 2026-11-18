@@ -19,6 +19,7 @@ import {
   oneOf,
   PROJECT_STATUSES,
   type Project,
+  type ProjectHelper,
   parseRef,
   type Session,
   sessionTitle,
@@ -27,6 +28,7 @@ import {
   type TodoDecision,
   type TodoStatus,
   type Todos,
+  takesMessages,
   UNFINISHED,
   type WatchCheck,
   withLine,
@@ -97,7 +99,8 @@ export const TODO_USAGE = `  nod in <what...> [--notes <text>] [--source <channe
                                    line. A description shows on the line below, its first
                                    ${DESCRIPTION_CUT} characters, to tell which project work is for
   nod project <project>            one project: the orchestrator in charge, its whole description,
-                                   its open todos and who changed what
+                                   its helpers (on while nod can tell it, its unfinished tasks,
+                                   its description or none), its open todos and who changed what
   nod project set <project> [--title <text>] [--outcome <text>] [--description <text>]
          [--orchestrator <name>] [--status <s>]
                                    an empty --outcome, --description or --orchestrator clears it.
@@ -286,6 +289,8 @@ const SAID = /"type":"(user|assistant)"/
 // gives way to a new one.
 // Every way, the session gets its name, resumed too (Claude Code 2.1.310 records it in the
 // transcript): a /rename goes back to it, and a new title shows once the project is retitled.
+// `description`: what a helper is for from now on, null clearing it (describeHelper); left out, it
+// keeps what it had.
 export function openSession(
   todos: Todos,
   ref: string,
@@ -294,8 +299,11 @@ export function openSession(
   config: string | null,
   role?: NamedRole,
   project?: string,
+  description?: string | null,
 ): { argv: string[]; cwd: string } {
   const { of, opens, owner, name, line, latest } = opening(todos, ref, role, project)
+  const helps = typeof owner === 'object' && 'project' in owner ? owner.project : null
+  if (description !== undefined && helps === null) throw new Error(DESCRIBES)
   // The session's name is for the person; Claude in it learns its project or role from this line
   // alone. Claude Code keeps a conversation's first system prompt on resume until it compacts, so a
   // resume passes it too. Its hooks tell nod where it takes its notices (inbox.ts).
@@ -310,6 +318,7 @@ export function openSession(
       `${of}'s session was opened in ${again.cwd}, which is gone; nod open ${opens} --new opens a new one here`,
     )
   }
+  if (description !== undefined && helps !== null) todos.describeHelper(helps, ref, description)
   // A named session's name is what nod open knows it by, kept; a project's follows the title.
   if (again?.role === 'project') todos.setSessionName(again.id, name)
   if (again !== null && said) {
@@ -690,10 +699,35 @@ function showProject(todos: Todos, p: Project): void {
     const lines = p.description.split('\n').map(clean).join('\n')
     console.log(`  description\n${indent(lines, 4)}`)
   }
+  for (const h of todos.helpers(p.id)) console.log(indent(helperText(h)))
   const open = { statuses: OPEN, projectId: p.id, hideSomedayProjects: false, day: null }
   for (const t of todos.list(open)) console.log(`  ${line(todos, t)}`)
   printChanges(todos.projectChanges(p.id))
 }
+
+// A project's helper as nod project shows it: its name, on while nod can tell it (takesMessages)
+// and off otherwise, its unfinished tasks, then what it is for, or that nothing is said.
+export function helperText(h: ProjectHelper): string {
+  const on = takesMessages(h.session) ? 'on' : 'off'
+  const tasks = `${h.unfinished} unfinished task${h.unfinished === 1 ? '' : 's'}`
+  const head = `helper ${clean(h.session.name)} ${on} · ${tasks}`
+  if (h.description === null) return `${head} · no description`
+  return `${head}\n${indent(h.description.split('\n').map(clean).join('\n'))}`
+}
+
+// `nod session set <name> --description <text>`: what the helper of that name is for from now on;
+// an empty one clears it. It prints the helper as nod project shows it.
+export function describeHelper(todos: Todos, name: string, description: string | null): string {
+  const latest = todos.latestNamed(name)
+  const place = latest?.role === 'helper' ? todos.sessionPlace(latest.sessionKey) : null
+  if (place === null) throw new Error(`no helper is named ${name}; ${DESCRIBES}`)
+  todos.describeHelper(place.project.id, name, description)
+  const shown = todos.helpers(place.project.id).find((h) => h.session.name === name)
+  return shown === undefined ? '' : helperText(shown)
+}
+// Why --description is refused but for a helper.
+export const DESCRIBES =
+  'only a helper has a description: nod open <name> --role helper --project <project> --description <text>'
 
 // `nod today [<day>] [--days <n>]`: what each day holds for certain, then what was picked for it.
 // Days after the first show only when they hold something.

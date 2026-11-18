@@ -860,6 +860,145 @@ test("nod session claim <name> --role helper --project makes the Claude session 
   refused(D, ['Health', '--role', 'helper', '--project', `p${p.id}`], 'Health names a project')
 }, 30_000)
 
+test("a helper's description is given as nod open or nod session claim makes it, changed with nod session set, kept for a new session of its name, and nod project lists each helper on or off with its unfinished tasks", () => {
+  const home = tmp.make('nod-helper-description-')
+  const here = realpathSync(tmp.make('nod-helper-description-here-'))
+  const bin = tmp.make('nod-helper-description-bin-')
+  writeFileSync(join(bin, 'claude'), '#!/bin/sh\necho "$(pwd -P) | $*"\n', { mode: 0o755 })
+  const todos = new Todos(new Ledger(home))
+  const p = todos.addProject({ title: 'Release', outcome: null }, 'human')
+  const {
+    CLAUDECODE: _,
+    CLAUDE_CODE_SESSION_ID: __,
+    NOD_TASK: ___,
+    NOD_ACTOR: ____,
+    CLAUDE_CODE_MESSAGING_SOCKET: _____,
+    ...shell
+  } = process.env
+  const env = {
+    ...shell,
+    NOD_HOME: home,
+    CLAUDE_CONFIG_DIR: join(home, 'account'),
+    PATH: `${bin}:${process.env.PATH}`,
+  }
+  const nod = (session: string | null, ...args: string[]) => {
+    const inSession = {
+      CLAUDECODE: '1',
+      CLAUDE_CODE_SESSION_ID: `${session}`,
+      CLAUDE_CODE_MESSAGING_SOCKET: `/socks/${session}`,
+    }
+    const r = Bun.spawnSync(['bun', cli, ...args], {
+      cwd: here,
+      env: session === null ? env : { ...env, ...inSession },
+    })
+    return { code: r.exitCode, out: r.stdout.toString(), err: r.stderr.toString() }
+  }
+  const ok = (session: string | null, ...args: string[]): string => {
+    const r = nod(session, ...args)
+    expect(r.code).toBe(0)
+    return r.out
+  }
+  const refused = (error: string, session: string | null, ...args: string[]): void => {
+    const r = nod(session, ...args)
+    expect(r.code).not.toBe(0)
+    expect(r.err).toContain(error)
+  }
+  // What nod project shows between the project's line and its todos: here, its helpers.
+  const helpers = (): string[] => {
+    const lines = ok(null, 'project', `p${p.id}`).trimEnd().split('\n')
+    const end = lines.findIndex((l) => /^ {2}(t\d|changes)/.test(l))
+    return lines.slice(1, end)
+  }
+  const describes = 'only a helper has a description'
+
+  expect(helpers()).toEqual([])
+  ok(null, 'open', 'review', '--role', 'helper', '--project', `p${p.id}`, '--description', 'PRs')
+  ok(null, 'open', 'docs', '--role', 'helper', '--project', `p${p.id}`)
+  // A session nod does not know, claimed with what it is for, on while its socket is there.
+  ok(
+    'key-a',
+    'session',
+    'claim',
+    'ops',
+    '--role',
+    'helper',
+    '--project',
+    `p${p.id}`,
+    '--description',
+    'Deploys\nand rollbacks',
+  )
+  const socket = join(home, 'ops.sock')
+  writeFileSync(socket, '')
+  todos.setSocket('key-a', socket)
+  const review = todos.latestNamed('review')?.sessionKey ?? ''
+  const of = (root: string): number =>
+    todos.delegateNew(
+      {
+        brief: 'do it',
+        repo: null,
+        branch: null,
+        checkCmd: null,
+        model: null,
+        after: [],
+        issue: null,
+        rootSession: root,
+      },
+      p.id,
+      'human',
+    )
+  of('key-a')
+  todos.handTask(of(review), 'ops')
+  of(review)
+  expect(helpers()).toEqual([
+    '  helper docs off · 0 unfinished tasks · no description',
+    '  helper ops on · 2 unfinished tasks',
+    '    Deploys',
+    '    and rollbacks',
+    '  helper review off · 1 unfinished task',
+    '    PRs',
+  ])
+
+  // Changed and cleared by its name; what would break a terminal stays out.
+  expect(ok(null, 'session', 'set', 'docs', '--description', 'Do\x1b[2Kcs')).toBe(
+    'helper docs off · 0 unfinished tasks\n  Do [2Kcs\n',
+  )
+  expect(ok(null, 'session', 'set', 'ops', '--description', '')).toBe(
+    'helper ops on · 2 unfinished tasks · no description\n',
+  )
+  // nod open by the name alone changes it too, and a new session of the name keeps it.
+  ok(null, 'open', 'review', '--description', 'Reviews pull requests')
+  ok(null, 'open', 'review', '--new')
+  expect(todos.latestNamed('review')?.sessionKey).not.toBe(review)
+  expect(helpers()).toEqual([
+    '  helper docs off · 0 unfinished tasks',
+    '    Do [2Kcs',
+    '  helper ops on · 2 unfinished tasks · no description',
+    '  helper review off · 1 unfinished task',
+    '    Reviews pull requests',
+  ])
+
+  // Only a helper has one, and a refusal opens nothing.
+  const sessions = todos.namedSessions('orchestrator').length
+  refused(describes, null, 'open', `p${p.id}`, '--description', 'x')
+  refused(describes, null, 'open', 'north', '--role', 'orchestrator', '--description', 'x')
+  expect(todos.namedSessions('orchestrator').length).toBe(sessions)
+  expect(todos.latestSession(p.id)).toBeNull()
+  refused(describes, 'key-b', 'session', 'claim', 'west', '--role', 'relay', '--description', 'x')
+  expect(todos.session('key-b')).toBeNull()
+  refused(
+    `no helper is named Release; ${describes}`,
+    null,
+    'session',
+    'set',
+    'Release',
+    '--description',
+    'x',
+  )
+  refused('usage:', null, 'session', 'set', 'review')
+  refused('usage:', null, 'session', 'set', 'review', '--role', 'helper', '--description', 'x')
+  expect(helpers()).toHaveLength(5)
+}, 30_000)
+
 test('nod open has claude compact at 60% of its window, unless the shell says how early', () => {
   const home = tmp.make('nod-open-compact-')
   const bin = tmp.make('nod-open-compact-bin-')
