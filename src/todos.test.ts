@@ -425,30 +425,33 @@ test('a session of no project has no project_sessions row and no place, and the 
 })
 
 test('a task in no project is heard by the latest of the orchestrator that added it, running or not, and anything else by none', () => {
-  const { todos } = books()
+  const { ledger, todos } = books()
   const [A, B, C, D] = ['key-a', 'key-b', 'key-c', 'key-d']
+  const by = (rootSession: string | null): Task => ledger.get(ledger.add({ ...task, rootSession }))
   expect(todos.listener(null, null)).toBeNull()
-  expect(todos.listener(null, A)).toBeNull()
+  expect(todos.listener(null, by(null))).toBeNull()
+  expect(todos.listener(null, by(A))).toBeNull()
   const north = { role: 'orchestrator', name: 'north' } as const
   const opened = todos.addSession(north, A, '/work/one')
   todos.addSession({ role: 'relay', name: 'gate' }, B, '/work/two')
   const south = todos.addSession({ role: 'orchestrator', name: 'south' }, C, '/work/three')
   todos.setSocket(C, '/socks/c')
-  expect(todos.listener(null, A)).toEqual(opened)
-  expect(todos.listener(null, C)).toEqual({ ...south, socket: '/socks/c' })
+  expect(todos.listener(null, by(A))).toEqual(opened)
+  expect(todos.listener(null, by(C))).toEqual({ ...south, socket: '/socks/c' })
   // A shell's, a relay's and an unknown session's go to no orchestrator, though one runs.
-  expect(todos.listener(null, null)).toBeNull()
-  expect(todos.listener(null, B)).toBeNull()
-  expect(todos.listener(null, 'key-unknown')).toBeNull()
+  expect(todos.listener(null, by(null))).toBeNull()
+  expect(todos.listener(null, by(B))).toBeNull()
+  expect(todos.listener(null, by('key-unknown'))).toBeNull()
   // --new: the newer of the name goes on for it, closed while another runs.
   const newer = todos.addSession(north, D, '/work/four')
-  expect(todos.listener(null, A)).toEqual(newer)
-  expect(todos.listener(null, null)).toBeNull()
+  expect(todos.listener(null, by(A))).toEqual(newer)
+  expect(todos.listener(null, by(null))).toBeNull()
 
   const p = project(todos, 'Release')
-  expect(todos.listener(p.id, A)).toBeNull()
+  expect(todos.listener(p.id, by(A))).toBeNull()
   const session = todos.addSession(p.id, 'key-p', '/work/p')
-  expect(todos.listener(p.id, A)).toEqual(session)
+  expect(todos.listener(p.id, by(A))).toEqual(session)
+  expect(todos.listener(p.id, null)).toEqual(session)
 })
 
 test('claiming a role puts in a session nod does not know, takes a project session out of its project, and refuses a name it cannot tell apart', () => {

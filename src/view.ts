@@ -12,10 +12,12 @@ export function taskLabel(t: Task): string {
   return ['task', `n${t.id}`, owner(t), t.issue ?? ''].filter((x) => x !== '').join(' ')
 }
 
-// The command that goes back into a project's session: nod open for the project's latest, else
-// claude --resume in the folder it was opened in, where Claude Code keeps its transcript.
+// The command that goes back into a project's session: nod open for the project's latest, or a
+// helper's by its name, else claude --resume in the folder it was opened in, where Claude Code keeps
+// its transcript.
 export function reopenCommand({ session, project, latest }: SessionPlace): string {
-  if (latest) return `nod open p${project.id}`
+  if (latest)
+    return `nod open ${session.role === 'helper' ? quote(session.name) : `p${project.id}`}`
   return `cd ${quote(session.cwd)} && claude --resume ${session.sessionKey}`
 }
 

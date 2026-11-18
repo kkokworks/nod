@@ -1,4 +1,5 @@
 import type { Database } from 'bun:sqlite'
+import { existsSync } from 'node:fs'
 import type { Compilable, Generated } from 'kysely'
 import { z } from 'zod'
 import {
@@ -34,13 +35,20 @@ export type TodoStatus = (typeof TODO_STATUSES)[number]
 export const PROJECT_STATUSES = ['active', 'someday', 'done', 'dropped'] as const
 export type ProjectStatus = (typeof PROJECT_STATUSES)[number]
 // What a session nod open opened is for: one project; `orchestrator`, which has none and hears of
-// the work in no project it adds; or `relay`, which has none and passes what comes from outside to the
-// project session it is for. The table's CHECK holds the same values (v29 in ledger.ts).
-export const SESSION_ROLES = ['project', 'orchestrator', 'relay'] as const
+// the work in no project it adds; `relay`, which has none and passes what comes from outside to the
+// project session it is for; or `helper`, a project's besides its own, which hears of the project's
+// tasks it added or was handed (Todos.listener). The table's CHECK holds the same values (v35 in
+// ledger.ts).
+export const SESSION_ROLES = ['project', 'orchestrator', 'relay', 'helper'] as const
 export type SessionRole = (typeof SESSION_ROLES)[number]
 // The roles of no project, which a session takes with a name of its own (nod open --role).
-export type OpenRole = Exclude<SessionRole, 'project'>
-export const OPEN_ROLES = SESSION_ROLES.filter((r): r is OpenRole => r !== 'project')
+export type OpenRole = Exclude<SessionRole, 'project' | 'helper'>
+export const OPEN_ROLES = SESSION_ROLES.filter(
+  (r): r is OpenRole => r !== 'project' && r !== 'helper',
+)
+// What nod open --role opens: a role of no project, or a project's helper, each by a name of its own.
+export type NamedRole = Exclude<SessionRole, 'project'>
+export const NAMED_ROLES = SESSION_ROLES.filter((r): r is NamedRole => r !== 'project')
 // Todos that still ask something of the person.
 export const OPEN: TodoStatus[] = ['inbox', 'next', 'waiting']
 const FINISHED: TodoStatus[] = ['done', 'dropped']
@@ -160,9 +168,11 @@ export type WatchCheck = { watch: string; at: string; code: number; output: stri
 // (`sessionKey`), and the folder it was opened in, where Claude Code keeps its transcript and so
 // where it is reopened. `name`: what `claude --name` gets, the project's for a project session
 // (sessionTitle), and what nod open knows it by in a role of no project, where the latest of a name
-// stands for it, so sessions of other names run beside it. `socket`: where it takes messages while
-// it runs, as its hooks last said (inbox.ts); null before they said, and once it ended. A `project`
-// session has a row in project_sessions, and no other does (addSession, claimSession).
+// stands for it, so sessions of other names run beside it; a helper's name is the same, and the
+// project's title goes before it only in `claude --name` (helperTitle). `socket`: where it takes
+// messages while it runs, as its hooks last said (inbox.ts); null before they said, and once it
+// ended. A `project` or `helper` session has a row in project_sessions, and no other does
+// (addSession, claimSession).
 export type Session = {
   id: number
   sessionKey: string
@@ -172,8 +182,8 @@ export type Session = {
   socket: string | null
   createdAt: string
 }
-// The project a session was opened for, and whether it is still that project's latest session,
-// the one `nod open` goes back into.
+// The project a session was opened for, and whether it is still the one `nod open` goes back into:
+// the project's latest session, for a helper the latest of its name.
 export type SessionPlace = { session: Session; project: Project; latest: boolean }
 // What a day holds besides its events, each todo once, in the first group it is in.
 export type DayTodos = { overdue: Todo[]; scheduled: Todo[]; due: Todo[]; focus: Todo[] }
@@ -189,6 +199,7 @@ type Tables = {
   sessions: Omit<Session, 'id'> & { id: Generated<number> }
   projectSessions: { sessionId: number; projectId: number }
   projectOrchestrators: { projectId: number; orchestrator: string }
+  taskHands: { taskId: number; helper: string | null }
 }
 
 const q = queryBuilder<Tables>()
@@ -848,10 +859,14 @@ export class Todos {
 
   // ── sessions (nod open) ──
 
-  // Records a Claude session opened in `cwd`, for the project or in a role of no project; from now
-  // on it is that one's. Its role and its project_sessions row go in here alone, so they agree.
+  // Records a Claude session opened in `cwd`, for the project, in a role of no project, or as the
+  // project's helper; from now on it is that one's. Its role and its project_sessions row go in here
+  // alone, so they agree.
   addSession(
-    of: number | { role: OpenRole; name: string },
+    of:
+      | number
+      | { role: OpenRole; name: string }
+      | { role: 'helper'; name: string; project: number },
     sessionKey: string,
     cwd: string,
   ): Session {
@@ -859,11 +874,12 @@ export class Todos {
       const seat =
         typeof of === 'number'
           ? { role: 'project' as const, name: sessionTitle(this.project(of)) }
-          : of
+          : { role: of.role, name: of.name }
       const row = { sessionKey, ...seat, cwd, socket: null, createdAt: now() }
       const id = this.insert(q.insertInto('sessions').values(row).returning('id'))
-      if (typeof of === 'number') {
-        this.run(q.insertInto('projectSessions').values({ sessionId: id, projectId: of }))
+      const projectId = typeof of === 'number' ? of : 'project' in of ? of.project : null
+      if (projectId !== null) {
+        this.run(q.insertInto('projectSessions').values({ sessionId: id, projectId }))
       }
       return { id, ...row }
     })()
@@ -886,14 +902,17 @@ export class Todos {
     })()
   }
 
-  // Refuses `name` for a session of `role` when nod open could not tell it apart: another role of no
-  // project has it, or it reads as a project, which nod open looks for first. A project session's
-  // own name does not count, as nod open finds those by the project: an old one goes on after a
-  // retitle. A name the role already goes by stays usable, whatever project took that title since.
-  // `sessionKey`: the session asking, which may give up the name for another role itself.
-  checkName(name: string, role: OpenRole, sessionKey = ''): void {
+  // Refuses `name` for a session of `role` when nod open could not tell it apart: another named role
+  // has it, a helper of another project (`project`: a helper's own), or it reads as a project, which
+  // nod open looks for first. A project session's own name does not count, as nod open finds those
+  // by the project: an old one goes on after a retitle. A name the role already goes by stays
+  // usable, whatever project took that title since. `sessionKey`: the session asking, which may give
+  // up the name for another role itself.
+  checkName(name: string, role: NamedRole, sessionKey = '', project: number | null = null): void {
     filled('name', name)
-    if (this.latestNamed(name)?.role === role) return
+    const latest = this.latestNamed(name)
+    const helps = latest === null ? null : this.sessionProject(latest.id)
+    if (latest?.role === role && helps === project) return
     if (this.namesProject(name)) {
       throw new Error(`${name} names a project, which nod open opens first; give another name`)
     }
@@ -906,6 +925,9 @@ export class Todos {
         .where('sessionKey', '!=', sessionKey),
     )
     if (taken !== null) throw new Error(`the name ${name} is taken by role ${taken.role}`)
+    if (latest?.role === 'helper' && role === 'helper') {
+      throw new Error(`the name ${name} is taken by a helper of p${helps}`)
+    }
   }
 
   // Writes the session's name, as nod open does each time it opens one.
@@ -943,7 +965,7 @@ export class Todos {
     return this.first(q.selectFrom('sessions').selectAll().where('sessionKey', '=', sessionKey))
   }
 
-  // The project's latest session; null before nod open opened one.
+  // The project's latest session of its own, no helper; null before nod open opened one.
   latestSession(projectId: number): Session | null {
     return this.first(
       q
@@ -951,13 +973,23 @@ export class Todos {
         .innerJoin('projectSessions', 'projectSessions.sessionId', 'sessions.id')
         .selectAll('sessions')
         .where('projectSessions.projectId', '=', projectId)
+        .where('sessions.role', '=', 'project')
         .orderBy('sessions.id', 'desc')
         .limit(1),
     )
   }
 
-  // The latest session of that name in a role of no project, the one that stands for it; null
-  // before there was one. Another role cannot have the name (checkName), a project's session may.
+  // The project a session (by its row) is of, its own or as a helper; null for one of no project.
+  private sessionProject(id: number): number | null {
+    const row = this.first(
+      q.selectFrom('projectSessions').select('projectId').where('sessionId', '=', id),
+    )
+    return row?.projectId ?? null
+  }
+
+  // The latest session of that name in a named role (one of no project, or a helper), the one that
+  // stands for it; null before there was one. Another role cannot have the name, nor a helper of
+  // another project (checkName); a project's session may.
   latestNamed(name: string): Session | null {
     return this.first(
       q
@@ -982,14 +1014,60 @@ export class Todos {
     )
   }
 
-  // The session nod tells of a task's work: the latest of its project; in no project, the latest of
-  // the orchestrator's name when an orchestrator added it (`rootSession`), running or not. None for
-  // work in no project anyone else added (a shell, a relay, any other session): no session that
-  // does not know the work hears of it, to answer its decisions.
-  listener(projectId: number | null, rootSession: string | null): Session | null {
-    if (projectId !== null) return this.latestSession(projectId)
-    const root = rootSession === null ? null : this.session(rootSession)
+  // The session nod tells of a task's work, or of a project's with no task (`task` null): in a
+  // project, its helper while that takes messages (helperOf), else the project's latest session, so
+  // what comes while the helper is off is not lost; in no project, the latest of the orchestrator's
+  // name when an orchestrator added it (`rootSession`), running or not. None for work in no project
+  // anyone else added (a shell, a relay, any other session): no session that does not know the work
+  // hears of it, to answer its decisions.
+  listener(projectId: number | null, task: Task | null): Session | null {
+    if (projectId !== null) {
+      const helper = task === null ? null : this.helperOf(task, projectId)
+      return takesMessages(helper) ? helper : this.latestSession(projectId)
+    }
+    const root = task?.rootSession == null ? null : this.session(task.rootSession)
     return root?.role === 'orchestrator' ? this.latestNamed(root.name) : null
+  }
+
+  // The helper whose work a task in `projectId` is, by the latest session of its name, on or off:
+  // the one nod hand last handed it to, else the helper that added it (`rootSession`); a
+  // retrospective's is that of the task it looks back on, unless handed itself. Null for the
+  // project's own session: a task handed back to it, one a helper did not add, and one whose helper
+  // is of another project (its todo moved since).
+  helperOf(task: Task, projectId: number): Session | null {
+    const hand = this.first(
+      q.selectFrom('taskHands').select('helper').where('taskId', '=', task.id),
+    )
+    if (hand === null && task.retroId !== null) {
+      return this.helperOf(this.ledger.get(this.ledger.retro(task.retroId).ofTaskId), projectId)
+    }
+    const root = hand !== null || task.rootSession === null ? null : this.session(task.rootSession)
+    const name = hand?.helper ?? (root?.role === 'helper' ? root.name : null)
+    const helper = name === null ? null : this.latestNamed(name)
+    if (helper?.role !== 'helper' || this.sessionProject(helper.id) !== projectId) return null
+    return helper
+  }
+
+  // Hands a task in a project to its helper of that name, or back to the project's own session
+  // (null): its notices not sent yet, and all after, go there (listener).
+  handTask(taskId: number, helper: string | null): void {
+    const task = this.ledger.get(taskId)
+    const projectId = this.projectOf(task)
+    if (projectId === null) {
+      throw new Error(`n${taskId} is in no project, so no project's session or helper takes it`)
+    }
+    const to = helper === null ? null : this.latestNamed(helper)
+    if (helper !== null && (to?.role !== 'helper' || this.sessionProject(to.id) !== projectId)) {
+      throw new Error(
+        `p${projectId} has no helper named ${helper}; nod open ${helper} --role helper --project p${projectId} opens one`,
+      )
+    }
+    this.run(
+      q
+        .insertInto('taskHands')
+        .values({ taskId, helper })
+        .onConflict((c) => c.column('taskId').doUpdateSet({ helper })),
+    )
   }
 
   // Where a Claude session belongs; null for any but a project session, one of no project too.
@@ -1004,7 +1082,8 @@ export class Todos {
     )
     if (row === null) return null
     const { projectId, ...session } = row
-    const latest = this.latestSession(projectId)
+    const latest =
+      session.role === 'helper' ? this.latestNamed(session.name) : this.latestSession(projectId)
     return { session, project: this.project(projectId), latest: latest?.id === session.id }
   }
 
@@ -1021,12 +1100,19 @@ export class Todos {
   // Whether a task is the work of Claude session `session`: what --mine lists and watches, and the
   // session the task page names as its root. For a session nod open opened for a project, every
   // task in that project, whoever added it, so a new session for the project (another account,
-  // --new, a long context) carries on with its tasks and decisions. Otherwise, and for a task in no
-  // project, a task the session added. rootSession keeps who added a task either way.
+  // --new, a long context) carries on with its tasks and decisions; the helpers' too, whose notices
+  // it takes while they are off. For a helper, the project's tasks whose helper has its name
+  // (helperOf), so a new session of the name carries on with them the same way. Otherwise, and for a
+  // task in no project, a task the session added. rootSession keeps who added a task either way.
   isMine(session: string, task: Task): boolean {
     const project = this.projectOf(task)
     const place = this.sessionPlace(session)
-    if (place !== null && project !== null) return project === place.project.id
+    if (place !== null && project !== null) {
+      if (project !== place.project.id) return false
+      return (
+        place.session.role !== 'helper' || this.helperOf(task, project)?.name === place.session.name
+      )
+    }
     return task.rootSession === session
   }
 
@@ -1038,13 +1124,14 @@ export class Todos {
     return a.rootSession !== null && a.rootSession === b.rootSession
   }
 
-  // The session whose work a task is now, as nod show and the task page name its root: the latest
-  // session of its project, else the session that added it while the task is still its work; null
-  // when that is no project session.
+  // The session whose work a task is now, as nod show and the task page name its root: its helper
+  // (helperOf), else the latest session of its project, else the session that added it while the
+  // task is still its work; null when that is no project session.
   rootPlace(task: Task): SessionPlace | null {
     const project = this.projectOf(task)
-    const session = (project === null ? null : this.latestSession(project))?.sessionKey
-    const root = session ?? task.rootSession
+    const owner =
+      project === null ? null : (this.helperOf(task, project) ?? this.latestSession(project))
+    const root = owner?.sessionKey ?? task.rootSession
     return root !== null && this.isMine(root, task) ? this.sessionPlace(root) : null
   }
 
@@ -1219,6 +1306,18 @@ export function sessionTitle(p: Project): string {
   const name = p.title.length <= SESSION_NAME_CHARS ? p.title : `p${p.id} ${p.title}`
   return oneLine(name, SESSION_NAME_CHARS).trim()
 }
+
+// What `claude --name` gets for a helper, which other sessions see it by (ListAgents): the
+// project's session name, cut short so the helper's name after it stays whole.
+export function helperTitle(p: Project, name: string): string {
+  const room = Math.max(SESSION_NAME_CHARS - name.length - 3, 1)
+  return `${oneLine(sessionTitle(p), room).trim()} · ${name}`
+}
+
+// Whether a session is on, as far as nod can tell: it said where it takes messages, and that socket
+// is there.
+export const takesMessages = (session: Session | null): session is Session =>
+  session !== null && session.socket !== null && existsSync(session.socket)
 
 // A project title that reads as a ref (`p3`) or a number could not be found by its title.
 function projectTitle(title: string): void {

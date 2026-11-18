@@ -1,16 +1,17 @@
-import { existsSync, lstatSync } from 'node:fs'
+import { lstatSync } from 'node:fs'
 import { z } from 'zod'
 import { Ledger, type Notice, type Task } from './ledger'
 import { message, unbroken } from './proc'
-import { type Project, type Session, Todos } from './todos'
+import { type Project, type Session, Todos, takesMessages } from './todos'
 import { REVIEW_TIMED_OUT } from './verify'
 import { allowedLine, firstLine, indent, oneLine, taskLabel } from './view'
 
 // nod tells a project's session, the one nod open opened for it last, what happens to its work:
 // each of the project's tasks that ends (once its check and review are done) and each of
 // its decisions that opens, and what a person sends it with `nod tell p<n>`; also what nod allowed
-// a worker itself, and each decision a person answered elsewhere (decisions.ts). An orchestrator
-// hears the same of the tasks in no project it added (Todos.listener). The ledger records each as a
+// a worker itself, and each decision a person answered elsewhere (decisions.ts). A helper of the
+// project hears the same of the tasks it added or was handed, while it takes messages; an
+// orchestrator, of the tasks in no project it added (Todos.listener). The ledger records each as a
 // notice with the change itself (ledger.ts); sendNotices sends what is unsent into the session's
 // inbox socket, as another Claude session on this machine does (SendMessage), after each notify and
 // on each tick. What finds no session running, or a send that fails, waits for the next.
@@ -47,13 +48,13 @@ export async function onInbox(
 }
 
 // What a session nod knows hears for: `ref`, what nod open opens it by; its project, none in a role
-// of no project; and whether it is the latest of those, which alone hears. Null for any other
-// session.
+// of no project; and whether it is the latest of those (of its name, for a helper), which alone
+// hears. Null for any other session.
 function hearing(todos: Todos, sessionKey: string) {
   const session = todos.session(sessionKey)
   if (session === null) return null
   const place = todos.sessionPlace(sessionKey)
-  const ref = place === null ? session.name : `p${place.project.id}`
+  const ref = place === null || session.role === 'helper' ? session.name : `p${place.project.id}`
   const latest = place?.latest ?? todos.latestNamed(session.name)?.id === session.id
   return { session, projectId: place?.project.id ?? null, ref, latest }
 }
@@ -113,17 +114,14 @@ export async function onCommand(
   return told.length === 0 ? null : told.join('\n')
 }
 
-// Whether a session is on, as far as nod can tell: it said where it takes messages, and that socket
-// is there.
-export const takesMessages = (session: Session | null): boolean =>
-  session !== null && session.socket !== null && existsSync(session.socket)
+export { takesMessages }
 
 // What a Claude session hears as it sets a project's work going (nod add, tell, an answer, resume,
-// restart) or moves a todo with going tasks (nod todo set --project), though it is not the
-// project's latest session, the one nod tells: a line for stderr for
-// each project of the tasks `ids` whose latest session cannot hear either (there is none, nod knows
-// no socket of it, or its socket file is gone), so the decisions and ends that work brings wait
-// unheard. Each project once, and none of `warned`, which onCommand told of already, and which
+// restart) or moves a todo with going tasks (nod todo set --project), though it is not the session
+// nod tells of it (Todos.listener: the task's helper while that takes messages, else the project's
+// latest session): a line for stderr for each project of the tasks `ids` whose latest session cannot
+// hear either (there is none, nod knows no socket of it, or its socket file is gone), so the
+// decisions and ends that work brings wait unheard. Each project once, and none of `warned`, which onCommand told of already, and which
 // gets those told here. Nothing for a person's shell (no session), nor for the project's latest
 // session, which onCommand speaks for. --mine shows only the session's own tasks, so the line
 // names plain `nod` and `nod ls` for work another session added.
@@ -141,8 +139,12 @@ export function unheardWork(
   for (const id of ids) {
     const task = ledger.get(id)
     const project = todos.projectOf(task)
-    if (project !== null) work.set(project, [...(work.get(project) ?? []), task])
-    else if (todos.listener(null, task.rootSession) === null && !loose.includes(id)) loose.push(id)
+    const hears = todos.listener(project, task)
+    if (project === null) {
+      if (hears === null && !loose.includes(id)) loose.push(id)
+    } else if (hears?.sessionKey !== session && !takesMessages(hears)) {
+      work.set(project, [...(work.get(project) ?? []), task])
+    }
   }
   const told: string[] = []
   if (loose.length > 0) {
@@ -153,8 +155,7 @@ export function unheardWork(
   if (session === null) return told
   for (const [projectId, tasks] of work) {
     const latest = todos.latestSession(projectId)
-    if (warned.has(projectId) || latest?.sessionKey === session) continue
-    if (takesMessages(latest)) continue
+    if (warned.has(projectId)) continue
     const p = `p${projectId}`
     const why =
       latest === null
@@ -202,8 +203,9 @@ export async function tellSessions(home: string): Promise<void> {
 }
 
 // Sends each session its unsent notices, oldest first, all in one message: each project's to its
-// latest session, and those of tasks in no project to the orchestrator that added them
-// (Todos.listener). One of a task in no project no orchestrator added, and a decision's opening
+// latest session, or a task's to its helper while that takes messages, and those of tasks in no
+// project to the orchestrator that added them (Todos.listener), each read as it is sent: what a
+// helper was handed (nod hand) and has not heard yet goes to it. One of a task in no project no orchestrator added, and a decision's opening
 // once it was answered, goes to none. A session not running keeps them. A send
 // that fails keeps them too, and a socket that is gone (the session ended without its SessionEnd
 // hook, `ended`) is forgotten until the session says it again.
@@ -218,7 +220,7 @@ export async function sendNotices(
   env: Record<string, string | undefined> = process.env,
 ): Promise<void> {
   const todos = new Todos(ledger)
-  let waiting: { notice: Notice; projectId: number | null; root: string | null }[] = []
+  let waiting: { notice: Notice; projectId: number | null; task: Task | null }[] = []
   for (const notice of ledger.unsentNotices()) {
     const task = notice.taskId === null ? null : ledger.get(notice.taskId)
     const projectId = notice.projectId ?? (task === null ? null : todos.projectOf(task))
@@ -226,12 +228,11 @@ export async function sendNotices(
       notice.event === 'decision' &&
       notice.decisionId !== null &&
       ledger.decision(notice.decisionId).answer !== null
-    const root = task?.rootSession ?? null
-    if (answered || (projectId === null && todos.listener(null, root) === null)) {
+    if (answered || (projectId === null && todos.listener(null, task) === null)) {
       ledger.claimNotices([notice.id], null)
-    } else waiting.push({ notice, projectId, root })
+    } else waiting.push({ notice, projectId, task })
   }
-  const hears = (w: (typeof waiting)[number]): Session | null => todos.listener(w.projectId, w.root)
+  const hears = (w: (typeof waiting)[number]): Session | null => todos.listener(w.projectId, w.task)
   // Session by session, each read as its turn comes, for each notice: the send before may have taken
   // a while, and a session opened since. A session is of one project or none.
   // ponytail: reads who hears each notice once per session sent to; what waits is a few dozen rows.

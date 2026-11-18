@@ -10,6 +10,8 @@ import { openSettings } from './settings'
 import {
   type Change,
   cleared,
+  helperTitle,
+  type NamedRole,
   OPEN,
   OPEN_ROLES,
   type OpenRole,
@@ -179,11 +181,20 @@ const ROLE_DUTIES: Record<OpenRole, string> = {
 }
 export const roleLine = (role: OpenRole, name: string): string =>
   `the ${role} ${name}: ${ROLE_DUTIES[role]}`
+// What Claude in a helper session hears of it, after its name and project.
+const HELPER_DUTIES =
+  "nod add here puts work in that project, and nod tells this session of the project's tasks it adds or is handed (nod hand) while it takes messages; the project's own session hears of the rest, and of these while this one is off."
 
-// All nod open tells apart by what it opens: a session of no project with `role`, or by its name
-// when no project goes by `ref`, else a project. `of`: how nod names it, `owner`: whose a new session
-// is, `name`: the session's, `line`: what Claude in it hears, `latest`: the one that stands for it.
-function opening(todos: Todos, ref: string, role: OpenRole | undefined) {
+// All nod open tells apart by what it opens: a session of no project with `role`, a project's
+// helper, or by its name when no project goes by `ref`, else a project. `of`: how nod names it,
+// `owner`: whose a new session is, `name`: the session's, `line`: what Claude in it hears,
+// `latest`: the one that stands for it.
+function opening(
+  todos: Todos,
+  ref: string,
+  role: NamedRole | undefined,
+  project: string | undefined,
+) {
   const named = (r: OpenRole, latest: Session | null) => ({
     of: ref,
     owner: { role: r, name: ref },
@@ -191,6 +202,26 @@ function opening(todos: Todos, ref: string, role: OpenRole | undefined) {
     line: `nod open opened this session as ${roleLine(r, ref)}`,
     latest,
   })
+  const helping = (p: Project, latest: Session | null) => ({
+    of: ref,
+    owner: { role: 'helper' as const, name: ref, project: p.id },
+    name: helperTitle(p, ref),
+    line: `nod open opened this session as the helper ${ref} of project p${p.id} ${p.title}: ${HELPER_DUTIES}`,
+    latest,
+  })
+  if (role === 'helper') {
+    if (project === undefined) {
+      throw new Error(`a helper is a project's: nod open ${ref} --role helper --project <project>`)
+    }
+    const p = todos.findProject(project)
+    todos.checkName(ref, role, '', p.id)
+    return helping(p, todos.latestNamed(ref))
+  }
+  if (project !== undefined) {
+    throw new Error(
+      '--project names the project of a helper: nod open <name> --role helper --project <project>',
+    )
+  }
   if (role !== undefined) {
     todos.checkName(ref, role)
     return named(role, todos.latestNamed(ref))
@@ -199,9 +230,11 @@ function opening(todos: Todos, ref: string, role: OpenRole | undefined) {
     const latest = todos.latestNamed(ref)
     if (latest === null) {
       throw new Error(
-        `no project or session named ${ref}; nod open ${ref} --role <${OPEN_ROLES.join('|')}> opens its first session`,
+        `no project or session named ${ref}; nod open ${ref} --role <${OPEN_ROLES.join('|')}> opens its first session, nod open ${ref} --role helper --project <project> a project's helper`,
       )
     }
+    const place = todos.sessionPlace(latest.sessionKey)
+    if (latest.role === 'helper' && place !== null) return helping(place.project, latest)
     return named(oneOf('session role', latest.role, OPEN_ROLES), latest)
   }
   const p = todos.findProject(ref)
@@ -221,7 +254,9 @@ const SAID = /"type":"(user|assistant)"/
 // it was opened in; a new one (`fresh`, or none yet) is recorded with `cwd` first and is the
 // project's from then on. Either way the session has the project's tasks and decisions as its own
 // (isMine). A session of no project opens by its name the same way (opening), the latest of the
-// name standing for it; its work is what it added. The account in `config` may keep no conversation
+// name standing for it; its work is what it added. So does a project's helper, `project` naming the
+// project of a new one; its work is the project's tasks it added or was handed, and the project's
+// latest session stays the one it was. The account in `config` may keep no conversation
 // of the latest: none of a session closed before its first message, and none of one kept in another
 // account's folder, as accounts need not share their projects/ folder. Claude Code (2.1.310) then
 // opens it with neither `--resume` (no conversation found) nor, once a transcript file of it is
@@ -236,9 +271,10 @@ export function openSession(
   fresh: boolean,
   cwd: string,
   config: string | null,
-  role?: OpenRole,
+  role?: NamedRole,
+  project?: string,
 ): { argv: string[]; cwd: string } {
-  const { of, owner, name, line, latest } = opening(todos, ref, role)
+  const { of, owner, name, line, latest } = opening(todos, ref, role, project)
   // The session's name is for the person; Claude in it learns its project or role from this line
   // alone. Claude Code keeps a conversation's first system prompt on resume until it compacts, so a
   // resume passes it too. Its hooks tell nod where it takes its notices (inbox.ts).
@@ -253,7 +289,8 @@ export function openSession(
       `${of}'s session was opened in ${again.cwd}, which is gone; nod open ${of} --new opens a new one here`,
     )
   }
-  if (again !== null) todos.setSessionName(again.id, name)
+  // A named session's name is what nod open knows it by, kept; a project's follows the title.
+  if (again?.role === 'project') todos.setSessionName(again.id, name)
   if (again !== null && said) {
     return {
       argv: ['claude', '--resume', again.sessionKey, '--name', name, ...told],
@@ -275,7 +312,7 @@ export function openSession(
 }
 
 // The project `nod add` puts its work in, by the Claude session it runs in (`session`). One nod
-// open opened for a project hands over its project's work only: the work goes in that project, and
+// open opened for a project, or as its helper, hands over its project's work only: the work goes in that project, and
 // work of another is refused with where it goes instead. One in a role of no project hands over no
 // project's work, refused the same way; an orchestrator's work in no project stays in none, and a
 // relay's is refused, as no session would hear of it (relays hear of no task). Any other Claude

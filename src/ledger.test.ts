@@ -26,7 +26,7 @@ test('reopening a ledger keeps its data and does not re-run migrations', () => {
   })
   const reopened = new Ledger(home)
   expect(reopened.get(id).brief).toBe('keep me')
-  expect(reopened.db.query('pragma user_version').get()).toEqual({ user_version: 34 })
+  expect(reopened.db.query('pragma user_version').get()).toEqual({ user_version: 35 })
 })
 
 test('v18 leaves the tasks before it without a root session', () => {
@@ -40,7 +40,7 @@ test('v18 leaves the tasks before it without a root session', () => {
 
   const ledger = new Ledger(home)
   expect(ledger.get(1)).toMatchObject({ brief: 'x', rootSession: null })
-  expect(ledger.db.query('pragma user_version').get()).toEqual({ user_version: 34 })
+  expect(ledger.db.query('pragma user_version').get()).toEqual({ user_version: 35 })
 })
 
 test('v23 gives a ledger of v22 project sessions, none yet, and leaves its projects as they were', () => {
@@ -80,7 +80,7 @@ test('v29 moves the project sessions of a v28 ledger to sessions under their ids
 
   const ledger = new Ledger(home)
   const todos = new Todos(ledger)
-  expect(ledger.db.query('pragma user_version').get()).toEqual({ user_version: 34 })
+  expect(ledger.db.query('pragma user_version').get()).toEqual({ user_version: 35 })
   expect(ledger.db.query('pragma foreign_key_check').all()).toEqual([])
   expect(todos.latestSession(1)).toEqual({
     id: 9,
@@ -125,7 +125,7 @@ test('v30 leaves the description of a v29 ledger’s projects empty and all else
 
   const ledger = new Ledger(home)
   const todos = new Todos(ledger)
-  expect(ledger.db.query('pragma user_version').get()).toEqual({ user_version: 34 })
+  expect(ledger.db.query('pragma user_version').get()).toEqual({ user_version: 35 })
   expect(todos.project(1)).toEqual({
     id: 1,
     title: 'Release',
@@ -151,7 +151,7 @@ test('v31 leaves a v30 ledger’s projects as they were, with no orchestrator, a
 
   const ledger = new Ledger(home)
   const todos = new Todos(ledger)
-  expect(ledger.db.query('pragma user_version').get()).toEqual({ user_version: 34 })
+  expect(ledger.db.query('pragma user_version').get()).toEqual({ user_version: 35 })
   expect(ledger.db.query('select * from project_orchestrators').all()).toEqual([])
   expect(todos.project(1)).toEqual({
     id: 1,
@@ -225,10 +225,10 @@ test('v32 drops the triggers of a v31 ledger that had none, and keeps every othe
   before.close()
 
   const ledger = new Ledger(home)
-  expect(ledger.db.query('pragma user_version').get()).toEqual({ user_version: 34 })
+  expect(ledger.db.query('pragma user_version').get()).toEqual({ user_version: 35 })
   const after = shape(ledger)
-  // and the table v34 adds, empty
-  expect(after.tables).toEqual({ ...tables, task_changes: 0 })
+  // and the tables v34 and v35 add, empty
+  expect(after.tables).toEqual({ ...tables, task_changes: 0, task_hands: 0 })
   expect(after.taskColumns).not.toContain('trigger_id')
   expect(ledger.get(1).brief).toBe('first')
   expect(existsSync(join(home, 'triggers.json'))).toBe(false)
@@ -391,9 +391,9 @@ test('v33 drops the unused columns and table of a v32 ledger that held nothing i
   before.close()
 
   const ledger = new Ledger(home)
-  expect(ledger.db.query('pragma user_version').get()).toEqual({ user_version: 34 })
-  // and the table v34 adds, empty
-  expect(shape(ledger).tables).toEqual({ ...tables, task_changes: 0 })
+  expect(ledger.db.query('pragma user_version').get()).toEqual({ user_version: 35 })
+  // and the tables v34 and v35 add, empty
+  expect(shape(ledger).tables).toEqual({ ...tables, task_changes: 0, task_hands: 0 })
   expect(columns(ledger, 'todos')).not.toContain('context')
   expect(columns(ledger, 'todos')).not.toContain('back_to')
   expect(columns(ledger, 'attempts')).not.toContain('cost_usd')
@@ -425,7 +425,7 @@ test('v33 keeps what a v32 ledger held of a context or a task to go back to in e
     insert into unmatched_notice_sessions (notice_id, session_key) values (2, 'key-gone');`)
   const ledger = new Ledger(home)
   const todos = new Todos(ledger)
-  expect(ledger.db.query('pragma user_version').get()).toEqual({ user_version: 34 })
+  expect(ledger.db.query('pragma user_version').get()).toEqual({ user_version: 35 })
   expect(ledger.db.query('pragma foreign_key_check').all()).toEqual([])
   expect(
     ledger.db
@@ -471,6 +471,57 @@ test('v33 keeps what a v32 ledger held of a context or a task to go back to in e
   expect(hadTrouble(ledger, 2)).toBe(true)
   expect(hadTrouble(ledger, 1)).toBe(false)
   expect(ledger.notice(2)).toMatchObject({ sessionId: null, sentAt: 'sent', note: 'to no row' })
+})
+
+test('v35 keeps a v34 ledger’s sessions under their ids, with what refers to them, and takes helpers', () => {
+  const home = freshHome()
+  const old = new Database(join(home, 'nod.db'), { create: true, strict: true })
+  for (const sql of MIGRATIONS.slice(0, 34)) old.exec(sql)
+  old.exec(`pragma user_version = 34;
+    insert into projects (id, title, status, created_at, status_at)
+      values (1, 'Release', 'active', 'at', 'at');
+    insert into sessions (id, session_key, role, name, cwd, socket, created_at)
+      values (3, 'key-a', 'project', 'Release', '/work/a', '/socks/a', 'at-a'),
+             (5, 'key-b', 'orchestrator', 'north', '/work/b', null, 'at-b'),
+             (8, 'key-c', 'relay', 'gate', '/work/c', null, 'at-c');
+    insert into project_sessions (session_id, project_id) values (3, 1);
+    insert into notices (id, project_id, event, note, created_at, session_id, sent_at)
+      values (1, 1, 'tell', 'to a', 'at', 3, 'sent-1'), (2, 1, 'tell', 'unsent', 'at', null, null);`)
+  const before = old.query('select * from sessions order by id').all()
+  old.close()
+
+  const ledger = new Ledger(home)
+  const todos = new Todos(ledger)
+  expect(ledger.db.query('pragma user_version').get()).toEqual({ user_version: 35 })
+  expect(ledger.db.query('pragma foreign_keys').get()).toEqual({ foreign_keys: 1 })
+  expect(ledger.db.query('pragma foreign_key_check').all()).toEqual([])
+  expect(ledger.db.query('select * from sessions order by id').all()).toEqual(before)
+  expect(todos.latestSession(1)).toMatchObject({ id: 3, sessionKey: 'key-a' })
+  expect(ledger.notice(1)).toMatchObject({ sessionId: 3, sentAt: 'sent-1' })
+  // Still the table the others refer to, its keys unique, and ids going on from the highest.
+  expect(() => ledger.claimNotices([2], 99)).toThrow('FOREIGN KEY constraint failed')
+  expect(() => todos.addSession(1, 'key-a', '/work/x')).toThrow('UNIQUE constraint failed')
+  const helper = todos.addSession({ role: 'helper', name: 'review', project: 1 }, 'key-d', '/w')
+  expect(helper).toMatchObject({ id: 9, role: 'helper' })
+  expect(todos.latestSession(1)?.id).toBe(3)
+  expect(ledger.db.query('select * from task_hands').all()).toEqual([])
+})
+
+test('a migration that makes a referenced table again undoes it all when a row would point at none', () => {
+  const home = freshHome()
+  const old = new Database(join(home, 'nod.db'), { create: true, strict: true })
+  for (const sql of MIGRATIONS.slice(0, 34)) old.exec(sql)
+  // A notice of a session no row holds, which only a ledger edited with the keys off has.
+  old.exec(`pragma user_version = 34;
+    insert into notices (id, project_id, event, note, created_at, session_id, sent_at)
+      values (1, null, 'tell', 'to none', 'at', 42, 'sent');`)
+  old.close()
+
+  expect(() => new Ledger(home)).toThrow('ledger migration 35 left rows that point at no row')
+  const db = new Database(join(home, 'nod.db'), { strict: true })
+  expect(db.query('pragma user_version').get()).toEqual({ user_version: 34 })
+  expect(db.query("select name from sqlite_schema where name = 'task_hands'").all()).toEqual([])
+  db.close()
 })
 
 test('sessions take the roles SESSION_ROLES names and refuse any other', () => {

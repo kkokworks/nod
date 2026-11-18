@@ -1,5 +1,5 @@
 import { afterAll, expect, spyOn, test } from 'bun:test'
-import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { FakeTerminals } from '../test/fake-terminals'
 import { inboxServer, inboxTest } from '../test/inbox-server'
@@ -1327,4 +1327,153 @@ test('an answer the ledger cannot record for the project session still stands, a
   }
   expect(ledger.decision(d).answer).toBe('yes')
   expect(answeredNotices(ledger)).toEqual([])
+})
+
+test("a project's helper hears of the tasks it added while it takes messages, and the project's session of them while it does not, so none is lost; the project's other notices stay with its session", async () => {
+  const { home, ledger, todos, p, q, task, turn, sent, send } = setup()
+  todos.addSession(p.id, A, '/work/one')
+  todos.setSocket(A, '/socks/a')
+  todos.addSession({ role: 'helper', name: 'review', project: p.id }, C, '/work/two')
+  // A helper's socket counts while its file is there (takesMessages), as nod has no other sign.
+  const socket = join(home, 'c.sock')
+  todos.setSocket(C, socket)
+  writeFileSync(socket, '')
+  const ofHelper = (text: string, project = p.id): number =>
+    todos.delegateNew({ ...brief(text), rootSession: C }, project, 'human')
+  const where = (): string[][] =>
+    sent.splice(0).map((s) => [s.socket, s.session_id, s.message.content])
+
+  ledger.succeed(ofHelper('Helper work'))
+  ledger.succeed(task('Main work'))
+  ledger.addNotice({ projectId: p.id, event: 'tell', note: 'Look at the logs' })
+  await sendNotices(ledger, send)
+  expect(where()).toEqual([
+    [
+      socket,
+      C,
+      expect.stringMatching(/^nod, project p1 Release: a notice\n\ntask n1 t1 succeeded/),
+    ],
+    [
+      '/socks/a',
+      A,
+      expect.stringMatching(
+        /2 notices, oldest first\n\ntask n2 t2 succeeded: Main work[\s\S]*Look at/,
+      ),
+    ],
+  ])
+  // A decision on its work goes to it too.
+  const asking = ofHelper('Ask first')
+  ledger.ask(asking, turn(asking, 'needs_decision', 'q'), 'question', 'Which way?')
+  await sendNotices(ledger, send)
+  expect(where()).toEqual([[socket, C, expect.stringContaining('decision d1 question (task n3')]])
+
+  // Off: its file is gone, or it said it ended. The project's session hears of its work meanwhile.
+  rmSync(socket)
+  ledger.succeed(ofHelper('While gone'))
+  await sendNotices(ledger, send)
+  expect(where()).toEqual([['/socks/a', A, expect.stringContaining('While gone')]])
+  writeFileSync(socket, '')
+  todos.setSocket(C, null)
+  ledger.error(asking, 'boom')
+  await sendNotices(ledger, send)
+  expect(where()).toEqual([['/socks/a', A, expect.stringContaining('task n3 t3 error, attempt 1')]])
+
+  // With both off it waits, and goes to whichever hears first: the helper, here.
+  todos.setSocket(A, null)
+  ledger.succeed(ofHelper('Waited'))
+  await sendNotices(ledger, send)
+  expect(where()).toEqual([])
+  await onInbox(ledger, { session_id: C, hook_event_name: 'SessionStart' }, socket, send)
+  expect(where()).toEqual([[socket, C, expect.stringContaining('Waited')]])
+
+  // A helper of another project hears nothing of it: its todo moved since, so p2's session does.
+  const moved = ofHelper('Moved')
+  todos.set(ledger.get(moved).todoId ?? 0, { projectId: q.id }, 'human')
+  todos.addSession(q.id, B, '/work/three')
+  todos.setSocket(B, '/socks/b')
+  ledger.succeed(moved)
+  await sendNotices(ledger, send)
+  expect(where()).toEqual([['/socks/b', B, expect.stringContaining('Moved')]])
+})
+
+test("nod hand moves a task to a helper, its notices not sent yet with it, and back to the project's session; its retrospective goes with it", async () => {
+  const { home, ledger, todos, p, q, task, turn, sent, send } = setup()
+  todos.addSession(p.id, A, '/work/one')
+  todos.addSession({ role: 'helper', name: 'review', project: p.id }, C, '/work/two')
+  todos.addSession({ role: 'helper', name: 'docs', project: q.id }, D, '/work/three')
+  const socket = join(home, 'c.sock')
+  todos.setSocket(C, socket)
+  writeFileSync(socket, '')
+  const where = (): string[][] => sent.splice(0).map((s) => [s.socket, s.message.content])
+
+  // The project's session is off, so what its task brings waits for it.
+  const going = task('Going')
+  ledger.ask(going, turn(going, 'needs_decision', 'q'), 'question', 'Which way?')
+  await sendNotices(ledger, send)
+  expect(where()).toEqual([])
+  todos.handTask(going, 'review')
+  await sendNotices(ledger, send)
+  expect(where()).toEqual([[socket, expect.stringContaining('decision d1 question (task n1')]])
+  ledger.succeed(going)
+  await sendNotices(ledger, send)
+  expect(where()).toEqual([[socket, expect.stringContaining('task n1 t1 succeeded')]])
+  // Its retrospective is the helper's too, unless handed itself.
+  const retro = ledger.addRetro(ledger.get(going), 'look back')
+  expect(todos.helperOf(ledger.get(retro), p.id)?.sessionKey).toBe(C)
+
+  // Back to the project's session, though the helper takes messages.
+  todos.handTask(going, null)
+  todos.setSocket(A, '/socks/a')
+  ledger.error(going, 'boom')
+  await sendNotices(ledger, send)
+  expect(where()).toEqual([['/socks/a', expect.stringContaining('task n1 t1 error, attempt 1')]])
+  expect(todos.helperOf(ledger.get(retro), p.id)).toBeNull()
+
+  // A helper the task's project lacks, and a task in no project, are refused, the hand as it was.
+  expect(() => todos.handTask(going, 'docs')).toThrow(
+    'p1 has no helper named docs; nod open docs --role helper --project p1 opens one',
+  )
+  expect(() => todos.handTask(going, 'nobody')).toThrow('p1 has no helper named nobody')
+  const loose = task('Loose', null)
+  expect(() => todos.handTask(loose, 'review')).toThrow(
+    `n${loose} is in no project, so no project's session or helper takes it`,
+  )
+  expect(todos.helperOf(ledger.get(going), p.id)).toBeNull()
+})
+
+test('a helper hears nothing-from-nod warnings only when it cannot hear, and none of its own work it set going while it hears', async () => {
+  const { home, ledger, todos, p, send } = setup()
+  todos.addSession({ role: 'helper', name: 'review', project: p.id }, C, '/work/two')
+  const socket = join(home, 'c.sock')
+  writeFileSync(socket, '')
+  // Its first nod command says where it takes messages: no warning, though p1 has no session.
+  expect(await onCommand(ledger, C, socket, send)).toBeNull()
+  const mine = todos.delegateNew({ ...brief('Mine'), rootSession: C }, p.id, 'human')
+  expect(unheardWork(ledger, C, [mine])).toEqual([])
+  expect(todos.isMine(C, ledger.get(mine))).toBe(true)
+  // The project's own work is not its own, and the project's session, which hears it, has none.
+  const theirs = todos.delegateNew(brief('Theirs'), p.id, 'human')
+  expect(todos.isMine(C, ledger.get(theirs))).toBe(false)
+  expect(unheardWork(ledger, C, [theirs])).toEqual([
+    "nod: p1's session hears nothing from nod (nod open never opened one), so the decisions and ends of this work wait unheard until nod open p1 opens one; meanwhile nod and nod ls here show them",
+  ])
+  // Handed, it is.
+  todos.handTask(theirs, 'review')
+  expect(todos.isMine(C, ledger.get(theirs))).toBe(true)
+  expect(unheardWork(ledger, C, [theirs])).toEqual([])
+  // The project's session has the helper's work as its own too.
+  todos.addSession(p.id, A, '/work/one')
+  expect(todos.isMine(A, ledger.get(mine))).toBe(true)
+
+  // An older session of the name, and one with no socket, hear nothing, and say how to open it.
+  todos.addSession({ role: 'helper', name: 'review', project: p.id }, B, '/work/three')
+  expect(await onCommand(ledger, B, undefined, send)).toBe(
+    'nod: this session of review hears nothing from nod: Claude Code gave it no inbox socket (CLAUDE_CODE_MESSAGING_SOCKET); nod open review opens it again',
+  )
+  expect(await onCommand(ledger, C, socket, send)).toBe(
+    "nod: this session of review hears nothing from nod: nod tells review's latest session, which nod open review opens",
+  )
+  // The newer of the name has the work as its own; the older no longer.
+  expect(todos.isMine(B, ledger.get(mine))).toBe(true)
+  expect(todos.rootPlace(ledger.get(mine))).toMatchObject({ session: { sessionKey: B } })
 })

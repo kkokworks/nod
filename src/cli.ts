@@ -29,6 +29,7 @@ import {
   onInbox,
   sendLine,
   sendNotices,
+  takesMessages,
   tellProject,
   tellSessions,
   unheardWork,
@@ -65,7 +66,7 @@ import {
   todayCommand,
   todoCommand,
 } from './todo-cli'
-import { type Found, OPEN_ROLES, oneOf, parseRef, Todos } from './todos'
+import { type Found, NAMED_ROLES, OPEN_ROLES, oneOf, parseRef, Todos } from './todos'
 import { scheduleEnv, scheduleOff, scheduleOn, tick } from './triggers'
 import {
   indent,
@@ -162,10 +163,19 @@ const USAGE = `usage:
                                    a session of that role and no project: the first of that
                                    name, or the same as nod open <name>. A name another role has,
                                    or that names a project, is refused
+  nod open <name> --role helper --project <project> [--new]
+                                   a helper of the project, beside its session, which it does not
+                                   stand for: the first of that name, or the same as nod open
+                                   <name>; a project may have several. Named "<project's session
+                                   name> · <name>" in Claude Code. Its tasks (--mine) are the
+                                   project's it added or was handed (nod hand), and nod tells it
+                                   of them while it takes messages, the project's session while
+                                   it does not. nod add there keeps to the project. A name another
+                                   role or another project's helper has is refused
   nod open <name> [--new]          the latest session of that name, as a project's is opened, when
                                    no project goes by it; a session of another name runs beside
-                                   it. Its tasks are those it added. nod add there takes no
-                                   project's work: a project's goes to its session with nod tell
+                                   it. A helper's is as above. In a role of no project, its tasks
+                                   are those it added, and nod add there takes no project's work: a project's goes to its session with nod tell
                                    p<n>, or in as a todo with nod in --project. An orchestrator
                                    hands over work in no project and hears of it (see below); a
                                    relay passes what comes from outside to the project session it
@@ -175,6 +185,9 @@ const USAGE = `usage:
                                    conversation going on: nod records it if it did not know it,
                                    with the folder its transcript says it was opened in, a project
                                    session leaves its project, and it says where it takes messages
+  nod hand <task> [<helper>]       hand a task in a project to the project's helper of that name,
+                                   or with none back to the project's session: what nod has not
+                                   told of it yet, and all after, goes there
   nod tell <task> <message...>     send a follow-up into the task's session
   nod tell p<project> <message...> send a message into the project's session, as nod tells it of
                                    its tasks; kept until that session takes messages. From an
@@ -198,7 +211,8 @@ const USAGE = `usage:
   nod ls [--all] [--mine] [--plain | --json]
                                    tasks not yet collected by gc (--all: every task; --mine: only
                                    this Claude session's: those it added, or, in a session nod
-                                   open opened, its project's), as a table the terminal's width:
+                                   open opened, its project's; a helper's, those it added or was
+                                   handed), as a table the terminal's width:
                                    what needs you, running, queued, ended but not dealt with (no
                                    link, no push), then ended; the latest first in each, with its
                                    issue, links and the remote branches it was pushed to.
@@ -208,7 +222,8 @@ const USAGE = `usage:
                                    line a task
   nod show <task>                  history, links, then each turn's full report, the last at the
                                    very end. root: is the Claude session whose task it is: its
-                                   project's latest session, by the project and how to reopen it,
+                                   helper or its project's latest session, by the project and how
+                                   to reopen it,
                                    with the session that added it when that was another; else the
                                    session that added it (claude --resume <session>)
   nod search <ref>                 find by number: t<n>, n<n>, r<n>, p<n>, d<n>, or <n> for every
@@ -321,6 +336,10 @@ session, and nod --mine and nod ls --mine show it meanwhile. /clear goes on unde
 did not open: it hears nothing until nod open opens the project's session again. One with no hooks
 cannot say it cleared, so what went to it after, until its next nod command, is lost: once
 nod open opens it again, nod ls --mine and nod --mine show what it missed.
+A helper hears the same way of the project's tasks it added or was handed (nod hand): the latest
+session of its name, while it takes messages. While it does not, the project's session hears of
+them, so nothing is lost, and a notice not sent yet goes to whichever of the two hears when it is
+sent. What a project hears of no task (nod tell p<n>) goes to the project's session alone.
 An orchestrator hears the same way of the tasks it added in no project: the latest session of its
 name, even while another orchestrator runs. What comes while it is closed waits for it too. No
 session hears of a task in no project that no orchestrator added (a shell's, say): what
@@ -408,6 +427,9 @@ switch (command) {
   }
   case 'check':
     checkCommand(rest)
+    break
+  case 'hand':
+    await hand(rest)
     break
   case 'attach':
     attach(taskRef(rest[0]))
@@ -726,6 +748,26 @@ function checkCommand([ref, ...cmd]: string[]): void {
   for (const line of checkChanges(id)) console.log(`  ${line}`)
 }
 
+// `nod hand`: a task in a project goes to the project's helper of that name, or with none back to
+// the project's own session. What nod has not told of it yet goes there too, at once to one that
+// takes messages (Todos.listener reads it as it sends).
+async function hand([ref, helper, ...extra]: string[]): Promise<void> {
+  if (ref === undefined || extra.length > 0) throw new Error(USAGE)
+  const id = taskRef(ref)
+  const todos = new Todos(ledger)
+  todos.handTask(id, helper ?? null)
+  await tellSessions(home)
+  const p = `p${todos.projectOf(ledger.get(id))}`
+  if (helper === undefined) {
+    console.log(`n${id} goes to ${p}'s session`)
+    return
+  }
+  const off = takesMessages(todos.latestNamed(helper))
+    ? ''
+    : `; it takes no messages now, so ${p}'s session hears of n${id} until nod open ${helper} opens it`
+  console.log(`n${id} goes to the helper ${helper} of ${p}${off}`)
+}
+
 // Each change to the task's check, with when and who made it.
 function checkChanges(id: number): string[] {
   return ledger.taskChanges(id).map((c) => {
@@ -1027,7 +1069,7 @@ function attach(taskId: number): void {
 function open(args: string[]): void {
   const { values, positionals } = parseArgs({
     args,
-    options: { new: { type: 'boolean' }, role: { type: 'string' } },
+    options: { new: { type: 'boolean' }, role: { type: 'string' }, project: { type: 'string' } },
     allowPositionals: true,
   })
   const [ref, ...extra] = positionals
@@ -1039,7 +1081,8 @@ function open(args: string[]): void {
     values.new ?? false,
     process.cwd(),
     config,
-    values.role === undefined ? undefined : oneOf('session role', values.role, OPEN_ROLES),
+    values.role === undefined ? undefined : oneOf('session role', values.role, NAMED_ROLES),
+    values.project,
   )
   const env = { ...process.env }
   env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE ||= AUTOCOMPACT_PCT
