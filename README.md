@@ -246,7 +246,7 @@ nod todo set t2 --status next --from waiting                 # 아직 대기일 
 nod todo                 # 받은 일함·다음 행동·대기
 nod todo next
 nod project              # 진행 중인 프로젝트와 다음 행동 수 (없으면 알려 줌), 담당, 아랫줄에 설명 앞 100자
-nod project p1           # 한 프로젝트: 담당, 설명 전체, 열린 할 일과 바뀐 이력
+nod project p1           # 한 프로젝트: 담당, 설명 전체, 보조(켜짐·꺼짐, 안 끝난 작업 수, 맡는 일), 열린 할 일과 바뀐 이력
 nod project set p1 --description '치과, 건강 검진, 처방'   # 설명 고치기 (빈 값이면 비움)
 nod project set p1 --orchestrator north                   # 담당 오케스트레이터 정하기 (빈 값이면 비움)
 nod todo t1              # 한 개 보기: 메모·링크·누가 무엇을 바꿨는지

@@ -1087,9 +1087,11 @@ export class Todos {
     )
   }
 
-  // Says what the project's helper of that name is for, or nothing (null). It goes by the name, so
-  // a new session of it has it too.
-  describeHelper(projectId: number, name: string, description: string | null): void {
+  // Says what the project's helper of that name is for, or nothing (null, or only blanks). It goes
+  // by the name, so a new session of it has it too, and so does the name back in the project after
+  // it helped another.
+  describeHelper(projectId: number, name: string, said: string | null): void {
+    const description = said?.trim() || null
     const row = q
       .deleteFrom('helperDescriptions')
       .where('projectId', '=', projectId)
@@ -1119,6 +1121,7 @@ export class Todos {
         .where('sessions.role', '=', 'helper')
         .orderBy('sessions.name'),
     )
+    if (names.length === 0) return []
     const tasks = this.ledger
       .list()
       .filter((t) => UNFINISHED.includes(t.status) && this.projectOf(t) === projectId)

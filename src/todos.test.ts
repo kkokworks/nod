@@ -592,6 +592,11 @@ test("a project's helpers come by name, each by its latest session, with its des
   todos.describeHelper(p.id, 'review', null)
   todos.describeHelper(p.id, 'review', null)
   expect(shown(p.id)[1]).toEqual(['key-r2', null, 3])
+  // Blanks around it go, and blanks alone say nothing.
+  todos.describeHelper(p.id, 'review', '  PRs\n')
+  expect(shown(p.id)[1]).toEqual(['key-r2', 'PRs', 3])
+  todos.describeHelper(p.id, 'review', ' \n ')
+  expect(shown(p.id)[1]).toEqual(['key-r2', null, 3])
 
   // A name whose latest session went to another project is that one's, without what it was for
   // here; its tasks here go back to the project's own session.
@@ -602,6 +607,13 @@ test("a project's helpers come by name, each by its latest session, with its des
     ['key-d', null, 0],
     ['key-o', null, 0],
   ])
+  // Back in the project by the same name, it is what it was for here.
+  todos.claimSession(helper('docs', p.id), 'key-d', '/w')
+  expect(shown(p.id)).toEqual([
+    ['key-d', 'Writes the docs', 1],
+    ['key-r2', null, 3],
+  ])
+  todos.claimSession(helper('docs', q.id), 'key-d', '/w')
   // A role of no project is no helper.
   todos.claimSession({ role: 'relay', name: 'gate' }, 'key-r2', '/w')
   expect(shown(p.id)).toEqual([['key-r', null, 3]])
