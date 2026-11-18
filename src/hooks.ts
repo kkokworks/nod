@@ -11,7 +11,8 @@ import {
   permissionQuestion,
   QUESTION_LIMIT,
 } from './decisions'
-import { followWork } from './done'
+import { followWork, lands } from './done'
+import { landSoon } from './land'
 import type { Attempt, Ledger } from './ledger'
 import {
   CLAUDE_OPTION,
@@ -91,17 +92,22 @@ export const ToolEvent = z.object({
 
 // Called by the Stop hook. Returns the hook's stdout: a "block" that makes Claude Code continue the
 // same turn with a failed check's output, or null to let the worker stop.
+// `landNow`: how the task's landing goes on once this turn made it succeed (landSoon), but in tests.
 export async function onStop(
   ledger: Ledger,
   home: string,
   terminals: Terminals,
   event: z.infer<typeof StopEvent>,
+  landNow: (home: string, repo: string) => unknown = landSoon,
 ): Promise<string | null> {
   const taskId = ledger.taskOfSession(event.session_id)
   if (taskId === null) return null
   // Of a turn the task's end closed (nod cancel, a decision dropped): it ended, so nothing of that
   // turn goes in, not as one typed into the terminal either (currentAttempt would open it).
   if (ended(ledger, taskId) && ledger.openAttempt(taskId) === null) return null
+  // A turn nod or an answer started runs with the task running, landing work too (deliver); one
+  // typed into the terminal of a finished task leaves it succeeded, and moves no landing on.
+  const was = ledger.get(taskId).status
   // The turn went on after all (Claude Code continued it once the limit reset). From here to the
   // end, after nod has closed the turn, a restart would end this hook with Claude Code, so restarts
   // wait for it (settling, restartDue below). Hooks a test runs itself have no terminal.
@@ -134,6 +140,16 @@ export async function onStop(
   await followWork(ledger, SELF, null)
   // A task that just succeeded may let others start.
   await startReady(ledger, home, terminals)
+  // And lands now, its first done or its landing work done, rather than at the tick's next fifth
+  // minute; a landing that does not start is the tick's, as ever.
+  const task = ledger.get(taskId)
+  if (was !== 'succeeded' && task.status === 'succeeded' && task.repo !== null) {
+    try {
+      if (lands(ledger, task)) landNow(home, task.repo)
+    } catch (error) {
+      console.error(`nod: could not start landing task n${taskId}: ${message(error)}`)
+    }
+  }
   if (live && terminals.alive(name)) terminals.setOption(name, SETTLING_OPTION, null)
   // A restart that waited for this turn to end. One that cannot run must not change what the hook
   // answers; Claude Code keeps a hook's stderr in its debug log.

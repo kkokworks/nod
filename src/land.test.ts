@@ -14,12 +14,12 @@ import { calls, clonedRepo, fakeService, git } from '../test/remote'
 import { tempDirs } from '../test/tmp'
 import { testTmux } from '../test/tmux'
 import { onStop } from './hooks'
-import { land } from './land'
+import { land, landSoon } from './land'
 import { type Decision, type LandLevel, Ledger } from './ledger'
 import { workspaceOf } from './place'
-import { Tmux } from './tmux'
+import { running, Tmux } from './tmux'
 import { tick } from './triggers'
-import { answer, checkNow, drop, type Send, tell } from './worker'
+import { answer, checkNow, drop, type Send, tell, workerPrompt } from './worker'
 
 // Landing runs without a terminal here: what nod hands the worker (`send`) starts its turn as
 // deliver does, and each test ends that turn itself through the Stop hook, as the worker would.
@@ -51,6 +51,9 @@ let repo: string
 let origin: string
 let service: string
 let handed: { id: number; text: string }[]
+// The repos a Stop hook would land at once (landSoon): recorded, as a real one would land them in a
+// process of its own while the test does.
+let soon: string[]
 let n = 0
 
 // As deliver does with no terminal: the landing turn starts, and the worker's stop comes later.
@@ -76,6 +79,7 @@ beforeEach(() => {
   process.env.FAKE_SERVICE = service
   ;({ repo, origin } = clonedRepo(tmp.make, service, 'https://github.com/o/r'))
   handed = []
+  soon = []
 })
 
 const setRepo = (land: LandLevel, more: { checkCmd?: string; gateCmd?: string } = {}) =>
@@ -85,6 +89,20 @@ const setRepo = (land: LandLevel, more: { checkCmd?: string; gateCmd?: string } 
 // branch it then starts.
 // `start`: what its branch starts from without an earlier task (the repo's HEAD otherwise).
 function finished(
+  branch: string,
+  files: Record<string, string>,
+  after?: number,
+  start?: string,
+): number {
+  const id = working(branch, files, after, start)
+  const a = ledger.lastAttempt(id)?.id ?? 0
+  ledger.endAttempt(a, { outcome: 'succeeded', summary: 'did it', report: 'NOD: done | did it' })
+  ledger.succeed(id)
+  return id
+}
+
+// The same task while its worker's first turn, which made that commit, still runs.
+function working(
   branch: string,
   files: Record<string, string>,
   after?: number,
@@ -107,15 +125,13 @@ function finished(
   git(ws, 'add', '-A')
   git(ws, 'commit', '-qm', `change ${Object.keys(files).join(' ')}`)
   ledger.setRunning(id, ws)
-  const a = ledger.startAttempt({
+  ledger.startAttempt({
     taskId: id,
     kind: 'start',
     decisionId: null,
     sessionId: `s${id}`,
     prompt: `work on ${branch}`,
   })
-  ledger.endAttempt(a, { outcome: 'succeeded', summary: 'did it', report: 'NOD: done | did it' })
-  ledger.succeed(id)
   return id
 }
 
@@ -132,11 +148,13 @@ function mainMoves(file: string, text: string): string {
 
 // The worker's turn ends with `reply`.
 const stops = (id: number, reply: string, continuing = false) =>
-  onStop(ledger, home, Tmux.of(home), {
-    session_id: `s${id}`,
-    last_assistant_message: reply,
-    stop_hook_active: continuing,
-  })
+  onStop(
+    ledger,
+    home,
+    Tmux.of(home),
+    { session_id: `s${id}`, last_assistant_message: reply, stop_hook_active: continuing },
+    (_, path) => soon.push(path),
+  )
 const ws = (id: number): string => ledger.get(id).workspace ?? ''
 const head = (id: number): string => git(ws(id), 'rev-parse', 'HEAD')
 const reviews = (): string[] => {
@@ -561,6 +579,7 @@ test('nod land says another landing holds the repo when that kept it from a task
     `n${id} another landing is running in its repo: run ${call} again once it ends`
   expect(nodLand(`n${id}`)).toEqual([busy(`nod land n${id}`)])
   expect(nodLand()).toEqual([busy('nod land')])
+  expect(nodLand('--repo', repo)).toEqual([busy('nod land')])
   expect((await tick(ledger, home, Tmux.of(home), new Date(), true)).landed).toEqual([])
 
   // Once that pass ends the same task lands, and with none left a held repo is nothing to land.
@@ -570,6 +589,11 @@ test('nod land says another landing holds the repo when that kept it from a task
   ])
   hold()
   expect(nodLand()).toEqual(['nothing to land'])
+  // A repo nod does not land, as a task in one is refused.
+  setRepo('off')
+  const refused = Bun.spawnSync(['bun', resolve(import.meta.dir, 'cli.ts'), 'land', '--repo', repo])
+  expect(refused.exitCode).toBe(1)
+  expect(refused.stderr.toString()).toContain(`${repo} does not let nod land its tasks`)
 }, 30_000)
 
 test('a message while nod works in the worktree waits, so the worker does not edit files that move under it', async () => {
@@ -582,6 +606,108 @@ test('a message while nod works in the worktree waits, so the worker does not ed
   )
   expect(ledger.attempts(id)).toHaveLength(1)
 })
+
+test('a worker whose task nod lands hears that nod pushes and opens the pull request (at merge, merges it), and to only commit; others hear nothing of it', () => {
+  const said = (id: number): string => workerPrompt(ledger, ledger.get(id)).replaceAll('\n', ' ')
+  const only =
+    'So commit on the current branch and leave the rest to nod: do not push, set an upstream or open a pull request, and do not ask anyone to do any of it.'
+  const older = finished('feat/older', { 'o.txt': 'o\n' })
+  expect(said(older)).not.toContain('lands this branch')
+  setRepo('pr')
+  // Added before the repo went up, it lands only once named: the person pushes it until then.
+  expect(said(older)).not.toContain('lands this branch')
+  const id = finished('feat/told', { 't.txt': 't\n' })
+  expect(said(id)).toContain(
+    `Once nod accepts your done, it lands this branch itself: it rebases it onto the default branch, checks it, pushes it and opens a pull request. ${only}`,
+  )
+  setRepo('merge')
+  expect(said(id)).toContain(`opens a pull request, then squash merges it. ${only}`)
+  // Its landing stopped (a decision dropped): as in a repo nod does not land.
+  ledger.setLanding(id, { stopped: 'dropped' })
+  expect(said(id)).not.toContain('lands this branch')
+})
+
+test('a task lands as its first done succeeds, and goes on as its landing work ends: no tick, no nod land; a turn that leaves it succeeded, or a repo nod does not land, starts none', async () => {
+  const off = working('feat/off', { 'f.txt': 'f\n' })
+  await stops(off, 'NOD: done | did it')
+  expect(ledger.get(off).status).toBe('succeeded')
+  expect(soon).toEqual([])
+
+  setRepo('pr')
+  const id = working('feat/soon', { 's.txt': 's\n' })
+  await stops(id, 'NOD: done | did it')
+  expect(ledger.get(id).status).toBe('succeeded')
+  expect(soon).toEqual([repo])
+  // What that landing does (landSoon): a pass of this repo alone.
+  expect(await land(ledger, home, Tmux.of(home), { repo, send })).toEqual([
+    { id, did: 'its worker writes the pull request' },
+  ])
+  await stops(id, '# Add s\n\nWhy.\n\nNOD: done | wrote it')
+  expect(soon).toEqual([repo, repo])
+  expect(await land(ledger, home, Tmux.of(home), { repo, send })).toEqual([
+    { id, did: 'pull request open, waiting for its merge: https://github.com/o/r/pull/1' },
+  ])
+  // A turn typed into its terminal opens with the task succeeded (onPrompt), and leaves it so.
+  ledger.startAttempt({
+    taskId: id,
+    kind: 'followup',
+    decisionId: null,
+    sessionId: `s${id}`,
+    prompt: 'what did you change?',
+  })
+  await stops(id, 'Added s.\n\nNOD: done | answered')
+  expect(ledger.get(id).status).toBe('succeeded')
+  expect(soon).toEqual([repo, repo])
+}, 30_000)
+
+test('a landing that starts while another pass holds the repo lands nothing; the pass holding it lands the tasks whose turns ended meanwhile before it lets go', async () => {
+  setRepo('pr')
+  const x = finished('feat/x', { 'x.txt': 'x\n' })
+  const y = working('feat/y', { 'y.txt': 'y\n' })
+  // The parent of this test process, alive and not this process: another pass.
+  expect(ledger.claimRepo(repo, process.ppid, () => false)).toBe(true)
+  expect(await land(ledger, home, Tmux.of(home), { repo, send })).toEqual([])
+  expect(handed).toEqual([])
+  expect(ledger.landing(x)).toBeNull()
+  // Still that pass's.
+  expect(ledger.claimRepo(repo, process.pid, running)).toBe(false)
+  ledger.releaseRepo(repo, process.ppid)
+
+  // As this pass hands x the pull request's text, x's worker writes it and y's worker reports done.
+  // The landings their Stop hooks start find this pass holding the repo.
+  const meanwhile: Send = async (id, text) => {
+    await send(id, text)
+    if (id !== x) return
+    await stops(x, '# Add x\n\nWhy.\n\nNOD: done | wrote it')
+    await stops(y, 'NOD: done | did it')
+  }
+  expect(await land(ledger, home, Tmux.of(home), { repo, send: meanwhile })).toEqual([
+    { id: x, did: 'its worker writes the pull request' },
+    { id: x, did: 'pull request open, waiting for its merge: https://github.com/o/r/pull/1' },
+    { id: y, did: 'its worker writes the pull request' },
+  ])
+  expect(soon).toEqual([repo, repo])
+  expect(handed.map((h) => h.id)).toEqual([x, y])
+}, 30_000)
+
+test('landSoon lands in a process of its own, as nod land --repo does', async () => {
+  setRepo('pr')
+  const id = finished('feat/own', { 'o.txt': 'o\n' })
+  await land(ledger, home, Tmux.of(home), { send })
+  await stops(id, '# Add o\n\nWhy.\n\nNOD: done | wrote it')
+  expect(soon).toEqual([repo])
+  // Outside a sandbox, as a worker's Stop hook runs: inside one, nod land leaves it to the tick.
+  const sandbox = process.env.SANDBOX_RUNTIME
+  process.env.SANDBOX_RUNTIME = ''
+  try {
+    expect(await landSoon(home, repo).exited).toBe(0)
+  } finally {
+    process.env.SANDBOX_RUNTIME = sandbox
+    if (sandbox === undefined) delete process.env.SANDBOX_RUNTIME
+  }
+  expect(ledger.landing(id)?.pr).toBe('https://github.com/o/r/pull/1')
+  expect(calls(service).filter((c) => c.args[1] === 'create')).toHaveLength(1)
+}, 30_000)
 
 test('the tick lands on its fifth minutes, before it sweeps', async () => {
   setRepo('pr')
