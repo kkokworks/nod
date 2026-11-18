@@ -48,6 +48,18 @@ test('a 5-hour limit names a time alone: the next one from the failure', () => {
   expect(
     reset("You've hit your session limit · resets 7pm (Asia/Seoul)", '2026-11-18T10:00:30Z'),
   ).toBe('2026-11-18T10:00:00.000Z')
+  // A weekly limit within a day reads as a time alone too: 23 h 55 min on is that time tomorrow, not
+  // one five minutes ago.
+  expect(
+    reset("You've hit your weekly limit · resets 7pm (Asia/Seoul)", '2026-11-18T10:05:00Z'),
+  ).toBe('2026-11-19T10:00:00.000Z')
+  // The night summer time ends, 1:30 comes twice: the later one.
+  expect(
+    reset(
+      "You've hit your session limit · resets 1:30am (America/New_York)",
+      '2026-11-01T04:00:00Z',
+    ),
+  ).toBe('2026-11-01T06:30:00.000Z')
 })
 
 test('a day without its year is the next such day; one with its year is that day', () => {

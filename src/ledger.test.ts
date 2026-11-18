@@ -1214,16 +1214,29 @@ test('an error that says when a usage limit resets waits for it, and the tick ta
   const id = newTask(ledger)
   ledger.error(id, LIMIT)
   expect(ledger.limitWait(id)).toEqual({ resumeAt: RESUME_AT, resumed: 0 })
-  expect(ledger.claimResumes('2099-01-03T10:00:59.999Z')).toEqual([])
-  expect(ledger.claimResumes(RESUME_AT)).toEqual([id])
-  expect(ledger.claimResumes(RESUME_AT)).toEqual([])
+  expect(ledger.claimResume('2099-01-03T10:00:59.999Z')).toBeNull()
+  expect(ledger.claimResume(RESUME_AT)).toBe(id)
+  expect(ledger.claimResume(RESUME_AT)).toBeNull()
   expect(ledger.limitWait(id)).toEqual({ resumeAt: null, resumed: 1 })
   ledger.error(id, LIMIT)
   expect(ledger.limitWait(id)).toEqual({ resumeAt: RESUME_AT, resumed: 1 })
   // An error since that says no reset leaves it to the person.
   ledger.error(id, 'the review exited with 1: Failed to authenticate. API Error: 403')
   expect(ledger.limitWait(id)).toEqual({ resumeAt: null, resumed: 1 })
-  expect(ledger.claimResumes('2100-01-01T00:00:00.000Z')).toEqual([])
+  expect(ledger.claimResume('2100-01-01T00:00:00.000Z')).toBeNull()
+})
+
+test('the tick takes the tasks due one at a time, so one it stops on leaves the rest due, and each once', () => {
+  const ledger = new Ledger(freshHome())
+  const [first, second] = [1, 2].map(() => newTask(ledger))
+  for (const id of [second, first]) ledger.error(id ?? 0, LIMIT)
+  expect(ledger.claimResume(RESUME_AT)).toBe(first ?? 0)
+  expect(ledger.limitWait(second ?? 0)).toEqual({ resumeAt: RESUME_AT, resumed: 0 })
+  // Stopped on its limit again before that tick took the next: that tick does not take it twice.
+  ledger.error(first ?? 0, LIMIT)
+  expect(ledger.claimResume(RESUME_AT, first)).toBe(second ?? 0)
+  expect(ledger.claimResume(RESUME_AT, second)).toBeNull()
+  expect(ledger.claimResume(RESUME_AT)).toBe(first ?? 0)
 })
 
 test('a task no longer in error, or collected, is not resumed after its limit; one whose error says no reset never waits', () => {
@@ -1237,11 +1250,21 @@ test('a task no longer in error, or collected, is not resumed after its limit; o
     plain ?? 0,
     'Failed to authenticate. API Error: 403 Attention Required! | Cloudflare',
   )
-  expect(ledger.claimResumes(RESUME_AT)).toEqual([])
+  expect(ledger.claimResume(RESUME_AT)).toBeNull()
   for (const id of [running, cancelled, collected]) {
     expect(ledger.limitWait(id ?? 0)).toEqual({ resumeAt: null, resumed: 0 })
   }
   expect(ledger.limitWait(plain ?? 0)).toBeNull()
+  // Brought back by restore, still in error: gc collected it, so its wait went with that.
+  ledger.uncollected(collected ?? 0)
+  expect(ledger.claimResume(RESUME_AT)).toBeNull()
+  expect(ledger.limitWait(collected ?? 0)).toEqual({ resumeAt: null, resumed: 0 })
+  // As gc marks one: the same.
+  const swept = newTask(ledger)
+  ledger.error(swept, LIMIT)
+  expect(ledger.collectedAsRead(ledger.get(swept), null)).toBe(true)
+  ledger.uncollected(swept)
+  expect(ledger.limitWait(swept)).toEqual({ resumeAt: null, resumed: 0 })
 })
 
 test('v37 has the tasks a usage limit stopped before it wait as from when they errored, unless the reset has passed or gc collected them', () => {

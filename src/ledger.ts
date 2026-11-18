@@ -1227,7 +1227,7 @@ export class Ledger {
     )
   }
 
-  // When the tick resumes the task (claimResumes), and how many times nod resumed it after a limit;
+  // When the tick resumes the task (claimResume), and how many times nod resumed it after a limit;
   // null for a task no limit stopped. No time once nothing is due: it errored otherwise since, it is
   // no longer in error (the person resumed or cancelled it, or nod did), or gc collected it (the
   // person dealt with it).
@@ -1244,46 +1244,65 @@ export class Ledger {
     return { resumeAt: due ? row.resumeAt : null, resumed: row.resumed }
   }
 
-  // Takes the tasks due a resume by `now` (limitWait), each counted as resumed, in one statement, so
-  // of two ticks at once only one resumes each.
-  claimResumes(now: string): number[] {
-    return this.run(
+  // Takes the first task after task `after` due a resume by `now` (limitWait), counted as resumed,
+  // in one statement, so of two ticks at once only one resumes it; null when none is due. One at a
+  // time, so a tick that stops midway leaves the rest due; past `after`, so a tick resumes a task
+  // once, even one that stopped on its limit again as fast.
+  claimResume(now: string, after = 0): number | null {
+    const claimed = this.first(
       q
         .updateTable('limitWaits')
         .set((eb) => ({ resumeAt: null, resumed: eb('resumed', '+', 1) }))
-        .where('resumeAt', '<=', now)
-        .where('taskId', 'in', (eb) =>
+        .where('taskId', '=', (eb) =>
           eb
-            .selectFrom('tasks')
-            .select('id')
-            .where('status', '=', 'error')
-            .where('collectedAt', 'is', null),
+            .selectFrom('limitWaits as w')
+            .innerJoin('tasks as t', 't.id', 'w.taskId')
+            .select('w.taskId')
+            .where('w.taskId', '>', after)
+            .where('w.resumeAt', '<=', now)
+            .where('t.status', '=', 'error')
+            .where('t.collectedAt', 'is', null)
+            .orderBy('w.taskId')
+            .limit(1),
         )
         .returning('taskId'),
-    ).map((r) => r.taskId)
+    )
+    return claimed?.taskId ?? null
   }
 
   // A gc that finds the branch already gone has no head to record and keeps the one recorded.
   collected(id: number, head: string | null): void {
     const set = head === null ? { collectedAt: now() } : { collectedAt: now(), head }
-    this.run(q.updateTable('tasks').set(set).where('id', '=', id))
+    this.db.transaction(() => {
+      this.run(q.updateTable('tasks').set(set).where('id', '=', id))
+      this.dealtWith(id)
+    })()
   }
 
   // collected, but only while the task is as gc read it, in one statement: one told to go on since
   // is not hidden from ls. One collected before keeps when.
   collectedAsRead(task: Task, head: string | null): boolean {
     const at = task.collectedAt ?? now()
-    const marked = this.run(
-      q
-        .updateTable('tasks')
-        .set(head === null ? { collectedAt: at } : { collectedAt: at, head })
-        .where('id', '=', task.id)
-        .where('status', '=', task.status)
-        .where('finishedAt', 'is', task.finishedAt)
-        .where('collectedAt', 'is', task.collectedAt)
-        .returning('id'),
-    )
-    return marked.length > 0
+    return this.db.transaction((): boolean => {
+      const marked = this.run(
+        q
+          .updateTable('tasks')
+          .set(head === null ? { collectedAt: at } : { collectedAt: at, head })
+          .where('id', '=', task.id)
+          .where('status', '=', task.status)
+          .where('finishedAt', 'is', task.finishedAt)
+          .where('collectedAt', 'is', task.collectedAt)
+          .returning('id'),
+      )
+      if (marked.length > 0) this.dealtWith(task.id)
+      return marked.length > 0
+    })()
+  }
+
+  // A task gc collected the person has dealt with, so nod no longer resumes it after its usage
+  // limit, nor once restore brings it back: a wait it kept would be past by then.
+  private dealtWith(id: number): void {
+    this.run(q.updateTable('limitWaits').set({ resumeAt: null }).where('taskId', '=', id))
   }
 
   // resume brought the task back after gc, so ls lists it again.

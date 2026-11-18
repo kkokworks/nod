@@ -2099,3 +2099,47 @@ test("the prompt hook opens the turn typed into a worker's terminal, printing no
   quiet(prompt('', home, 'not json'))
   expect(turns()).toBe(before)
 })
+
+test('nod show and nod ls say when nod resumes a task a usage limit stopped, and nod show how many times it has', () => {
+  const home = tmp.make('nod-limit-')
+  const ledger = new Ledger(home)
+  const {
+    CLAUDECODE: _,
+    CLAUDE_CODE_SESSION_ID: __,
+    NOD_TASK: ___,
+    NOD_ACTOR: ____,
+    CLAUDE_CODE_MESSAGING_SOCKET: _____,
+    ...shell
+  } = process.env
+  // A clock of its own, so the time shown is the same wherever the test runs.
+  const env = { ...shell, NOD_HOME: home, TZ: 'UTC' }
+  const id = ledger.add({
+    brief: 'review it',
+    repo: null,
+    branch: null,
+    checkCmd: null,
+    model: null,
+    after: [],
+    issue: null,
+  })
+  const limit =
+    "the review exited with 1: You've hit your weekly limit · resets Jan 3, 2099 at 7pm (Asia/Seoul)"
+  ledger.error(id, limit)
+  const nod = (...args: string[]): string =>
+    Bun.spawnSync(['bun', cli, ...args], { env }).stdout.toString()
+  const note = `resumes 2099-01-03 10:01 after its usage limit: ${limit}`
+  const show = nod('show', `n${id}`)
+  expect(show).toContain(
+    '0 turns  resumes 2099-01-03 10:01 after its usage limit: the review exited with 1:',
+  )
+  expect(show).toContain(
+    '  usage limit: nod resumes it at 2099-01-03 10:01 unless nod resume or nod cancel comes first; resumed 0 of at most 3 times\n',
+  )
+  expect(nod('ls', '--plain')).toContain(`\t${note}\t`)
+  // Resumed once, and stopped since by an error that says no reset: the count stays, the time goes.
+  ledger.claimResume('2099-01-03T10:01:00.000Z')
+  ledger.error(id, 'the review exited with 1: Failed to authenticate. API Error: 403')
+  const after = nod('show', `n${id}`)
+  expect(after).toContain('  usage limit: resumed 1 of at most 3 times\n')
+  expect(after).not.toContain('resumes 2099')
+}, 20_000)

@@ -10,8 +10,11 @@ const RESET =
   /(?:^|: )You['’]ve hit your [^·\n]+? · resets (?:([A-Z][a-z]{2}) (\d{1,2})(?:, (\d{4}))?(?: at|,) )?(\d{1,2})(?::(\d{2}))? ?([ap]m) \(([\w+\-/]+)\)/im
 const MONTHS = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec']
 // How long before `at` Claude Code may have printed the line: a reset it names before then is the
-// next one of that day or time.
-const PRINTED_WITHIN_MS = 10 * 60_000
+// next one of that day or time. nod records the failure within seconds of it. Kept short, as a time
+// alone is a reset up to 24 hours on, and one this close to 24 hours on reads as this long ago: nod
+// would resume while the limit still holds. One recorded later than this (a machine asleep in
+// between) reads a day or a year late, which only waits.
+const PRINTED_WITHIN_MS = 2 * 60_000
 
 // The moment the limit resets, read from `text` that a failure at `at` left; null for text with no
 // such line, or one whose time or zone is no moment (13pm, Feb 30, a zone that does not exist). A
@@ -30,17 +33,20 @@ export function limitReset(text: string, at: Date): Date | null {
     const from = Temporal.Instant.fromEpochMilliseconds(
       at.getTime() - PRINTED_WITHIN_MS,
     ).toZonedDateTimeISO(timeZone)
+    // A time the clocks pass twice (summer time ending) is the later: nod resumes an hour late
+    // rather than while the limit holds.
     const on = (y: number, month: number, d: number): Temporal.ZonedDateTime =>
       Temporal.ZonedDateTime.from(
         { timeZone, year: y, month, day: d, ...time },
-        { overflow: 'reject' },
+        { overflow: 'reject', disambiguation: 'later' },
       )
     const after = (z: Temporal.ZonedDateTime): boolean =>
       Temporal.ZonedDateTime.compare(z, from) >= 0
     let reset: Temporal.ZonedDateTime
     if (mon === undefined) {
       reset = on(from.year, from.month, from.day)
-      if (!after(reset)) reset = reset.add({ days: 1 })
+      const next = from.toPlainDate().add({ days: 1 })
+      if (!after(reset)) reset = on(next.year, next.month, next.day)
     } else {
       const month = MONTHS.indexOf(mon.toLowerCase()) + 1
       if (month === 0) return null

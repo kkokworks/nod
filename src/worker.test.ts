@@ -6318,7 +6318,13 @@ it('a review a usage limit stopped waits for the reset, then the tick has its wo
   expect(status(id)).toBe('error')
   expect(terminals.alive(sessionName(id))).toBe(true)
   writeFileSync(join(ledger.get(id).workspace ?? '', 'lifted'), '')
-  expect(await resumeDue(ledger, home, terminals, new Date(LIMIT_RESUME_AT))).toEqual([id])
+  // The tick, which closes the terminals of tasks that ended an hour before: it resumes first, into
+  // the terminal still open, which no new launch replaces.
+  expect((await tick(ledger, home, terminals, new Date(LIMIT_RESUME_AT), false)).resumed).toEqual([
+    id,
+  ])
+  const session = ledger.attempts(id)[0]?.sessionId
+  expect(entries('launch').filter((l) => l.sessionId === session)).toHaveLength(1)
   expect(ledger.lastAttempt(id)?.kind).toBe('resume')
   expect(ledger.lastAttempt(id)?.prompt).toStartWith(
     "nod's check of your last report stopped on a Claude usage limit, which has reset now",
@@ -6381,4 +6387,55 @@ it('an error that names no reset is left to the person, as before', async () => 
   expect(ledger.limitWait(id)).toBeNull()
   expect(await resumeDue(ledger, home, terminals, new Date('2099-02-01T00:00:00Z'))).toEqual([])
   expect(status(id)).toBe('error')
+})
+
+it('a task whose start a usage limit stopped starts again from the start once it resets', async () => {
+  const id = limited('write it')
+  ledger.error(id, `${LIMITED}\nFix what stopped it, then \`nod resume n${id}\` starts it again.`)
+  expect(await resumeDue(ledger, home, terminals, new Date(LIMIT_RESUME_AT))).toEqual([id])
+  await reaches(id, 'succeeded')
+  expect(ledger.attempts(id).map((a) => a.kind)).toEqual(['start'])
+})
+
+it('a task nod cannot resume once its limit resets is left to the person, with why as its error, which its session hears', async () => {
+  const first = limited('first')
+  const after = ledger.add({
+    brief: 'after it',
+    repo: null,
+    branch: null,
+    checkCmd: null,
+    model: null,
+    after: [first],
+    issue: null,
+  })
+  ledger.error(after, LIMITED)
+  expect(await resumeDue(ledger, home, terminals, new Date(LIMIT_RESUME_AT))).toEqual([])
+  expect(status(after)).toBe('error')
+  expect(ledger.get(after).error).toStartWith(
+    `nod could not resume it once its usage limit reset: task n${after} has not started. It comes after n${first}, which must succeed`,
+  )
+  expect(ledger.limitWait(after)).toEqual({ resumeAt: null, resumed: 1 })
+  // Its session would hear it; this task is in no project, so none does, and the notice is closed.
+  const events = ledger.db
+    .query<{ event: string; note: string }, [number]>(
+      'select event, note from notices where task_id = ? order by id',
+    )
+    .all(after)
+  expect(events.at(-1)).toEqual({ event: 'error', note: ledger.get(after).error ?? '' })
+})
+
+it('nod cancel of a task waiting on its usage limit starts no retrospective, which would run under that limit', async () => {
+  const id = started('write it', 'limited-retro')
+  // A retry, which is trouble a retrospective would look back on.
+  ledger.startAttempt({
+    taskId: id,
+    kind: 'retry',
+    decisionId: null,
+    sessionId: 'limited-retro',
+    prompt: 'fix it',
+  })
+  ledger.error(id, `the review exited with 1: ${LIMITED}`)
+  await cancel(ledger, home, terminals, id, 'human')
+  expect(status(id)).toBe('cancelled')
+  expect(ledger.retroFor(id)).toBeNull()
 })
