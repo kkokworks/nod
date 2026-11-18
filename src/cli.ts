@@ -175,8 +175,9 @@ const USAGE = `usage:
   nod open <name> [--new]          the latest session of that name, as a project's is opened, when
                                    no project goes by it; a session of another name runs beside
                                    it. A helper's is as above. In a role of no project, its tasks
-                                   are those it added, and nod add there takes no project's work: a project's goes to its session with nod tell
-                                   p<n>, or in as a todo with nod in --project. An orchestrator
+                                   are those it added, and nod add there takes no project's work:
+                                   a project's goes to its session with nod tell p<n>, or in as a
+                                   todo with nod in --project. An orchestrator
                                    hands over work in no project and hears of it (see below); a
                                    relay passes what comes from outside to the project session it
                                    is for, hands over no task, and nod tells it of no task
@@ -212,10 +213,10 @@ const USAGE = `usage:
                                    tasks not yet collected by gc (--all: every task; --mine: only
                                    this Claude session's: those it added, or, in a session nod
                                    open opened, its project's; a helper's, those it added or was
-                                   handed), as a table the terminal's width:
-                                   what needs you, running, queued, ended but not dealt with (no
-                                   link, no push), then ended; the latest first in each, with its
-                                   issue, links and the remote branches it was pushed to.
+                                   handed), as a table the terminal's width: what needs you,
+                                   running, queued, ended but not dealt with (no link, no push),
+                                   then ended; the latest first in each, with its issue, links
+                                   and the remote branches it was pushed to.
                                    Into a pipe or with --plain, a tab-separated line a task (its
                                    number, todo, status, turns, the time its age counts from,
                                    the note's first line, issue, links, pushes); --json, a JSON
@@ -223,9 +224,9 @@ const USAGE = `usage:
   nod show <task>                  history, links, then each turn's full report, the last at the
                                    very end. root: is the Claude session whose task it is: its
                                    helper or its project's latest session, by the project and how
-                                   to reopen it,
-                                   with the session that added it when that was another; else the
-                                   session that added it (claude --resume <session>)
+                                   to reopen it, with the session that added it when that was
+                                   another; else the session that added it (claude --resume
+                                   <session>)
   nod search <ref>                 find by number: t<n>, n<n>, r<n>, p<n>, d<n>, or <n> for every
                                    kind
   nod stats
@@ -750,7 +751,8 @@ function checkCommand([ref, ...cmd]: string[]): void {
 
 // `nod hand`: a task in a project goes to the project's helper of that name, or with none back to
 // the project's own session. What nod has not told of it yet goes there too, at once to one that
-// takes messages (Todos.listener reads it as it sends).
+// takes messages (Todos.listener reads it as it sends). When the session that hears of it now cannot
+// either, stderr says so, as for work set going (warnUnheard).
 async function hand([ref, helper, ...extra]: string[]): Promise<void> {
   if (ref === undefined || extra.length > 0) throw new Error(USAGE)
   const id = taskRef(ref)
@@ -760,12 +762,13 @@ async function hand([ref, helper, ...extra]: string[]): Promise<void> {
   const p = `p${todos.projectOf(ledger.get(id))}`
   if (helper === undefined) {
     console.log(`n${id} goes to ${p}'s session`)
-    return
+  } else {
+    const off = takesMessages(todos.latestNamed(helper))
+      ? ''
+      : `; it takes no messages now, so ${p}'s session hears of n${id} until nod open ${helper} --role helper --project ${p} opens it`
+    console.log(`n${id} goes to the helper ${helper} of ${p}${off}`)
   }
-  const off = takesMessages(todos.latestNamed(helper))
-    ? ''
-    : `; it takes no messages now, so ${p}'s session hears of n${id} until nod open ${helper} opens it`
-  console.log(`n${id} goes to the helper ${helper} of ${p}${off}`)
+  warnUnheard([id])
 }
 
 // Each change to the task's check, with when and who made it.

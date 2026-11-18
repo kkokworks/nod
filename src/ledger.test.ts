@@ -517,11 +517,28 @@ test('a migration that makes a referenced table again undoes it all when a row w
       values (1, null, 'tell', 'to none', 'at', 42, 'sent');`)
   old.close()
 
-  expect(() => new Ledger(home)).toThrow('ledger migration 35 left rows that point at no row')
+  expect(() => new Ledger(home)).toThrow(
+    'ledger migration 35 left rows that point at no row of sessions: notices 1',
+  )
   const db = new Database(join(home, 'nod.db'), { strict: true })
   expect(db.query('pragma user_version').get()).toEqual({ user_version: 34 })
   expect(db.query("select name from sqlite_schema where name = 'task_hands'").all()).toEqual([])
   db.close()
+})
+
+test('a row a ledger edited by hand left pointing at no task does not stop the migration that makes sessions again', () => {
+  const home = freshHome()
+  const old = new Database(join(home, 'nod.db'), { create: true, strict: true })
+  for (const sql of MIGRATIONS.slice(0, 34)) old.exec(sql)
+  old.exec(`pragma user_version = 34;
+    insert into links (task_id, url, created_at) values (42, 'https://example.com', 'at');`)
+  old.close()
+
+  const ledger = new Ledger(home)
+  expect(ledger.db.query('pragma user_version').get()).toEqual({ user_version: 35 })
+  expect(ledger.db.query('select "table", parent from pragma_foreign_key_check').all()).toEqual([
+    { table: 'links', parent: 'tasks' },
+  ])
 })
 
 test('sessions take the roles SESSION_ROLES names and refuse any other', () => {

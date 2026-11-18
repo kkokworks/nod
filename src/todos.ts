@@ -1070,7 +1070,7 @@ export class Todos {
     )
   }
 
-  // Where a Claude session belongs; null for any but a project session, one of no project too.
+  // Where a Claude session belongs, a project's own or its helper; null for one of no project.
   sessionPlace(sessionKey: string): SessionPlace | null {
     const row = this.first(
       q

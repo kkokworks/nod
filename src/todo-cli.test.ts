@@ -7,6 +7,7 @@ import { Ledger } from './ledger'
 import { openSettings } from './settings'
 import { actorFromEnv, checkTell, openSession, roleLine, sessionFromEnv } from './todo-cli'
 import { type NamedRole, OPEN_ROLES, type OpenRole, Todos } from './todos'
+import { reopenCommand } from './view'
 
 const tmp = tempDirs()
 afterAll(tmp.removeAll)
@@ -757,6 +758,19 @@ test("nod open <name> --role helper --project opens a project's helper beside it
   )
   expect(open('billing-review', false, here, 'helper', `p${long.id}`).argv[2]).toBe(
     `p${long.id} Migrate every billin · billing-review`,
+  )
+
+  // A project titled as the helper since goes first by the name alone, so the command nod shows for
+  // it names its role and project, with what would break a terminal kept out.
+  const helper = todos.sessionPlace(key('review'))
+  todos.addProject({ title: 'review', outcome: null }, 'human')
+  expect(helper && reopenCommand(helper)).toBe(`nod open 'review' --role helper --project p${p.id}`)
+  expect(open('review', false, here, 'helper', `p${p.id}`).argv).toContain(key('review'))
+  const evil = 'ev\x1b[31mil'
+  open(evil, false, here, 'helper', `p${p.id}`)
+  const shown = todos.sessionPlace(key(evil))
+  expect(shown && reopenCommand(shown)).toBe(
+    `nod open 'ev [31mil' --role helper --project p${p.id}`,
   )
 })
 

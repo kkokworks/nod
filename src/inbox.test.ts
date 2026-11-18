@@ -1468,12 +1468,22 @@ test('a helper hears nothing-from-nod warnings only when it cannot hear, and non
   // An older session of the name, and one with no socket, hear nothing, and say how to open it.
   todos.addSession({ role: 'helper', name: 'review', project: p.id }, B, '/work/three')
   expect(await onCommand(ledger, B, undefined, send)).toBe(
-    'nod: this session of review hears nothing from nod: Claude Code gave it no inbox socket (CLAUDE_CODE_MESSAGING_SOCKET); nod open review opens it again',
+    'nod: this session of review hears nothing from nod: Claude Code gave it no inbox socket (CLAUDE_CODE_MESSAGING_SOCKET); nod open review --role helper --project p1 opens it again',
   )
   expect(await onCommand(ledger, C, socket, send)).toBe(
-    "nod: this session of review hears nothing from nod: nod tells review's latest session, which nod open review opens",
+    "nod: this session of review hears nothing from nod: nod tells review's latest session, which nod open review --role helper --project p1 opens",
   )
-  // The newer of the name has the work as its own; the older no longer.
+  // A helper's own warning does not stand for its project's session, which does not hear either.
+  const told = new Set<number>()
+  todos.setSocket(A, null)
+  const given = todos.delegateNew(brief('Given back'), p.id, 'human')
+  await onCommand(ledger, B, undefined, send, told)
+  expect(told.size).toBe(0)
+  expect(unheardWork(ledger, B, [given], told)).toEqual([
+    "nod: p1's session hears nothing from nod (it takes no messages now), so the decisions and ends of this work wait unheard until nod open p1 opens it again; meanwhile nod and nod ls here show them",
+  ])
+  // The newer of the name stands for it; each session of the name has the work as its own.
   expect(todos.isMine(B, ledger.get(mine))).toBe(true)
+  expect(todos.isMine(C, ledger.get(mine))).toBe(true)
   expect(todos.rootPlace(ledger.get(mine))).toMatchObject({ session: { sessionKey: B } })
 })

@@ -189,7 +189,7 @@ test("in a helper session add hands over its project's work as the helper's, whi
   )
   const ofA = Number(add(A, 'from the project session').out.trim())
   expect(nod(H, 'show', String(ofH)).out).toContain(
-    `  root: p${p.id} Release · nod open 'review'\n`,
+    `  root: p${p.id} Release · nod open 'review' --role helper --project p${p.id}\n`,
   )
   expect(nod(H, 'show', String(ofA)).out).toContain(
     `  root: p${p.id} Release · nod open p${p.id}\n`,
@@ -207,14 +207,20 @@ test("in a helper session add hands over its project's work as the helper's, whi
   })
   expect(nod(H, 'ls', '--mine').out).toContain('from the project session')
   expect(nod(null, 'show', String(ofA)).out).toContain(
-    `  root: p${p.id} Release · nod open 'review' · added from ${A}\n`,
+    `  root: p${p.id} Release · nod open 'review' --role helper --project p${p.id} · added from ${A}\n`,
   )
-  // A helper that takes no messages now: the project's session hears of the task meanwhile.
+  // A helper that takes no messages now: the project's session hears of the task meanwhile, and as
+  // that takes none either, a Claude session handing it hears so (a shell hears no such line).
   rmSync(socket)
-  expect(nod(null, 'hand', `n${ofH}`, 'review').out).toBe(
-    `n${ofH} goes to the helper review of p${p.id}; it takes no messages now, so p${p.id}'s session hears of n${ofH} until nod open review opens it\n`,
+  const deaf = `nod: p${p.id}'s session hears nothing from nod (it takes no messages now)`
+  const off = nod(H, 'hand', `n${ofH}`, 'review')
+  expect(off.out).toBe(
+    `n${ofH} goes to the helper review of p${p.id}; it takes no messages now, so p${p.id}'s session hears of n${ofH} until nod open review --role helper --project p${p.id} opens it\n`,
   )
-  expect(nod(null, 'hand', `n${ofH}`).out).toBe(`n${ofH} goes to p${p.id}'s session\n`)
+  expect(off.err).toContain(deaf)
+  const back = nod(H, 'hand', `n${ofH}`)
+  expect(back.out).toBe(`n${ofH} goes to p${p.id}'s session\n`)
+  expect(back.err).toContain(deaf)
   expect(nod(H, 'ls', '--mine').out).not.toContain('from the helper')
 
   const loose = add(null, 'in no project').out.trim()

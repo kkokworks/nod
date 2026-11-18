@@ -47,16 +47,21 @@ export async function onInbox(
   await sendNotices(ledger, send)
 }
 
-// What a session nod knows hears for: `ref`, what nod open opens it by; its project, none in a role
-// of no project; and whether it is the latest of those (of its name, for a helper), which alone
-// hears. Null for any other session.
+// What a session nod knows hears for: `ref`, what nod names it by, and `opens`, what nod open opens
+// it by (a helper's with its role and project, as a project titled so since goes first by the
+// name); its project, none in a role of no project; and whether it is the latest of those (of its
+// name, for a helper), which alone hears. Null for any other session.
 function hearing(todos: Todos, sessionKey: string) {
   const session = todos.session(sessionKey)
   if (session === null) return null
   const place = todos.sessionPlace(sessionKey)
   const ref = place === null || session.role === 'helper' ? session.name : `p${place.project.id}`
+  const opens =
+    place !== null && session.role === 'helper'
+      ? `${ref} --role helper --project p${place.project.id}`
+      : ref
   const latest = place?.latest ?? todos.latestNamed(session.name)?.id === session.id
-  return { session, projectId: place?.project.id ?? null, ref, latest }
+  return { session, projectId: place?.project.id ?? null, ref, opens, latest }
 }
 
 // What every nod command run in a Claude session does first (cli.ts), for a session nod knows that
@@ -67,8 +72,8 @@ function hearing(todos: Todos, sessionKey: string) {
 // one its process ran until /clear or /resume with no hook to say so, whose old ID the socket drops.
 // Returns what to tell stderr, or null: why such a session still hears nothing (it is not the
 // latest, which alone hears, or nod knows no socket of it), and which latest session lost its socket
-// to this one. `warned` gets each project it told of, which unheardWork does not tell of again in
-// the same command. Any other session is told nothing here (unheardWork speaks to it as it sets a
+// to this one. `warned` gets each project whose own session it told of, which unheardWork does not
+// tell of again in the same command; a helper's line does not stand for its project's session. Any other session is told nothing here (unheardWork speaks to it as it sets a
 // project's work going) and changes nothing.
 // ponytail: with no SessionEnd hook such a session ends, or goes on under a new ID, without saying
 // so: its socket stays until a send finds it gone (sendNotices) or another session says it, and a
@@ -87,27 +92,27 @@ export async function onCommand(
   const had = said === null ? null : todos.sessionAt(said)
   if (said !== null && (me !== null || had !== null)) todos.setSocket(session, said)
   const told: string[] = []
-  const tell = (of: { projectId: number | null }, line: string): void => {
-    if (of.projectId !== null) warned.add(of.projectId)
+  const tell = (of: NonNullable<ReturnType<typeof hearing>>, line: string): void => {
+    if (of.projectId !== null && of.session.role === 'project') warned.add(of.projectId)
     told.push(line)
   }
   const lost = had === null ? null : hearing(todos, had.sessionKey)
   if (lost?.latest && lost.ref !== me?.ref) {
     tell(
       lost,
-      `nod: ${lost.ref}'s session took messages at this session's inbox socket, which runs another session now (/clear or /resume in its terminal), so it hears nothing from nod; nod open ${lost.ref} opens it again`,
+      `nod: ${lost.ref}'s session took messages at this session's inbox socket, which runs another session now (/clear or /resume in its terminal), so it hears nothing from nod; nod open ${lost.opens} opens it again`,
     )
   }
   if (me !== null) {
     const deaf = `nod: this session of ${me.ref} hears nothing from nod`
     if (!me.latest) {
-      tell(me, `${deaf}: nod tells ${me.ref}'s latest session, which nod open ${me.ref} opens`)
+      tell(me, `${deaf}: nod tells ${me.ref}'s latest session, which nod open ${me.opens} opens`)
     } else if (said !== null) {
       await sendNotices(ledger, send)
     } else if (!socket && me.session.socket === null) {
       tell(
         me,
-        `${deaf}: Claude Code gave it no inbox socket (CLAUDE_CODE_MESSAGING_SOCKET); nod open ${me.ref} opens it again`,
+        `${deaf}: Claude Code gave it no inbox socket (CLAUDE_CODE_MESSAGING_SOCKET); nod open ${me.opens} opens it again`,
       )
     }
   }

@@ -790,9 +790,10 @@ export const MIGRATIONS = [
   );
   `,
 ]
-// The migrations that make again a table others reference, which SQLite does only with foreign keys
-// off, and the pragma does nothing inside a transaction; numbered as user_version counts.
-const REBUILDS = new Set([35])
+// The migrations that make again a table others reference, by that table, which SQLite does only
+// with foreign keys off, and the pragma does nothing inside a transaction; numbered as user_version
+// counts.
+const REBUILDS = new Map([[35, 'sessions']])
 // The migration that moves <home>/rules.md into the ledger, numbered as user_version counts.
 const RULES_FILE_MIGRATION = 17
 // The migration that drops the triggers, before which saveTriggers runs.
@@ -935,7 +936,7 @@ export class Ledger {
       this.db.query<{ user_version: number }, []>('pragma user_version').get()?.user_version ?? 0
     for (const [i, sql] of MIGRATIONS.entries()) {
       if (i < version()) continue
-      const rebuild = REBUILDS.has(i + 1)
+      const rebuild = REBUILDS.get(i + 1)
       if (rebuild) this.db.exec('pragma foreign_keys = off')
       // Immediate, and the version read again inside: another process opening the ledger may have
       // run this migration while this one waited for the lock.
@@ -950,9 +951,21 @@ export class Ledger {
             for (const statement of sql.split(';')) {
               if (statement.trim() !== '') this.db.run(statement)
             }
-            // With the keys off nothing checked the rows; one left pointing nowhere undoes it all.
-            if (rebuild && this.db.query('pragma foreign_key_check').get() !== null) {
-              throw new Error(`ledger migration ${i + 1} left rows that point at no row`)
+            // With the keys off nothing checked the rows; one left pointing at no row of the table
+            // made again undoes it all. Only those: what a ledger edited by hand left elsewhere
+            // does not stop nod opening it, as no migration before stopped on it.
+            const lost = rebuild
+              ? this.db
+                  .query<{ table: string; rowid: number }, [string]>(
+                    'select "table", rowid from pragma_foreign_key_check where parent = ?',
+                  )
+                  .all(rebuild)
+              : []
+            if (lost.length > 0) {
+              const rows = lost.map((r) => `${r.table} ${r.rowid}`).join(', ')
+              throw new Error(
+                `ledger migration ${i + 1} left rows that point at no row of ${rebuild}: ${rows}`,
+              )
             }
             if (i + 1 === RULES_FILE_MIGRATION) this.importRulesFile(home)
             this.db.exec(`pragma user_version = ${i + 1}`)
