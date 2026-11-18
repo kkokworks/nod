@@ -57,6 +57,8 @@ import {
   actorFromEnv,
   capture,
   checkTell,
+  DESCRIBES,
+  describeHelper,
   helperLine,
   namedSeat,
   openSession,
@@ -68,7 +70,7 @@ import {
   todayCommand,
   todoCommand,
 } from './todo-cli'
-import { type Found, NAMED_ROLES, oneOf, parseRef, Todos } from './todos'
+import { cleared, type Found, NAMED_ROLES, oneOf, parseRef, Todos } from './todos'
 import { scheduleEnv, scheduleOff, scheduleOn, tick } from './triggers'
 import {
   clean,
@@ -167,7 +169,7 @@ const USAGE = `usage:
                                    a session of that role and no project: the first of that
                                    name, or the same as nod open <name>. A name another role has,
                                    or that names a project, is refused
-  nod open <name> --role helper --project <project> [--new]
+  nod open <name> --role helper --project <project> [--new] [--description <text>]
                                    a helper of the project, beside its session, which it does not
                                    stand for: the first of that name, or the same as nod open
                                    <name>; a project may have several. Named "<project's session
@@ -175,7 +177,9 @@ const USAGE = `usage:
                                    project's it added or was handed (nod hand), and nod tells it
                                    of them while it takes messages, the project's session while
                                    it does not. nod add there keeps to the project. A name another
-                                   role or another project's helper has is refused
+                                   role or another project's helper has is refused. --description
+                                   says what work is its, kept by the name for each session of it
+                                   (nod project <project> shows it); an empty one clears it
   nod open <name> [--new]          the latest session of that name, as a project's is opened, when
                                    no project goes by it; a session of another name runs beside
                                    it. A helper's is as above. In a role of no project, its tasks
@@ -186,12 +190,16 @@ const USAGE = `usage:
                                    relay passes what comes from outside to the project session it
                                    is for, hands over no task, and nod tells it of no task
   nod session claim <name> --role orchestrator|relay
-  nod session claim <name> --role helper --project <project>
+  nod session claim <name> --role helper --project <project> [--description <text>]
                                    give the Claude session this runs in that role and name, its
                                    conversation going on: nod records it if it did not know it,
                                    with the folder its transcript says it was opened in, a project
                                    session leaves its project, and it says where it takes messages.
-                                   A helper's name is checked as nod open's, which opens it again
+                                   A helper's name and description are as nod open's, which opens
+                                   it again
+  nod session set <name> --description <text>
+                                   what the helper of that name is for from now on; an empty one
+                                   clears it
   nod hand <task> [<helper>]       hand a task in a project to the project's helper of that name,
                                    or with none back to the project's session: what nod has not
                                    told of it yet, and all after, goes there
@@ -1084,7 +1092,12 @@ function attach(taskId: number): void {
 function open(args: string[]): void {
   const { values, positionals } = parseArgs({
     args,
-    options: { new: { type: 'boolean' }, role: { type: 'string' }, project: { type: 'string' } },
+    options: {
+      new: { type: 'boolean' },
+      role: { type: 'string' },
+      project: { type: 'string' },
+      description: { type: 'string' },
+    },
     allowPositionals: true,
   })
   const [ref, ...extra] = positionals
@@ -1098,6 +1111,7 @@ function open(args: string[]): void {
     config,
     values.role === undefined ? undefined : oneOf('session role', values.role, NAMED_ROLES),
     values.project,
+    cleared(values.description),
   )
   const env = { ...process.env }
   env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE ||= AUTOCOMPACT_PCT
@@ -1109,19 +1123,34 @@ function open(args: string[]): void {
 // going on. A new row's folder is where its transcript says it was opened, as Bash may stand
 // elsewhere by now and nod open resumes it from there. It then says where it takes messages, as any
 // session does at its first nod command, which sends what waited and tells it when it cannot hear.
+// `nod session set`: a helper's description.
 async function sessionCommand([sub, ...args]: string[]): Promise<void> {
   const { values, positionals } = parseArgs({
     args,
-    options: { role: { type: 'string' }, project: { type: 'string' } },
+    options: {
+      role: { type: 'string' },
+      project: { type: 'string' },
+      description: { type: 'string' },
+    },
     allowPositionals: true,
   })
   const [name, ...extra] = positionals
-  if (sub !== 'claim' || name === undefined || extra.length > 0) throw new Error(USAGE)
+  if (name === undefined || extra.length > 0) throw new Error(USAGE)
   const todos = new Todos(ledger)
+  const description = cleared(values.description)
+  if (sub === 'set') {
+    if (description === undefined || values.role !== undefined || values.project !== undefined) {
+      throw new Error(USAGE)
+    }
+    console.log(describeHelper(todos, name, description))
+    return
+  }
+  if (sub !== 'claim') throw new Error(USAGE)
   const role =
     values.role === undefined ? undefined : oneOf('session role', values.role, NAMED_ROLES)
   const seat = namedSeat(todos, 'nod session claim', name, role, values.project)
   if (seat === null) throw new Error(USAGE)
+  if (description !== undefined && !('project' in seat)) throw new Error(DESCRIBES)
   const session = sessionFromEnv()
   if (session === null) {
     throw new Error('nod session claim names the Claude session it runs in; run it in one')
@@ -1134,6 +1163,9 @@ async function sessionCommand([sub, ...args]: string[]): Promise<void> {
     )
   }
   todos.claimSession(seat, session, cwd ?? process.cwd())
+  if (description !== undefined && 'project' in seat) {
+    todos.describeHelper(seat.project, name, description)
+  }
   await sayInbox()
   // Its role may be what a notice waited for, though its socket is the one nod knew.
   await tellSessions(home)

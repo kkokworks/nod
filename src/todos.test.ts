@@ -552,6 +552,73 @@ test("claiming a helper puts in a session nod does not know as the project's, mo
   expect(todos.sessionPlace(A)?.project.id).toBe(p.id)
 })
 
+test("a project's helpers come by name, each by its latest session, with its description, which a new session of the name keeps, and its unfinished tasks", () => {
+  const { ledger, todos } = books()
+  const p = project(todos, 'Release')
+  const q = project(todos, 'Health')
+  const helper = (name: string, of: number) => ({ role: 'helper' as const, name, project: of })
+  const shown = (of: number) =>
+    todos.helpers(of).map((h) => [h.session.sessionKey, h.description, h.unfinished])
+  todos.addSession(p.id, 'key-p', '/w')
+  todos.addSession({ role: 'orchestrator', name: 'north' }, 'key-n', '/w')
+  expect(todos.helpers(p.id)).toEqual([])
+
+  todos.addSession(helper('review', p.id), 'key-r', '/w')
+  todos.addSession(helper('docs', p.id), 'key-d', '/w')
+  todos.addSession(helper('ops', q.id), 'key-o', '/w')
+  const of = (root: string): number =>
+    todos.delegateNew({ ...task, rootSession: root }, p.id, 'human')
+  of('key-r')
+  ask(ledger, of('key-r'), 'which way?')
+  ledger.succeed(of('key-r'))
+  todos.handTask(of('key-p'), 'review')
+  todos.handTask(of('key-r'), null)
+  of('key-p')
+  of('key-d')
+  expect(shown(p.id)).toEqual([
+    ['key-d', null, 1],
+    ['key-r', null, 3],
+  ])
+  expect(shown(q.id)).toEqual([['key-o', null, 0]])
+
+  // Said, changed and cleared by the name, in its project alone; a new session of it has it.
+  todos.describeHelper(p.id, 'review', 'Reviews pull requests')
+  todos.describeHelper(p.id, 'review', 'Reviews and merges pull requests')
+  todos.addSession(helper('review', p.id), 'key-r2', '/w')
+  expect(shown(p.id)).toEqual([
+    ['key-d', null, 1],
+    ['key-r2', 'Reviews and merges pull requests', 3],
+  ])
+  todos.describeHelper(p.id, 'review', null)
+  todos.describeHelper(p.id, 'review', null)
+  expect(shown(p.id)[1]).toEqual(['key-r2', null, 3])
+  // Blanks around it go, and blanks alone say nothing.
+  todos.describeHelper(p.id, 'review', '  PRs\n')
+  expect(shown(p.id)[1]).toEqual(['key-r2', 'PRs', 3])
+  todos.describeHelper(p.id, 'review', ' \n ')
+  expect(shown(p.id)[1]).toEqual(['key-r2', null, 3])
+
+  // A name whose latest session went to another project is that one's, without what it was for
+  // here; its tasks here go back to the project's own session.
+  todos.describeHelper(p.id, 'docs', 'Writes the docs')
+  todos.claimSession(helper('docs', q.id), 'key-d', '/w')
+  expect(shown(p.id)).toEqual([['key-r2', null, 3]])
+  expect(shown(q.id)).toEqual([
+    ['key-d', null, 0],
+    ['key-o', null, 0],
+  ])
+  // Back in the project by the same name, it is what it was for here.
+  todos.claimSession(helper('docs', p.id), 'key-d', '/w')
+  expect(shown(p.id)).toEqual([
+    ['key-d', 'Writes the docs', 1],
+    ['key-r2', null, 3],
+  ])
+  todos.claimSession(helper('docs', q.id), 'key-d', '/w')
+  // A role of no project is no helper.
+  todos.claimSession({ role: 'relay', name: 'gate' }, 'key-r2', '/w')
+  expect(shown(p.id)).toEqual([['key-r', null, 3]])
+})
+
 for (const role of OPEN_ROLES) {
   test(`a ${role} session's work is what it added, as any session's, and it is nobody's root place`, () => {
     const { ledger, todos } = books()

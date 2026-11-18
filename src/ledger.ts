@@ -789,6 +789,17 @@ export const MIGRATIONS = [
     helper text
   );
   `,
+  // v36: what a project's helper is for (--description), by its name as task_hands holds it, so
+  // each session of the name has it; the project's own session hands it the work that falls under
+  // it. A helper with none has no row.
+  `
+  create table helper_descriptions (
+    project_id integer not null references projects(id),
+    name text not null,
+    description text not null,
+    primary key (project_id, name)
+  );
+  `,
 ]
 // The migrations that make again a table others reference, by that table, which SQLite does only
 // with foreign keys off, and the pragma does nothing inside a transaction; numbered as user_version
