@@ -827,3 +827,37 @@ function sh(cmd: string[], cwd: string): string {
   if (result.exitCode !== 0) throw new Error(`${cmd.join(' ')}: ${result.stderr.toString()}`)
   return result.stdout.toString()
 }
+
+test('an errored task nod is to resume once its usage limit resets does not go with age; once nothing is to resume it, it does', async () => {
+  const home = tmp.make('nod-done-limit-')
+  const ledger = new Ledger(home)
+  const errored = (error: string): number => {
+    const id = ledger.add({
+      brief: error,
+      repo: null,
+      branch: null,
+      checkCmd: null,
+      model: null,
+      after: [],
+      issue: null,
+    })
+    ledger.error(id, error)
+    ledger.db.query('update tasks set finished_at = $at where id = $id').run({ id, at: OLD })
+    return id
+  }
+  // A weekly limit resets as late as a week on.
+  const waits = errored(
+    "the review exited with 1: You've hit your weekly limit · resets Jan 3, 2099 at 7pm (Asia/Seoul)",
+  )
+  const crashed = errored('crashed')
+  const lookup: PrLookup = async () => null
+  expect((await doneTasks(ledger, Tmux.of(home), lookup, NOW)).done).toEqual([
+    { id: crashed, reason: 'finished 7+ days ago' },
+  ])
+  ledger.cancel(waits, 'cancelled by human')
+  ledger.db.query('update tasks set finished_at = $at where id = $id').run({ id: waits, at: OLD })
+  expect((await doneTasks(ledger, Tmux.of(home), lookup, NOW)).done).toEqual([
+    { id: waits, reason: 'finished 7+ days ago' },
+    { id: crashed, reason: 'finished 7+ days ago' },
+  ])
+})

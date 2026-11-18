@@ -37,6 +37,7 @@ import { testTmux } from '../test/tmux'
 import { tmuxTest } from '../test/tmux-server'
 import { setAccountRule, transcriptPath } from './account'
 import { ALLOW } from './allow'
+import { localTime } from './days'
 import { askToLand, permissionQuestion } from './decisions'
 import { workerEnv } from './env'
 import { collect } from './gc'
@@ -70,6 +71,7 @@ import { Todos } from './todos'
 import { heardOf, promptMark } from './transcript'
 import { tick } from './triggers'
 import { REVIEW } from './verify'
+import { taskNote } from './view'
 import {
   answer,
   cancel,
@@ -83,6 +85,7 @@ import {
   restartDue,
   restartMark,
   resume,
+  resumeDue,
   StopEvent,
   settle,
   startReady,
@@ -6275,3 +6278,164 @@ test('a Claude Code this process may not signal counts as running, so a message 
   await until(() => entries('turn')[1])
   expect(entries('turn').map((t) => t.message)).toEqual(['first', 'second'])
 }, 30_000)
+
+// What the fake reviewer prints on `review-limited` (fake-agent.ts), and when nod resumes after it:
+// the minute after the one it names, as the line leaves out the seconds.
+const LIMITED = "You've hit your weekly limit · resets Jan 3, 2099 at 7pm (Asia/Seoul)"
+const LIMIT_RESUME_AT = '2099-01-03T10:01:00.000Z'
+const limited = (brief: string, add: (task: NewTask) => number = (t) => ledger.add(t)): number =>
+  add({ brief, repo: null, branch: null, checkCmd: null, model: null, after: [], issue: null })
+
+it('a review a usage limit stopped waits for the reset, then the tick has its worker report again, once, and the session of its project hears both', async () => {
+  const todos = new Todos(ledger)
+  const p = todos.addProject({ title: 'Release', outcome: null }, 'human')
+  const hearing = 'bbbb2222-0000-4000-8000-00000000000b'
+  todos.addSession(p.id, hearing, '/work/one')
+  const heard: string[] = []
+  // Again each time: a notify's send to it, which finds no one there, forgets it.
+  const hear = (): Promise<void> => {
+    todos.setSocket(hearing, '/socks/b')
+    return sendNotices(ledger, async (_socket, line) => {
+      heard.push(JSON.parse(line).message.content)
+    })
+  }
+  const id = limited('review-limited: write it', (t) => todos.delegateNew(t, p.id, 'human'))
+  await startTask(ledger, home, terminals, id)
+  await until(() => status(id) === 'error')
+  expect(ledger.get(id).error).toStartWith(`the review exited with 1: ${LIMITED}`)
+  expect(ledger.limitWait(id)).toEqual({ resumeAt: LIMIT_RESUME_AT, resumed: 0 })
+  const at = localTime(new Date(LIMIT_RESUME_AT))
+  expect(taskNote(ledger, ledger.get(id))).toStartWith(
+    `resumes ${at} after its usage limit: the review exited with 1: ${LIMITED}`,
+  )
+  await hear()
+  expect(heard.join('\n')).toContain(
+    `next: nothing: nod resumes it at ${at}, once its usage limit has reset, unless the person says otherwise first (nod resume n${id}, nod cancel n${id})`,
+  )
+
+  // Not before then, its terminal still open.
+  expect(await resumeDue(ledger, home, terminals, new Date('2099-01-03T10:00:59.999Z'))).toEqual([])
+  expect(status(id)).toBe('error')
+  expect(terminals.alive(sessionName(id))).toBe(true)
+  writeFileSync(join(ledger.get(id).workspace ?? '', 'lifted'), '')
+  // The tick, which closes the terminals of tasks that ended an hour before: it resumes first, into
+  // the terminal still open, which no new launch replaces (counted once the task succeeded, below).
+  // Its closing may still close that terminal once the fast fake has finished.
+  const ticked = await tick(ledger, home, terminals, new Date(LIMIT_RESUME_AT), false)
+  expect(ticked.resumed).toEqual([id])
+  expect(ledger.lastAttempt(id)?.kind).toBe('resume')
+  expect(ledger.lastAttempt(id)?.prompt).toStartWith(
+    "nod's check of your last report stopped on a Claude usage limit, which has reset now",
+  )
+  await reaches(id, 'succeeded')
+  expect(ledger.attempts(id).map((a) => [a.kind, a.checkResult])).toEqual([
+    ['start', null],
+    ['resume', 'passed'],
+  ])
+  const session = ledger.attempts(id)[0]?.sessionId
+  expect(entries('launch').filter((l) => l.sessionId === session)).toHaveLength(1)
+  expect(await resumeDue(ledger, home, terminals, new Date('2099-02-01T00:00:00Z'))).toEqual([])
+  expect(ledger.limitWait(id)).toEqual({ resumeAt: null, resumed: 1 })
+  await hear()
+  expect(heard.join('\n')).toContain(
+    `resumed: nod resumes it now: the usage limit that stopped it has reset\nnext: nothing yet; nod tells you how n${id} goes on\n\ntask n${id} t1 succeeded, attempt 2: did it`,
+  )
+})
+
+it('a task a usage limit keeps stopping is resumed at most three times, then left to the person', async () => {
+  const id = limited('review-limited: write it')
+  await startTask(ledger, home, terminals, id)
+  for (let resumed = 0; resumed < 3; resumed++) {
+    await until(() => status(id) === 'error' && ledger.attempts(id).length === resumed + 1)
+    expect(ledger.limitWait(id)).toEqual({ resumeAt: LIMIT_RESUME_AT, resumed })
+    expect(await resumeDue(ledger, home, terminals, new Date(LIMIT_RESUME_AT))).toEqual([id])
+  }
+  await until(() => status(id) === 'error' && ledger.attempts(id).length === 4)
+  expect(ledger.limitWait(id)).toEqual({ resumeAt: null, resumed: 3 })
+  expect(taskNote(ledger, ledger.get(id))).toStartWith(`the review exited with 1: ${LIMITED}`)
+  expect(await resumeDue(ledger, home, terminals, new Date('2099-02-01T00:00:00Z'))).toEqual([])
+  expect(status(id)).toBe('error')
+}, 30_000)
+
+it.each(['resume', 'cancel'])(
+  'a person who goes first with nod %s before the reset keeps the tick from resuming the task',
+  async (how) => {
+    const id = limited('review-limited: write it')
+    await startTask(ledger, home, terminals, id)
+    await until(() => status(id) === 'error')
+    if (how === 'resume') {
+      writeFileSync(join(ledger.get(id).workspace ?? '', 'lifted'), '')
+      // nod resume reopens a closed terminal; an open one takes nod tell.
+      await terminals.close(sessionName(id))
+      expect(await resume(ledger, home, terminals, id)).toBe('reopened')
+      await reaches(id, 'succeeded')
+    } else {
+      await cancel(ledger, home, terminals, id, 'human')
+    }
+    expect(ledger.limitWait(id)).toEqual({ resumeAt: null, resumed: 0 })
+    expect(await resumeDue(ledger, home, terminals, new Date(LIMIT_RESUME_AT))).toEqual([])
+    expect(status(id)).toBe(how === 'resume' ? 'succeeded' : 'cancelled')
+    expect(ledger.attempts(id).map((a) => a.kind)).toEqual(
+      how === 'resume' ? ['start', 'resume'] : ['start'],
+    )
+  },
+)
+
+it('an error that names no reset is left to the person, as before', async () => {
+  const id = await add('review-mute')
+  await until(() => status(id) === 'error')
+  expect(ledger.limitWait(id)).toBeNull()
+  expect(await resumeDue(ledger, home, terminals, new Date('2099-02-01T00:00:00Z'))).toEqual([])
+  expect(status(id)).toBe('error')
+})
+
+it('a task whose start a usage limit stopped starts again from the start once it resets', async () => {
+  const id = limited('write it')
+  ledger.error(id, `${LIMITED}\nFix what stopped it, then \`nod resume n${id}\` starts it again.`)
+  expect(await resumeDue(ledger, home, terminals, new Date(LIMIT_RESUME_AT))).toEqual([id])
+  await reaches(id, 'succeeded')
+  expect(ledger.attempts(id).map((a) => a.kind)).toEqual(['start'])
+})
+
+it('a task nod cannot resume once its limit resets is left to the person, with why as its error, which its session hears', async () => {
+  const first = limited('first')
+  const after = ledger.add({
+    brief: 'after it',
+    repo: null,
+    branch: null,
+    checkCmd: null,
+    model: null,
+    after: [first],
+    issue: null,
+  })
+  ledger.error(after, LIMITED)
+  expect(await resumeDue(ledger, home, terminals, new Date(LIMIT_RESUME_AT))).toEqual([])
+  expect(status(after)).toBe('error')
+  expect(ledger.get(after).error).toStartWith(
+    `nod could not resume it once its usage limit reset: task n${after} has not started. It comes after n${first}, which must succeed`,
+  )
+  expect(ledger.limitWait(after)).toEqual({ resumeAt: null, resumed: 1 })
+  // Its session would hear it; this task is in no project, so none does, and the notice is closed.
+  const events = ledger.db
+    .query<{ event: string; note: string }, [number]>(
+      'select event, note from notices where task_id = ? order by id',
+    )
+    .all(after)
+  expect(events.at(-1)).toEqual({ event: 'error', note: ledger.get(after).error ?? '' })
+})
+
+it('nod cancel of a task waiting on its usage limit starts no retrospective, which would run under that limit', async () => {
+  const id = started('write it', 'limited-retro')
+  // A retry, which is trouble a retrospective would look back on.
+  ledger.startAttempt({
+    taskId: id,
+    kind: 'retry',
+    decisionId: null,
+    sessionId: 'limited-retro',
+    prompt: 'fix it',
+  })
+  ledger.error(id, `the review exited with 1: ${LIMITED}`)
+  await cancel(ledger, home, terminals, id, 'human')
+  expect(status(id)).toBe('cancelled')
+  expect(ledger.retroFor(id)).toBeNull()
+})

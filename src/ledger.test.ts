@@ -26,7 +26,7 @@ test('reopening a ledger keeps its data and does not re-run migrations', () => {
   })
   const reopened = new Ledger(home)
   expect(reopened.get(id).brief).toBe('keep me')
-  expect(reopened.db.query('pragma user_version').get()).toEqual({ user_version: 36 })
+  expect(reopened.db.query('pragma user_version').get()).toEqual({ user_version: 37 })
 })
 
 test('v18 leaves the tasks before it without a root session', () => {
@@ -40,7 +40,7 @@ test('v18 leaves the tasks before it without a root session', () => {
 
   const ledger = new Ledger(home)
   expect(ledger.get(1)).toMatchObject({ brief: 'x', rootSession: null })
-  expect(ledger.db.query('pragma user_version').get()).toEqual({ user_version: 36 })
+  expect(ledger.db.query('pragma user_version').get()).toEqual({ user_version: 37 })
 })
 
 test('v23 gives a ledger of v22 project sessions, none yet, and leaves its projects as they were', () => {
@@ -80,7 +80,7 @@ test('v29 moves the project sessions of a v28 ledger to sessions under their ids
 
   const ledger = new Ledger(home)
   const todos = new Todos(ledger)
-  expect(ledger.db.query('pragma user_version').get()).toEqual({ user_version: 36 })
+  expect(ledger.db.query('pragma user_version').get()).toEqual({ user_version: 37 })
   expect(ledger.db.query('pragma foreign_key_check').all()).toEqual([])
   expect(todos.latestSession(1)).toEqual({
     id: 9,
@@ -125,7 +125,7 @@ test('v30 leaves the description of a v29 ledger’s projects empty and all else
 
   const ledger = new Ledger(home)
   const todos = new Todos(ledger)
-  expect(ledger.db.query('pragma user_version').get()).toEqual({ user_version: 36 })
+  expect(ledger.db.query('pragma user_version').get()).toEqual({ user_version: 37 })
   expect(todos.project(1)).toEqual({
     id: 1,
     title: 'Release',
@@ -151,7 +151,7 @@ test('v31 leaves a v30 ledger’s projects as they were, with no orchestrator, a
 
   const ledger = new Ledger(home)
   const todos = new Todos(ledger)
-  expect(ledger.db.query('pragma user_version').get()).toEqual({ user_version: 36 })
+  expect(ledger.db.query('pragma user_version').get()).toEqual({ user_version: 37 })
   expect(ledger.db.query('select * from project_orchestrators').all()).toEqual([])
   expect(todos.project(1)).toEqual({
     id: 1,
@@ -225,14 +225,15 @@ test('v32 drops the triggers of a v31 ledger that had none, and keeps every othe
   before.close()
 
   const ledger = new Ledger(home)
-  expect(ledger.db.query('pragma user_version').get()).toEqual({ user_version: 36 })
+  expect(ledger.db.query('pragma user_version').get()).toEqual({ user_version: 37 })
   const after = shape(ledger)
-  // and the tables v34, v35 and v36 add, empty
+  // and the tables v34 to v37 add, empty
   expect(after.tables).toEqual({
     ...tables,
     task_changes: 0,
     task_hands: 0,
     helper_descriptions: 0,
+    limit_waits: 0,
   })
   expect(after.taskColumns).not.toContain('trigger_id')
   expect(ledger.get(1).brief).toBe('first')
@@ -396,13 +397,14 @@ test('v33 drops the unused columns and table of a v32 ledger that held nothing i
   before.close()
 
   const ledger = new Ledger(home)
-  expect(ledger.db.query('pragma user_version').get()).toEqual({ user_version: 36 })
-  // and the tables v34, v35 and v36 add, empty
+  expect(ledger.db.query('pragma user_version').get()).toEqual({ user_version: 37 })
+  // and the tables v34 to v37 add, empty
   expect(shape(ledger).tables).toEqual({
     ...tables,
     task_changes: 0,
     task_hands: 0,
     helper_descriptions: 0,
+    limit_waits: 0,
   })
   expect(columns(ledger, 'todos')).not.toContain('context')
   expect(columns(ledger, 'todos')).not.toContain('back_to')
@@ -435,7 +437,7 @@ test('v33 keeps what a v32 ledger held of a context or a task to go back to in e
     insert into unmatched_notice_sessions (notice_id, session_key) values (2, 'key-gone');`)
   const ledger = new Ledger(home)
   const todos = new Todos(ledger)
-  expect(ledger.db.query('pragma user_version').get()).toEqual({ user_version: 36 })
+  expect(ledger.db.query('pragma user_version').get()).toEqual({ user_version: 37 })
   expect(ledger.db.query('pragma foreign_key_check').all()).toEqual([])
   expect(
     ledger.db
@@ -502,7 +504,7 @@ test('v35 keeps a v34 ledger’s sessions under their ids, with what refers to t
 
   const ledger = new Ledger(home)
   const todos = new Todos(ledger)
-  expect(ledger.db.query('pragma user_version').get()).toEqual({ user_version: 36 })
+  expect(ledger.db.query('pragma user_version').get()).toEqual({ user_version: 37 })
   expect(ledger.db.query('pragma foreign_keys').get()).toEqual({ foreign_keys: 1 })
   expect(ledger.db.query('pragma foreign_key_check').all()).toEqual([])
   expect(ledger.db.query('select * from sessions order by id').all()).toEqual(before)
@@ -545,7 +547,7 @@ test('a row a ledger edited by hand left pointing at no task does not stop the m
   old.close()
 
   const ledger = new Ledger(home)
-  expect(ledger.db.query('pragma user_version').get()).toEqual({ user_version: 36 })
+  expect(ledger.db.query('pragma user_version').get()).toEqual({ user_version: 37 })
   expect(ledger.db.query('select "table", parent from pragma_foreign_key_check').all()).toEqual([
     { table: 'links', parent: 'tasks' },
   ])
@@ -1189,4 +1191,109 @@ test('a transaction that reads before it writes waits while another process writ
   expect(await writer.exited).toBe(0)
   expect(ledger.after(b).map((t) => t.id)).toEqual([a])
   expect(ledger.get(a).brief).toBe('edited')
+})
+
+// A reset with its year, which reads the same whenever the test runs, and when the tick resumes after
+// it: the minute after the one it names, as the line leaves out the seconds.
+const LIMIT =
+  "the review exited with 1: You've hit your weekly limit · resets Jan 3, 2099 at 7pm (Asia/Seoul)"
+const RESUME_AT = '2099-01-03T10:01:00.000Z'
+const newTask = (ledger: Ledger): number =>
+  ledger.add({
+    brief: 'x',
+    repo: null,
+    branch: null,
+    checkCmd: null,
+    model: null,
+    after: [],
+    issue: null,
+  })
+
+test('an error that says when a usage limit resets waits for it, and the tick takes it once, until it stops on one again', () => {
+  const ledger = new Ledger(freshHome())
+  const id = newTask(ledger)
+  ledger.error(id, LIMIT)
+  expect(ledger.limitWait(id)).toEqual({ resumeAt: RESUME_AT, resumed: 0 })
+  expect(ledger.claimResume('2099-01-03T10:00:59.999Z')).toBeNull()
+  expect(ledger.claimResume(RESUME_AT)).toBe(id)
+  expect(ledger.claimResume(RESUME_AT)).toBeNull()
+  expect(ledger.limitWait(id)).toEqual({ resumeAt: null, resumed: 1 })
+  ledger.error(id, LIMIT)
+  expect(ledger.limitWait(id)).toEqual({ resumeAt: RESUME_AT, resumed: 1 })
+  // An error since that says no reset leaves it to the person.
+  ledger.error(id, 'the review exited with 1: Failed to authenticate. API Error: 403')
+  expect(ledger.limitWait(id)).toEqual({ resumeAt: null, resumed: 1 })
+  expect(ledger.claimResume('2100-01-01T00:00:00.000Z')).toBeNull()
+})
+
+test('the tick takes the tasks due one at a time, so one it stops on leaves the rest due, and each once', () => {
+  const ledger = new Ledger(freshHome())
+  const [first, second] = [1, 2].map(() => newTask(ledger))
+  for (const id of [second, first]) ledger.error(id ?? 0, LIMIT)
+  expect(ledger.claimResume(RESUME_AT)).toBe(first ?? 0)
+  expect(ledger.limitWait(second ?? 0)).toEqual({ resumeAt: RESUME_AT, resumed: 0 })
+  // Stopped on its limit again before that tick took the next: that tick does not take it twice.
+  ledger.error(first ?? 0, LIMIT)
+  expect(ledger.claimResume(RESUME_AT, first)).toBe(second ?? 0)
+  expect(ledger.claimResume(RESUME_AT, second)).toBeNull()
+  expect(ledger.claimResume(RESUME_AT)).toBe(first ?? 0)
+})
+
+test('a task no longer in error, or collected, is not resumed after its limit; one whose error says no reset never waits', () => {
+  const ledger = new Ledger(freshHome())
+  const [running, cancelled, collected, plain] = [1, 2, 3, 4].map(() => newTask(ledger))
+  for (const id of [running, cancelled, collected]) ledger.error(id ?? 0, LIMIT)
+  ledger.setRunning(running ?? 0, '/work/x')
+  ledger.cancel(cancelled ?? 0, 'cancelled by human')
+  ledger.collected(collected ?? 0, null)
+  ledger.error(
+    plain ?? 0,
+    'Failed to authenticate. API Error: 403 Attention Required! | Cloudflare',
+  )
+  expect(ledger.claimResume(RESUME_AT)).toBeNull()
+  for (const id of [running, cancelled, collected]) {
+    expect(ledger.limitWait(id ?? 0)).toEqual({ resumeAt: null, resumed: 0 })
+  }
+  expect(ledger.limitWait(plain ?? 0)).toBeNull()
+  // Brought back by restore, still in error: gc collected it, so its wait went with that.
+  ledger.uncollected(collected ?? 0)
+  expect(ledger.claimResume(RESUME_AT)).toBeNull()
+  expect(ledger.limitWait(collected ?? 0)).toEqual({ resumeAt: null, resumed: 0 })
+  // As gc marks one: the same.
+  const swept = newTask(ledger)
+  ledger.error(swept, LIMIT)
+  expect(ledger.collectedAsRead(ledger.get(swept), null)).toBe(true)
+  ledger.uncollected(swept)
+  expect(ledger.limitWait(swept)).toEqual({ resumeAt: null, resumed: 0 })
+})
+
+test('v37 has the tasks a usage limit stopped before it wait as from when they errored, unless the reset has passed or gc collected them', () => {
+  const home = freshHome()
+  const old = new Database(join(home, 'nod.db'), { create: true, strict: true })
+  for (const sql of MIGRATIONS.slice(0, 36)) old.exec(sql)
+  old.exec('pragma user_version = 36')
+  const weekly =
+    "the review exited with 1: You've hit your weekly limit · resets Nov 21 at 7pm (Asia/Seoul)"
+  const insert = old.prepare(
+    'insert into tasks (id, brief, status, error, created_at, finished_at, collected_at) values (?, ?, ?, ?, ?, ?, ?)',
+  )
+  insert.run(1, 'ahead', 'error', weekly, 'at', '2099-11-18T03:00:00.000Z', null)
+  insert.run(2, 'past', 'error', weekly, 'at', '2020-11-18T03:00:00.000Z', null)
+  insert.run(3, 'collected', 'error', weekly, 'at', '2099-11-18T03:00:00.000Z', 'at')
+  insert.run(
+    4,
+    'no reset',
+    'error',
+    'Failed to authenticate',
+    'at',
+    '2099-11-18T03:00:00.000Z',
+    null,
+  )
+  old.close()
+
+  const ledger = new Ledger(home)
+  expect(ledger.db.query('pragma user_version').get()).toEqual({ user_version: 37 })
+  // Nov 21 of the year it errored, not of the year the ledger opened.
+  expect(ledger.limitWait(1)).toEqual({ resumeAt: '2099-11-21T10:01:00.000Z', resumed: 0 })
+  for (const id of [2, 3, 4]) expect(ledger.limitWait(id)).toBeNull()
 })

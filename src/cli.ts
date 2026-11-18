@@ -5,6 +5,7 @@ import { parseArgs } from 'node:util'
 import { accountRule, configDir, describeRule, openedIn, setAccountRule } from './account'
 import { ALLOW, onPermissionRequest, PermissionEvent } from './allow'
 import { createdFrom } from './branch'
+import { localTime } from './days'
 import { finished, NO_PERSON } from './decisions'
 import { followWork, sweep } from './done'
 import { AUTOCOMPACT_PCT } from './env'
@@ -42,6 +43,7 @@ import {
   LAND_LEVELS,
   type LandLevel,
   Ledger,
+  MAX_LIMIT_RESUMES,
   nodHome,
   type Repo,
   type RepoEdit,
@@ -115,8 +117,9 @@ const USAGE = `usage:
   nod <decision> <answer...>       answer a decision; the worker gets it in its own session
   nod drop <decision>              end the task instead of answering
   nod cancel <task> [--reason <text>]
-                                   end a task that has not ended (queued, running, or waiting on
-                                   a decision) as drop does: its turn and any check or review of
+                                   end a task that has not ended (queued, running, waiting on a
+                                   decision, or in error with nod to resume it once a usage
+                                   limit resets) as drop does: its turn and any check or review of
                                    one stop with its session, its decisions close, the tasks
                                    after it are cancelled with it, its todo is a next action
                                    again, and the session that hears of it is told cancelled.
@@ -250,7 +253,8 @@ const USAGE = `usage:
                                    neither, of the finished tasks a signal says are done with:
                                    dropped, taken over by a newer task on the same todo, merged
                                    into the default branch, a linked pull request merged, closed or
-                                   approved by you, or finished 7+ days ago (one with commits no
+                                   approved by you, or finished 7+ days ago (not one nod is to
+                                   resume once its usage limit resets; one with commits no
                                    remote has only once a linked pull request of its branch in
                                    the repo origin pushes to merged after its last commit and no
                                    other linked one waits, and only if it succeeded). Branches go
@@ -307,7 +311,8 @@ const USAGE = `usage:
                                    the machine or tmux) and about tasks that have waited an hour
                                    on background work, has a worker report again when Claude Code
                                    cut off the Stop hook checking its turn (its time limit, a
-                                   sleep), and restarts the workers due a restart
+                                   sleep), restarts the workers due a restart, and resumes the
+                                   tasks a Claude usage limit stopped once its reset time passed
   nod restart [<task...>]          start the Claude Code of these workers, or of every worker,
                                    again in the same terminal and conversation: at once between
                                    turns, after its turn otherwise, and only once nobody is
@@ -564,7 +569,7 @@ switch (command) {
     break
   case 'tick': {
     // Run by hand, it checks the watches now too, not only on their every fifth minute.
-    const { passed, collected, lost, waited, cut, restarted, closed, landed } = await tick(
+    const { passed, collected, lost, waited, cut, restarted, resumed, closed, landed } = await tick(
       ledger,
       home,
       terminals,
@@ -577,9 +582,10 @@ switch (command) {
     if (waited.length > 0) console.log(`waited too long on background work: ${taskList(waited)}`)
     if (cut.length > 0) console.log(`went on from a check cut off: ${taskList(cut)}`)
     if (restarted.length > 0) console.log(`restarted task(s) ${taskList(restarted)}`)
+    if (resumed.length > 0) console.log(`resumed after a usage limit: ${taskList(resumed)}`)
     if (closed.length > 0) console.log(`closed the terminal(s) of task(s) ${taskList(closed)}`)
     for (const m of landed) console.log(`landing n${m.id}: ${m.did}`)
-    const did = [passed, collected, lost, waited, cut, restarted, closed, landed]
+    const did = [passed, collected, lost, waited, cut, restarted, resumed, closed, landed]
     if (did.every((x) => x.length === 0)) console.log('nothing due')
     break
   }
@@ -1356,6 +1362,16 @@ async function show(id: number): Promise<void> {
     console.log(`  landing: ${at} (on ${short(landing.base)}, pushed ${short(landing.pushed)})`)
   }
   if (task.collectedAt !== null) console.log(`  collected: ${task.collectedAt}`)
+  const wait = ledger.limitWait(id)
+  if (wait !== null) {
+    const when =
+      wait.resumeAt === null
+        ? ''
+        : `nod resumes it at ${localTime(new Date(wait.resumeAt))} unless nod resume or nod cancel comes first; `
+    console.log(
+      `  usage limit: ${when}resumed ${wait.resumed} of at most ${MAX_LIMIT_RESUMES} times`,
+    )
+  }
   const after = ledger.after(id)
   if (after.length > 0) {
     console.log(`  after: ${after.map((a) => `n${a.id} (${a.status})`).join(', ')}`)
