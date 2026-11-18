@@ -13,6 +13,7 @@ import {
   SqliteQueryCompiler,
   sql,
 } from 'kysely'
+import { limitReset } from './limit'
 
 export type TaskStatus =
   | 'queued'
@@ -234,7 +235,8 @@ export type Decision = {
 // `note`: a command, allow.ts, or its repo's trust, awaitStart in worker.ts), which is also the
 // ledger's record of it, or a decision a person answered or dropped elsewhere than in that session
 // (`answered`, decisions.ts's noticeAnswered; the answer is the decision's, or `note` for one a
-// person's tell went on past). `attemptId`: the
+// person's tell went on past), or nod resuming a task once the usage limit that stopped it reset
+// (`resumed`, resumeDue in worker.ts). `attemptId`: the
 // task's latest turn as it happened. `sessionId` and `sentAt`: the session it went to and when; null
 // and set for one closed unsent, which had no session to go to (a task in no project, a decision's
 // opening once it was answered first).
@@ -246,6 +248,7 @@ export type NoticeEvent =
   | 'tell'
   | 'allowed'
   | 'answered'
+  | 'resumed'
 export type Notice = {
   id: number
   taskId: number | null
@@ -800,6 +803,16 @@ export const MIGRATIONS = [
     primary key (project_id, name)
   );
   `,
+  // v37: when the tick resumes a task a Claude usage limit stopped (resume_at, null once it has or
+  // when it will not), and how many times nod resumed it so; only a task that hit one has a row.
+  // waitOldLimits fills it for those stopped so before.
+  `
+  create table limit_waits (
+    task_id integer primary key references tasks(id),
+    resume_at text,
+    resumed integer not null
+  );
+  `,
 ]
 // The migrations that make again a table others reference, by that table, which SQLite does only
 // with foreign keys off, and the pragma does nothing inside a transaction; numbered as user_version
@@ -809,6 +822,14 @@ const REBUILDS = new Map([[35, 'sessions']])
 const RULES_FILE_MIGRATION = 17
 // The migration that drops the triggers, before which saveTriggers runs.
 const TRIGGERS_MIGRATION = 32
+// The migration after which waitOldLimits runs.
+const LIMIT_WAITS_MIGRATION = 37
+// How many times nod resumes a task a usage limit stopped (limitWait), so one whose limit does not
+// lift when it says goes back to the person rather than round and round.
+// ponytail: counted over the task's life, never reset; per stop in a row if long tasks hit it.
+export const MAX_LIMIT_RESUMES = 3
+// After the minute a limit names it resets: the line leaves out the seconds.
+const RESET_SECONDS_MS = 60_000
 
 // The tables as the migrations leave them, in camelCase; CamelCasePlugin maps names to snake_case.
 // The todo tables (v10) are typed in todos.ts.
@@ -826,6 +847,7 @@ type Tables = {
   repos: Repo & { lander: number | null }
   repoChanges: { id: Generated<number>; repo: string; actor: string; change: string; at: string }
   taskChanges: { id: Generated<number>; taskId: number; actor: string; change: string; at: string }
+  limitWaits: { taskId: number; resumeAt: string | null; resumed: number }
   landings: Landing
   notices: Omit<Notice, 'id'> & { id: Generated<number> }
 }
@@ -979,6 +1001,7 @@ export class Ledger {
               )
             }
             if (i + 1 === RULES_FILE_MIGRATION) this.importRulesFile(home)
+            if (i + 1 === LIMIT_WAITS_MIGRATION) this.waitOldLimits()
             this.db.exec(`pragma user_version = ${i + 1}`)
           })
           .immediate()
@@ -1161,6 +1184,83 @@ export class Ledger {
 
   error(id: number, message: string): void {
     this.setStatus(id, 'error', message)
+  }
+
+  // An error that says when a Claude usage limit resets (limitReset) has the tick resume the task
+  // once it has (resumeDue in worker.ts), up to MAX_LIMIT_RESUMES times; any other error, or one past
+  // them, leaves it to the person, as before. setStatus runs it on each error, in its transaction, so
+  // a wait an earlier error set never outlives the latest.
+  private waitLimit(id: number, error: string | null, at: Date): void {
+    const reset = error === null ? null : limitReset(error, at)
+    const had = this.first(q.selectFrom('limitWaits').select('resumed').where('taskId', '=', id))
+    if (reset === null && had === null) return
+    const resumed = had?.resumed ?? 0
+    const resumeAt =
+      reset !== null && resumed < MAX_LIMIT_RESUMES
+        ? new Date(reset.getTime() + RESET_SECONDS_MS).toISOString()
+        : null
+    this.run(
+      q
+        .insertInto('limitWaits')
+        .values({ taskId: id, resumeAt, resumed })
+        .onConflict((oc) => oc.column('taskId').doUpdateSet({ resumeAt })),
+    )
+  }
+
+  // Tasks a usage limit stopped before v37 wait as one stopped since, from when they errored, but
+  // only until their limit resets: one past it the person may have left for good.
+  private waitOldLimits(): void {
+    const stopped = this.run(
+      q
+        .selectFrom('tasks')
+        .select(['id', 'error', 'finishedAt'])
+        .where('status', '=', 'error')
+        .where('collectedAt', 'is', null),
+    )
+    for (const t of stopped) {
+      if (t.finishedAt !== null) this.waitLimit(t.id, t.error, new Date(t.finishedAt))
+    }
+    this.run(
+      q
+        .deleteFrom('limitWaits')
+        .where((eb) => eb.or([eb('resumeAt', '<=', now()), eb('resumeAt', 'is', null)])),
+    )
+  }
+
+  // When the tick resumes the task (claimResumes), and how many times nod resumed it after a limit;
+  // null for a task no limit stopped. No time once nothing is due: it errored otherwise since, it is
+  // no longer in error (the person resumed or cancelled it, or nod did), or gc collected it (the
+  // person dealt with it).
+  limitWait(id: number): { resumeAt: string | null; resumed: number } | null {
+    const row = this.first(
+      q
+        .selectFrom('limitWaits as w')
+        .innerJoin('tasks as t', 't.id', 'w.taskId')
+        .select(['w.resumeAt', 'w.resumed', 't.status', 't.collectedAt'])
+        .where('w.taskId', '=', id),
+    )
+    if (row === null) return null
+    const due = row.status === 'error' && row.collectedAt === null
+    return { resumeAt: due ? row.resumeAt : null, resumed: row.resumed }
+  }
+
+  // Takes the tasks due a resume by `now` (limitWait), each counted as resumed, in one statement, so
+  // of two ticks at once only one resumes each.
+  claimResumes(now: string): number[] {
+    return this.run(
+      q
+        .updateTable('limitWaits')
+        .set((eb) => ({ resumeAt: null, resumed: eb('resumed', '+', 1) }))
+        .where('resumeAt', '<=', now)
+        .where('taskId', 'in', (eb) =>
+          eb
+            .selectFrom('tasks')
+            .select('id')
+            .where('status', '=', 'error')
+            .where('collectedAt', 'is', null),
+        )
+        .returning('taskId'),
+    ).map((r) => r.taskId)
   }
 
   // A gc that finds the branch already gone has no head to record and keeps the one recorded.
@@ -2030,6 +2130,7 @@ export class Ledger {
       const error = settled === null ? wantedError : null
       const finishedAt = FINISHED.has(status) ? now() : null
       this.run(q.updateTable('tasks').set({ status, error, finishedAt }).where('id', '=', id))
+      if (status === 'error') this.waitLimit(id, error, new Date())
       if (FINISHED.has(status)) {
         const attempts = this.attempts(id)
         const done = attempts.findLast((a) => a.outcome === 'succeeded')

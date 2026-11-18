@@ -1,3 +1,4 @@
+import { localTime } from './days'
 import { FINISHED, type Ledger, type Notice, type Task, type TaskStatus } from './ledger'
 import { sessionName } from './place'
 import { quote } from './tmux'
@@ -37,15 +38,19 @@ export function taskStatus(t: Task, live: ReadonlySet<string>): string {
   return t.status === 'running' && !live.has(sessionName(t.id)) ? 'session ended' : t.status
 }
 
-// The one line shown beside a task: what went wrong, what it waits for, where its landing stands,
-// what it last reported, or what it was asked to do.
+// The one line shown beside a task: what went wrong (and when nod resumes it, once a usage limit
+// stopped it), what it waits for, where its landing stands, what it last reported, or what it was
+// asked to do.
 export function taskNote(ledger: Ledger, t: Task): string {
   const waiting = t.status === 'queued' ? ledger.after(t.id) : []
   const waitsFor =
     waiting.length > 0 ? `waits for ${waiting.map((a) => `n${a.id}`).join(', ')}: ${t.brief}` : null
-  return (
-    t.error ?? waitsFor ?? landingNote(ledger, t) ?? ledger.lastAttempt(t.id)?.summary ?? t.brief
-  )
+  const resumeAt = t.error === null ? null : (ledger.limitWait(t.id)?.resumeAt ?? null)
+  const error =
+    resumeAt === null
+      ? t.error
+      : `resumes ${localTime(new Date(resumeAt))} after its usage limit: ${t.error}`
+  return error ?? waitsFor ?? landingNote(ledger, t) ?? ledger.lastAttempt(t.id)?.summary ?? t.brief
 }
 
 // Where landing the task stands (land.ts), until it is merged.

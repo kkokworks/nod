@@ -19,6 +19,7 @@ import {
   overdueWaits,
   reportLostTells,
   restartDue,
+  resumeDue,
   SELF,
 } from './worker'
 
@@ -35,9 +36,10 @@ const OUTPUT_LIMIT = 2000
 const WATCH_EVERY_MINUTES = 5
 
 // Asks about the turns whose terminal is gone and the tasks that waited too long on background
-// work, goes on from the checks Stop hooks did not finish, restarts the workers due a restart, and
-// closes the terminals of tasks finished a while ago (worker.ts), then, with `watches`, the watches
-// and gc of the finished tasks a signal says are done with (done.ts).
+// work, goes on from the checks Stop hooks did not finish, restarts the workers due a restart,
+// resumes the tasks whose usage limit reset, and closes the terminals of tasks finished a while ago
+// (worker.ts), then, with `watches`, the watches and gc of the finished tasks a signal says are done
+// with (done.ts).
 export async function tick(
   ledger: Ledger,
   home: string,
@@ -51,6 +53,7 @@ export async function tick(
   waited: number[]
   cut: number[]
   restarted: number[]
+  resumed: number[]
   closed: number[]
   landed: Moved[]
 }> {
@@ -60,6 +63,11 @@ export async function tick(
   // An account rule that cannot be read must not stop the watches.
   const restarted = await restartDue(ledger, home, terminals).catch((error) => {
     console.error(`nod: could not restart workers: ${message(error)}`)
+    return []
+  })
+  // Before closeFinished, so a terminal it would close is the one the resume goes into.
+  const resumed = await resumeDue(ledger, home, terminals, now).catch((error) => {
+    console.error(`nod: could not resume the tasks a usage limit stopped: ${message(error)}`)
     return []
   })
   const closed = await closeFinished(ledger, home, terminals, now)
@@ -95,7 +103,7 @@ export async function tick(
   await sendNotices(ledger).catch((error) =>
     console.error(`nod: could not tell the sessions: ${message(error)}`),
   )
-  return { passed, collected, lost, waited, cut, restarted, closed, landed }
+  return { passed, collected, lost, waited, cut, restarted, resumed, closed, landed }
 }
 
 // A watch passes when it exits 0. A command the shell cannot run (126, 127) never will; anything
@@ -232,7 +240,7 @@ export async function tickHome(home: string): Promise<void> {
   const ledger = new Ledger(home)
   const now = new Date()
   const watches = now.getMinutes() % WATCH_EVERY_MINUTES === 0
-  const { passed, collected, lost, cut, restarted, closed } = await tick(
+  const { passed, collected, lost, cut, restarted, resumed, closed } = await tick(
     ledger,
     home,
     Tmux.of(home),
@@ -247,5 +255,6 @@ export async function tickHome(home: string): Promise<void> {
   if (lost.length > 0) console.log(`${at} turn(s) lost with their terminal: ${tasks(lost)}`)
   if (cut.length > 0) console.log(`${at} went on from a check cut off: ${tasks(cut)}`)
   if (restarted.length > 0) console.log(`${at} restarted task(s) ${tasks(restarted)}`)
+  if (resumed.length > 0) console.log(`${at} resumed after a usage limit: ${tasks(resumed)}`)
   if (closed.length > 0) console.log(`${at} closed the terminal(s) of task(s) ${tasks(closed)}`)
 }

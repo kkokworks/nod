@@ -113,9 +113,12 @@ async function signal(
     }
     return merged
   }
-  if (task.finishedAt !== null && Date.parse(task.finishedAt) <= now.getTime() - STALE_DAYS * DAY) {
-    return `finished ${STALE_DAYS}+ days ago`
-  }
+  // Not one nod is to resume once its usage limit resets (resumeDue): a weekly limit may reset as
+  // late as that.
+  const resumes = ledger.limitWait(task.id)?.resumeAt != null
+  const stale =
+    task.finishedAt !== null && Date.parse(task.finishedAt) <= now.getTime() - STALE_DAYS * DAY
+  if (stale && !resumes) return `finished ${STALE_DAYS}+ days ago`
   const sameTodo = (t: Task): boolean =>
     t.id > task.id && t.todoId !== null && t.todoId === task.todoId
   const tookOver = (t: Task): string => `n${t.id} took over t${task.todoId}`

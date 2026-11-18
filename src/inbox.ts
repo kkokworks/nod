@@ -1,5 +1,6 @@
 import { lstatSync } from 'node:fs'
 import { z } from 'zod'
+import { localTime } from './days'
 import { Ledger, type Notice, type Task } from './ledger'
 import { message, unbroken } from './proc'
 import { type Project, type Session, Todos, takesMessages } from './todos'
@@ -308,6 +309,7 @@ const NEXT = {
       ? `nod tell n${id} <message> opens it again in the same conversation, and the review runs again on its next done`
       : `nod show n${id} says why; settle with the person what to do`,
   cancelled: (id: number) => `tell the person (nod show n${id})`,
+  resumed: (id: number) => `nothing yet; nod tells you how n${id} goes on`,
 }
 
 // A notice as the session hears it, with the turn it came on (its attempt, counted from 1, or the
@@ -338,7 +340,13 @@ function noticeText(ledger: Ledger, n: Notice): string {
   const turn = ledger.attempts(task.id).findIndex((a) => a.id === n.attemptId) + 1
   const attempt = turn === 0 ? '' : `, attempt ${turn}`
   const note = firstLine(n.note || task.brief)
-  return `${taskLabel(task)} ${n.event}${attempt}: ${note}\nnext: ${NEXT[n.event](task.id, note)}`
+  // An error a usage limit made that nod resumes by itself, unless it has already.
+  const resumeAt = n.event === 'error' ? (ledger.limitWait(task.id)?.resumeAt ?? null) : null
+  const next =
+    resumeAt === null
+      ? NEXT[n.event](task.id, note)
+      : `nothing: nod resumes it at ${localTime(new Date(resumeAt))}, once its usage limit has reset, unless the person says otherwise first (nod resume n${task.id}, nod cancel n${task.id})`
+  return `${taskLabel(task)} ${n.event}${attempt}: ${note}\nnext: ${next}`
 }
 
 // One line into a session's inbox socket, done once the socket took all of it and nod closed its

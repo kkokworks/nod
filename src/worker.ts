@@ -649,11 +649,12 @@ export async function drop(
 }
 
 // `nod cancel`: ends a task that has not ended, with no decision to drop, as dropping one does:
-// queued, running (its turn and a check of one going on stop with its session), or waiting on a
-// decision. `by` (actorFromEnv) and `reason` stay with the task as its error, which `nod show`, ls,
-// watch and the project session's notice show. A task that ended is refused, and so is one whose
-// work succeeded and is landing (landingOn): its work stands, so the person drops a decision on it
-// to stop its landing, or lets nod land go on with it.
+// queued, running (its turn and a check of one going on stop with its session), waiting on a
+// decision, or in error with nod to resume it once a usage limit resets (resumeDue), which this
+// stops. `by` (actorFromEnv) and `reason` stay with the task as its error, which `nod show`, ls,
+// watch and the project session's notice show. A task that ended otherwise is refused, and so is
+// one whose work succeeded and is landing (landingOn): its work stands, so the person drops a
+// decision on it to stop its landing, or lets nod land go on with it.
 export async function cancel(
   ledger: Ledger,
   home: string,
@@ -670,7 +671,8 @@ export async function cancel(
     // up to then.
     end: () => {
       const { status } = ledger.get(taskId)
-      if (FINISHED.has(status)) throw new Error(`task n${taskId} has ended (${status})`)
+      const resumes = status === 'error' && ledger.limitWait(taskId)?.resumeAt != null
+      if (FINISHED.has(status) && !resumes) throw new Error(`task n${taskId} has ended (${status})`)
       if (landingOn(ledger, taskId)) throw new Error(landingRefused(ledger, taskId))
       ledger.cancel(taskId, note)
       return 'dropped'
@@ -816,9 +818,10 @@ export async function tell(
 
 // A task that failed before its worker started has no conversation to reopen, so it starts anew,
 // under the same number, brief and branch, once the person fixed what stopped it (`started`). nod
-// never does that by itself. Until it has its folder, its error names this process (restartMark),
-// so one cut off before then is taken over by the next resume, not left running with no workspace;
-// what the cut-off start left in the repo goes first (clearCutOff).
+// does that by itself only once a usage limit that stopped it resets (resumeDue). Until it has its
+// folder, its error names this process (restartMark), so one cut off before then is taken over by
+// the next resume, not left running with no workspace; what the cut-off start left in the repo goes
+// first (clearCutOff).
 export async function resume(
   ledger: Ledger,
   home: string,
@@ -828,6 +831,64 @@ export async function resume(
   if (terminals.alive(sessionName(taskId))) {
     throw new Error(`task n${taskId}'s session is still open; send it a message with \`nod tell\``)
   }
+  return reopen(ledger, home, terminals, taskId, RESUME_PROMPT)
+}
+
+// What the worker of a task a usage limit stopped hears once nod resumes it (resumeDue): with its
+// report in, only nod's check of it failed (the review on the limit, say), so it reports again, as
+// after a check cut off (REPORT_AGAIN); else its turn did, and it goes on.
+const LIMIT_REPORT_AGAIN =
+  "nod's check of your last report stopped on a Claude usage limit, which has reset now, so nothing came of that report. Change nothing and skip the subagent review: report again as you did, with your NOD line, and nod checks it."
+const LIMIT_RESUME =
+  'Your task stopped on a Claude usage limit, which has reset now. Check the current state of this directory and continue the task.'
+
+// Resumes, as nod resume does, the tasks whose usage limit reset by `now` (claimResumes): each from
+// the step it stopped at, a terminal still open too (a limit that reset within the hour it keeps,
+// closeFinished), and the session that hears of the task is told. One the person resumed or
+// cancelled before is not due. One that fails to resume is the person's: a failure the resume did
+// not record as the task's error (it comes after tasks that have not succeeded, say) becomes it, so
+// that session hears why. The tick runs it. Returns the tasks it resumed.
+// ponytail: a cancel in the moment between the claim and the turn opening is undone by that turn.
+export async function resumeDue(
+  ledger: Ledger,
+  home: string,
+  terminals: Terminals,
+  now: Date,
+): Promise<number[]> {
+  const resumed: number[] = []
+  for (const id of ledger.claimResumes(now.toISOString())) {
+    const before = ledger.get(id).error
+    // Before the turn it opens, whose end would otherwise come first.
+    ledger.addNotice({
+      taskId: id,
+      event: 'resumed',
+      note: 'nod resumes it now: the usage limit that stopped it has reset',
+    })
+    try {
+      const last = ledger.lastAttempt(id)
+      const words =
+        last?.outcome === 'error' && last.report !== null ? LIMIT_REPORT_AGAIN : LIMIT_RESUME
+      await reopen(ledger, home, terminals, id, words)
+      resumed.push(id)
+    } catch (error) {
+      if (ended(ledger, id)) continue
+      const task = ledger.get(id)
+      if (task.status === 'error' && task.error === before) {
+        ledger.error(id, `nod could not resume it once its usage limit reset: ${message(error)}`)
+      }
+      await notifyError(ledger, home, id)(error)
+    }
+  }
+  return resumed
+}
+
+async function reopen(
+  ledger: Ledger,
+  home: string,
+  terminals: Terminals,
+  taskId: number,
+  words: string,
+): Promise<'reopened' | 'started'> {
   const task = ledger.get(taskId)
   const by = Number(MARKED.exec(task.error ?? '')?.[1])
   const stale = task.status === 'running' && by > 0 && !running(by) ? task.error : null
@@ -838,7 +899,7 @@ export async function resume(
     return 'started'
   }
   await restore(ledger, home, taskId)
-  await deliver(ledger, home, terminals, taskId, 'resume', RESUME_PROMPT, null)
+  await deliver(ledger, home, terminals, taskId, 'resume', words, null)
   return 'reopened'
 }
 

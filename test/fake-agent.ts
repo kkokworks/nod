@@ -34,6 +34,8 @@ import { GIT } from './remote'
 
 type Hooks = Record<string, { matcher?: string; hooks: { command: string }[] }[]>
 
+// A reset with its year, so a test knows it whenever it runs.
+const LIMITED = "You've hit your weekly limit · resets Jan 3, 2099 at 7pm (Asia/Seoul)"
 const ENTER = '\r'
 const ESCAPE = '\x1b'
 const DOWN = '\x1b[B'
@@ -71,7 +73,8 @@ const prompt =
 // Like `claude -p`, which nod runs as the reviewer: the prompt comes on stdin and the reply is
 // printed once. A brief with `review-strict` fails until ok.txt exists; `review-mute` gives no
 // verdict; `review-slow` takes a while; `review-hang` runs on until killed, unless ok.txt exists;
-// `review-killed` is killed outright. Like Claude Code under a user's UserPromptSubmit hook that
+// `review-killed` is killed outright; `review-limited` exits 1 on a weekly usage limit, as Claude
+// Code prints it, until a file `lifted` is in its folder. Like Claude Code under a user's UserPromptSubmit hook that
 // screens for personal data, a brief with a value shaped like a national ID number is blocked
 // before any model runs: it prints why, then the whole brief, and exits 0 (2.1.310). It logs the
 // diff file its brief names as it reads it then, and the folder it may read (--add-dir), as given
@@ -99,6 +102,10 @@ if (args.includes('-p')) {
   // A sleep, not a promise that never settles: with nothing else to wait on, Bun would just exit.
   if (stdin.includes('review-hang') && !existsSync('ok.txt')) await Bun.sleep(60_000)
   if (stdin.includes('review-killed')) process.kill(process.pid, 'SIGKILL')
+  if (stdin.includes('review-limited') && !existsSync('lifted')) {
+    console.log(LIMITED)
+    process.exit(1)
+  }
   let reply = 'NOD: done | looks right'
   if (stdin.includes('review-strict') && !existsSync('ok.txt')) {
     reply = 'ok.txt is missing.\nNOD: failed | ok.txt is missing'
