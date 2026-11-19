@@ -872,11 +872,7 @@ export class Todos {
   // alone, so they agree.
   addSession(of: number | NamedSeat, sessionKey: string, cwd: string): Session {
     return this.db.transaction(() => {
-      const seat =
-        typeof of === 'number'
-          ? { role: 'project' as const, name: sessionTitle(this.project(of)) }
-          : { role: of.role, name: of.name }
-      const row = { sessionKey, ...seat, cwd, socket: null, createdAt: now() }
+      const row = { sessionKey, ...this.seat(of), cwd, socket: null, createdAt: now() }
       const id = this.insert(q.insertInto('sessions').values(row).returning('id'))
       const projectId = typeof of === 'number' ? of : 'project' in of ? of.project : null
       if (projectId !== null) {
@@ -886,20 +882,28 @@ export class Todos {
     })()
   }
 
-  // Gives the Claude session running now the role and name of `of`, its conversation going on: one
-  // nod does not know goes in as opened in `cwd`, and one of a project, its own or as a helper,
-  // leaves it for the helper's project or none. Its id stays, so the latest of the name may still be
+  // The role and name a session of `of` goes by: a project's (`of` its id) is the project's title.
+  private seat(of: number | NamedSeat): { role: SessionRole; name: string } {
+    return typeof of === 'number'
+      ? { role: 'project', name: sessionTitle(this.project(of)) }
+      : { role: of.role, name: of.name }
+  }
+
+  // Gives the Claude session running now the role and name of `of`, or makes it the session of the
+  // project `of` names, its conversation going on: one nod does not know goes in as opened in `cwd`,
+  // and so is the latest, and one of a project, its own or as a helper, leaves it for the project
+  // `of` gives or none. Its id stays, so the latest of the name, or of the project, may still be
   // another.
-  // ponytail: a session claiming a name another holds under a higher id does not stand for it;
-  // renumbering it would take the notices sent to it along.
-  claimSession(of: NamedSeat, sessionKey: string, cwd: string): Session {
+  // ponytail: a session claiming a name or project another holds under a higher id does not stand
+  // for it; renumbering it would take the notices sent to it along.
+  claimSession(of: number | NamedSeat, sessionKey: string, cwd: string): Session {
     return this.db.transaction(() => {
-      const projectId = 'project' in of ? of.project : null
-      this.checkName(of.name, of.role, sessionKey, projectId)
+      const projectId = typeof of === 'number' ? of : 'project' in of ? of.project : null
+      if (typeof of !== 'number') this.checkName(of.name, of.role, sessionKey, projectId)
       const had = this.session(sessionKey)
       if (had === null) return this.addSession(of, sessionKey, cwd)
+      const seat = this.seat(of)
       this.run(q.deleteFrom('projectSessions').where('sessionId', '=', had.id))
-      const seat = { role: of.role, name: of.name }
       this.run(q.updateTable('sessions').set(seat).where('id', '=', had.id))
       if (projectId !== null) {
         this.run(q.insertInto('projectSessions').values({ sessionId: had.id, projectId }))

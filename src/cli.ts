@@ -26,6 +26,7 @@ import {
 } from './hooks'
 import {
   InboxEvent,
+  notSentLine,
   onCommand,
   onInbox,
   sendLine,
@@ -66,6 +67,7 @@ import {
   openSession,
   placeWork,
   projectCommand,
+  projectSessionLine,
   roleLine,
   sessionFromEnv,
   TODO_USAGE,
@@ -194,12 +196,14 @@ const USAGE = `usage:
                                    is for, hands over no task, and nod tells it of no task
   nod session claim <name> --role orchestrator|relay
   nod session claim <name> --role helper --project <project> [--description <text>]
-                                   give the Claude session this runs in that role and name, its
-                                   conversation going on: nod records it if it did not know it,
-                                   with the folder its transcript says it was opened in, a project
-                                   session leaves its project, and it says where it takes messages.
-                                   A helper's name and description are as nod open's, which opens
-                                   it again
+  nod session claim <project>
+                                   give the Claude session this runs in that role and name, or make
+                                   it the project's session, its conversation going on: nod records
+                                   it if it did not know it, with the folder its transcript says it
+                                   was opened in, so it is the project's latest session (one nod
+                                   knew keeps its place among them), a project session leaves its
+                                   project, and it says where it takes messages. A helper's name and
+                                   description are as nod open's, which opens it again
   nod session set <name> --description <text>
                                    what the helper of that name is for from now on; an empty one
                                    clears it
@@ -356,8 +360,9 @@ or no socket) says so on stderr. So does nod add, tell, resume, restart <task> o
 other Claude session, for a project whose latest session cannot hear either (none, no socket known,
 or its socket gone): what that work brings waits unheard until nod open opens the project's
 session, and nod --mine and nod ls --mine show it meanwhile. /clear goes on under an ID nod open
-did not open: it hears nothing until nod open opens the project's session again. One with no hooks
-cannot say it cleared, so what went to it after, until its next nod command, is lost: once
+did not open: it hears nothing until nod open opens the project's session again, or nod session
+claim p<n> run in it makes it the project's session, its new conversation going on. One with no
+hooks cannot say it cleared, so what went to it after, until its next nod command, is lost: once
 nod open opens it again, nod ls --mine and nod --mine show what it missed.
 A helper hears the same way of the project's tasks it added or was handed (nod hand): the latest
 session of its name, while it takes messages. While it does not, the project's session hears of
@@ -431,9 +436,7 @@ switch (command) {
       const p = parseRef(rest[0] ?? '', 'p')
       checkTell(new Todos(ledger), sessionFromEnv(), p)
       const sent = await tellProject(ledger, p, words(rest.slice(1)), actorFromEnv())
-      console.log(
-        sent ? 'sent' : `not sent yet: p${p} has no session taking messages; it goes once one does`,
-      )
+      console.log(sent ? 'sent' : notSentLine(new Todos(ledger), p))
       break
     }
     const id = taskRef(rest[0])
@@ -1143,10 +1146,12 @@ function open(args: string[]): void {
   process.exit(result.exitCode ?? 1)
 }
 
-// `nod session claim`: the Claude session running this takes a role and a name, its conversation
-// going on. A new row's folder is where its transcript says it was opened, as Bash may stand
-// elsewhere by now and nod open resumes it from there. It then says where it takes messages, as any
-// session does at its first nod command, which sends what waited and tells it when it cannot hear.
+// `nod session claim`: the Claude session running this takes a role and a name, or becomes a
+// project's session (a /clear or a claude of its own in the project's terminal, which nod open
+// would leave for the conversation it opened), its conversation going on. A new row's folder is
+// where its transcript says it was opened, as Bash may stand elsewhere by now and nod open resumes
+// it from there. It then says where it takes messages, as any session does at its first nod
+// command, which sends what waited and tells it when it cannot hear.
 // `nod session set`: a helper's description.
 async function sessionCommand([sub, ...args]: string[]): Promise<void> {
   const { values, positionals } = parseArgs({
@@ -1172,9 +1177,13 @@ async function sessionCommand([sub, ...args]: string[]): Promise<void> {
   if (sub !== 'claim') throw new Error(USAGE)
   const role =
     values.role === undefined ? undefined : oneOf('session role', values.role, NAMED_ROLES)
-  const seat = namedSeat(todos, 'nod session claim', name, role, values.project)
+  // With no role, the project the name gives, as nod open finds one first.
+  const seat =
+    namedSeat(todos, 'nod session claim', name, role, values.project) ??
+    (todos.namesProject(name) ? todos.findProject(name).id : null)
   if (seat === null) throw new Error(USAGE)
-  if (description !== undefined && !('project' in seat)) throw new Error(DESCRIBES)
+  const helps = typeof seat !== 'number' && 'project' in seat ? seat.project : null
+  if (description !== undefined && helps === null) throw new Error(DESCRIBES)
   const session = sessionFromEnv()
   if (session === null) {
     throw new Error('nod session claim names the Claude session it runs in; run it in one')
@@ -1187,14 +1196,16 @@ async function sessionCommand([sub, ...args]: string[]): Promise<void> {
     )
   }
   todos.claimSession(seat, session, cwd ?? process.cwd())
-  if (description !== undefined && 'project' in seat) {
-    todos.describeHelper(seat.project, name, description)
-  }
+  if (description !== undefined && helps !== null) todos.describeHelper(helps, name, description)
   await sayInbox()
   // Its role may be what a notice waited for, though its socket is the one nod knew.
   await tellSessions(home)
   const line =
-    'project' in seat ? helperLine(todos.project(seat.project), name) : roleLine(seat.role, name)
+    typeof seat === 'number'
+      ? projectSessionLine(todos.project(seat))
+      : 'project' in seat
+        ? helperLine(todos.project(seat.project), name)
+        : roleLine(seat.role, name)
   console.log(`this session is ${line}`)
 }
 

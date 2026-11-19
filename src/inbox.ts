@@ -192,6 +192,20 @@ export async function tellProject(
   return ledger.notice(id).sentAt !== null
 }
 
+// What `nod tell p<n>` says of words that wait: the session they wait for, by its ID, as the
+// conversation open in the project's terminal may be another (/clear, a claude of its own there),
+// why it takes nothing, and the two ways to a session that does. Read after the send, which forgets
+// a socket it found gone.
+export function notSentLine(todos: Todos, projectId: number): string {
+  const p = `p${projectId}`
+  const latest = todos.latestSession(projectId)
+  const why =
+    latest === null
+      ? `${p} has no session: nod open never opened one`
+      : `${p}'s session is ${latest.sessionKey} (since ${localTime(new Date(latest.createdAt))}), which ${latest.socket === null ? 'takes no messages now' : 'took nothing at its inbox socket'}`
+  return `not sent yet: ${why}; it goes once ${p} has a session taking messages: nod open ${p} opens ${latest === null ? 'one' : 'that one again'}, or nod session claim ${p} makes the Claude session it runs in ${p}'s session`
+}
+
 // What notify does after an event: sends what waits, with a ledger of its own, and tells only
 // stderr what went wrong, as nothing else may stop on it.
 export async function tellSessions(home: string): Promise<void> {

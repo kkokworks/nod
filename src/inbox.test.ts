@@ -4,8 +4,9 @@ import { join, resolve } from 'node:path'
 import { FakeTerminals } from '../test/fake-terminals'
 import { inboxServer, inboxTest } from '../test/inbox-server'
 import { socketsParent, tempDirs } from '../test/tmp'
+import { localTime } from './days'
 import { decide, noticeAnswered, WENT_ON } from './decisions'
-import { onCommand, onInbox, sendNotices, tellProject, unheardWork } from './inbox'
+import { notSentLine, onCommand, onInbox, sendNotices, tellProject, unheardWork } from './inbox'
 import { Ledger, type NewTask } from './ledger'
 import { notify } from './notify'
 import { Tmux } from './tmux'
@@ -716,6 +717,109 @@ test("nod tell p<n> sends a person's words into the project's session, or keeps 
   await expect(tellProject(ledger, 9, 'nobody', 'human', send)).rejects.toThrow('no project p9')
 })
 
+test('what nod tell p<n> keeps names the session it waits for by its ID, why that takes nothing, and the two ways to one that does', async () => {
+  const { ledger, todos, p } = setup()
+  const ways = 'it goes once p1 has a session taking messages: nod open p1 opens'
+  const claim = "or nod session claim p1 makes the Claude session it runs in p1's session"
+  const since = (key: string) => localTime(new Date(todos.session(key)?.createdAt ?? ''))
+  expect(notSentLine(todos, p.id)).toBe(
+    `not sent yet: p1 has no session: nod open never opened one; ${ways} one, ${claim}`,
+  )
+  // The session nod open opened, not the conversation that runs in its terminal since a /clear.
+  todos.addSession(p.id, A, '/work/one')
+  todos.addSession(p.id, B, '/work/two')
+  const waits = `not sent yet: p1's session is ${B} (since ${since(B)}), which`
+  expect(notSentLine(todos, p.id)).toBe(
+    `${waits} takes no messages now; ${ways} that one again, ${claim}`,
+  )
+  // A socket still there that took nothing is kept, for the next send.
+  todos.setSocket(B, '/socks/b')
+  const error = spyOn(console, 'error').mockImplementation(() => {})
+  const fails = async (): Promise<void> => {
+    throw new Error('took no line')
+  }
+  try {
+    expect(await tellProject(ledger, p.id, 'Hello', 'human', fails)).toBe(false)
+  } finally {
+    error.mockRestore()
+  }
+  expect(notSentLine(todos, p.id)).toBe(
+    `${waits} took nothing at its inbox socket; ${ways} that one again, ${claim}`,
+  )
+})
+
+inboxTest(
+  "a conversation the project's terminal runs since nod open's (a /clear, a claude of its own) hears what waited once it claims the project, and what is told after",
+  async () => {
+    const { home, ledger, todos, p } = setup()
+    const socket = join(tmp.make('nod-inbox-sock-', socketsParent()), 's')
+    // nod open opened A, which ended; the terminal runs B now, which nod does not know.
+    todos.addSession(p.id, A, '/work/one')
+    const {
+      CLAUDECODE: _,
+      CLAUDE_CODE_SESSION_ID: __,
+      NOD_TASK: ___,
+      NOD_ACTOR: ____,
+      CLAUDE_CODE_MESSAGING_SOCKET: _____,
+      ...shell
+    } = process.env
+    const env = { ...shell, NOD_HOME: home, CLAUDE_CONFIG_DIR: join(home, 'account') }
+    // Not spawnSync: the socket server answers in this process meanwhile.
+    const nod = async (session: string | null, ...args: string[]) => {
+      const inSession = {
+        CLAUDECODE: '1',
+        CLAUDE_CODE_SESSION_ID: `${session}`,
+        CLAUDE_CODE_MESSAGING_SOCKET: socket,
+      }
+      const proc = Bun.spawn(['bun', cli, ...args], {
+        env: { ...env, ...(session === null ? { NOD_ACTOR: 'human' } : inSession) },
+        stdout: 'pipe',
+        stderr: 'pipe',
+      })
+      const [code, out, err] = await Promise.all([
+        proc.exited,
+        new Response(proc.stdout).text(),
+        new Response(proc.stderr).text(),
+      ])
+      return { code, out, err }
+    }
+    const kept = await nod(null, 'tell', 'p1', 'Look at the logs')
+    expect(kept).toMatchObject({ code: 0, err: '' })
+    expect(kept.out).toContain(`not sent yet: p1's session is ${A} (`)
+    expect(kept.out).toContain('nod session claim p1')
+    // B's nod commands before it claims change nothing: it is no session of nod's.
+    expect(await nod(B, 'project')).toMatchObject({ code: 0, err: '' })
+    expect(todos.session(B)).toBeNull()
+    expect(ledger.unsentNotices()).toHaveLength(1)
+
+    const server = await inboxServer(socket)
+    try {
+      const claimed = await nod(B, 'session', 'claim', 'p1')
+      expect(claimed).toMatchObject({ code: 0, err: expect.stringContaining('no transcript') })
+      await server.received(1)
+      expect(server.lines).toMatchObject([
+        {
+          type: 'user',
+          session_id: B,
+          message: {
+            content: 'nod, project p1 Release: a notice\n\nnod tell from human:\nLook at the logs',
+          },
+        },
+      ])
+      expect(ledger.unsentNotices()).toEqual([])
+      expect(await nod(null, 'tell', 'p1', 'And the metrics')).toMatchObject({
+        code: 0,
+        out: 'sent\n',
+      })
+      await server.received(2)
+      expect(server.lines[1]).toMatchObject({ session_id: B })
+    } finally {
+      await server.close()
+    }
+  },
+  15_000,
+)
+
 test('nod tell p<n> from an orchestrator is refused for a project another has, and leaves nothing to send', async () => {
   const { home, ledger, todos, p } = setup()
   const { NOD_TASK: _, NOD_ACTOR: __, CLAUDE_CODE_MESSAGING_SOCKET: ___, ...env } = process.env
@@ -743,7 +847,9 @@ test('nod tell p<n> from an orchestrator is refused for a project another has, a
 test('nod open sessions report their inbox through nod hook inbox, and nod tell p<n> keeps what no session takes', async () => {
   const { home, ledger, todos, p } = setup()
   todos.addSession(p.id, A, '/work/one')
-  const env = { ...process.env, NOD_HOME: home, NOD_ACTOR: 'human' }
+  // The test's time zone, which bun test sets to UTC, as nod's line shows a local time.
+  const TZ = Intl.DateTimeFormat().resolvedOptions().timeZone
+  const env = { ...process.env, NOD_HOME: home, NOD_ACTOR: 'human', TZ }
   const run = async (input: string, nodHome = home): Promise<string> => {
     const proc = Bun.spawn(['bun', cli, 'hook', 'inbox'], {
       env: { ...env, NOD_HOME: nodHome, CLAUDE_CODE_MESSAGING_SOCKET: '/socks/none' },
@@ -771,9 +877,8 @@ test('nod open sessions report their inbox through nod hook inbox, and nod tell 
 
   const tell = Bun.spawn(['bun', cli, 'tell', 'p1', 'Hello', 'there'], { env, stdout: 'pipe' })
   expect(await tell.exited).toBe(0)
-  expect(await new Response(tell.stdout).text()).toBe(
-    'not sent yet: p1 has no session taking messages; it goes once one does\n',
-  )
+  expect(await new Response(tell.stdout).text()).toBe(`${notSentLine(todos, p.id)}\n`)
+  expect(notSentLine(todos, p.id)).toContain(`p1's session is ${A} (`)
   expect(ledger.unsentNotices().map((n) => n.note)).toEqual(['nod tell from human:\nHello there'])
 }, 15_000)
 

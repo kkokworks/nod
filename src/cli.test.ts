@@ -860,6 +860,117 @@ test("nod session claim <name> --role helper --project makes the Claude session 
   refused(D, ['Health', '--role', 'helper', '--project', `p${p.id}`], 'Health names a project')
 }, 30_000)
 
+test("nod session claim <project> makes the Claude session it runs in the project's latest session, which nod open then goes back to, its conversation going on", () => {
+  const home = tmp.make('nod-claim-project-')
+  const account = join(home, 'account')
+  const here = realpathSync(tmp.make('nod-claim-project-here-'))
+  const opened = realpathSync(tmp.make('nod-claim-project-opened-'))
+  const bin = tmp.make('nod-claim-project-bin-')
+  // Stands in for claude: says where it ran and with what.
+  writeFileSync(join(bin, 'claude'), '#!/bin/sh\necho "$(pwd -P) | $*"\n', { mode: 0o755 })
+  const todos = new Todos(new Ledger(home))
+  const p = todos.addProject({ title: 'Release', outcome: null }, 'human')
+  const q = todos.addProject({ title: 'Health', outcome: null }, 'human')
+  const {
+    CLAUDECODE: _,
+    CLAUDE_CODE_SESSION_ID: __,
+    NOD_TASK: ___,
+    NOD_ACTOR: ____,
+    CLAUDE_CODE_MESSAGING_SOCKET: _____,
+    ...shell
+  } = process.env
+  const env = {
+    ...shell,
+    NOD_HOME: home,
+    CLAUDE_CONFIG_DIR: account,
+    PATH: `${bin}:${process.env.PATH}`,
+  }
+  const nod = (session: string | null, ...args: string[]) => {
+    const inSession = {
+      CLAUDECODE: '1',
+      CLAUDE_CODE_SESSION_ID: `${session}`,
+      CLAUDE_CODE_MESSAGING_SOCKET: `/socks/${session}`,
+    }
+    const r = Bun.spawnSync(['bun', cli, ...args], {
+      cwd: here,
+      env: session === null ? env : { ...env, ...inSession },
+    })
+    return { code: r.exitCode, out: r.stdout.toString(), err: r.stderr.toString() }
+  }
+  const claim = (session: string, ...args: string[]) => nod(session, 'session', 'claim', ...args)
+  const refused = (session: string, args: string[], error: string): void => {
+    const r = claim(session, ...args)
+    expect(r.code).not.toBe(0)
+    expect(r.err).toContain(error)
+    expect(todos.session(session)).toBeNull()
+  }
+  const [old, cleared] = ['key-old', 'key-cleared']
+  todos.addSession(p.id, old, '/work/release')
+
+  // What names no project, or gives a project what only a helper has, goes in nowhere.
+  refused(cleared, ['p9'], 'no project p9')
+  refused(cleared, ['Nowhere'], 'usage:')
+  refused(cleared, [`p${p.id}`, '--description', 'x'], 'only a helper has a description')
+  refused(cleared, [`p${p.id}`, '--project', `p${q.id}`], '--project names the project of a helper')
+
+  // The conversation a /clear or a claude of its own runs in the project's terminal: nod did not
+  // know it, so it is recorded where its transcript says, and is the project's latest from now on.
+  const folder = projectFolder(account, opened)
+  mkdirSync(folder, { recursive: true })
+  writeFileSync(
+    join(folder, `${cleared}.jsonl`),
+    `${JSON.stringify({ type: 'user', cwd: opened })}\n`,
+  )
+  const claimed = claim(cleared, 'Release')
+  expect(claimed).toMatchObject({ code: 0, err: '' })
+  expect(claimed.out).toBe(
+    `this session is for project p${p.id} Release: nod add here puts work in that project, and the project's tasks and decisions are this session's.\n`,
+  )
+  expect(todos.latestSession(p.id)).toMatchObject({
+    sessionKey: cleared,
+    role: 'project',
+    name: 'Release',
+    cwd: opened,
+    socket: `/socks/${cleared}`,
+  })
+  expect(todos.sessionPlace(old)).toMatchObject({ latest: false })
+  // Its nod add is the project's, as in a session nod open opened: another project's is refused.
+  const other = nod(cleared, 'add', 'Book the blood test', '--project', `p${q.id}`)
+  expect(other.code).not.toBe(0)
+  expect(other.err).toContain(`this session is for p${p.id} Release; p${q.id} Health's work`)
+  // nod open goes back to it, not to the conversation nod open opened before.
+  expect(nod(null, 'open', `p${p.id}`).out).toStartWith(
+    `${opened} | --resume ${cleared} --name Release `,
+  )
+  // Claimed again, nothing changes.
+  expect(claim(cleared, `p${p.id}`)).toMatchObject({ code: 0, err: '' })
+  expect(todos.latestSession(p.id)?.sessionKey).toBe(cleared)
+
+  // Another project's session leaves it, keeping its folder.
+  const own = todos.addSession(q.id, 'key-health', '/work/health')
+  expect(claim('key-health', `p${p.id}`)).toMatchObject({ code: 0, err: '' })
+  expect(todos.session('key-health')).toEqual({
+    ...own,
+    role: 'project',
+    name: 'Release',
+    socket: '/socks/key-health',
+  })
+  expect(todos.latestSession(q.id)).toBeNull()
+  expect(todos.latestSession(p.id)?.sessionKey).toBe('key-health')
+
+  // A session nod knew from before a newer one keeps its place, and hears that it hears nothing.
+  todos.addSession({ role: 'orchestrator', name: 'north' }, 'key-north', '/work/north')
+  todos.addSession(p.id, 'key-newer', '/work/newer')
+  const behind = claim('key-north', `p${p.id}`)
+  expect(behind.code).toBe(0)
+  expect(behind.err).toContain(
+    `nod: this session of p${p.id} hears nothing from nod: nod tells p${p.id}'s latest session, which nod open p${p.id} opens`,
+  )
+  expect(todos.session('key-north')).toMatchObject({ role: 'project', name: 'Release' })
+  expect(todos.latestNamed('north')).toBeNull()
+  expect(todos.latestSession(p.id)?.sessionKey).toBe('key-newer')
+}, 30_000)
+
 test("a helper's description is given as nod open or nod session claim makes it, changed with nod session set, kept for a new session of its name, and nod project lists each helper on or off with its unfinished tasks", () => {
   const home = tmp.make('nod-helper-description-')
   const here = realpathSync(tmp.make('nod-helper-description-here-'))
