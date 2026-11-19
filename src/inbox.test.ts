@@ -497,6 +497,17 @@ test("a nod command in a project session its hooks never told nod of says where 
   ])
 })
 
+test("a conversation nod knows that takes a project session's socket (resumed in its terminal) is not told to claim the project, as it would leave its own place", async () => {
+  const { ledger, todos, p, send } = setup()
+  todos.addSession(p.id, A, '/work/one')
+  await onCommand(ledger, A, '/socks/a', send)
+  todos.addSession({ role: 'orchestrator', name: 'north' }, B, '/work/two')
+  expect(await onCommand(ledger, B, '/socks/a', send)).toBe(
+    "nod: p1's session took messages at this session's inbox socket, which runs another session now (/clear or /resume in its terminal), so it hears nothing from nod; nod open p1 opens it again",
+  )
+  expect(todos.session(B)).toMatchObject({ role: 'orchestrator', socket: '/socks/a' })
+})
+
 test("a socket is one session's: the ID /clear or /resume goes on under takes it from the old one at its first nod command and says so, so what comes then waits; a session starting at it takes it too", async () => {
   const { ledger, todos, p, q, task, sent, send } = setup()
   const D = 'dddd4444-0000-4000-8000-00000000000d'

@@ -97,9 +97,10 @@ export async function onCommand(
   }
   const lost = had === null ? null : hearing(todos, had.sessionKey)
   if (lost?.latest && lost.ref !== me?.ref) {
-    // This conversation runs in the project session's terminal: it may take the project over.
+    // A conversation nod does not know (a /clear, a claude of its own) runs in the project session's
+    // terminal: it may take the project over. One nod knows (resumed there) keeps its own place.
     const keep =
-      lost.session.role === 'project'
+      lost.session.role === 'project' && me === null
         ? `, or nod session claim ${lost.ref} here makes this conversation ${lost.ref}'s session`
         : ''
     tell(
