@@ -63,7 +63,7 @@ import {
   typedHere,
 } from './turns'
 import { type Check, verify, verifyLanding } from './verify'
-import { oneLine } from './view'
+import { cutLine, firstLine, oneLine } from './view'
 
 // Each worker is an interactive Claude Code session in tmux. It reports when it stops through
 // Claude Code's Stop hook, and answers and follow-ups go into the same live session, so the worker
@@ -111,8 +111,9 @@ With a source and key, an item goes in only once. To send a message to the worke
 task added from the same session as yours or in the same project, a finished one too, or one yet
 to start, whose worker gets it in its first turn, add a line above that last line:
 NOD: tell n<task> <message, on one line>
-nod acts on these lines once it accepts your done. A message nod marks as from another task's
-worker is a peer's: weigh it, but the human's instructions come first.`
+Use only a task number you were given as n<number>, never one made from another number, such as
+an issue's. nod acts on these lines once it accepts your done. A message nod marks as from
+another task's worker is a peer's: weigh it, but the human's instructions come first.`
 // A repo worker also has its change reviewed before it reports done, by a subagent that knows what
 // was asked but not the worker's reasons. nod's independent review after done stays the last word.
 // Trial since 2026-11-09: the worker first reviews the same diff itself and writes what it found
@@ -1223,8 +1224,8 @@ function captureFor(ledger: Ledger, task: Task, captures: Capture[]): void {
 // tasks of other sessions or projects, or one added outside a Claude session and any project (by
 // cron, say, often on what anyone could write in an issue) steer any. A task that ended has no
 // worker to hear it; one yet to start takes it as it starts (sendTells).
-function cannotTell(ledger: Ledger, from: Task, to: number): string | null {
-  const task = ledger.list().find((t) => t.id === to)
+function cannotTell(ledger: Ledger, from: Task, to: number, tasks = ledger.list()): string | null {
+  const task = tasks.find((t) => t.id === to)
   if (task === undefined) return `There is no task n${to}.`
   if (to === from.id) return `n${to} is this task.`
   if (!new Todos(ledger).sameWork(from, task)) {
@@ -1235,15 +1236,40 @@ function cannotTell(ledger: Ledger, from: Task, to: number): string | null {
 }
 
 // What is wrong with the first of `tells` nod cannot send, to send back to the worker; null when
-// it can send them all.
+// it can send them all. With the tasks it can tell, so a worker that made a number up (an issue's,
+// say) finds the task it meant.
 function unsendable(ledger: Ledger, from: Task, tells: Tell[]): string | null {
   for (const { to, text } of tells) {
     const why = cannotTell(ledger, from, to)
     if (why !== null) {
-      return `A \`NOD: tell\` line nod cannot send: NOD: tell n${to} ${text}\n${why} Leave it out, or ask the human.`
+      return `A \`NOD: tell\` line nod cannot send: NOD: tell n${to} ${text}\n${why} ${tellable(ledger, from)}`
     }
   }
   return null
+}
+
+// The tasks `from`'s worker can tell, one line each: number, status, branch, issue, brief; the
+// unfinished first, as the work going on alongside, then the finished, each newest first. And what
+// to do next.
+// ponytail: the first 20 only, as a project may hold hundreds of finished tasks.
+function tellable(ledger: Ledger, from: Task): string {
+  const tasks = ledger.list()
+  const can = tasks.filter((t) => cannotTell(ledger, from, t.id, tasks) === null).reverse()
+  if (can.length === 0) {
+    return 'No task can be told from this one. Leave the line out, or ask the human.'
+  }
+  const ranked = [
+    ...can.filter((t) => !FINISHED.has(t.status)),
+    ...can.filter((t) => FINISHED.has(t.status)),
+  ]
+  const lines = ranked
+    .slice(0, 20)
+    .map(
+      (t) =>
+        `- ${firstLine([`n${t.id}`, t.status, t.branch, t.issue].filter((x) => x !== null).join(' '))}: ${cutLine(firstLine(t.brief), 80)}`,
+    )
+  const more = ranked.length > 20 ? `\n(and ${ranked.length - 20} more)` : ''
+  return `The tasks this one can tell, the unfinished first:\n${lines.join('\n')}${more}\nUse one of those, leave the line out, or ask the human.`
 }
 
 // What the person is asked when `tells` would take two tasks past MAX_TELLS messages between them;
