@@ -32,7 +32,7 @@ export const InboxEvent = z.object({ session_id: z.string(), hook_event_name: z.
 // ends, none, unless the session runs on elsewhere since (nod open of the same session in another
 // terminal). A session nod open did not open records nothing, only takes its socket from any
 // session that had it (setSocket), so the conversation /clear starts under a new ID hears nothing
-// until nod open opens the project's session again.
+// until nod open opens the project's session again, or nod session claim makes it the project's.
 export async function onInbox(
   ledger: Ledger,
   event: z.infer<typeof InboxEvent>,
@@ -97,9 +97,15 @@ export async function onCommand(
   }
   const lost = had === null ? null : hearing(todos, had.sessionKey)
   if (lost?.latest && lost.ref !== me?.ref) {
+    // A conversation nod does not know (a /clear, a claude of its own) runs in the project session's
+    // terminal: it may take the project over. One nod knows (resumed there) keeps its own place.
+    const keep =
+      lost.session.role === 'project' && me === null
+        ? `, or nod session claim ${lost.ref} here makes this conversation ${lost.ref}'s session`
+        : ''
     tell(
       lost,
-      `nod: ${lost.ref}'s session took messages at this session's inbox socket, which runs another session now (/clear or /resume in its terminal), so it hears nothing from nod; nod open ${lost.opens} opens it again`,
+      `nod: ${lost.ref}'s session took messages at this session's inbox socket, which runs another session now (/clear or /resume in its terminal), so it hears nothing from nod; nod open ${lost.opens} opens it again${keep}`,
     )
   }
   if (me !== null) {
@@ -190,6 +196,26 @@ export async function tellProject(
   const id = ledger.addNotice({ projectId, event: 'tell', note })
   await sendNotices(ledger, send)
   return ledger.notice(id).sentAt !== null
+}
+
+// What `nod tell p<n>` says of words that wait: the session they wait for, by its ID and when nod
+// recorded it, as the conversation open in the project's terminal may be another (/clear, a claude
+// of its own there), why it takes nothing, and the two ways to a session that does: claim run where
+// the project's conversation is, not by whoever told. One whose socket is still there but took
+// nothing (a sandbox, a send that timed out) likely runs, and hears at the next send. Read after the
+// send, which forgets a socket it found gone.
+export function notSentLine(todos: Todos, projectId: number): string {
+  const p = `p${projectId}`
+  const latest = todos.latestSession(projectId)
+  const claim = `or nod session claim ${p}, run in the terminal meant for ${p}, makes the conversation there ${p}'s session`
+  if (latest === null) {
+    return `not sent yet: ${p} has no session: nod open never opened one; it goes once ${p} has a session taking messages: nod open ${p} opens one, ${claim}`
+  }
+  const which = `${p}'s session is ${latest.sessionKey} (recorded ${localTime(new Date(latest.createdAt))})`
+  if (latest.socket !== null) {
+    return `not sent yet: ${which}, whose inbox socket took nothing now; it goes with the next send, at the next tick or event`
+  }
+  return `not sent yet: ${which}, which takes no messages now; it goes once ${p} has a session taking messages: nod open ${p} opens that one again, ${claim}`
 }
 
 // What notify does after an event: sends what waits, with a ledger of its own, and tells only

@@ -190,6 +190,9 @@ const HELPER_DUTIES =
   "nod add here puts work in that project, and nod tells this session of the project's tasks it adds or is handed (nod hand) while it takes messages; the project's own session hears of the rest, and of these while this one is off."
 export const helperLine = (p: Project, name: string): string =>
   `the helper ${name} of project p${p.id} ${p.title}: ${HELPER_DUTIES}`
+// What Claude in a project's own session hears of it, as it opens or claims it.
+export const projectSessionLine = (p: Project): string =>
+  `for project p${p.id} ${p.title}: nod add here puts work in that project, and the project's tasks and decisions are this session's.`
 
 // The session of `name` that `role` and `project` give, as nod open and nod session claim take
 // them: `project` names a helper's project, which it needs, and no other role takes. Null for no
@@ -266,7 +269,7 @@ function opening(
     opens: `p${p.id}`,
     owner: p.id,
     name: sessionTitle(p),
-    line: `nod open opened this session for project p${p.id} ${p.title}: nod add here puts work in that project, and the project's tasks and decisions are this session's.`,
+    line: `nod open opened this session ${projectSessionLine(p)}`,
     latest: todos.latestSession(p.id),
   }
 }
