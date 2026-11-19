@@ -1224,8 +1224,8 @@ function captureFor(ledger: Ledger, task: Task, captures: Capture[]): void {
 // tasks of other sessions or projects, or one added outside a Claude session and any project (by
 // cron, say, often on what anyone could write in an issue) steer any. A task that ended has no
 // worker to hear it; one yet to start takes it as it starts (sendTells).
-function cannotTell(ledger: Ledger, from: Task, to: number): string | null {
-  const task = ledger.list().find((t) => t.id === to)
+function cannotTell(ledger: Ledger, from: Task, to: number, tasks = ledger.list()): string | null {
+  const task = tasks.find((t) => t.id === to)
   if (task === undefined) return `There is no task n${to}.`
   if (to === from.id) return `n${to} is this task.`
   if (!new Todos(ledger).sameWork(from, task)) {
@@ -1236,8 +1236,8 @@ function cannotTell(ledger: Ledger, from: Task, to: number): string | null {
 }
 
 // What is wrong with the first of `tells` nod cannot send, to send back to the worker; null when
-// it can send them all. With the unfinished tasks it can tell, so a worker that made a number up
-// (an issue's, say) finds the task it meant.
+// it can send them all. With the tasks it can tell, so a worker that made a number up (an issue's,
+// say) finds the task it meant.
 function unsendable(ledger: Ledger, from: Task, tells: Tell[]): string | null {
   for (const { to, text } of tells) {
     const why = cannotTell(ledger, from, to)
@@ -1248,24 +1248,28 @@ function unsendable(ledger: Ledger, from: Task, tells: Tell[]): string | null {
   return null
 }
 
-// The unfinished tasks `from`'s worker can tell, one line each: number, branch, issue, brief; and
-// what to do next.
-// ponytail: the 20 newest; a finished task still takes a tell, but listing those would run long.
+// The tasks `from`'s worker can tell, one line each: number, status, branch, issue, brief; the
+// unfinished first, as the work going on alongside, then the finished, each newest first. And what
+// to do next.
+// ponytail: the first 20 only, as a project may hold hundreds of finished tasks.
 function tellable(ledger: Ledger, from: Task): string {
-  const open = ledger
-    .list()
-    .filter((t) => !FINISHED.has(t.status) && cannotTell(ledger, from, t.id) === null)
-  if (open.length === 0) {
-    return 'No unfinished task can be told from this one. Leave the line out, or ask the human.'
+  const tasks = ledger.list()
+  const can = tasks.filter((t) => cannotTell(ledger, from, t.id, tasks) === null).reverse()
+  if (can.length === 0) {
+    return 'No task can be told from this one. Leave the line out, or ask the human.'
   }
-  const lines = open
-    .slice(-20)
+  const ranked = [
+    ...can.filter((t) => !FINISHED.has(t.status)),
+    ...can.filter((t) => FINISHED.has(t.status)),
+  ]
+  const lines = ranked
+    .slice(0, 20)
     .map(
       (t) =>
-        `- ${firstLine([`n${t.id}`, t.branch, t.issue].filter((x) => x !== null).join(' '))}: ${cutLine(firstLine(t.brief), 80)}`,
+        `- ${firstLine([`n${t.id}`, t.status, t.branch, t.issue].filter((x) => x !== null).join(' '))}: ${cutLine(firstLine(t.brief), 80)}`,
     )
-  const older = open.length > 20 ? `\n(and ${open.length - 20} older)` : ''
-  return `The unfinished tasks this one can tell:\n${lines.join('\n')}${older}\nUse one of those, leave the line out, or ask the human.`
+  const more = ranked.length > 20 ? `\n(and ${ranked.length - 20} more)` : ''
+  return `The tasks this one can tell, the unfinished first:\n${lines.join('\n')}${more}\nUse one of those, leave the line out, or ask the human.`
 }
 
 // What the person is asked when `tells` would take two tasks past MAX_TELLS messages between them;

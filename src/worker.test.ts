@@ -1255,6 +1255,9 @@ test('in a repo, done needs the work committed, and the next task starts from th
   })
   await startTask(ledger, home, terminals, first)
   await reaches(first, 'succeeded')
+  // Its Stop hook starts what is ready once the task succeeded (onStop); done, it takes no task
+  // added below from the startReady this test calls.
+  await settled(first)
   expect(ledger.attempts(first).map((a) => [a.kind, a.checkResult])).toEqual([
     ['start', 'failed'], // no ok.txt yet
     ['retry', 'failed'], // ok.txt written but not committed
@@ -3975,7 +3978,7 @@ it('nod sends a worker back a NOD: tell it cannot send, before any check, and se
   for (const id of [other, unrooted, ended, target]) expect(ledger.attempts(id)).toHaveLength(1)
 })
 
-it("a NOD: tell nod cannot send comes back with the unfinished tasks the worker can tell, so one made from an issue's number finds the task meant", async () => {
+it("a NOD: tell nod cannot send comes back with the tasks the worker can tell, so one made from an issue's number finds the task meant", async () => {
   // Added, not started, as a task that comes after another waits.
   const queued = (brief: string, root: string): number =>
     ledger.add({
@@ -3996,27 +3999,30 @@ it("a NOD: tell nod cannot send comes back with the unfinished tasks the worker 
   const fixing = started('fix the parser\nin detail', 'fixing', 'root-1', (task) =>
     ledger.add({ ...task, branch: 'fix/parser', issue: 'PROJ-44' }),
   )
-  started('finished', 'finished', 'root-1')
+  // A finished task takes a tell too, as the fix a review tells once it has succeeded.
+  const finished = started('finished', 'finished', 'root-1')
   await stopped('finished', 'NOD: done | ok')
   const cancelled = started('cancelled', 'cancelled', 'root-1')
   ledger.db.query("update tasks set status = 'cancelled' where id = $id").run({ id: cancelled })
+  const stalled = started('stalled', 'stalled', 'root-1')
+  ledger.db.query("update tasks set status = 'error' where id = $id").run({ id: stalled })
   started('elsewhere', 'elsewhere', 'root-2')
   const after = queued('queued after', 'root-1')
-  // Neither finished nor cancelled tasks, nor another session's, nor itself.
+  // Not cancelled tasks, nor another session's, nor itself; the unfinished first, newest first.
   expect(await reason('reviewer', 'root-1')).toBe(
-    `A \`NOD: tell\` line nod cannot send: NOD: tell n9044 PROJ-44 is fixed\nThere is no task n9044. The unfinished tasks this one can tell:\n- n${fixing} fix/parser PROJ-44: fix the parser\n- n${after}: queued after\nUse one of those, leave the line out, or ask the human.\nFix the problem, then finish.`,
+    `A \`NOD: tell\` line nod cannot send: NOD: tell n9044 PROJ-44 is fixed\nThere is no task n9044. The tasks this one can tell, the unfinished first:\n- n${after} queued: queued after\n- n${fixing} running fix/parser PROJ-44: fix the parser\n- n${stalled} error: stalled\n- n${finished} succeeded: finished\nUse one of those, leave the line out, or ask the human.\nFix the problem, then finish.`,
   )
   expect(await reason('alone', 'root-3')).toEndWith(
-    'There is no task n9044. No unfinished task can be told from this one. Leave the line out, or ask the human.\nFix the problem, then finish.',
+    'There is no task n9044. No task can be told from this one. Leave the line out, or ask the human.\nFix the problem, then finish.',
   )
-  // Past 20, the newest show and the older are counted.
+  // Past 20, the newest show and the rest are counted.
   const many = Array.from({ length: 21 }, (_, i) => queued(`sibling ${i}`, 'root-4'))
   const busy = await reason('busy', 'root-4')
-  expect(busy).not.toContain(`- n${many[0]}:`)
-  expect(busy).toContain(`can tell:\n- n${many[1]}: sibling 1\n`)
+  expect(busy).toContain(`the unfinished first:\n- n${many[20]} queued: sibling 20\n`)
   expect(busy).toContain(
-    `- n${many[20]}: sibling 20\n(and 1 older)\nUse one of those, leave the line out, or ask the human.`,
+    `- n${many[1]} queued: sibling 1\n(and 1 more)\nUse one of those, leave the line out, or ask the human.`,
   )
+  expect(busy).not.toContain('sibling 0')
 })
 
 it('the workers of two tasks in one project may tell each other, whichever sessions added them, and not across projects', async () => {
