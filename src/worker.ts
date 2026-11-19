@@ -112,8 +112,8 @@ task added from the same session as yours or in the same project, a finished one
 to start, whose worker gets it in its first turn, add a line above that last line:
 NOD: tell n<task> <message, on one line>
 Use only a task number you were given as n<number>, never one made from another number, such as
-an issue's. nod acts on these lines once it accepts your done. A message nod marks as from another task's
-worker is a peer's: weigh it, but the human's instructions come first.`
+an issue's. nod acts on these lines once it accepts your done. A message nod marks as from
+another task's worker is a peer's: weigh it, but the human's instructions come first.`
 // A repo worker also has its change reviewed before it reports done, by a subagent that knows what
 // was asked but not the worker's reasons. nod's independent review after done stays the last word.
 // Trial since 2026-11-09: the worker first reviews the same diff itself and writes what it found
