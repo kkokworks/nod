@@ -1516,6 +1516,10 @@ it('a repo worker is told to have a subagent review its branch from where it sta
   const every = workerPrompt(ledger, null).replaceAll('\n', ' ')
   expect(every).toContain('nod then waits for that work instead of asking the human')
   expect(every).toContain('NOD: tell n<task> <message, on one line>')
+  // Not one made up from an issue key the brief names.
+  expect(every).toContain(
+    "Use only a task number you were given as n<number>, never one made from another number, such as an issue's.",
+  )
   expect(every).toContain("worker is a peer's: weigh it, but the human's instructions come first")
   // Deleting the way nod allows itself (harmless in allow.ts), or not at all, so no decision opens
   // while the human is away; and no memory other sessions would read unchecked.
@@ -3969,6 +3973,50 @@ it('nod sends a worker back a NOD: tell it cannot send, before any check, and se
   expect(await refused(ended)).toContain(`n${ended} has ended.`)
   expect(entries('review')).toEqual([])
   for (const id of [other, unrooted, ended, target]) expect(ledger.attempts(id)).toHaveLength(1)
+})
+
+it("a NOD: tell nod cannot send comes back with the unfinished tasks the worker can tell, so one made from an issue's number finds the task meant", async () => {
+  // Added, not started, as a task that comes after another waits.
+  const queued = (brief: string, root: string): number =>
+    ledger.add({
+      brief,
+      repo: null,
+      branch: null,
+      checkCmd: null,
+      model: null,
+      after: [],
+      issue: null,
+      rootSession: root,
+    })
+  const reason = async (session: string, root: string): Promise<string> => {
+    started('review', session, root)
+    const out = await stopped(session, 'NOD: tell n9044 PROJ-44 is fixed\nNOD: done | ok')
+    return JSON.parse(out ?? '{}').reason
+  }
+  const fixing = started('fix the parser\nin detail', 'fixing', 'root-1', (task) =>
+    ledger.add({ ...task, branch: 'fix/parser', issue: 'PROJ-44' }),
+  )
+  started('finished', 'finished', 'root-1')
+  await stopped('finished', 'NOD: done | ok')
+  const cancelled = started('cancelled', 'cancelled', 'root-1')
+  ledger.db.query("update tasks set status = 'cancelled' where id = $id").run({ id: cancelled })
+  started('elsewhere', 'elsewhere', 'root-2')
+  const after = queued('queued after', 'root-1')
+  // Neither finished nor cancelled tasks, nor another session's, nor itself.
+  expect(await reason('reviewer', 'root-1')).toBe(
+    `A \`NOD: tell\` line nod cannot send: NOD: tell n9044 PROJ-44 is fixed\nThere is no task n9044. The unfinished tasks this one can tell:\n- n${fixing} fix/parser PROJ-44: fix the parser\n- n${after}: queued after\nUse one of those, leave the line out, or ask the human.\nFix the problem, then finish.`,
+  )
+  expect(await reason('alone', 'root-3')).toEndWith(
+    'There is no task n9044. No unfinished task can be told from this one. Leave the line out, or ask the human.\nFix the problem, then finish.',
+  )
+  // Past 20, the newest show and the older are counted.
+  const many = Array.from({ length: 21 }, (_, i) => queued(`sibling ${i}`, 'root-4'))
+  const busy = await reason('busy', 'root-4')
+  expect(busy).not.toContain(`- n${many[0]}:`)
+  expect(busy).toContain(`can tell:\n- n${many[1]}: sibling 1\n`)
+  expect(busy).toContain(
+    `- n${many[20]}: sibling 20\n(and 1 older)\nUse one of those, leave the line out, or ask the human.`,
+  )
 })
 
 it('the workers of two tasks in one project may tell each other, whichever sessions added them, and not across projects', async () => {
