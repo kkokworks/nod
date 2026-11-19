@@ -510,7 +510,7 @@ test("a socket is one session's: the ID /clear or /resume goes on under takes it
   // /clear: the same process and socket, under an ID nod open did not open, which the old ID's
   // lines no longer reach.
   expect(await onCommand(ledger, C, '/socks/a', send)).toBe(
-    "nod: p1's session took messages at this session's inbox socket, which runs another session now (/clear or /resume in its terminal), so it hears nothing from nod; nod open p1 opens it again",
+    "nod: p1's session took messages at this session's inbox socket, which runs another session now (/clear or /resume in its terminal), so it hears nothing from nod; nod open p1 opens it again, or nod session claim p1 here makes this conversation p1's session",
   )
   expect(todos.latestSession(p.id)?.socket).toBeNull()
   ledger.succeed(task('First'))
@@ -720,19 +720,22 @@ test("nod tell p<n> sends a person's words into the project's session, or keeps 
 test('what nod tell p<n> keeps names the session it waits for by its ID, why that takes nothing, and the two ways to one that does', async () => {
   const { ledger, todos, p } = setup()
   const ways = 'it goes once p1 has a session taking messages: nod open p1 opens'
-  const claim = "or nod session claim p1 makes the Claude session it runs in p1's session"
-  const since = (key: string) => localTime(new Date(todos.session(key)?.createdAt ?? ''))
+  // Run where p1's conversation is, not by whoever told: a session claiming it takes it over.
+  const claim =
+    "or nod session claim p1, run in the terminal meant for p1, makes the conversation there p1's session"
+  const recorded = (key: string) => localTime(new Date(todos.session(key)?.createdAt ?? ''))
   expect(notSentLine(todos, p.id)).toBe(
     `not sent yet: p1 has no session: nod open never opened one; ${ways} one, ${claim}`,
   )
   // The session nod open opened, not the conversation that runs in its terminal since a /clear.
   todos.addSession(p.id, A, '/work/one')
   todos.addSession(p.id, B, '/work/two')
-  const waits = `not sent yet: p1's session is ${B} (since ${since(B)}), which`
+  const waits = `not sent yet: p1's session is ${B} (recorded ${recorded(B)})`
   expect(notSentLine(todos, p.id)).toBe(
-    `${waits} takes no messages now; ${ways} that one again, ${claim}`,
+    `${waits}, which takes no messages now; ${ways} that one again, ${claim}`,
   )
-  // A socket still there that took nothing is kept, for the next send.
+  // A socket still there that took nothing (a sandbox, a timeout) is kept: the session likely runs,
+  // and hears at the next send, so neither way is offered.
   todos.setSocket(B, '/socks/b')
   const error = spyOn(console, 'error').mockImplementation(() => {})
   const fails = async (): Promise<void> => {
@@ -744,7 +747,7 @@ test('what nod tell p<n> keeps names the session it waits for by its ID, why tha
     error.mockRestore()
   }
   expect(notSentLine(todos, p.id)).toBe(
-    `${waits} took nothing at its inbox socket; ${ways} that one again, ${claim}`,
+    `${waits}, whose inbox socket took nothing now; it goes with the next send, at the next tick or event`,
   )
 })
 
