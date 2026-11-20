@@ -10,7 +10,7 @@ import { notify } from './notify'
 import { message, runGroup } from './proc'
 import { pullRequests } from './prs'
 import { homeId, type Terminals, Tmux } from './tmux'
-import { Todos } from './todos'
+import { SELF, Todos } from './todos'
 import { oneLine } from './view'
 import {
   closeFinished,
@@ -20,7 +20,6 @@ import {
   reportLostTells,
   restartDue,
   resumeDue,
-  SELF,
 } from './worker'
 
 // The tick: what nod does on its own between commands (tick), and the watches that tell when what a

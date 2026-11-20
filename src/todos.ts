@@ -57,6 +57,9 @@ export type NamedSeat =
 export const OPEN: TodoStatus[] = ['inbox', 'next', 'waiting']
 const FINISHED: TodoStatus[] = ['done', 'dropped']
 const CLOSED_PROJECT: ProjectStatus[] = ['done', 'dropped']
+// Who moves a delegated todo along with its task, or a watched one once its watch passes: nod
+// itself. Not the environment's actor, which in a worker's hook is that worker.
+export const SELF = 'nod'
 // A delegated todo's tasks that may still go on: one in error can be resumed.
 export const UNFINISHED: TaskStatus[] = ['queued', 'running', 'needs_decision', 'error']
 

@@ -76,7 +76,7 @@ import {
   todoCommand,
   toldHelper,
 } from './todo-cli'
-import { cleared, type Found, NAMED_ROLES, oneOf, parseRef, Todos } from './todos'
+import { cleared, type Found, NAMED_ROLES, oneOf, parseRef, SELF, Todos } from './todos'
 import { scheduleEnv, scheduleOff, scheduleOn, tick } from './triggers'
 import {
   clean,
@@ -104,7 +104,6 @@ import {
   restart,
   restartDue,
   resume,
-  SELF,
   StopEvent,
   startReady,
   startTask,
@@ -262,8 +261,9 @@ const USAGE = `usage:
                                    close sessions and delete workspaces and worktrees of the named
                                    finished tasks, or of tasks finished that long ago, or, with
                                    neither, of the finished tasks a signal says are done with:
-                                   dropped, taken over by a newer task on the same todo, merged
-                                   into the default branch, a linked pull request merged, closed or
+                                   dropped, taken over by a newer task on the same todo, its todo
+                                   closed done or dropped by you since, merged into the default
+                                   branch, a linked pull request merged, closed or
                                    approved by you, or finished 7+ days ago (not one nod is to
                                    resume once its usage limit resets; one with commits no
                                    remote has only once a linked pull request of its branch in
