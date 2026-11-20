@@ -7,12 +7,14 @@ import { addDays, dayOf, localDay, localTime, parseWhen, REPEATS, type Repeat } 
 import { unheardWork } from './inbox'
 import { message } from './proc'
 import { openSettings } from './settings'
+import { quote } from './tmux'
 import {
   type Change,
   cleared,
   helperTitle,
   type NamedRole,
   type NamedSeat,
+  namesTask,
   OPEN,
   OPEN_ROLES,
   type OpenRole,
@@ -397,9 +399,48 @@ export function placeWork(
   )
 }
 
-// Refuses `nod tell p<n>` from an orchestrator session when another orchestrator is in charge of the
-// project, so a project's talk stays with one. Any session of its name is in charge. A project with
-// none takes any orchestrator's, and any other session and a shell tell as they always did.
+// What `nod tell` takes for the project's helper `name`: the name alone, or as nod open takes it
+// (helperOpens) for one that reads as a task (namesTask).
+export const helperTells = (name: string, projectId: number): string =>
+  namesTask(name) ? helperOpens(name, projectId) : clean(quote(name))
+
+// The project's helper `nod tell <helper> <message...>` names, and where its message starts (`at`):
+// `<name> --role helper --project <project>` as nod open takes it, the two in either order, or the
+// name alone, of the latest session of the name while that is a helper, when it reads as no task.
+// Null for a task.
+export function toldHelper(
+  todos: Todos,
+  [name = '', ...args]: string[],
+): { name: string; projectId: number; at: number } | null {
+  const latest = todos.latestNamed(name)
+  const helps =
+    latest?.role === 'helper' ? (todos.sessionPlace(latest.sessionKey)?.project ?? null) : null
+  const flags = new Map([
+    [args[0], args[1]],
+    [args[2], args[3]],
+  ])
+  const ref = flags.get('--project')
+  if (flags.get('--role') === 'helper' && ref !== undefined) {
+    if (!namesTask(name)) return { name, projectId: todos.findProject(ref).id, at: 5 }
+    // A task's words may start so too: they stay the task's unless they name the project of the
+    // helper of that name, as findProject reads it (p<n>, <n> or its title).
+    if (helps !== null && [`p${helps.id}`, `${helps.id}`, helps.title].includes(ref)) {
+      return { name, projectId: helps.id, at: 5 }
+    }
+  }
+  if (namesTask(name)) return null
+  if (helps === null) {
+    throw new Error(
+      `no task or helper named ${name}: nod tell takes n<n>, t<n>, r<n>, p<n> or a helper's name`,
+    )
+  }
+  return { name, projectId: helps.id, at: 1 }
+}
+
+// Refuses `nod tell p<n>`, or `nod tell <helper>` of the project, from an orchestrator session when
+// another orchestrator is in charge of the project, so a project's talk stays with one. Any session
+// of its name is in charge. A project with none takes any orchestrator's, and any other session and
+// a shell tell as they always did.
 export function checkTell(todos: Todos, session: string | null, projectId: number): void {
   const mine = session === null ? null : todos.session(session)
   const owner = todos.orchestratorOf(projectId)

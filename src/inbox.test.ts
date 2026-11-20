@@ -762,6 +762,53 @@ test('what nod tell p<n> keeps names the session it waits for by its ID, why tha
   )
 })
 
+test("nod tell <helper> sends a person's words into the helper's latest session by its socket, keeps them while it is off, not for the project's session, and gives them to that once the name is no helper of the project", async () => {
+  const { ledger, todos, p, q, sent, send } = setup()
+  todos.addSession(p.id, A, '/work/one')
+  todos.setSocket(A, '/socks/a')
+  // Claimed, so Claude Code shows it by another name: nod goes by the socket it knows.
+  todos.claimSession({ role: 'helper', name: 'review', project: p.id }, C, '/work/two')
+  todos.setSocket(C, '/socks/c')
+  const where = (): string[][] =>
+    sent.splice(0).map((s) => [s.socket, s.session_id, s.message.content])
+  // It says whom it was for, so the project's session that may hear it instead knows.
+  const told = (text: string) =>
+    `nod, project p1 Release: a notice\n\nnod tell from human for helper review:\n${text}`
+
+  expect(await tellProject(ledger, p.id, 'Look at the logs', 'human', send, 'review')).toBe(true)
+  expect(where()).toEqual([['/socks/c', C, told('Look at the logs')]])
+
+  // Off, it waits for the helper, though the project's session takes messages.
+  todos.setSocket(C, null)
+  expect(await tellProject(ledger, p.id, 'And the metrics', 'human', send, 'review')).toBe(false)
+  expect(where()).toEqual([])
+  const recorded = localTime(new Date(todos.session(C)?.createdAt ?? ''))
+  const opens = "'review' --role helper --project p1"
+  expect(notSentLine(todos, p.id, 'review')).toBe(
+    `not sent yet: review's session is ${C} (recorded ${recorded}), which takes no messages now; it goes once review has a session taking messages: nod open ${opens} opens that one again, or nod session claim ${opens}, run in the terminal meant for review, makes the conversation there review's session`,
+  )
+  await onInbox(ledger, { session_id: C, hook_event_name: 'SessionStart' }, '/socks/c', send)
+  expect(where()).toEqual([['/socks/c', C, told('And the metrics')]])
+
+  // A name that went to another project's helper since leaves what waits to the project's session.
+  todos.setSocket(C, null)
+  expect(await tellProject(ledger, p.id, 'Still there?', 'human', send, 'review')).toBe(false)
+  todos.claimSession({ role: 'helper', name: 'review', project: q.id }, C, '/work/two')
+  todos.setSocket(C, '/socks/c')
+  await sendNotices(ledger, send)
+  expect(where()).toEqual([['/socks/a', A, told('Still there?')]])
+  expect(notSentLine(todos, p.id, 'review')).toStartWith(`not sent yet: p1's session is ${A} (`)
+
+  // A helper the project lacks keeps nothing.
+  await expect(tellProject(ledger, p.id, 'x', 'human', send, 'review')).rejects.toThrow(
+    'p1 has no helper named review; nod open review --role helper --project p1 opens one',
+  )
+  await expect(tellProject(ledger, p.id, 'x', 'human', send, 'nobody')).rejects.toThrow(
+    'p1 has no helper named nobody',
+  )
+  expect(ledger.unsentNotices()).toEqual([])
+})
+
 inboxTest(
   "a conversation the project's terminal runs since nod open's (a /clear, a claude of its own) hears what waited once it claims the project, and what is told after",
   async () => {

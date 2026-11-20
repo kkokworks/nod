@@ -63,6 +63,7 @@ import {
   DESCRIBES,
   describeHelper,
   helperLine,
+  helperTells,
   namedSeat,
   openSession,
   placeWork,
@@ -73,6 +74,7 @@ import {
   TODO_USAGE,
   todayCommand,
   todoCommand,
+  toldHelper,
 } from './todo-cli'
 import { cleared, type Found, NAMED_ROLES, oneOf, parseRef, Todos } from './todos'
 import { scheduleEnv, scheduleOff, scheduleOn, tick } from './triggers'
@@ -215,6 +217,11 @@ const USAGE = `usage:
                                    its tasks; kept until that session takes messages. From an
                                    orchestrator session it is refused when another orchestrator
                                    is in charge of the project (nod project set --orchestrator)
+  nod tell <helper> <message...>   the same into the latest session of a project's helper of that
+                                   name, by the socket nod knows of it, whatever name Claude Code
+                                   shows for it; kept until it takes messages. A name that reads as
+                                   a task goes as nod open takes it: <name> --role helper --project
+                                   <project>
   nod resume <task>                reopen a task whose session ended, from its transcript; one that
                                    failed before its worker started starts again under the same
                                    number and branch, once you fixed what stopped it
@@ -367,7 +374,8 @@ nod open opens it again, nod ls --mine and nod --mine show what it missed.
 A helper hears the same way of the project's tasks it added or was handed (nod hand): the latest
 session of its name, while it takes messages. While it does not, the project's session hears of
 them, so nothing is lost, and a notice not sent yet goes to whichever of the two hears when it is
-sent. What a project hears of no task (nod tell p<n>) goes to the project's session alone.
+sent. What a project hears of no task (nod tell p<n>) goes to the project's session alone, and what
+nod tell <helper> says to that helper alone, waiting while it is off.
 An orchestrator hears the same way of the tasks it added in no project: the latest session of its
 name, even while another orchestrator runs. What comes while it is closed waits for it too. No
 session hears of a task in no project that no orchestrator added (a shell's, say): what
@@ -432,11 +440,16 @@ switch (command) {
     await sessionCommand(rest)
     break
   case 'tell': {
-    if (/^p\d+$/.test(rest[0] ?? '')) {
-      const p = parseRef(rest[0] ?? '', 'p')
-      checkTell(new Todos(ledger), sessionFromEnv(), p)
-      const sent = await tellProject(ledger, p, words(rest.slice(1)), actorFromEnv())
-      console.log(sent ? 'sent' : notSentLine(new Todos(ledger), p))
+    const todos = new Todos(ledger)
+    const project = /^p\d+$/.test(rest[0] ?? '')
+    const helper = project ? null : toldHelper(todos, rest)
+    if (project || helper !== null) {
+      const p = helper?.projectId ?? parseRef(rest[0] ?? '', 'p')
+      const name = helper?.name ?? null
+      checkTell(todos, sessionFromEnv(), p)
+      const text = words(rest.slice(helper?.at ?? 1))
+      const sent = await tellProject(ledger, p, text, actorFromEnv(), sendLine, name)
+      console.log(sent ? 'sent' : notSentLine(todos, p, name))
       break
     }
     const id = taskRef(rest[0])
@@ -1151,7 +1164,8 @@ function open(args: string[]): void {
 // would leave for the conversation it opened), its conversation going on. A new row's folder is
 // where its transcript says it was opened, as Bash may stand elsewhere by now and nod open resumes
 // it from there. It then says where it takes messages, as any session does at its first nod
-// command, which sends what waited and tells it when it cannot hear.
+// command, which sends what waited and tells it when it cannot hear. A helper hears too how other
+// sessions reach it (nod tell <helper>), as Claude Code keeps the name it had.
 // `nod session set`: a helper's description.
 async function sessionCommand([sub, ...args]: string[]): Promise<void> {
   const { values, positionals } = parseArgs({
@@ -1207,6 +1221,13 @@ async function sessionCommand([sub, ...args]: string[]): Promise<void> {
         ? helperLine(todos.project(seat.project), name)
         : roleLine(seat.role, name)
   console.log(`this session is ${line}`)
+  // A Claude already running keeps the name Claude Code gave it, not the one nod open would, so
+  // other sessions do not find it by that one (ListAgents); nod tells it by the socket it knows.
+  if (helps !== null) {
+    console.log(
+      `other sessions send to this one with nod tell ${helperTells(name, helps)} <message...>, whatever name Claude Code shows for it`,
+    )
+  }
 }
 
 // What the worker shows right now, for a Claude session that cannot attach a terminal.

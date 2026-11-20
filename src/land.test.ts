@@ -591,7 +591,13 @@ test('nod land says another landing holds the repo when that kept it from a task
   expect(nodLand()).toEqual(['nothing to land'])
   // A repo nod does not land, as a task in one is refused.
   setRepo('off')
-  const refused = Bun.spawnSync(['bun', resolve(import.meta.dir, 'cli.ts'), 'land', '--repo', repo])
+  // With this test's NOD_HOME: Bun.spawnSync passes the env it started with unless given one.
+  const refused = Bun.spawnSync(
+    ['bun', resolve(import.meta.dir, 'cli.ts'), 'land', '--repo', repo],
+    {
+      env: { ...process.env },
+    },
+  )
   expect(refused.exitCode).toBe(1)
   expect(refused.stderr.toString()).toContain(`${repo} does not let nod land its tasks`)
 }, 30_000)
