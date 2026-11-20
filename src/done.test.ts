@@ -862,7 +862,7 @@ test('an errored task nod is to resume once its usage limit resets does not go w
   ])
 })
 
-test('a finished repo task goes once the person closes its todo, done or dropped, since it ended; not when nod closed it, nor one closed before it ended, one nod is to resume, one with commits no remote has, or one without a repo', async () => {
+test('a finished repo task goes once the person closes its todo, done or dropped, since it ended; not when nod closed it, nor one closed before it ended, one nod is to resume or lands, one with commits no remote has, or one without a repo', async () => {
   const home = tmp.make('nod-done-todo-')
   process.env.CLAUDE_CONFIG_DIR = tmp.make('nod-done-claude-')
   const ledger = new Ledger(home)
@@ -939,6 +939,15 @@ test('a finished repo task goes once the person closes its todo, done or dropped
   close(unpushed.todo, 'done')
   const plain = finished('plain', { plain: true })
   close(plain.todo, 'dropped')
+  // One nod lands, its pull request open, say: landing brings back a collected task, so it would
+  // go and come back at every pass. An errored task nod does not land, its landing begun or not.
+  const landing = finished('landing')
+  close(landing.todo, 'done')
+  ledger.setRepo(repo, { land: 'pr' }, 'human')
+  // Only the tasks whose landing began land: none was added since the repo let nod land.
+  ledger.db.query("update repos set raised_at = '2099-01-01T00:00:00.000Z'").run()
+  ledger.setLanding(landing.id, {})
+  ledger.setLanding(errored.id, {})
   // As gc and the tick do, the todos first.
   await followWork(ledger, SELF, null)
   expect(todos.get(byNod.todo).status).toBe('done')
@@ -955,7 +964,7 @@ test('a finished repo task goes once the person closes its todo, done or dropped
     clean: [],
     skipped: [],
   })
-  for (const t of [byNod, before, resumes, unpushed, plain]) {
+  for (const t of [byNod, before, resumes, unpushed, plain, landing]) {
     expect(ledger.get(t.id).collectedAt).toBeNull()
   }
   // Its commit stays where it was, and so does a plain workspace's output.

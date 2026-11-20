@@ -119,7 +119,9 @@ async function signal(
   const stale =
     task.finishedAt !== null && Date.parse(task.finishedAt) <= now.getTime() - STALE_DAYS * DAY
   if (stale && !resumes) return `finished ${STALE_DAYS}+ days ago`
-  const closed = task.repo === null || resumes ? null : closedTodo(ledger, task)
+  // Not one nod lands (due in land.ts), which would bring it back at every pass until it merged.
+  const landing = task.status === 'succeeded' && lands(ledger, task)
+  const closed = task.repo === null || resumes || landing ? null : closedTodo(ledger, task)
   if (closed !== null) return closed
   const sameTodo = (t: Task): boolean =>
     t.id > task.id && t.todoId !== null && t.todoId === task.todoId
