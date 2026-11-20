@@ -281,13 +281,26 @@ test('nod tell takes a helper by its name, or as nod open takes it when the name
     projectId: 1,
   })
   expect(helperTells('t5', release.id)).toBe("'t5' --role helper --project p1")
-  const asOpen =
-    'nod tell takes a helper as nod open does: <name> --role helper --project <project>'
-  expect(() => toldHelper(todos, ['t5', '--role', 'relay', 'hi'])).toThrow(asOpen)
-  expect(() => toldHelper(todos, ['t5', '--role', 'helper', 'hi'])).toThrow(asOpen)
-  expect(() => toldHelper(todos, ['t5', '--role', 'helper', '--project', 'p9'])).toThrow(
+  // Words for a task that start like that form stay the task's, unless they name the project of
+  // the helper of that name.
+  for (const words of [
+    ['t5', '--role', 'relay', 'hi'],
+    ['t5', '--role', 'helper', 'hi'],
+    ['t5', '--role', 'helper', '--project', 'p9', 'hi'],
+    ['t5', '--role', 'helper', '--project', 'p2', 'hi'],
+    ['n5', '--role', 'helper', '--project', 'p1', 'hi'],
+  ]) {
+    expect(toldHelper(todos, words)).toBeNull()
+  }
+  // A helper's name that reads as no task takes the form as nod open does, and any other words.
+  expect(() => toldHelper(todos, ['web-perf', '--role', 'helper', '--project', 'p9'])).toThrow(
     'no project p9',
   )
+  expect(toldHelper(todos, ['web-perf', '--role', 'relay', 'hi'])).toEqual({
+    name: 'web-perf',
+    projectId: 2,
+    at: 1,
+  })
   // Any other name, an orchestrator's too, is no helper.
   for (const name of ['north', 'nobody', 'review']) {
     expect(() => toldHelper(todos, [name, 'hi'])).toThrow(`no task or helper named ${name}`)

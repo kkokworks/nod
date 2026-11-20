@@ -411,23 +411,25 @@ export function toldHelper(
   todos: Todos,
   [name = '', ...args]: string[],
 ): { name: string; projectId: number; at: number } | null {
-  if (args[0] === '--role') {
-    if (args[1] !== 'helper' || args[2] !== '--project' || args[3] === undefined) {
-      throw new Error(
-        'nod tell takes a helper as nod open does: <name> --role helper --project <project>',
-      )
+  const latest = todos.latestNamed(name)
+  const helps =
+    latest?.role === 'helper' ? (todos.sessionPlace(latest.sessionKey)?.project ?? null) : null
+  const [role, of, flag, ref] = args
+  if (role === '--role' && of === 'helper' && flag === '--project' && ref !== undefined) {
+    if (!namesTask(name)) return { name, projectId: todos.findProject(ref).id, at: 5 }
+    // A task's words may start so too: they stay the task's unless they name the project of the
+    // helper of that name, as findProject reads it (p<n>, <n> or its title).
+    if (helps !== null && [`p${helps.id}`, `${helps.id}`, helps.title].includes(ref)) {
+      return { name, projectId: helps.id, at: 5 }
     }
-    return { name, projectId: todos.findProject(args[3]).id, at: 5 }
   }
   if (namesTask(name)) return null
-  const latest = todos.latestNamed(name)
-  const place = latest?.role === 'helper' ? todos.sessionPlace(latest.sessionKey) : null
-  if (place == null) {
+  if (helps === null) {
     throw new Error(
       `no task or helper named ${name}: nod tell takes n<n>, t<n>, r<n>, p<n> or a helper's name`,
     )
   }
-  return { name, projectId: place.project.id, at: 1 }
+  return { name, projectId: helps.id, at: 1 }
 }
 
 // Refuses `nod tell p<n>`, or `nod tell <helper>` of the project, from an orchestrator session when
