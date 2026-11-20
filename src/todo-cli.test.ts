@@ -281,6 +281,11 @@ test('nod tell takes a helper by its name, or as nod open takes it when the name
     projectId: 1,
   })
   expect(helperTells('t5', release.id)).toBe("'t5' --role helper --project p1")
+  // The two in either order, as nod open takes them.
+  const reversed = ['t5', '--project', 'p1', '--role', 'helper', 'hi']
+  expect(toldHelper(todos, reversed)).toEqual({ name: 't5', projectId: 1, at: 5 })
+  const named = ['web-perf', '--project', 'Health', '--role', 'helper', 'hi']
+  expect(toldHelper(todos, named)).toEqual({ name: 'web-perf', projectId: 2, at: 5 })
   // Words for a task that start like that form stay the task's, unless they name the project of
   // the helper of that name.
   for (const words of [
@@ -288,6 +293,7 @@ test('nod tell takes a helper by its name, or as nod open takes it when the name
     ['t5', '--role', 'helper', 'hi'],
     ['t5', '--role', 'helper', '--project', 'p9', 'hi'],
     ['t5', '--role', 'helper', '--project', 'p2', 'hi'],
+    ['t5', '--project', 'p2', '--role', 'helper', 'hi'],
     ['n5', '--role', 'helper', '--project', 'p1', 'hi'],
   ]) {
     expect(toldHelper(todos, words)).toBeNull()

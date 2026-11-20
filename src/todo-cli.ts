@@ -405,8 +405,9 @@ export const helperTells = (name: string, projectId: number): string =>
   namesTask(name) ? helperOpens(name, projectId) : clean(quote(name))
 
 // The project's helper `nod tell <helper> <message...>` names, and where its message starts (`at`):
-// `<name> --role helper --project <project>` as nod open takes it, or the name alone, of the latest
-// session of the name while that is a helper, when it reads as no task. Null for a task.
+// `<name> --role helper --project <project>` as nod open takes it, the two in either order, or the
+// name alone, of the latest session of the name while that is a helper, when it reads as no task.
+// Null for a task.
 export function toldHelper(
   todos: Todos,
   [name = '', ...args]: string[],
@@ -414,8 +415,12 @@ export function toldHelper(
   const latest = todos.latestNamed(name)
   const helps =
     latest?.role === 'helper' ? (todos.sessionPlace(latest.sessionKey)?.project ?? null) : null
-  const [role, of, flag, ref] = args
-  if (role === '--role' && of === 'helper' && flag === '--project' && ref !== undefined) {
+  const flags = new Map([
+    [args[0], args[1]],
+    [args[2], args[3]],
+  ])
+  const ref = flags.get('--project')
+  if (flags.get('--role') === 'helper' && ref !== undefined) {
     if (!namesTask(name)) return { name, projectId: todos.findProject(ref).id, at: 5 }
     // A task's words may start so too: they stay the task's unless they name the project of the
     // helper of that name, as findProject reads it (p<n>, <n> or its title).

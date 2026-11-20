@@ -199,7 +199,9 @@ export async function tellProject(
   if (helper !== null && todos.helperNamed(helper, projectId) === null) {
     throw noHelper(projectId, helper)
   }
-  const note = `nod tell from ${actor}:\n${text}`
+  // For a helper it says so, as the project's session hears it once the name is no helper of it.
+  const to = helper === null ? '' : ` for helper ${clean(helper)}`
+  const note = `nod tell from ${actor}${to}:\n${text}`
   const id = ledger.addNotice({ projectId, helper, event: 'tell', note })
   await sendNotices(ledger, send)
   return ledger.notice(id).sentAt !== null

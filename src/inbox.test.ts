@@ -771,8 +771,9 @@ test("nod tell <helper> sends a person's words into the helper's latest session 
   todos.setSocket(C, '/socks/c')
   const where = (): string[][] =>
     sent.splice(0).map((s) => [s.socket, s.session_id, s.message.content])
+  // It says whom it was for, so the project's session that may hear it instead knows.
   const told = (text: string) =>
-    `nod, project p1 Release: a notice\n\nnod tell from human:\n${text}`
+    `nod, project p1 Release: a notice\n\nnod tell from human for helper review:\n${text}`
 
   expect(await tellProject(ledger, p.id, 'Look at the logs', 'human', send, 'review')).toBe(true)
   expect(where()).toEqual([['/socks/c', C, told('Look at the logs')]])

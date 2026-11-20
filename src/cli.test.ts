@@ -836,7 +836,11 @@ test("nod session claim <name> --role helper --project makes the Claude session 
   expect(told).toMatchObject({ code: 0 })
   expect(told.out).toStartWith(`not sent yet: review's session is ${A} (`)
   expect(new Ledger(home).unsentNotices()).toMatchObject([
-    { projectId: p.id, helper: 'review', note: 'nod tell from human:\nLook at the logs' },
+    {
+      projectId: p.id,
+      helper: 'review',
+      note: 'nod tell from human for helper review:\nLook at the logs',
+    },
   ])
   expect(nod(null, 'tell', 'docs', 'hi').err).toContain(
     "no task or helper named docs: nod tell takes n<n>, t<n>, r<n>, p<n> or a helper's name",
