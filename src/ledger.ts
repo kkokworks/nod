@@ -260,6 +260,8 @@ export type Notice = {
   createdAt: string
   // The session it went to (the sessions table in todos.ts); null for none.
   sessionId: number | null
+  // The name of the project's helper it is for (nod tell <helper>); null for any other.
+  helper: string | null
   sentAt: string | null
 }
 
@@ -813,6 +815,9 @@ export const MIGRATIONS = [
     resumed integer not null
   );
   `,
+  // v38: the project's helper a person's words are for (nod tell <helper>), by its name as
+  // task_hands holds it; null for the project's session and for every other notice.
+  `alter table notices add column helper text`,
 ]
 // The migrations that make again a table others reference, by that table, which SQLite does only
 // with foreign keys off, and the pragma does nothing inside a transaction; numbered as user_version
@@ -2029,7 +2034,8 @@ export class Ledger {
 
   // ── notices (inbox.ts) ──
 
-  // A person's words for a project's session, or, from setStatus and ask, a task's end or decision.
+  // A person's words for a project's session or helper, or, from setStatus and ask, a task's end or
+  // decision.
   addNotice(
     n: Partial<Omit<Notice, 'id' | 'createdAt' | 'sessionId' | 'sentAt'>> & {
       event: NoticeEvent

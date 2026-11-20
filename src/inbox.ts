@@ -3,7 +3,7 @@ import { z } from 'zod'
 import { localTime } from './days'
 import { Ledger, type Notice, type Task } from './ledger'
 import { message, unbroken } from './proc'
-import { type Project, type Session, Todos, takesMessages } from './todos'
+import { noHelper, type Project, type Session, Todos, takesMessages } from './todos'
 import { REVIEW_TIMED_OUT } from './verify'
 import { allowedLine, clean, firstLine, helperOpens, indent, oneLine, taskLabel } from './view'
 
@@ -182,18 +182,25 @@ export function unheardWork(
   return told
 }
 
-// `nod tell p<n>`: a person's words for the project's session, by the same way. Returns whether
-// they went now; else they wait for the session as a notice does.
+// `nod tell p<n>`: a person's words for the project's session, by the same way; `nod tell <helper>`:
+// for the project's helper of that name (`helper`), by the socket nod knows of its latest session,
+// whatever name Claude Code shows for it (a session that claimed it keeps the one it had). Returns
+// whether they went now; else they wait for that session as a notice does (Todos.listener).
 export async function tellProject(
   ledger: Ledger,
   projectId: number,
   text: string,
   actor: string,
   send = sendLine,
+  helper: string | null = null,
 ): Promise<boolean> {
-  new Todos(ledger).project(projectId)
+  const todos = new Todos(ledger)
+  todos.project(projectId)
+  if (helper !== null && todos.helperNamed(helper, projectId) === null) {
+    throw noHelper(projectId, helper)
+  }
   const note = `nod tell from ${actor}:\n${text}`
-  const id = ledger.addNotice({ projectId, event: 'tell', note })
+  const id = ledger.addNotice({ projectId, helper, event: 'tell', note })
   await sendNotices(ledger, send)
   return ledger.notice(id).sentAt !== null
 }
@@ -203,11 +210,14 @@ export async function tellProject(
 // of its own there), why it takes nothing, and the two ways to a session that does: claim run where
 // the project's conversation is, not by whoever told. One whose socket is still there but took
 // nothing (a sandbox, a send that timed out) likely runs, and hears at the next send. Read after the
-// send, which forgets a socket it found gone.
-export function notSentLine(todos: Todos, projectId: number): string {
-  const p = `p${projectId}`
-  const latest = todos.latestSession(projectId)
-  const claim = `or nod session claim ${p}, run in the terminal meant for ${p}, makes the conversation there ${p}'s session`
+// send, which forgets a socket it found gone. Of words for the project's helper `helper`, the same
+// of its latest session, which nod open and claim reach by helperOpens.
+export function notSentLine(todos: Todos, projectId: number, helper: string | null = null): string {
+  const helps = helper === null ? null : todos.helperNamed(helper, projectId)
+  const p = helps === null ? `p${projectId}` : clean(helps.name)
+  const opens = helps === null ? p : helperOpens(helps.name, projectId)
+  const latest = helps ?? todos.latestSession(projectId)
+  const claim = `or nod session claim ${opens}, run in the terminal meant for ${p}, makes the conversation there ${p}'s session`
   if (latest === null) {
     return `not sent yet: ${p} has no session: nod open never opened one; it goes once ${p} has a session taking messages: nod open ${p} opens one, ${claim}`
   }
@@ -215,7 +225,7 @@ export function notSentLine(todos: Todos, projectId: number): string {
   if (latest.socket !== null) {
     return `not sent yet: ${which}, whose inbox socket took nothing now; it goes with the next send, at the next tick or event`
   }
-  return `not sent yet: ${which}, which takes no messages now; it goes once ${p} has a session taking messages: nod open ${p} opens that one again, ${claim}`
+  return `not sent yet: ${which}, which takes no messages now; it goes once ${p} has a session taking messages: nod open ${opens} opens that one again, ${claim}`
 }
 
 // What notify does after an event: sends what waits, with a ledger of its own, and tells only
@@ -233,7 +243,8 @@ export async function tellSessions(home: string): Promise<void> {
 }
 
 // Sends each session its unsent notices, oldest first, all in one message: each project's to its
-// latest session, or a task's to its helper while that takes messages, and those of tasks in no
+// latest session, or a task's to its helper while that takes messages, a person's words for a helper
+// to it (nod tell <helper>), and those of tasks in no
 // project to the orchestrator that added them (Todos.listener), each read as it is sent: what a
 // helper was handed (nod hand) and has not heard yet goes to it. One of a task in no project no orchestrator added, and a decision's opening
 // once it was answered, goes to none. A session not running keeps them. A send
@@ -262,7 +273,8 @@ export async function sendNotices(
       ledger.claimNotices([notice.id], null)
     } else waiting.push({ notice, projectId, task })
   }
-  const hears = (w: (typeof waiting)[number]): Session | null => todos.listener(w.projectId, w.task)
+  const hears = (w: (typeof waiting)[number]): Session | null =>
+    todos.listener(w.projectId, w.task, w.notice.helper)
   // Session by session, each read as its turn comes, for each notice: the send before may have taken
   // a while, and a session opened since. A session is of one project or none.
   // ponytail: reads who hears each notice once per session sent to; what waits is a few dozen rows.

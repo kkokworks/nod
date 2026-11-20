@@ -5,7 +5,15 @@ import { projectFolder } from '../test/projects'
 import { tempDirs } from '../test/tmp'
 import { Ledger } from './ledger'
 import { openSettings } from './settings'
-import { actorFromEnv, checkTell, openSession, roleLine, sessionFromEnv } from './todo-cli'
+import {
+  actorFromEnv,
+  checkTell,
+  helperTells,
+  openSession,
+  roleLine,
+  sessionFromEnv,
+  toldHelper,
+} from './todo-cli'
 import { type NamedRole, OPEN_ROLES, type OpenRole, Todos } from './todos'
 import { reopenCommand } from './view'
 
@@ -252,6 +260,38 @@ test('an orchestrator tells only a project it has or none has, and no other sess
 
   todos.setProject(release.id, { orchestrator: null }, 'human')
   checkTell(todos, 'south', release.id)
+})
+
+test('nod tell takes a helper by its name, or as nod open takes it when the name reads as a task, which stays a task', () => {
+  const todos = new Todos(new Ledger(tmp.make('nod-tell-helper-')))
+  const release = todos.addProject({ title: 'Release', outcome: null }, 'human')
+  const health = todos.addProject({ title: 'Health', outcome: null }, 'human')
+  todos.addSession({ role: 'helper', name: 'web-perf', project: health.id }, 'h1', '/work/h1')
+  todos.addSession({ role: 'helper', name: 't5', project: release.id }, 'h2', '/work/h2')
+  todos.addSession({ role: 'orchestrator', name: 'north' }, 'o1', '/work/o1')
+
+  expect(toldHelper(todos, ['web-perf', 'hi'])).toEqual({ name: 'web-perf', projectId: 2, at: 1 })
+  expect(helperTells('web-perf', health.id)).toBe("'web-perf'")
+  // A task's ref stays the task's, a helper of that name or not.
+  for (const ref of ['t5', '5', 'n5', 'r5', ' 5', ''])
+    expect(toldHelper(todos, [ref, 'hi'])).toBeNull()
+  const long = ['t5', '--role', 'helper', '--project', 'p1', 'hi']
+  expect(toldHelper(todos, long)).toEqual({ name: 't5', projectId: 1, at: 5 })
+  expect(toldHelper(todos, ['t5', '--role', 'helper', '--project', 'Release'])).toMatchObject({
+    projectId: 1,
+  })
+  expect(helperTells('t5', release.id)).toBe("'t5' --role helper --project p1")
+  const asOpen =
+    'nod tell takes a helper as nod open does: <name> --role helper --project <project>'
+  expect(() => toldHelper(todos, ['t5', '--role', 'relay', 'hi'])).toThrow(asOpen)
+  expect(() => toldHelper(todos, ['t5', '--role', 'helper', 'hi'])).toThrow(asOpen)
+  expect(() => toldHelper(todos, ['t5', '--role', 'helper', '--project', 'p9'])).toThrow(
+    'no project p9',
+  )
+  // Any other name, an orchestrator's too, is no helper.
+  for (const name of ['north', 'nobody', 'review']) {
+    expect(() => toldHelper(todos, [name, 'hi'])).toThrow(`no task or helper named ${name}`)
+  }
 })
 
 test('a list cuts a description past 100 characters and marks the cut, and one project shows it whole', async () => {

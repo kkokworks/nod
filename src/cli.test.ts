@@ -818,8 +818,9 @@ test("nod session claim <name> --role helper --project makes the Claude session 
   writeFileSync(join(folder, `${A}.jsonl`), `${JSON.stringify({ type: 'user', cwd: opened })}\n`)
   const claimed = claim(A, 'review', '--role', 'helper', '--project', `p${p.id}`)
   expect(claimed).toMatchObject({ code: 0, err: '' })
+  // Claude Code keeps the name it had, so it hears how other sessions reach it all the same.
   expect(claimed.out).toBe(
-    `this session is the helper review of project p${p.id} Release: nod add here puts work in that project, and nod tells this session of the project's tasks it adds or is handed (nod hand) while it takes messages; the project's own session hears of the rest, and of these while this one is off.\n`,
+    `this session is the helper review of project p${p.id} Release: nod add here puts work in that project, and nod tells this session of the project's tasks it adds or is handed (nod hand) while it takes messages; the project's own session hears of the rest, and of these while this one is off.\nother sessions send to this one with nod tell 'review' <message...>, whatever name Claude Code shows for it\n`,
   )
   expect(todos.session(A)).toMatchObject({
     role: 'helper',
@@ -829,6 +830,25 @@ test("nod session claim <name> --role helper --project makes the Claude session 
   })
   expect(todos.sessionPlace(A)).toMatchObject({ project: { id: p.id }, latest: true })
   expect(todos.latestSession(p.id)).toBeNull()
+  // By that name a shell's words go to it, or wait for it, by the socket nod knows (none listens
+  // at this one).
+  const told = nod(null, 'tell', 'review', 'Look', 'at', 'the', 'logs')
+  expect(told).toMatchObject({ code: 0 })
+  expect(told.out).toStartWith(`not sent yet: review's session is ${A} (`)
+  expect(new Ledger(home).unsentNotices()).toMatchObject([
+    { projectId: p.id, helper: 'review', note: 'nod tell from human:\nLook at the logs' },
+  ])
+  expect(nod(null, 'tell', 'docs', 'hi').err).toContain(
+    "no task or helper named docs: nod tell takes n<n>, t<n>, r<n>, p<n> or a helper's name",
+  )
+  // An orchestrator tells a helper only as it tells the helper's project.
+  todos.addSession({ role: 'orchestrator', name: 'north' }, 'key-n', '/work/n')
+  todos.addSession({ role: 'orchestrator', name: 'south' }, 'key-s', '/work/s')
+  todos.setProject(p.id, { orchestrator: 'north' }, 'human')
+  const refusedTell = nod('key-s', 'tell', 'review', 'hi')
+  expect(refusedTell.code).not.toBe(0)
+  expect(refusedTell.err).toContain(`p${p.id} Release is the orchestrator north's`)
+  todos.setProject(p.id, { orchestrator: null }, 'human')
   // nod open goes back to the same conversation, by its role and project or by its name alone.
   const resumed = `${opened} | --resume ${A} --name Release · review `
   expect(nod(null, 'open', 'review', '--role', 'helper', '--project', `p${p.id}`).out).toStartWith(

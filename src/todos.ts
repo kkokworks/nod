@@ -1040,11 +1040,18 @@ export class Todos {
   // what comes while the helper is off is not lost; in no project, the latest of the orchestrator's
   // name when an orchestrator added it (`rootSession`), running or not. None for work in no project
   // anyone else added (a shell, a relay, any other session): no session that does not know the work
-  // hears of it, to answer its decisions.
-  listener(projectId: number | null, task: Task | null): Session | null {
+  // hears of it, to answer its decisions. Words for a helper (`helper`, nod tell <helper>) wait for
+  // it, on or off, while it is the project's; once it is not, the project's session hears them.
+  listener(
+    projectId: number | null,
+    task: Task | null,
+    helper: string | null = null,
+  ): Session | null {
     if (projectId !== null) {
-      const helper = task === null ? null : this.helperOf(task, projectId)
-      return takesMessages(helper) ? helper : this.latestSession(projectId)
+      const told = helper === null ? null : this.helperNamed(helper, projectId)
+      if (told !== null) return told
+      const helps = task === null ? null : this.helperOf(task, projectId)
+      return takesMessages(helps) ? helps : this.latestSession(projectId)
     }
     const root = task?.rootSession == null ? null : this.session(task.rootSession)
     return root?.role === 'orchestrator' ? this.latestNamed(root.name) : null
@@ -1064,7 +1071,13 @@ export class Todos {
     }
     const root = hand !== null || task.rootSession === null ? null : this.session(task.rootSession)
     const name = hand?.helper ?? (root?.role === 'helper' ? root.name : null)
-    const helper = name === null ? null : this.latestNamed(name)
+    return name === null ? null : this.helperNamed(name, projectId)
+  }
+
+  // The latest session of the name while it is a helper of `projectId`, on or off; null once it went
+  // to another project or role, or before there was one.
+  helperNamed(name: string, projectId: number): Session | null {
+    const helper = this.latestNamed(name)
     if (helper?.role !== 'helper' || this.sessionProject(helper.id) !== projectId) return null
     return helper
   }
@@ -1077,11 +1090,8 @@ export class Todos {
     if (projectId === null) {
       throw new Error(`n${taskId} is in no project, so no project's session or helper takes it`)
     }
-    const to = helper === null ? null : this.latestNamed(helper)
-    if (helper !== null && (to?.role !== 'helper' || this.sessionProject(to.id) !== projectId)) {
-      throw new Error(
-        `p${projectId} has no helper named ${helper}; nod open ${helper} --role helper --project p${projectId} opens one`,
-      )
+    if (helper !== null && this.helperNamed(helper, projectId) === null) {
+      throw noHelper(projectId, helper)
     }
     this.run(
       q
@@ -1112,7 +1122,7 @@ export class Todos {
     )
   }
 
-  // The project's helpers by name, each by the latest session of it as helperOf finds it: one whose
+  // The project's helpers by name, each by the latest session of it as helperNamed finds it: one whose
   // latest session went to another project or role since is not the project's any more.
   helpers(projectId: number): ProjectHelper[] {
     const names = this.run(
@@ -1130,8 +1140,8 @@ export class Todos {
       .list()
       .filter((t) => UNFINISHED.includes(t.status) && this.projectOf(t) === projectId)
     return names.flatMap(({ name }) => {
-      const session = this.latestNamed(name)
-      if (session?.role !== 'helper' || this.sessionProject(session.id) !== projectId) return []
+      const session = this.helperNamed(name, projectId)
+      if (session === null) return []
       const said = this.first(
         q
           .selectFrom('helperDescriptions')
@@ -1374,6 +1384,17 @@ const parsed = (r: { actor: string; change: string; at: string }): Change => ({
 function filled(what: string, value: string): void {
   if (value.trim() === '') throw new Error(`empty ${what}`)
 }
+
+// Whether `nod tell` reads `ref` as a task (Todos.taskRef: n<n>, t<n>, r<n> or a number), which a
+// helper of that name does not take over: nod tell reaches that one as nod open does (helperOpens).
+export const namesTask = (ref: string): boolean =>
+  /^[ntr]?\d+$/.test(ref) || Number.isInteger(Number(ref))
+
+// What nod hand and nod tell say of a helper the project lacks (helperNamed).
+export const noHelper = (projectId: number, name: string): Error =>
+  new Error(
+    `p${projectId} has no helper named ${name}; nod open ${name} --role helper --project p${projectId} opens one`,
+  )
 
 // A project session's name: the project's title, or `p<n>` and the start of it when that is long.
 export function sessionTitle(p: Project): string {
