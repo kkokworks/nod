@@ -3,12 +3,12 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { projectFolder } from '../test/projects'
 import { tempDirs } from '../test/tmp'
-import { doneTasks, type PrLookup, type PullRequest, sweep } from './done'
+import { doneTasks, followWork, type PrLookup, type PullRequest, sweep } from './done'
 import { collect } from './gc'
 import { Ledger, type NewTask } from './ledger'
 import { workspaceOf } from './place'
 import { Tmux } from './tmux'
-import { Todos } from './todos'
+import { SELF, Todos } from './todos'
 import { restore } from './worker'
 
 const tmp = tempDirs()
@@ -861,3 +861,113 @@ test('an errored task nod is to resume once its usage limit resets does not go w
     { id: crashed, reason: 'finished 7+ days ago' },
   ])
 })
+
+test('a finished repo task goes once the person closes its todo, done or dropped, since it ended; not when nod closed it, nor one closed before it ended, one nod is to resume or lands, one with commits no remote has, or one without a repo', async () => {
+  const home = tmp.make('nod-done-todo-')
+  process.env.CLAUDE_CONFIG_DIR = tmp.make('nod-done-claude-')
+  const ledger = new Ledger(home)
+  const repo = join(home, 'repo')
+  mkdirSync(repo)
+  const git = (cwd: string, ...args: string[]): string =>
+    sh(['git', '-c', 'user.email=t@t', '-c', 'user.name=t', ...args], cwd)
+  git(repo, 'init', '-q', '-b', 'main')
+  git(repo, 'commit', '-q', '--allow-empty', '-m', 'init')
+  git(repo, 'update-ref', 'refs/remotes/origin/main', 'HEAD')
+  git(repo, 'symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main')
+  const todos = new Todos(ledger)
+  // A task its todo was delegated to, finished now in a worktree (a folder without a repo) that
+  // has a commit no remote has when `commit` is set. No other signal ends it.
+  const finished = (
+    name: string,
+    how: { plain?: boolean; commit?: boolean; error?: string } = {},
+  ) => {
+    const todo = todos.capture(
+      { title: name, notes: null, source: 'cli', sourceKey: null, url: null },
+      'human',
+    ).todo.id
+    const branch = how.plain ? null : `feat/${name}`
+    const spec: NewTask = {
+      brief: name,
+      repo: branch === null ? null : repo,
+      branch,
+      checkCmd: null,
+      model: null,
+      after: [],
+      issue: null,
+    }
+    const id = todos.delegate(todo, spec, 'human')
+    const cwd = workspaceOf(home, ledger.get(id))
+    if (branch === null) mkdirSync(cwd, { recursive: true })
+    else {
+      git(repo, 'worktree', 'add', '-q', '-b', branch, cwd)
+      if (how.commit) {
+        writeFileSync(join(cwd, `${name}.txt`), name)
+        git(cwd, 'add', '.')
+        git(cwd, 'commit', '-q', '-m', name)
+      }
+    }
+    ledger.setRunning(id, cwd)
+    if (how.error === undefined) ledger.succeed(id)
+    else ledger.error(id, how.error)
+    return { id, todo }
+  }
+  const close = (todo: number, status: 'done' | 'dropped'): void => {
+    todos.finish([todo], status, 'human')
+  }
+
+  const done = finished('done')
+  close(done.todo, 'done')
+  const dropped = finished('dropped')
+  close(dropped.todo, 'dropped')
+  // The person saw what went wrong and closed its todo.
+  const errored = finished('errored', { error: 'crashed' })
+  close(errored.todo, 'done')
+  // nod closes the todo of a task that made no commits once it succeeds (followWork, below).
+  const byNod = finished('by-nod')
+  // Closed while it still ran: the person has not seen what it left.
+  const before = finished('before')
+  close(before.todo, 'done')
+  ledger.db
+    .query('update todos set status_at = $at where id = $id')
+    .run({ id: before.todo, at: OLD })
+  const resumes = finished('resumes', {
+    error:
+      "the review exited with 1: You've hit your weekly limit · resets Jan 3, 2099 at 7pm (Asia/Seoul)",
+  })
+  close(resumes.todo, 'done')
+  const unpushed = finished('unpushed', { commit: true })
+  close(unpushed.todo, 'done')
+  const plain = finished('plain', { plain: true })
+  close(plain.todo, 'dropped')
+  // One nod lands, its pull request open, say: landing brings back a collected task, so it would
+  // go and come back at every pass. An errored task nod does not land, its landing begun or not.
+  const landing = finished('landing')
+  close(landing.todo, 'done')
+  ledger.setRepo(repo, { land: 'pr' }, 'human')
+  // Only the tasks whose landing began land: none was added since the repo let nod land.
+  ledger.db.query("update repos set raised_at = '2099-01-01T00:00:00.000Z'").run()
+  ledger.setLanding(landing.id, {})
+  ledger.setLanding(errored.id, {})
+  // As gc and the tick do, the todos first.
+  await followWork(ledger, SELF, null)
+  expect(todos.get(byNod.todo).status).toBe('done')
+
+  const swept = await sweep(ledger, home, Tmux.of(home), async () => null, NOW)
+
+  expect(swept.done).toEqual([
+    { id: done.id, reason: `t${done.todo} done` },
+    { id: dropped.id, reason: `t${dropped.todo} dropped` },
+    { id: errored.id, reason: `t${errored.todo} done` },
+  ])
+  expect(swept.report).toEqual({
+    removed: [done.id, dropped.id, errored.id],
+    clean: [],
+    skipped: [],
+  })
+  for (const t of [byNod, before, resumes, unpushed, plain, landing]) {
+    expect(ledger.get(t.id).collectedAt).toBeNull()
+  }
+  // Its commit stays where it was, and so does a plain workspace's output.
+  expect(existsSync(workspaceOf(home, ledger.get(unpushed.id)))).toBe(true)
+  expect(existsSync(workspaceOf(home, ledger.get(plain.id)))).toBe(true)
+}, 30_000)

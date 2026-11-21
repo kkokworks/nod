@@ -49,7 +49,7 @@ import { activeRules, hadTrouble, isNoRule, retroBrief } from './rules'
 import { listen, owed, sendUnsent, sendWatched, unsent, type Worker, watchStart } from './sending'
 import { CLI, STOP_HOOK_TIMEOUT_SECS, workerSettings } from './settings'
 import { pasted, quote, running, type Terminals } from './tmux'
-import { Todos } from './todos'
+import { SELF, Todos } from './todos'
 import { hasTranscript, heardOf, transcriptLines } from './transcript'
 import {
   CUT,
@@ -200,9 +200,6 @@ const TRUST_DIALOG = 'Yes, I trust this folder'
 const YES = /^y(es)?$/i
 const SCREEN_TIMEOUT_MS = 5000
 const SCREEN_POLL_MS = 100
-// Who moves a delegated todo along with its task, or a watched one once its watch passes: nod
-// itself. Not the environment's actor, which in a worker's hook is that worker.
-export const SELF = 'nod'
 
 // What Claude Code's hooks pass on stdin (measured on 2.1.290); only the fields nod reads. The Stop
 // hook's is here, as settle takes it; the other hooks' are in hooks.ts.

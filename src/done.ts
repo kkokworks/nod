@@ -4,7 +4,7 @@ import { sessionName } from './place'
 import { message, readAtOnce } from './proc'
 import { isPullRequest, pushUrls, sameRepo } from './prs'
 import type { Terminals } from './tmux'
-import { type Left, Todos } from './todos'
+import { type Left, SELF, Todos } from './todos'
 
 // When a finished task is done with, so gc can collect it without the human naming it. gc keeps
 // the session's transcript and resume rebuilds the worktree (restore in worker.ts), so collecting
@@ -15,7 +15,7 @@ import { type Left, Todos } from './todos'
 // only copy from ls, unless a succeeded task's own pull request merged after the last of them and
 // no other linked one waits; a queued task that starts from this one's branch; a person attached
 // to the session. An errored task goes only with age, as what went wrong is for the person to see
-// first, or, in a repo, once a newer task took its todo over.
+// first, or, in a repo, once a newer task took its todo over or the person closed its todo.
 
 const STALE_DAYS = 7
 const DAY = 86_400_000
@@ -119,6 +119,10 @@ async function signal(
   const stale =
     task.finishedAt !== null && Date.parse(task.finishedAt) <= now.getTime() - STALE_DAYS * DAY
   if (stale && !resumes) return `finished ${STALE_DAYS}+ days ago`
+  // Not one nod lands (due in land.ts), which would bring it back at every pass until it merged.
+  const landing = task.status === 'succeeded' && lands(ledger, task)
+  const closed = task.repo === null || resumes || landing ? null : closedTodo(ledger, task)
+  if (closed !== null) return closed
   const sameTodo = (t: Task): boolean =>
     t.id > task.id && t.todoId !== null && t.todoId === task.todoId
   const tookOver = (t: Task): string => `n${t.id} took over t${task.todoId}`
@@ -151,6 +155,19 @@ async function signal(
     else return null
   }
   return ends.length > 0 ? ends.join(', ') : null
+}
+
+// The person closed the task's todo, done or dropped, since the task ended: they have dealt with
+// what it left, an error too. Not when nod closed it (followTasks), as it does once a task that
+// made no commits succeeds, before the person has seen what it says.
+function closedTodo(ledger: Ledger, task: Task): string | null {
+  if (task.todoId === null || task.finishedAt === null) return null
+  const todos = new Todos(ledger)
+  const todo = todos.get(task.todoId)
+  if (todo.status !== 'done' && todo.status !== 'dropped') return null
+  if (todo.statusAt < task.finishedAt) return null
+  const by = todos.changes(todo.id).findLast((c) => 'status' in c.change)?.actor
+  return by === undefined || by === SELF ? null : `t${todo.id} ${todo.status}`
 }
 
 // Whether the person approved an open pull request since the task was added.

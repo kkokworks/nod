@@ -25,6 +25,7 @@ import { message } from './proc'
 import { askedAgain } from './review'
 import { wentIn } from './sending'
 import { pasted, running, type Terminals } from './tmux'
+import { SELF } from './todos'
 import { endedWithoutStop, HELD_BACK, PASTE_WRAP, promptMark, transcriptTail } from './transcript'
 import {
   currentTurn,
@@ -40,7 +41,6 @@ import {
   continueAfter,
   restartDue,
   restartingClaude,
-  SELF,
   type StopEvent,
   settle,
   startReady,
