@@ -31,6 +31,7 @@ import {
   currentTurn,
   cutOff,
   forgetHeldBack,
+  heldSince,
   openTurn,
   STOPPED_DIALOG,
   stoppedDialogs,
@@ -215,10 +216,11 @@ export async function onStopFailure(
 // before nod's message (deliver): the message goes on past it at once, and the decision would
 // otherwise hold the task and refuse nod's messages through the turn it goes on to.
 // ponytail: not measured in an interactive session; a command that did come here would open a
-// turn its Stop never closes, read as cut off once Claude Code starts again. Nor whether Claude Code
-// runs this hook for a message it gives the worker in the middle of a turn, or how it passes one
-// nod pasted: words of nod's it changed read as the person's, and are kept twice. A message Claude
-// Code gives by itself while a person is attached, in a shape OWN_MESSAGE misses, reads as theirs.
+// turn its Stop never closes, read as cut off once Claude Code starts again. It runs this hook for a
+// background agent's report in the middle of a turn too, as others of the person's held some back
+// there (2.1.312 to 2.1.330); not measured whether for one nod pasted, or how it passes that: words of
+// nod's it changed read as the person's, and are kept twice. A message Claude Code gives by itself
+// while a person is attached, in a shape OWN_MESSAGE misses, reads as theirs.
 export async function onPrompt(
   ledger: Ledger,
   home: string,
@@ -239,7 +241,8 @@ export async function onPrompt(
   openTurn(ledger, taskId, event.session_id, typed ? said : TYPED, (open) => {
     if (!typed || pastedByNod(ledger, open, event.prompt, left)) return
     // What they typed before this, if a hook of theirs held it back, the review does not go by.
-    if (endedWithoutStop(transcriptTail(ledger, home, open)) === HELD_BACK) {
+    const lines = transcriptTail(ledger, home, open)
+    if (endedWithoutStop(lines) === HELD_BACK && heldSince(ledger, open, lines) !== null) {
       forgetHeldBack(ledger, home, open)
     }
     ledger.addMessage(taskId, open.id, said)

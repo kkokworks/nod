@@ -46,21 +46,39 @@ import { message, spawn } from './proc'
 import { type Capture, nodLines, parseCaptures, parseReport, parseTells, type Tell } from './report'
 import { REBUILT } from './review'
 import { activeRules, hadTrouble, isNoRule, retroBrief } from './rules'
-import { listen, owed, sendUnsent, sendWatched, unsent, type Worker, watchStart } from './sending'
+import {
+  lastLines,
+  listen,
+  owed,
+  sendUnsent,
+  sendWatched,
+  unsent,
+  type Worker,
+  watchStart,
+} from './sending'
 import { CLI, STOP_HOOK_TIMEOUT_SECS, workerSettings } from './settings'
 import { pasted, quote, running, type Terminals } from './tmux'
 import { SELF, Todos } from './todos'
-import { hasTranscript, heardOf, transcriptLines } from './transcript'
+import {
+  hasTranscript,
+  heardOf,
+  toolRuns,
+  transcriptLines,
+  transcriptSize,
+  transcriptTail,
+} from './transcript'
 import {
   CUT,
   cutOff,
   DENIED_HERE,
   endTurnWithoutStop,
+  heldSince,
   noTurn,
   refusedDialogs,
   STOPPED_DIALOG,
   stoppedDialogs,
   typedHere,
+  unseenHeldBack,
 } from './turns'
 import { type Check, verify, verifyLanding } from './verify'
 import { cutLine, firstLine, oneLine } from './view'
@@ -71,7 +89,8 @@ import { cutLine, firstLine, oneLine } from './view'
 
 // A subagent's report reaches a turn that still runs between its tool calls (measured on 2.1.310),
 // and background work that ends after the turn starts the next one (2.1.309, docs/design.md), so a
-// worker never needs to sleep for one. The prompt says "agent": "subagent" is the repo worker's
+// worker never needs to sleep for one; a report a hook of the person's holds back starts none, and is
+// asked about (restingTurns). The prompt says "agent": "subagent" is the repo worker's
 // review (SUBAGENT_REVIEW_PROMPT), which tests tell apart by that word.
 const WORKER_PROMPT = `You are a nod worker. Do only the task you were given, inside the current directory.
 Shell commands run in a sandbox: writing outside this directory and network access to most hosts
@@ -168,6 +187,13 @@ const RESTART_GRACE_MS = 1000
 const SETTLE_POLL_MS = 1000
 // A turn younger than this may still be launching, its terminal not yet there.
 const LAUNCH_GRACE_MS = 30_000
+// A turn the ledger has open with no tool running and nothing new in its transcript through this many
+// ticks in a row is asked about (restingTurns). The tick runs every minute the machine is awake, so a
+// sleep does not count. No worker's turn that went on was that quiet for an hour (docs/design.md).
+const QUIET_TICKS = 60
+// Kept on a worker's tmux session: how many ticks found its open turn so, and where its transcript
+// stood: `<attempt>:<bytes>:<ticks>`.
+const QUIET_OPTION = 'nod_quiet'
 // How long a finished task keeps its terminal (closeFinished).
 const IDLE_TERMINAL_MS = 60 * 60_000
 // Kept on a worker's tmux session: the restart it waits to do once its turn ends, the reason the
@@ -2132,6 +2158,63 @@ async function lostTurn(
   rmSync(reopened, { force: true })
   // The message stays in the prompt file, and goes to the worker ahead of the answer.
   return cutOff(ledger, home, t.id, open, NEVER_TOOK, 'Nothing of the turn is done.')
+}
+
+// Asks the person about the turns the ledger has open while their worker, its terminal up, rests at its
+// prompt, so nothing of it will close them: one whose message a hook held back (unseenHeldBack), and
+// one that shows nothing for QUIET_TICKS, whatever kept it from starting or its Stop hook from coming.
+// The task read as running for days, with no decision. Not one a usage limit ended, which Claude Code
+// goes on with; nor one a Stop hook checks or Claude Code starts again for, nor with a tool running.
+// While a person is attached, nothing counts as quiet. The tick runs it, before overdueWaits, which
+// would end a held-back turn with no word of it (endTurnWithoutStop). Returns the tasks asked about.
+// ponytail: a person who runs nod tick by hand counts those ticks too.
+export async function restingTurns(
+  ledger: Ledger,
+  home: string,
+  terminals: Terminals,
+): Promise<number[]> {
+  const live = terminals.sessions()
+  const asked: number[] = []
+  for (const t of ledger.list()) {
+    if (t.status !== 'running' || !live.has(sessionName(t.id))) continue
+    // One whose terminal goes meanwhile, or that cannot be read, must not keep the rest from it.
+    try {
+      if (await restingTurn(ledger, home, terminals, t.id)) asked.push(t.id)
+    } catch (error) {
+      console.error(`nod: could not look whether task n${t.id}'s worker rests: ${message(error)}`)
+    }
+  }
+  return asked
+}
+
+// restingTurns for a running task whose terminal is up: whether it raised the decision.
+async function restingTurn(
+  ledger: Ledger,
+  home: string,
+  terminals: Terminals,
+  taskId: number,
+): Promise<boolean> {
+  const open = ledger.openAttempt(taskId)
+  if (open === null) return false
+  const name = sessionName(taskId)
+  if (terminals.option(name, STALLED_OPTION) !== '') return false
+  if (settling(terminals, name) || restartingClaude(terminals, name)) return false
+  const lines = transcriptTail(ledger, home, open)
+  const held = unseenHeldBack(ledger, open, lines)
+  if (held !== null) return cutOff(ledger, home, taskId, open, held.why, held.done, false)
+  if (toolRuns(lines) || terminals.attached(name)) return false
+  const at = `${open.id}:${transcriptSize(ledger, home, taskId, open.sessionId)}:`
+  const seen = terminals.option(name, QUIET_OPTION)
+  const ticks = seen.startsWith(at) ? Number(seen.slice(at.length)) + 1 : 1
+  terminals.setOption(name, QUIET_OPTION, `${at}${ticks}`)
+  if (ticks <= QUIET_TICKS) return false
+  const why = `Its turn is open, but for ${QUIET_TICKS} minutes nothing has come of it: no tool runs, and Claude Code has added nothing to its conversation, so its worker looks to rest at its prompt.`
+  // The screen and the turn's message may hold what a hook held back (unseenHeldBack).
+  if (heldSince(ledger, open, lines) !== null) {
+    return cutOff(ledger, home, taskId, open, why, undefined, false)
+  }
+  const screen = `The screen:\n${lastLines(terminals, taskId)}`
+  return cutOff(ledger, home, taskId, open, `${why}\n${screen}`)
 }
 
 // How often lostTurns opened a turn's terminal again, as `<turn> <times>`.
