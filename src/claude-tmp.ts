@@ -4,6 +4,7 @@ import {
   readdirSync,
   readFileSync,
   realpathSync,
+  renameSync,
   rmdirSync,
   rmSync,
 } from 'node:fs'
@@ -43,9 +44,11 @@ export function tmpRoot(config: string | null): string {
 // keep the rest, and then it throws why. It goes through and removes folders only, never links: the
 // root is the TMPDIR of every worker's sandbox, and a link one left there would lead nod, which has
 // no sandbox, to what it points to. rmSync removes a link it finds inside, not what that points to:
-// the output Claude Code keeps of a background agent is a link to its transcript.
-// ponytail: a link put in between the look and the removal is followed; only one to a folder that
-// has a folder by that session's ID loses anything.
+// the output Claude Code keeps of a background agent is a link to its transcript. Each goes to a name
+// of its own first (GONE), at once, as removing it may take seconds: what the worker of a task told
+// to go on meanwhile writes is in a folder made anew. One a removal left under such a name goes too.
+// ponytail: a link put in between the look and the rename is followed; only one to a folder that has
+// a folder by that session's ID loses anything.
 export function removeTmp(
   root: string,
   cwd: string,
@@ -57,13 +60,19 @@ export function removeTmp(
   for (const folder of readdirSync(root).filter((f) => namedAfter(f, cwd))) {
     const dir = join(root, folder)
     if (!isFolder(dir)) continue
-    for (const id of readdirSync(dir)) {
-      if (!isFolder(join(dir, id)) || !mine(id)) continue
+    for (const name of readdirSync(dir)) {
+      const at = join(dir, name)
+      if (!isFolder(at) || !mine(name.replace(GONE, ''))) continue
+      const gone = GONE.test(name) ? at : `${at}.gone-${crypto.randomUUID()}`
       try {
-        rmSync(join(dir, id), { recursive: true })
+        if (gone !== at) renameSync(at, gone)
+        rmSync(gone, { recursive: true })
         removed = true
       } catch (error) {
-        failed.push(error)
+        // Another gc is removing it.
+        if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) {
+          failed.push(error)
+        }
       }
     }
     if (!removed) continue
@@ -76,6 +85,8 @@ export function removeTmp(
   if (failed.length > 0) throw failed[0]
   return removed
 }
+
+const GONE = /\.gone-[0-9a-f-]{36}$/
 
 const isFolder = (path: string): boolean =>
   lstatSync(path, { throwIfNoEntry: false })?.isDirectory() ?? false

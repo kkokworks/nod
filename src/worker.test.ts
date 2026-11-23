@@ -54,7 +54,7 @@ import {
 import { notify } from './notify'
 import { PROMPTED_OPTION, sessionName, socketsDir, workspaceOf } from './place'
 import { AT_ONCE, readAtOnce, spawn } from './proc'
-import { askedAgain, reviewBrief } from './review'
+import { askedAgain, REBUILT, reviewBrief, withoutRebuilt } from './review'
 import { retroBrief } from './rules'
 import {
   forgetStuck,
@@ -129,10 +129,8 @@ if (Bun.which('claude', { PATH: process.env.PATH }) !== join(bin, 'claude')) {
 // where the sessions' temp folders are, so nod does not look in the real ones.
 process.env.CLAUDE_CONFIG_DIR = tmp.make('nod-claude-')
 const claudeTmp = tmp.make('nod-claude-tmp-')
-writeFileSync(
-  join(process.env.CLAUDE_CONFIG_DIR, 'settings.json'),
-  JSON.stringify({ env: { CLAUDE_CODE_TMPDIR: claudeTmp } }),
-)
+const TEMP_SETTINGS = JSON.stringify({ env: { CLAUDE_CODE_TMPDIR: claudeTmp } })
+writeFileSync(join(process.env.CLAUDE_CONFIG_DIR, 'settings.json'), TEMP_SETTINGS)
 
 let home: string
 let ledger: Ledger
@@ -180,6 +178,7 @@ function accounts(...names: string[]): string[] {
   return names.map((n) => {
     const folder = tmp.make(`nod-account-${n}-`)
     symlinkSync(shared, join(folder, 'projects'))
+    writeFileSync(join(folder, 'settings.json'), TEMP_SETTINGS)
     trust(folder)
     return folder
   })
@@ -5483,6 +5482,7 @@ test('the first message after gc collected a repo task tells its worker the work
 
   const [, second, third] = turnsOf(id)
   expect(second).toStartWith('nod made this folder again after gc collected it')
+  expect(second).toContain('what you left in your scratchpad is gone')
   expect(second).toContain('install the dependencies as the lock file pins them')
   expect(second).toEndWith('\n\nsecond')
   expect(third).toBe('third')
@@ -5497,6 +5497,10 @@ test('the first message after gc collected a repo task tells its worker the work
   const review = entries('review').at(-1)?.message
   expect(review).toContain('later words win:\n- second\n- third\n')
   expect(review).not.toContain('nod made this folder again')
+  // Nor the notice as nod gave it before it told of the scratchpad, in turns the ledger still has.
+  const before = REBUILT.replace(', and what you left in your scratchpad is gone', '')
+  expect(before).not.toBe(REBUILT)
+  expect(withoutRebuilt(`${before}\n\nsecond\n\nthird`)).toBe('second\n\nthird')
 }, 20_000)
 
 it('the review hears what the human told the worker in the middle of a turn, in order with the rest', () => {

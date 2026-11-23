@@ -1,5 +1,13 @@
 import { afterAll, expect, spyOn, test } from 'bun:test'
-import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs'
 import { dirname, join } from 'node:path'
 import { projectFolder, tempFolder } from '../test/projects'
 import { tempDirs } from '../test/tmp'
@@ -867,23 +875,22 @@ test('gc collects a task whose temp folder it cannot remove, says why, and nod g
     id: locked.id,
     reason: expect.stringMatching(
       // Bun 1.3.14 says EACCES, 1.4.4 ENOTEMPTY.
-      /^collected, but a temp folder of its sessions stays: (EACCES|ENOTEMPTY)/,
+      /^collected, but gc could not remove its temp folders: (EACCES|ENOTEMPTY)/,
     ),
   }
-  try {
-    expect(await collect(ledger, home, Tmux.of(home), { ids: [locked.id, other.id] })).toEqual({
-      removed: [locked.id, other.id],
-      clean: [],
-      skipped: [stays],
-    })
-    expect(ledger.get(locked.id).collectedAt).not.toBeNull()
-    expect(existsSync(other.kept)).toBe(false)
-    expect(dropTemps(ledger, home)).toEqual({ removed: [], skipped: [stays] })
-  } finally {
-    chmodSync(join(locked.kept, 'scratchpad'), 0o755)
-  }
+  expect(await collect(ledger, home, Tmux.of(home), { ids: [locked.id, other.id] })).toEqual({
+    removed: [locked.id, other.id],
+    clean: [],
+    skipped: [stays],
+  })
+  expect(ledger.get(locked.id).collectedAt).not.toBeNull()
+  expect(existsSync(other.kept)).toBe(false)
+  expect(dropTemps(ledger, home)).toEqual({ removed: [], skipped: [stays] })
+
+  const [left = ''] = readdirSync(dirname(locked.kept))
+  chmodSync(join(dirname(locked.kept), left, 'scratchpad'), 0o755)
   expect(dropTemps(ledger, home)).toEqual({ removed: [locked.id], skipped: [] })
-  expect(existsSync(locked.kept)).toBe(false)
+  expect(existsSync(dirname(locked.kept))).toBe(false)
 })
 
 test('the temp folders of tasks collected before go once, with nod gc or as it names the task, not as the tick sweeps', async () => {

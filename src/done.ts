@@ -8,9 +8,9 @@ import { type Left, SELF, Todos } from './todos'
 
 // When a finished task is done with, so gc can collect it without the human naming it. gc keeps
 // the session's transcript and resume rebuilds the worktree (restore in worker.ts), so collecting
-// a repo task too early costs a rebuild, not the task, and the signals can be generous. A plain
-// workspace's files are the task's output, which resume cannot bring back, so only age lets one
-// go; a retrospective's output is its report and the answer to it, kept in the ledger, so it goes
+// a repo task too early costs a rebuild and the files in its worker's scratchpad, not the task, and
+// the signals can be generous. A plain workspace's files are the task's output, which resume cannot
+// bring back, so only age lets one go; a retrospective's output is its report and the answer to it, kept in the ledger, so it goes
 // once it ends. Held back: commits on the branch that no remote has, since collecting hides the
 // only copy from ls, unless a succeeded task's own pull request merged after the last of them and
 // no other linked one waits; a queued task that starts from this one's branch; a person attached
@@ -145,7 +145,7 @@ async function signal(
   // one that asked for changes has another round. Links on the task's todo count too (nod in
   // --link, nod todo set --link); those that are no pull request, a chat message say, do not.
   // ponytail: a todo's links are all its rounds'; one merged in an earlier round ends a later round
-  // that has not linked its own yet, which costs a rebuild if it goes on.
+  // that has not linked its own yet, which costs a rebuild and its scratchpad if it goes on.
   const ends: string[] = []
   for (const url of linksOf(ledger, task)) {
     const pr = await prs(url)

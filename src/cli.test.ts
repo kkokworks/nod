@@ -6,12 +6,13 @@ import {
   existsSync,
   mkdirSync,
   openSync,
+  readdirSync,
   readFileSync,
   realpathSync,
   rmSync,
   writeFileSync,
 } from 'node:fs'
-import { join, resolve } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { projectFolder, tempFolder } from '../test/projects'
 import { tempDirs } from '../test/tmp'
 import { Ledger } from './ledger'
@@ -1199,11 +1200,13 @@ test('gc says which tasks collected before had temp folders left, and why one st
       env: { ...process.env, NOD_HOME: home },
     }).stdout.toString()
   const lines = gc().split('\n')
-  chmodSync(locked.kept, 0o755)
+  const temps = dirname(dirname(locked.kept))
+  const [left = ''] = readdirSync(temps)
+  chmodSync(join(temps, left, 'scratchpad'), 0o755)
   expect(lines[0]).toBe('removed 0 task(s): -')
   expect(lines[1]).toBe(`removed temp folders of tasks collected before: n${removed.taskId}`)
   expect(lines[2]).toStartWith(
-    `skipped n${locked.taskId}: collected, but a temp folder of its sessions stays: E`,
+    `skipped n${locked.taskId}: collected, but gc could not remove its temp folders: E`,
   )
   expect(existsSync(removed.kept)).toBe(false)
   expect(gc()).toContain(`collected before: n${locked.taskId}\n`)

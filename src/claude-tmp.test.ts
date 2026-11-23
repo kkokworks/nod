@@ -1,4 +1,5 @@
-import { afterAll, afterEach, expect, test } from 'bun:test'
+import { afterAll, afterEach, expect, spyOn, test } from 'bun:test'
+import * as fs from 'node:fs'
 import {
   chmodSync,
   existsSync,
@@ -6,6 +7,8 @@ import {
   readdirSync,
   readFileSync,
   realpathSync,
+  renameSync,
+  rmSync,
   symlinkSync,
   writeFileSync,
 } from 'node:fs'
@@ -163,15 +166,50 @@ test('a session folder it cannot remove says why, and does not keep the others',
     const locked = temp(base, cwd, first)
     const other = temp(base, cwd, second)
     chmodSync(join(locked, 'scratchpad'), 0o555)
-    try {
-      // Bun 1.3.14 says EACCES, 1.4.4 ENOTEMPTY.
-      expect(() => removeTmp(root, cwd, () => true)).toThrow(/EACCES|ENOTEMPTY/)
-    } finally {
-      chmodSync(join(locked, 'scratchpad'), 0o755)
-    }
-    expect(existsSync(join(locked, 'scratchpad', 'a.txt'))).toBe(true)
+    // Bun 1.3.14 says EACCES, 1.4.4 ENOTEMPTY.
+    expect(() => removeTmp(root, cwd, () => true)).toThrow(/EACCES|ENOTEMPTY/)
     expect(existsSync(other)).toBe(false)
+    // What is left of it is out of its session's way, and goes the next time.
+    expect(existsSync(locked)).toBe(false)
+    const [left = ''] = readdirSync(dirname(locked))
+    expect(left).toStartWith(`${first}.gone-`)
+    chmodSync(join(dirname(locked), left, 'scratchpad'), 0o755)
     expect(removeTmp(root, cwd, () => true)).toBe(true)
     expect(readdirSync(root)).toEqual([])
   }
+})
+
+test("what a session's worker, told to go on meanwhile, writes as its folder goes stays", () => {
+  const { base, root, cwd } = place()
+  const session = temp(base, cwd, MINE)
+  const anew = join(session, 'scratchpad', 'new.txt')
+  const rm = rmSync
+  // As the removal starts: the worker's Claude Code makes its folder anew.
+  const spy = spyOn(fs, 'rmSync').mockImplementation((path, options) => {
+    mkdirSync(dirname(anew), { recursive: true })
+    writeFileSync(anew, 'new')
+    rm(path, options)
+  })
+  try {
+    expect(removeTmp(root, cwd, mine)).toBe(true)
+  } finally {
+    spy.mockRestore()
+  }
+  expect(readFileSync(anew, 'utf8')).toBe('new')
+  expect(existsSync(join(session, 'scratchpad', 'a.txt'))).toBe(false)
+  expect(readdirSync(dirname(session))).toEqual([MINE])
+})
+
+test('a session folder another gc takes first is no failure', () => {
+  const { base, root, cwd } = place()
+  const taken = temp(base, cwd, MINE)
+  // The other gc comes once this one has found the folder.
+  const took = (id: string): boolean => {
+    renameSync(taken, `${taken}.gone-${crypto.randomUUID()}`)
+    return mine(id)
+  }
+  expect(removeTmp(root, cwd, took)).toBe(false)
+  // One cut off before it was done leaves it so, for the next.
+  expect(removeTmp(root, cwd, mine)).toBe(true)
+  expect(readdirSync(root)).toEqual([])
 })
