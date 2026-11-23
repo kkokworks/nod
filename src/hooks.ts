@@ -26,12 +26,12 @@ import { askedAgain } from './review'
 import { wentIn } from './sending'
 import { pasted, running, type Terminals } from './tmux'
 import { SELF } from './todos'
-import { endedWithoutStop, HELD_BACK, PASTE_WRAP, promptMark, transcriptTail } from './transcript'
+import { HELD_BACK, PASTE_WRAP, promptMark, transcriptTail } from './transcript'
 import {
   currentTurn,
   cutOff,
+  endOfTurn,
   forgetHeldBack,
-  heldSince,
   openTurn,
   STOPPED_DIALOG,
   stoppedDialogs,
@@ -242,9 +242,7 @@ export async function onPrompt(
     if (!typed || pastedByNod(ledger, open, event.prompt, left)) return
     // What they typed before this, if a hook of theirs held it back, the review does not go by.
     const lines = transcriptTail(ledger, home, open)
-    if (endedWithoutStop(lines) === HELD_BACK && heldSince(ledger, open, lines) !== null) {
-      forgetHeldBack(ledger, home, open)
-    }
+    if (endOfTurn(ledger, open, lines) === HELD_BACK) forgetHeldBack(ledger, home, open)
     ledger.addMessage(taskId, open.id, said)
   })
   // After their words are in: closing the dialog's decision may fail (the ledger busy), and those

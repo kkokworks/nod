@@ -151,36 +151,50 @@ function* turnRows(lines: string[]): Generator<Row> {
 // the words is none, and not one Claude Code marks as written as it shut down
 // (`interruptedByShutdown`), a turn cut off. A message a hook held back leaves no message of the
 // person's but a system entry with `promptSubmitEnding` (measured on 2.1.310 with `claude -p`). So
-// does one held back in the middle of a turn, a background agent's report say, which goes on past it:
-// that comes right after a tool's result, where Claude Code gives a turn what waits for it (read from
-// nod's own workers, 2.1.312 to 2.1.330).
-export function endedWithoutStop(lines: string[]): string | null {
+// does one held back while a turn runs, a background agent's report say, which goes on past it: right
+// after a tool's result, where Claude Code gives a turn what waits for it (read from nod's own
+// workers, 2.1.312 to 2.1.330), or after a message that started the turn along with it (2.1.330's
+// binary). So one after a row of the person's is none of its end, but for their stop, or a row from
+// before `since`, when that turn began: a turn cut off there.
+export function endedWithoutStop(lines: string[], since = 0): string | null {
   let held = false
   for (const row of turnRows(lines)) {
     if (row.type === 'system') {
       held ||= row.promptSubmitEnding !== undefined
       continue
     }
-    if (held) return row.type === 'user' && resultsOf(row).length > 0 ? null : HELD_BACK
+    const stopped =
+      row.type === 'user' &&
+      textsOf(row.message?.content).some((t) => typeof t === 'string' && t.startsWith(STOP_MARK))
+    if (held) {
+      const before = Date.parse(row.timestamp ?? '') < since
+      return row.type === 'user' && !stopped && !before ? null : HELD_BACK
+    }
     if (row.type === 'assistant') return null
-    const stopped = textsOf(row.message?.content).some(
-      (t) => typeof t === 'string' && t.startsWith(STOP_MARK),
-    )
     return stopped && row.interruptedByShutdown !== true ? STOPPED_TURN : null
   }
   return held ? HELD_BACK : null
 }
 
-// The last message a hook held back in `lines`: when, what Claude Code shows of it, and the command of
-// the hook that did: `UserPromptSubmit operation blocked by hook:`, `[<command>]: <its reason>`, the
-// message's words last (2.1.328). NaN, '' and null once Claude Code keeps it otherwise.
-export type HeldBack = { at: number; shown: string; hook: string | null }
-export function lastHeldBack(lines: string[]): HeldBack | null {
+// Whether `lines` end with a message Claude Code queued, or took from its queue, with nothing written
+// of what came of it: its prompt hooks run (2.1.314 to 2.1.330, about 100 ms).
+export function onItsWay(lines: string[]): boolean {
+  for (const line of lines.toReversed()) {
+    const row = TranscriptEntry.safeParse(jsonOrNull(line)).data
+    if (row?.type === 'queue-operation') return ['enqueue', 'dequeue'].includes(row.operation ?? '')
+    if (['user', 'assistant', 'system'].includes(row?.type ?? '')) return false
+  }
+  return false
+}
+
+// The last message a hook held back in `lines`: when, and what Claude Code shows of it, the hook's
+// reason, then the message's words unless the hook hides them (2.1.328). NaN and '' once Claude Code
+// keeps it otherwise.
+export function lastHeldBack(lines: string[]): { at: number; shown: string } | null {
   for (const row of turnRows(lines)) {
     if (row.promptSubmitEnding === undefined) continue
     const shown = typeof row.content === 'string' ? row.content : ''
-    const hook = /^UserPromptSubmit .*:\n\[(.+?)\]: /.exec(shown)?.[1] ?? null
-    return { at: Date.parse(row.timestamp ?? ''), shown, hook }
+    return { at: Date.parse(row.timestamp ?? ''), shown }
   }
   return null
 }
@@ -190,7 +204,7 @@ export function lastHeldBack(lines: string[]): HeldBack | null {
 // ponytail: a call whose result went with the Claude Code that ran it reads as running until the next
 // turn; one before what nod reads (results that long of calls run at once) reads as none.
 export function toolRuns(lines: string[]): boolean {
-  const done = new Set<string>()
+  const done = new Set<unknown>()
   for (const row of turnRows(lines)) {
     if (row.type === 'system') {
       if (row.subtype === 'turn_duration') return false
@@ -320,8 +334,8 @@ export function toolCalls(lines: string[]): ToolCall[] {
 
 // The blocks of a transcript row's message, and the tool calls whose results it holds, by their ids.
 const blocksOf = (row: Row) => (Array.isArray(row.message?.content) ? row.message.content : [])
-const resultsOf = (row: Row): string[] =>
-  blocksOf(row).flatMap((b) => ToolResult.safeParse(b).data?.tool_use_id ?? [])
+const resultsOf = (row: Row): unknown[] =>
+  blocksOf(row).flatMap((b) => (b?.type === 'tool_result' ? [b.tool_use_id] : []))
 
 // The text of a transcript message's `content`: a string, or the text blocks of a list.
 const textsOf = (content: unknown): unknown[] =>

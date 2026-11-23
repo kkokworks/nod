@@ -3683,6 +3683,7 @@ it('a typed turn whose transcript shows it ended without a Stop is ended, not ta
     { type: 'system', subtype: 'turn_duration' },
   ])
   const heldBack = typedTurn('held-back', [
+    working,
     {
       type: 'system',
       subtype: 'informational',
@@ -3697,9 +3698,20 @@ it('a typed turn whose transcript shows it ended without a Stop is ended, not ta
     said('<task-notification>finished</task-notification>', { queueTranscriptOnly: true }),
   ])
   // One held back in the middle of a turn, after a tool's result: the turn goes on.
+  const call = {
+    type: 'assistant',
+    message: { content: [{ type: 'tool_use', id: 't1', name: 'Bash' }] },
+  }
+  const result = [{ type: 'tool_result', tool_use_id: 't1', content: 'ok' }]
   const during = typedTurn('during', [
-    { type: 'assistant', message: { content: [{ type: 'tool_use', id: 't1', name: 'Bash' }] } },
-    said([{ type: 'tool_result', tool_use_id: 't1', content: 'ok' }]),
+    call,
+    said(result),
+    { type: 'system', subtype: 'informational', promptSubmitEnding: {} },
+  ])
+  // After a tool's result of a turn cut off long before: what the person typed next was held back.
+  const cutBefore = typedTurn('cut-before', [
+    call,
+    said(result, { timestamp: new Date(Date.now() - 3_600_000).toISOString() }),
     { type: 'system', subtype: 'informational', promptSubmitEnding: {} },
   ])
   // Not stopped by the person: Claude Code shut down, a tool printed the words, a subagent's.
@@ -3725,13 +3737,14 @@ it('a typed turn whose transcript shows it ended without a Stop is ended, not ta
     const a = ledger.attempts(id).at(-1)
     return [a?.outcome, a?.error]
   }
-  expect([stopped, heldBack, noted].map(last)).toEqual([
+  expect([stopped, heldBack, noted, cutBefore].map(last)).toEqual([
     ['error', 'the person stopped it (Escape)'],
+    ['error', 'a hook held the message back'],
     ['error', 'a hook held the message back'],
     ['error', 'a hook held the message back'],
   ])
   // Their question is still the person's to answer.
-  for (const id of [stopped, heldBack, noted]) {
+  for (const id of [stopped, heldBack, noted, cutBefore]) {
     expect(status(id)).toBe('needs_decision')
     expect(ledger.decisions(id).map((d) => d.answer)).toEqual([null])
   }
@@ -3780,16 +3793,18 @@ const callRow = (id: string) => ({
   type: 'assistant',
   message: { content: [{ type: 'tool_use', id, name: 'Bash', input: {} }] },
 })
-const resultRow = (id: string) => userRow([{ type: 'tool_result', tool_use_id: id, content: 'ok' }])
+const resultRow = (id: string) => userRow([{ type: 'tool_result', tool_use_id: id }])
 const endRow = { type: 'system', subtype: 'turn_duration' }
-// A message `words` a hook held back, `ago` ms before.
+// A message `words` a hook held back, `ago` ms before, for a reason that quotes it.
 const heldRow = (words: string, ago = 0) => ({
   type: 'system',
   subtype: 'informational',
   timestamp: new Date(Date.now() - ago).toISOString(),
-  content: `UserPromptSubmit operation blocked by hook:\n[node guard.mjs]: it holds ${words}\n\nOriginal prompt: ${words}`,
+  content: `UserPromptSubmit operation blocked by hook:\n[guard] matched [the secret]: take it out\n\nOriginal prompt: ${words}`,
   promptSubmitEnding: { ending: { kind: 'blocked_by_hook' }, promptKept: false },
 })
+// What Claude Code does with a message it queued, before the message's own row.
+const queueRow = (operation: string) => ({ type: 'queue-operation', operation })
 // The notice of a background agent that finished, which starts no turn.
 const noticeRow = userRow('<task-notification>finished</task-notification>', {
   queueTranscriptOnly: true,
@@ -3829,9 +3844,13 @@ it("a background agent's report that a hook held back as its worker rested is as
   keep('report-held', userRow('review it'), saidRow('NOD: question | Waiting'), endRow)
   await stopped('report-held', 'NOD: question | Waiting for the review', ['review'])
   prompted('report-held', report)
-  keep('report-held', heldRow(report), noticeRow)
+  keep('report-held', heldRow(report), queueRow('enqueue'), queueRow('dequeue'))
   expect(ledger.openAttempt(id)?.prompt).toBe('(typed into the terminal)')
 
+  // What comes next has its hooks run, and may start the turn. It is the notice, which does not.
+  expect(await look(id)).toEqual([])
+  expect(ledger.openAttempt(id)).not.toBeNull()
+  keep('report-held', noticeRow)
   expect(await look(id)).toEqual([id])
   expect(status(id)).toBe('needs_decision')
   expect(ledger.attempts(id).map((a) => a.outcome)).toEqual(['waiting', 'error'])
@@ -3841,7 +3860,6 @@ it("a background agent's report that a hook held back as its worker rested is as
   expect(decision.question).toContain(
     "A UserPromptSubmit hook held back a message Claude Code gave the worker by itself, such as a background agent's report",
   )
-  expect(decision.question).toContain('The hook: node guard.mjs\n')
   expect(decision.question).not.toContain('secret')
   // Once only.
   expect(await look(id)).toEqual([])
@@ -3895,6 +3913,16 @@ it('what a hook held back in the middle of a turn, or of what a person typed, is
   )
   expect(await look(running)).toEqual([])
   expect(ledger.openAttempt(running)).not.toBeNull()
+  // Two reports that start a turn at once, the second held back.
+  const both = start('review it', 'held-along')
+  keep('held-along', userRow('review it'), saidRow('NOD: question | Waiting'), endRow)
+  await stopped('held-along', 'NOD: question | Waiting for the reviews', ['review', 'review'])
+  prompted('held-along', '<agent-message from="a1">fine</agent-message>')
+  prompted('held-along', '<agent-message from="a2">the secret</agent-message>')
+  keep('held-along', userRow('<agent-message from="a1">fine</agent-message>'))
+  keep('held-along', heldRow('<agent-message from="a2">the secret</agent-message>'), noticeRow)
+  expect(await look(both)).toEqual([])
+  expect(ledger.openAttempt(both)).not.toBeNull()
 
   // The person saw theirs held back, and the turn is ended as before.
   const typed = start('write it', 'typed-held')
@@ -3904,7 +3932,7 @@ it('what a hook held back in the middle of a turn, or of what a person typed, is
   keep('typed-held', heldRow('use the secret'))
   expect(await look(typed)).toEqual([])
   expect(ledger.lastAttempt(typed)?.error).toBe('a hook held the message back')
-  for (const id of [running, typed]) expect(ledger.decisions(id)).toEqual([])
+  for (const id of [running, both, typed]) expect(ledger.decisions(id)).toEqual([])
 
   // What was held back before the turn opened is not what opened it, which is on its way in.
   const next = start('write it', 'held-before')
@@ -3914,6 +3942,16 @@ it('what a hook held back in the middle of a turn, or of what a person typed, is
   prompted('held-before', '<agent-message from="a2">fine</agent-message>')
   expect(await look(next)).toEqual([])
   expect(ledger.openAttempt(next)).not.toBeNull()
+
+  // Nor are words they typed since, which Claude Code has yet to write down, forgotten for it.
+  const twice = start('write it', 'typed-after')
+  keep('typed-after', userRow('write it'), saidRow('NOD: question | Waiting'), endRow)
+  await stopped('typed-after', 'NOD: question | Waiting for the review', ['review'])
+  keep('typed-after', heldRow('<agent-message from="a1">the secret</agent-message>', 60_000))
+  attachedWhile(() => prompted('typed-after', 'first'))
+  attachedWhile(() => prompted('typed-after', 'second'))
+  expect(ledger.openAttempt(twice)?.prompt).toBe('(typed into the terminal)\nfirst')
+  expect(ledger.messages(twice).map((m) => m.text)).toEqual(['(typed into the terminal)\nsecond'])
 })
 
 it('a turn the ledger has open while its worker shows nothing for an hour of ticks is asked about, with its screen, whatever kept it', async () => {
@@ -3969,13 +4007,6 @@ it('a turn the ledger has open while its worker shows nothing for an hour of tic
   keep('checked', userRow('write it'), saidRow('NOD: done | did it'))
   kept.set(checked, new Map([['nod_settling', String(process.pid)]]))
   expect(await ticks(checked, 200)).toEqual([])
-  // What a hook held back shows on the screen, so neither goes into the question.
-  const stopped = start('write the secret', 'stopped-held')
-  keep('stopped-held', userRow('write it'), userRow('[Request interrupted by user]'))
-  keep('stopped-held', heldRow('another secret'))
-  expect(await ticks(stopped, 61)).toEqual([stopped])
-  expect(ledger.decisions(stopped)[0]?.question).toContain('nothing has come of it')
-  expect(ledger.decisions(stopped)[0]?.question).not.toMatch(/secret|Update installed/)
   // Nor one a person is attached to.
   const watched = start('write it', 'watched')
   keep('watched', userRow('write it'))
@@ -3992,6 +4023,20 @@ it('a turn the ledger has open while its worker shows nothing for an hour of tic
   for (const id of [going, tool, limit, checked, watched]) {
     expect(status(id)).toBe('running')
     expect(ledger.decisions(id)).toEqual([])
+  }
+
+  // What a hook held back, in an earlier turn too, shows on the screen, so neither that nor the turn's
+  // message goes into the question.
+  for (const [session, ago] of [
+    ['held-now', 0],
+    ['held-earlier', 60_000],
+  ] as const) {
+    const id = start('write the secret', session)
+    keep(session, userRow('write it'), userRow('[Request interrupted by user]'))
+    keep(session, heldRow('another secret', ago))
+    expect(await ticks(id, 61)).toEqual([id])
+    expect(ledger.decisions(id)[0]?.question).toContain('nothing has come of it')
+    expect(ledger.decisions(id)[0]?.question).not.toMatch(/secret|Update installed/)
   }
 })
 
@@ -5621,9 +5666,9 @@ it('what a person typed that a hook of theirs held back leaves the ledger once t
     message: { content: [{ type: 'text', text: 'x'.repeat(300 * 1024) }] },
   }
   attachedWhile(() => {
-    // Held back, then typed again another way.
+    // Held back, then typed again another way, as Claude Code takes that from its queue.
     prompted('retyped', 'use the secret')
-    transcript('retyped', [said('write it'), answered, held])
+    transcript('retyped', [said('write it'), answered, held, queueRow('dequeue')])
     prompted('retyped', 'use the other one')
     transcript('retyped', [said('write it'), answered, held, said('use the other one')])
     // Words Claude Code took in; then a message held back that nod's hook did not record.
@@ -5654,7 +5699,7 @@ it('what a person typed that a hook of theirs held back leaves the ledger once t
     prompted('ended', 'use the secret')
     transcript('ended', [said('write it'), answered, held])
     prompted('sent', 'use the secret')
-    transcript('sent', [said('write it'), held])
+    transcript('sent', [said('write it'), said('[Request interrupted by user]'), held])
   })
   expect(ledger.messages(sent).map((m) => m.text)).toEqual([
     '(typed into the terminal)\nuse the secret',

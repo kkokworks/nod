@@ -62,6 +62,7 @@ import { SELF, Todos } from './todos'
 import {
   hasTranscript,
   heardOf,
+  lastHeldBack,
   toolRuns,
   transcriptLines,
   transcriptSize,
@@ -72,7 +73,6 @@ import {
   cutOff,
   DENIED_HERE,
   endTurnWithoutStop,
-  heldSince,
   noTurn,
   refusedDialogs,
   STOPPED_DIALOG,
@@ -2209,8 +2209,9 @@ async function restingTurn(
   terminals.setOption(name, QUIET_OPTION, `${at}${ticks}`)
   if (ticks <= QUIET_TICKS) return false
   const why = `Its turn is open, but for ${QUIET_TICKS} minutes nothing has come of it: no tool runs, and Claude Code has added nothing to its conversation, so its worker looks to rest at its prompt.`
-  // The screen and the turn's message may hold what a hook held back (unseenHeldBack).
-  if (heldSince(ledger, open, lines) !== null) {
+  // The screen and the turn's message may hold what a hook held back (unseenHeldBack), in an earlier
+  // turn too.
+  if (lastHeldBack(lines) !== null) {
     return cutOff(ledger, home, taskId, open, why, undefined, false)
   }
   const screen = `The screen:\n${lastLines(terminals, taskId)}`
