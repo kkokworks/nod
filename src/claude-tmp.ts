@@ -69,10 +69,8 @@ export function removeTmp(
         rmSync(gone, { recursive: true })
         removed = true
       } catch (error) {
-        // Another gc is removing it.
-        if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) {
-          failed.push(error)
-        }
+        // Gone otherwise: another gc took it.
+        if (existsSync(at) || existsSync(gone)) failed.push(error)
       }
     }
     if (!removed) continue

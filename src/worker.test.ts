@@ -5501,6 +5501,9 @@ test('the first message after gc collected a repo task tells its worker the work
   const before = REBUILT.replace(', and what you left in your scratchpad is gone', '')
   expect(before).not.toBe(REBUILT)
   expect(withoutRebuilt(`${before}\n\nsecond\n\nthird`)).toBe('second\n\nthird')
+  // Words that quote some of it are the person's.
+  const quoting = `Shorten "${before.slice(0, 120)}", but\n\nnot "${REBUILT}".`
+  expect(withoutRebuilt(quoting)).toBe(quoting)
 }, 20_000)
 
 it('the review hears what the human told the worker in the middle of a turn, in order with the rest', () => {

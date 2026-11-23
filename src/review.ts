@@ -3,11 +3,13 @@ import type { Ledger, Task } from './ledger'
 // Goes ahead of the next message once restore made a collected task's worktree again (rebuiltFile
 // in worker.ts). It is nod's, so what shows the message to the reviewer or the person leaves it out:
 // it would take the place of the message in a line cut short.
-export const REBUILT =
-  'nod made this folder again after gc collected it, so it has none of the files git ignores (dependencies, build output), and what you left in your scratchpad is gone. Before you stop, install the dependencies as the lock file pins them and run the acceptance check, if you have one, once.'
-// Also as it was before it told of the scratchpad, which the ledger still has.
+const rebuilt = (lost: string): string =>
+  `nod made this folder again after gc collected it, so it has none of the files git ignores (dependencies, build output)${lost}. Before you stop, install the dependencies as the lock file pins them and run the acceptance check, if you have one, once.`
+export const REBUILT = rebuilt(', and what you left in your scratchpad is gone')
+// Also as it was before it told of the scratchpad, which turns in the ledger still have. Nothing but
+// the whole notice: a person's words may quote some of it.
 export const withoutRebuilt = (text: string): string =>
-  text.replace(/nod made this folder again after gc collected it, so it has none [^\n]*\n\n/g, '')
+  text.replaceAll(`${REBUILT}\n\n`, '').replaceAll(`${rebuilt('')}\n\n`, '')
 
 // A repo task's work: its commits from `start` to `head`, their `git diff --stat`, and the file nod
 // saved their diff in (`saved`).

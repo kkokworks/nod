@@ -772,14 +772,19 @@ function withTemps() {
   const home = tmp.make('nod-gc-')
   const base = tmp.make('nod-gc-tmp-')
   const account = tmp.make('nod-gc-claude-')
-  process.env.CLAUDE_CONFIG_DIR = tmp.make('nod-gc-other-')
-  writeFileSync(
-    join(account, 'settings.json'),
-    JSON.stringify({ env: { CLAUDE_CODE_TMPDIR: base } }),
-  )
+  // This shell's account keeps them elsewhere.
+  const shellBase = tmp.make('nod-gc-shell-tmp-')
+  const shell = tmp.make('nod-gc-shell-')
+  process.env.CLAUDE_CONFIG_DIR = shell
+  for (const [dir, at] of [
+    [account, base],
+    [shell, shellBase],
+  ] as const) {
+    writeFileSync(join(dir, 'settings.json'), JSON.stringify({ env: { CLAUDE_CODE_TMPDIR: at } }))
+  }
   const ledger = new Ledger(home)
-  const temp = (cwd: string, session: string): string => {
-    const dir = tempFolder(base, cwd, session)
+  const temp = (cwd: string, session: string, at = base): string => {
+    const dir = tempFolder(at, cwd, session)
     mkdirSync(join(dir, 'scratchpad'), { recursive: true })
     writeFileSync(join(dir, 'scratchpad', 'big'), 'x')
     return dir
@@ -813,7 +818,7 @@ function withTemps() {
     ledger.succeed(id)
     return { id, cwd, session, kept }
   }
-  return { home, base, ledger, temp, turn, task }
+  return { home, base, shellBase, ledger, temp, turn, task }
 }
 
 test("gc removes the temp folders of a task's sessions, and leaves every other session's", async () => {
@@ -894,7 +899,13 @@ test('gc collects a task whose temp folder it cannot remove, says why, and nod g
 })
 
 test('the temp folders of tasks collected before go once, with nod gc or as it names the task, not as the tick sweeps', async () => {
-  const { home, ledger, temp, task } = withTemps()
+  const { home, shellBase, ledger, temp, task } = withTemps()
+  // As nod left them before it recorded accounts, under the account of the shell.
+  const old = task('old')
+  const oldTemp = temp(old.cwd, old.session, shellBase)
+  rmSync(old.cwd, { recursive: true })
+  ledger.db.query('update tasks set account = null where id = $id').run({ id: old.id })
+  ledger.collected(old.id, null)
   // As gc left them before it removed temp folders.
   const [first, named] = [task('first'), task('named')]
   for (const t of [first, named]) {
@@ -925,8 +936,8 @@ test('the temp folders of tasks collected before go once, with nod gc or as it n
     skipped: [],
   })
   expect(existsSync(named.kept)).toBe(false)
-  expect(dropTemps(ledger, home)).toEqual({ removed: [first.id], skipped: [] })
-  expect(existsSync(first.kept)).toBe(false)
+  expect(dropTemps(ledger, home)).toEqual({ removed: [old.id, first.id], skipped: [] })
+  expect([oldTemp, first.kept].map((d) => existsSync(d))).toEqual([false, false])
   for (const t of [open.kept, running.kept, awayTemp]) expect(existsSync(t)).toBe(true)
 
   expect(dropTemps(ledger, home)).toEqual({ removed: [], skipped: [] })

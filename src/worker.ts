@@ -44,7 +44,7 @@ import {
 } from './place'
 import { message, spawn } from './proc'
 import { type Capture, nodLines, parseCaptures, parseReport, parseTells, type Tell } from './report'
-import { REBUILT } from './review'
+import { REBUILT, withoutRebuilt } from './review'
 import { activeRules, hadTrouble, isNoRule, retroBrief } from './rules'
 import {
   lastLines,
@@ -1497,7 +1497,7 @@ async function deliver(
   // A message that goes again (a stuck one) has it already.
   const rebuilt = rebuiltFile(home, taskId)
   const notice = existsSync(rebuilt)
-  const words = notice && !text.includes(REBUILT) ? `${REBUILT}\n\n${text}` : text
+  const words = notice && withoutRebuilt(text) === text ? `${REBUILT}\n\n${text}` : text
   // A turn the person stopped takes no message: the message starts a turn of its own.
   const stopped = stoppedDialogs(ledger, home, taskId)
   endTurnWithoutStop(ledger, home, taskId)
@@ -2079,7 +2079,8 @@ async function giveUp(
   failure: string,
 ): Promise<void> {
   // The message goes, but the next one still tells that restore made the folder again.
-  if (takePrompt(home, taskId)?.includes(REBUILT)) writeFileSync(rebuiltFile(home, taskId), '')
+  const prompt = takePrompt(home, taskId) ?? ''
+  if (withoutRebuilt(prompt) !== prompt) writeFileSync(rebuiltFile(home, taskId), '')
   const screen = terminals
     .screen(sessionName(taskId))
     .replace(/\n\s*\n/g, '\n')

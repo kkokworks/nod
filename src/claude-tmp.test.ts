@@ -200,6 +200,23 @@ test("what a session's worker, told to go on meanwhile, writes as its folder goe
   expect(readdirSync(dirname(session))).toEqual([MINE])
 })
 
+test('a session folder that stays is a failure, whatever stopped its removal', () => {
+  const { base, root, cwd } = place()
+  const session = temp(base, cwd, MINE)
+  // As a process the worker left there, making files and removing them meanwhile, stops it.
+  const spy = spyOn(fs, 'rmSync').mockImplementation(() => {
+    throw Object.assign(new Error('ENOENT: no such file or directory'), { code: 'ENOENT' })
+  })
+  try {
+    expect(() => removeTmp(root, cwd, mine)).toThrow('ENOENT')
+  } finally {
+    spy.mockRestore()
+  }
+  expect(existsSync(dirname(session))).toBe(true)
+  expect(removeTmp(root, cwd, mine)).toBe(true)
+  expect(readdirSync(root)).toEqual([])
+})
+
 test('a session folder another gc takes first is no failure', () => {
   const { base, root, cwd } = place()
   const taken = temp(base, cwd, MINE)

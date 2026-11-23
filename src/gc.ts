@@ -205,17 +205,17 @@ export async function collect(
 
 // Removes the temp folders Claude Code keeps of a collected task's sessions (claude-tmp.ts): those
 // opened in its workspace whose last turn the ledger has as this task's, and that it does not have as
-// a person's (nod open, nod session claim). A task taken back since (restore) keeps them. One with no
-// account recorded has none: nod started no Claude Code for it (keepWorker). Returns whether there
-// was one.
+// a person's (nod open, nod session claim). A task taken back since (restore) keeps them. Returns
+// whether there was one.
 function dropTemp(ledger: Ledger, home: string, id: number): boolean {
   const work = join(home, 'work')
   const { workspace, account } = ledger.get(id)
-  if (account === null || !workspace?.startsWith(`${work}/`) || !existsSync(work)) return false
+  if (!workspace?.startsWith(`${work}/`) || !existsSync(work)) return false
   const todos = new Todos(ledger)
   return removeTmp(
-    // '' is Claude Code's default folder.
-    tmpRoot(account || null),
+    // '' is Claude Code's default folder, null an account nod never recorded: this shell's, without an
+    // account rule, whose command would run for each such task.
+    tmpRoot((account ?? process.env.CLAUDE_CONFIG_DIR) || null),
     // The workspace's real path, which Claude Code names the folder after; the workspace is gone.
     join(realpathSync(work), relative(work, workspace)),
     // Asked of each right before it goes, since the one before may take a while.
