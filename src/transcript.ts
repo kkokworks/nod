@@ -7,10 +7,10 @@ import { jsonOrNull } from './report'
 import { pasted } from './tmux'
 
 // Reading the transcript Claude Code keeps of a worker's session (JSONL): whether there is one, its
-// lines or its end, how its last turn ended, what became of a message pasted in while a turn ran,
-// and which tool calls the person refused. It only reads: what nod changes in the ledger by it is
-// turns.ts's (endTurnWithoutStop, forgetHeldBack, stoppedDialogs, refusedDialogs) and worker.ts's
-// (carryUnheard). This module imports none of
+// lines or its end, how its last turn ended, whether a tool runs, what became of a message pasted in
+// while a turn ran, and which tool calls the person refused. It only reads: what nod changes in the
+// ledger by it is turns.ts's (endTurnWithoutStop, forgetHeldBack, stoppedDialogs, refusedDialogs,
+// unseenHeldBack) and worker.ts's (carryUnheard, restingTurns). This module imports none of
 // worker.ts, hooks.ts or land.ts.
 
 // How Claude Code marks a turn the person stopped (endTurnWithoutStop), how much of the
@@ -20,6 +20,9 @@ const STOP_MARK = '[Request interrupted by user'
 const TRANSCRIPT_TAIL = 256 * 1024
 export const STOPPED_TURN = 'the person stopped it (Escape)'
 export const HELD_BACK = 'a hook held the message back'
+// How long the hooks of a message may keep it on its way in (onItsWay): Claude Code's own limit for
+// most of them.
+const PROMPT_HOOKS_MS = 60_000
 
 // The lines of the transcript of a task's session; null for one there is none of, or that cannot
 // be read, which goes to stderr only.
@@ -107,40 +110,124 @@ export function hasTranscript(config: string | null, sessionId: string): boolean
 
 const TranscriptEntry = z.object({
   type: z.string(),
+  subtype: z.string().optional().catch(undefined),
+  timestamp: z.string().optional().catch(undefined),
   isSidechain: z.boolean().optional(),
   isMeta: z.boolean().optional(),
+  queueTranscriptOnly: z.boolean().optional().catch(undefined),
   interruptedByShutdown: z.boolean().optional(),
-  promptSubmitEnding: z.unknown().optional(),
+  promptSubmitEnding: z.object({ promptKept: z.unknown() }).partial().optional().catch({}),
   message: z.object({ content: z.unknown() }).optional(),
   // Of Claude Code's queue (heardOf); an entry they do not fit still reads.
   operation: z.string().optional().catch(undefined),
   content: z.unknown().optional(),
   attachment: z.object({ type: z.string(), prompt: z.unknown() }).optional().catch(undefined),
 })
+type Row = z.infer<typeof TranscriptEntry>
 
-// How the last turn in a transcript's end `lines` (transcriptTail) ended, if without a Stop hook;
-// null if it did not, or for all this can tell. Read as Claude Code reads its own transcript
-// (2.1.310's binary): the last message of the person's or the worker's, not a subagent's
-// (sidechain), decides. The person's stop
-// is their message `[Request interrupted by user…]`, in a text block, so a tool's output holding
-// the words is none, and not one Claude Code marks as written as it shut down
-// (`interruptedByShutdown`), a turn cut off. A message a hook held back leaves no message of the
-// person's but a system entry with `promptSubmitEnding` (measured on 2.1.310 with `claude -p`).
-export function endedWithoutStop(lines: string[]): string | null {
+// The rows of a transcript's end `lines` (transcriptTail) that say how its last turn stands, the last
+// first: the person's, the worker's and Claude Code's own (system) in the main thread, not a
+// subagent's (sidechain). Not the person's rows that are no turn: a meta row; one Claude Code keeps
+// for the record only (`queueTranscriptOnly`: the notice that a background agent finished, whose
+// report comes as a message of its own, which Claude Code leaves out too as it looks for a turn,
+// 2.1.328); what a local command such as /exit leaves.
+function* turnRows(lines: string[]): Generator<Row> {
   for (const line of lines.toReversed()) {
     const parsed = TranscriptEntry.safeParse(jsonOrNull(line))
     if (!parsed.success || parsed.data.isSidechain === true) continue
-    const entry = parsed.data
-    if (entry.type === 'system' && entry.promptSubmitEnding !== undefined) return HELD_BACK
-    if (entry.type === 'assistant') return null
-    if (entry.type !== 'user' || entry.isMeta === true) continue
-    const texts = textsOf(entry.message?.content)
-    // What a local command such as /exit leaves is no turn of its own.
-    if (texts.some((t) => typeof t === 'string' && /^<(command-|local-command-)/.test(t))) continue
-    const stopped = texts.some((t) => typeof t === 'string' && t.startsWith(STOP_MARK))
-    return stopped && entry.interruptedByShutdown !== true ? STOPPED_TURN : null
+    const row = parsed.data
+    if (row.type === 'user') {
+      if (row.isMeta === true || row.queueTranscriptOnly === true) continue
+      const local = /^<(command-|local-command-)/
+      if (textsOf(row.message?.content).some((t) => typeof t === 'string' && local.test(t)))
+        continue
+    }
+    if (['user', 'assistant', 'system'].includes(row.type)) yield row
+  }
+}
+
+// How the last turn in a transcript's end `lines` (transcriptTail) ended, if without a Stop hook;
+// null if it did not, or for all this can tell. Read as Claude Code reads its own transcript
+// (2.1.310's binary): the last message of the person's or the worker's (turnRows) decides. The
+// person's stop
+// is their message `[Request interrupted by user…]`, in a text block, so a tool's output holding
+// the words is none, and not one Claude Code marks as written as it shut down
+// (`interruptedByShutdown`), a turn cut off. A message a hook held back leaves no message of the
+// person's but a system entry with `promptSubmitEnding` (measured on 2.1.310 with `claude -p`). So
+// does one held back while a turn runs, a background agent's report say, which goes on past it: right
+// after a tool's result, where Claude Code gives a turn what waits for it (read from nod's own
+// workers, 2.1.312 to 2.1.330), or after a message that started the turn along with it (2.1.330's
+// binary). So one after a row of the person's is none of its end, but for their stop, or a row from
+// before `since`, when that turn began: a turn cut off there. Nor counts what bash mode left, or the
+// held-back message itself, which a hook that stops it (`continue: false`) keeps in the conversation
+// with no turn (`promptKept`, 2.1.330's binary).
+export function endedWithoutStop(lines: string[], since = 0): string | null {
+  let held = false
+  let kept = 0
+  for (const row of turnRows(lines)) {
+    if (row.type === 'system') {
+      held ||= row.promptSubmitEnding !== undefined
+      if (row.promptSubmitEnding?.promptKept === true) kept++
+      continue
+    }
+    const stopped = row.type === 'user' && says(row, STOP_MARK)
+    if (held) {
+      if (row.type === 'user' && says(row, '<bash-')) continue
+      if (row.type === 'user' && resultsOf(row).length === 0 && kept-- > 0) continue
+      const before = Date.parse(row.timestamp ?? '') < since
+      return row.type === 'user' && !stopped && !before ? null : HELD_BACK
+    }
+    if (row.type === 'assistant') return null
+    return stopped && row.interruptedByShutdown !== true ? STOPPED_TURN : null
+  }
+  return held ? HELD_BACK : null
+}
+
+// Whether `lines` end with a message Claude Code queued, or took from its queue, with nothing written
+// of what came of it: its prompt hooks run (2.1.314 to 2.1.330, about 100 ms). One from longer ago than
+// they may take waits for something else, or went with its Claude Code.
+export function onItsWay(lines: string[]): boolean {
+  for (const line of lines.toReversed()) {
+    const row = TranscriptEntry.safeParse(jsonOrNull(line)).data
+    if (row?.type === 'queue-operation') {
+      const age = Date.now() - Date.parse(row.timestamp ?? '')
+      return ['enqueue', 'dequeue'].includes(row.operation ?? '') && age < PROMPT_HOOKS_MS
+    }
+    if (['user', 'assistant', 'system'].includes(row?.type ?? '')) return false
+  }
+  return false
+}
+
+// The last message a hook held back in `lines`: when, and what Claude Code shows of it, the hook's
+// reason, then the message's words unless the hook hides them (2.1.328). NaN and '' once Claude Code
+// keeps it otherwise.
+export function lastHeldBack(lines: string[]): { at: number; shown: string } | null {
+  for (const row of turnRows(lines)) {
+    if (row.promptSubmitEnding === undefined) continue
+    const shown = typeof row.content === 'string' ? row.content : ''
+    return { at: Date.parse(row.timestamp ?? ''), shown }
   }
   return null
+}
+
+// Whether a tool call of the last turn in `lines` still has no result: it runs, or its dialog shows.
+// A turn's first message or the last one's end (`turn_duration`) is as far back as it looks.
+// ponytail: a call whose result went with the Claude Code that ran it reads as running until the next
+// turn; one before what nod reads (results that long of calls run at once) reads as none.
+export function toolRuns(lines: string[]): boolean {
+  const done = new Set<unknown>()
+  for (const row of turnRows(lines)) {
+    if (row.type === 'system') {
+      if (row.subtype === 'turn_duration') return false
+      continue
+    }
+    if (row.type === 'user') {
+      const results = resultsOf(row)
+      if (results.length === 0) return false
+      for (const id of results) done.add(id)
+    } else if (blocksOf(row).some((b) => b?.type === 'tool_use' && !done.has(b.id))) return true
+  }
+  return false
 }
 
 // What became of a message pasted into a worker's Claude Code while a turn ran (heardOf).
@@ -255,6 +342,15 @@ export function toolCalls(lines: string[]): ToolCall[] {
   }
   return [...calls.values()]
 }
+
+// The blocks of a transcript row's message, and the tool calls whose results it holds, by their ids.
+const blocksOf = (row: Row) => (Array.isArray(row.message?.content) ? row.message.content : [])
+const resultsOf = (row: Row): unknown[] =>
+  blocksOf(row).flatMap((b) => (b?.type === 'tool_result' ? [b.tool_use_id] : []))
+
+// Whether a text of a transcript row's message starts with `mark`.
+const says = (row: Row, mark: string): boolean =>
+  textsOf(row.message?.content).some((t) => typeof t === 'string' && t.startsWith(mark))
 
 // The text of a transcript message's `content`: a string, or the text blocks of a list.
 const textsOf = (content: unknown): unknown[] =>

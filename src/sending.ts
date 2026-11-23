@@ -199,7 +199,7 @@ const SCREEN_LINES = 15
 const WORDS_SHOWN = 200
 const SCREEN_HEAD = '\nThe screen:\n'
 
-const lastLines = (terminals: Terminals, taskId: number): string => {
+export const lastLines = (terminals: Terminals, taskId: number): string => {
   const name = sessionName(taskId)
   return terminals.alive(name)
     ? terminals.screen(name).trimEnd().split('\n').slice(-SCREEN_LINES).join('\n')

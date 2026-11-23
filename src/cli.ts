@@ -320,8 +320,10 @@ const USAGE = `usage:
                                    the scheduled tick does the watches, landing and gc every
                                    fifth minute.
                                    It also asks about turns whose terminal is gone (a restart of
-                                   the machine or tmux) and about tasks that have waited an hour
-                                   on background work, has a worker report again when Claude Code
+                                   the machine or tmux) or whose worker rests at its prompt (a
+                                   hook held its message back, or nothing came of the turn for an
+                                   hour) and about tasks that have waited an hour on background
+                                   work, has a worker report again when Claude Code
                                    cut off the Stop hook checking its turn (its time limit, a
                                    sleep), restarts the workers due a restart, and resumes the
                                    tasks a Claude usage limit stopped once its reset time passed
@@ -586,23 +588,19 @@ switch (command) {
     break
   case 'tick': {
     // Run by hand, it checks the watches now too, not only on their every fifth minute.
-    const { passed, collected, lost, waited, cut, restarted, resumed, closed, landed } = await tick(
-      ledger,
-      home,
-      terminals,
-      new Date(),
-      true,
-    )
+    const { passed, collected, lost, rested, waited, cut, restarted, resumed, closed, landed } =
+      await tick(ledger, home, terminals, new Date(), true)
     if (passed.length > 0) console.log(`watch passed: ${passed.map((id) => `t${id}`).join(', ')}`)
     if (collected.length > 0) console.log(`collected task(s) ${taskList(collected)}`)
     if (lost.length > 0) console.log(`turn(s) lost with their terminal: ${taskList(lost)}`)
+    if (rested.length > 0) console.log(`open turn(s) whose worker rests: ${taskList(rested)}`)
     if (waited.length > 0) console.log(`waited too long on background work: ${taskList(waited)}`)
     if (cut.length > 0) console.log(`went on from a check cut off: ${taskList(cut)}`)
     if (restarted.length > 0) console.log(`restarted task(s) ${taskList(restarted)}`)
     if (resumed.length > 0) console.log(`resumed after a usage limit: ${taskList(resumed)}`)
     if (closed.length > 0) console.log(`closed the terminal(s) of task(s) ${taskList(closed)}`)
     for (const m of landed) console.log(`landing n${m.id}: ${m.did}`)
-    const did = [passed, collected, lost, waited, cut, restarted, resumed, closed, landed]
+    const did = [passed, collected, lost, rested, waited, cut, restarted, resumed, closed, landed]
     if (did.every((x) => x.length === 0)) console.log('nothing due')
     break
   }

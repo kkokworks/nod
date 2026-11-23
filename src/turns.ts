@@ -9,13 +9,17 @@ import {
   permissionQuestion,
   WENT_ON,
 } from './decisions'
-import type { Attempt, Decision, Ledger } from './ledger'
+import type { Attempt, Decision, Ledger, Message } from './ledger'
 import { withoutRebuilt } from './review'
 import {
   endedWithoutStop,
   HELD_BACK,
   heardOf,
+  lastHeldBack,
+  onItsWay,
+  PASTE_WRAP,
   STOPPED_TURN,
+  spoken,
   toolCalls,
   transcriptLines,
   transcriptTail,
@@ -26,7 +30,8 @@ import { oneLine } from './view'
 // ended without its Stop hook, as the person stopped it or a hook of theirs held their message back
 // (endTurnWithoutStop, stoppedDialogs, forgetHeldBack, as its transcript shows) or as its Claude
 // Code or terminal went (cutOff), and the dialogs of a turn that did end the person refused in its
-// terminal (refusedDialogs), with the decisions they close or open (decisions.ts). What
+// terminal (refusedDialogs), and a message a hook held back that nobody saw (unseenHeldBack), with the
+// decisions they close or open (decisions.ts). What
 // goes into the worker's terminal (deliver, carryUnheard) is worker.ts's. This module takes no
 // terminal, and imports none of worker.ts, hooks.ts or land.ts.
 
@@ -126,7 +131,8 @@ export function openTurn(
 // decision open, a permission dialog the person stopped say: closing that would leave its task
 // waiting on nothing, so it goes as before, closed by the next turn's Stop, or cut off. Words of a
 // message held back leave the ledger (forgetHeldBack), also from a turn nod sent that a person
-// typed into, which is not theirs to end here. Errors only go to stderr: what calls this goes on as
+// typed into, which is not theirs to end here. While another message is on its way in (onItsWay), one
+// held back ends nothing: that may start the turn. Errors only go to stderr: what calls this goes on as
 // before.
 // ponytail: reads the transcript's end, in Claude Code's own format; a format that changes reads as
 // not ended, which leaves the turn open as before.
@@ -136,11 +142,67 @@ export function endTurnWithoutStop(ledger: Ledger, home: string, taskId: number)
   const theirs = typedHere(open.prompt)
   const said = ledger.messages(taskId).some((m) => m.attemptId === open.id && typedHere(m.text))
   if (!theirs && !said) return
-  const why = endedWithoutStop(transcriptTail(ledger, home, open))
+  const lines = transcriptTail(ledger, home, open)
+  const why = endOfTurn(ledger, open, lines)
+  if (why === HELD_BACK && onItsWay(lines)) return
   if (why === HELD_BACK) forgetHeldBack(ledger, home, open)
   if (!theirs || why === null) return
   if (ledger.decisions(taskId).some((d) => d.answer === null && d.attemptId === open.id)) return
   ledger.failOpenAttempt(open.id, why)
+}
+
+// nod's prompt hook, which puts a message into the ledger, runs beside the hook that holds it back, and
+// may end after it (by up to 93 ms in nine measured, longer on a busy machine).
+const HELD_SLACK_MS = 10_000
+
+// How the open turn `open`, whose transcript ends with `lines` (transcriptTail), ended, if without a
+// Stop hook (endedWithoutStop). A message a hook held back before the turn opened, or before it took
+// its last message, is another's, and Claude Code has yet to write down what came since.
+export function endOfTurn(ledger: Ledger, open: Attempt, lines: string[]): string | null {
+  const opened = Date.parse(open.startedAt)
+  const why = endedWithoutStop(lines, opened - HELD_SLACK_MS)
+  if (why !== HELD_BACK) return why
+  const took = Math.max(opened, ...messagesIn(ledger, open).map((m) => Date.parse(m.createdAt)))
+  return (lastHeldBack(lines)?.at ?? Number.NaN) < took - HELD_SLACK_MS ? null : why
+}
+
+const messagesIn = (ledger: Ledger, turn: Attempt): Message[] =>
+  ledger.messages(turn.taskId).filter((m) => m.attemptId === turn.id)
+
+// What of the open turn `open`, whose transcript ends with `lines` (transcriptTail), the person is told
+// once a hook of theirs held back its message as the worker rested: one Claude Code gave the worker by
+// itself (a background agent's report), or nod's own. So no turn came, and nobody saw it. Null for any
+// other turn, and for what a person typed, which they saw held back. Not what was held back or the
+// hook's reason, which is for the person alone and may quote it: a decision's question goes to the
+// project's session, past the same hook. Nor the hook's command, which what Claude Code shows does not
+// tell apart from a reason.
+// ponytail: a turn another of these closed first (endTurnWithoutStop, before the tick looks) is not
+// told of; a task that waited on that report is asked about once it waited too long (overdueWaits).
+// A message of nod's whose words the hook hides is told of as any quiet turn (restingTurns).
+export function unseenHeldBack(
+  ledger: Ledger,
+  open: Attempt,
+  lines: string[],
+): { why: string; done: string } | null {
+  const held = lastHeldBack(lines)
+  if (held === null || onItsWay(lines)) return null
+  if (endOfTurn(ledger, open, lines) !== HELD_BACK) return null
+  const told = messagesIn(ledger, open).map((m) => m.text)
+  const last = spoken(held.shown.replace(PASTE_WRAP, ''))
+  const nods = [open.prompt, ...told].some(
+    (text) => !typedHere(text) && spoken(text) !== '' && last.endsWith(spoken(text)),
+  )
+  if (!nods && (open.prompt !== TYPED || told.some(typedHere))) return null
+  const whose = nods
+    ? 'the message nod sent'
+    : "a message Claude Code gave the worker by itself, such as a background agent's report"
+  const how = nods
+    ? 'Have the answer say it again without what the hook stops.'
+    : 'Have the worker ask for it again without what the hook stops, or go on without it.'
+  return {
+    why: `A UserPromptSubmit hook held back ${whose}, so no turn came of it.`,
+    done: `Nothing of it is done. ${how}`,
+  }
 }
 
 // Closes the permission decisions of the open turn once its transcript shows the person stopped it
@@ -198,7 +260,8 @@ export const noTurn = (a: Attempt): boolean =>
 // A turn that ended without its Stop hook, because its Claude Code or terminal went. It may have
 // done part of its work, so the person decides how it goes on instead of nod running it again. A
 // permission or trust prompt it was showing went with it. `done`: what of it may be done, for one
-// that never took its message. Returns whether it raised the decision.
+// that never took its message. `quoted`: whether the question shows the turn's message. Returns
+// whether it raised the decision.
 export async function cutOff(
   ledger: Ledger,
   home: string,
@@ -206,6 +269,7 @@ export async function cutOff(
   attempt: Attempt,
   why: string,
   done = 'The turn did not finish, and part of it may be done.',
+  quoted = true,
 ): Promise<boolean> {
   // Taken first, in one statement: of two that find the turn open at once (ticks, say), one raises
   // the decision. A message sent while Claude Code started again may have run it to its end since.
@@ -215,13 +279,14 @@ export async function cutOff(
   const owes = closed.some((d) => d.reason === 'stuck')
     ? '\nA message that had not gone in goes to the worker after the next turn.'
     : ''
+  const on = quoted ? ` It was on:\n> ${oneLine(withoutRebuilt(attempt.prompt), 200)}` : ''
   await decide(
     ledger,
     home,
     taskId,
     attempt.id,
     'interrupted',
-    `${why}\n${done} It was on:\n> ${oneLine(withoutRebuilt(attempt.prompt), 200)}\nAnswer with how to go on, such as to check what is done and carry on; the answer goes into the same conversation.${owes}`,
+    `${why}\n${done}${on}\nAnswer with how to go on, such as to check what is done and carry on; the answer goes into the same conversation.${owes}`,
   )
   return true
 }
