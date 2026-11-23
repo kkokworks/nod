@@ -946,8 +946,8 @@ test('a finished repo task goes once the person closes its todo, done or dropped
   ledger.setRepo(repo, { land: 'pr' }, 'human')
   // Only the tasks whose landing began land: none was added since the repo let nod land.
   ledger.db.query("update repos set raised_at = '2099-01-01T00:00:00.000Z'").run()
-  ledger.setLanding(landing.id, {})
-  ledger.setLanding(errored.id, {})
+  ledger.setLanding(landing.id, { base: 'a' })
+  ledger.setLanding(errored.id, { base: 'a' })
   // As gc and the tick do, the todos first.
   await followWork(ledger, SELF, null)
   expect(todos.get(byNod.todo).status).toBe('done')

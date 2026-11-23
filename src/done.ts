@@ -202,13 +202,17 @@ export function lands(ledger: Ledger, task: Task, only?: number[]): boolean {
   return ledger.links(task.id).every((url) => url === l?.pr)
 }
 
-// Whether landing is not through with a task yet: each pass (due in land.ts) brings back one gc
-// collected, so the two would go round at every tick. It is through once nod's own pull request for
-// it merged, whether or not a pass has recorded that: the one that does is the last.
+// Whether landing is at a task and not through with it: each pass (due in land.ts) brings back one
+// gc collected, so the two would go round at every tick. It is at one once a pass recorded where
+// its commits start (`base`), right after the step that brings one back: a landing that only waits
+// on the task before it, or on a fetch, stops short of that step. It is through once nod's own pull
+// request for the task merged, whether or not a pass has recorded that: the one that does is the
+// last.
 async function stillLands(ledger: Ledger, task: Task, prs: PrLookup): Promise<boolean> {
   if (task.status !== 'succeeded' || !lands(ledger, task)) return false
-  const pr = ledger.landing(task.id)?.pr ?? null
-  return pr === null || (await prs(pr))?.state !== 'merged'
+  const l = ledger.landing(task.id)
+  if (l === null || l.base === null) return false
+  return l.pr === null || (await prs(l.pr))?.state !== 'merged'
 }
 
 // Where a succeeded task's work leaves its todo (followTasks in todos.ts): done once the task's

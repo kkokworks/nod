@@ -264,12 +264,12 @@ const USAGE = `usage:
                                    (not one nod lands, until its pull request merged): dropped,
                                    taken over by a newer task on the same todo, its todo closed
                                    done or dropped by you since, merged into the default branch, a
-                                   linked pull request merged, closed or
-                                   approved by you, or finished 7+ days ago (not one nod is to
-                                   resume once its usage limit resets; one with commits no
-                                   remote has only once a linked pull request of its branch in
-                                   the repo origin pushes to merged after its last commit and no
-                                   other linked one waits, and only if it succeeded). Branches go
+                                   linked pull request merged, closed or approved by you, or
+                                   finished 7+ days ago (not one nod is to resume once its usage
+                                   limit resets; one with commits no remote has only once a linked
+                                   pull request of its branch in the repo origin pushes to merged
+                                   after its last commit and no other linked one waits, and only
+                                   if it succeeded). Branches go
                                    once the remote's default branch has the changes, as a pushed
                                    branch may go unmerged; with neither, gc also fetches the repos
                                    of the branches it kept and deletes those merged since. Ledger

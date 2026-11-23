@@ -766,8 +766,11 @@ test('a task nod lands is not collected while its pull request is open, however 
     { id, reason: `merged: ${url}` },
   ])
 
-  const old = new Date(Date.now() - 8 * 86_400_000).toISOString()
-  ledger.db.query('update tasks set finished_at = $at where id = $id').run({ id, at: old })
+  const age = (id: number): void => {
+    const at = new Date(Date.now() - 8 * 86_400_000).toISOString()
+    ledger.db.query('update tasks set finished_at = $at where id = $id').run({ id, at })
+  }
+  age(id)
   const ticks = async () => {
     const { landed, collected } = await tick(ledger, home, Tmux.of(home), new Date(), true)
     return { did: landed.map((l) => l.did), collected }
@@ -780,6 +783,16 @@ test('a task nod lands is not collected while its pull request is open, however 
   Object.assign(prs[0], { state: 'merged', mergedAt: new Date().toISOString() })
   writeFileSync(join(service, 'prs.json'), JSON.stringify(prs))
   expect(await ticks()).toEqual({ did: [`merged: ${url}`], collected: [id] })
+
+  // One pushed by hand that waits on a task the person stopped landing: no pass brings it back.
+  const stopped = finished('feat/h', { 'h.txt': 'h\n' })
+  ledger.setLanding(stopped, { stopped: 'dropped' })
+  const after = finished('feat/i', { 'i.txt': 'i\n' }, stopped)
+  git(ws(after), 'push', '-q', 'origin', 'feat/i')
+  age(after)
+  const waits = `lands after n${stopped}`
+  expect(await ticks()).toEqual({ did: [waits], collected: [after] })
+  expect(await ticks()).toEqual({ did: [waits], collected: [] })
 }, 30_000)
 
 // Someone else's commit on a branch of the remote, `from` main.
