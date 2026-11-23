@@ -2,6 +2,7 @@ import { afterAll, beforeEach, expect, test } from 'bun:test'
 import {
   chmodSync,
   existsSync,
+  mkdirSync,
   readdirSync,
   readFileSync,
   rmSync,
@@ -10,9 +11,11 @@ import {
 } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { NOISY_FAILURE } from '../test/noisy-failure'
+import { projectFolder } from '../test/projects'
 import { calls, clonedRepo, fakeService, git } from '../test/remote'
 import { tempDirs } from '../test/tmp'
 import { testTmux } from '../test/tmux'
+import { doneTasks, type PullRequest } from './done'
 import { onStop } from './hooks'
 import { land, landSoon } from './land'
 import { type Decision, type LandLevel, Ledger } from './ledger'
@@ -727,6 +730,57 @@ test('the tick lands on its fifth minutes, before it sweeps', async () => {
     { id, did: 'pull request open, waiting for its merge: https://github.com/o/r/pull/1' },
   ])
 })
+
+test('a task nod lands is not collected while its pull request is open, however old or approved, or closed, as the next pass would bring it back; once that merged, it is', async () => {
+  setRepo('pr')
+  const id = finished('feat/g', { 'g.txt': 'g\n' })
+  await land(ledger, home, Tmux.of(home), { send })
+  await stops(id, 'Add g\n\nNOD: done | wrote it')
+  await land(ledger, home, Tmux.of(home), { send })
+  const url = 'https://github.com/o/r/pull/1'
+  expect(ledger.landing(id)?.pr).toBe(url)
+  // What a pass needs to bring back a task gc collected.
+  const transcripts = projectFolder(process.env.CLAUDE_CONFIG_DIR ?? '', ws(id))
+  mkdirSync(transcripts, { recursive: true })
+  writeFileSync(join(transcripts, `s${id}.jsonl`), '{}\n')
+  const signals = async (pr: Partial<PullRequest>) => {
+    const open: PullRequest = {
+      state: 'open',
+      head: 'feat/g',
+      headRepo: 'https://github.com/o/r',
+      mergedAt: null,
+      approvedAt: null,
+    }
+    const { done } = await doneTasks(
+      ledger,
+      Tmux.of(home),
+      async () => ({ ...open, ...pr }),
+      new Date(),
+    )
+    return done
+  }
+  expect(await signals({ approvedAt: '2099-01-01T00:00:00Z' })).toEqual([])
+  expect(await signals({ state: 'closed' })).toEqual([])
+  // nod gc before a pass recorded the merge: nothing is left to land.
+  expect(await signals({ state: 'merged', mergedAt: '2099-01-01T00:00:00Z' })).toEqual([
+    { id, reason: `merged: ${url}` },
+  ])
+
+  const old = new Date(Date.now() - 8 * 86_400_000).toISOString()
+  ledger.db.query('update tasks set finished_at = $at where id = $id').run({ id, at: old })
+  const ticks = async () => {
+    const { landed, collected } = await tick(ledger, home, Tmux.of(home), new Date(), true)
+    return { did: landed.map((l) => l.did), collected }
+  }
+  const open = { did: [`pull request open, waiting for its merge: ${url}`], collected: [] }
+  expect([await ticks(), await ticks()]).toEqual([open, open])
+  expect(existsSync(ws(id))).toBe(true)
+
+  const prs = JSON.parse(readFileSync(join(service, 'prs.json'), 'utf8'))
+  Object.assign(prs[0], { state: 'merged', mergedAt: new Date().toISOString() })
+  writeFileSync(join(service, 'prs.json'), JSON.stringify(prs))
+  expect(await ticks()).toEqual({ did: [`merged: ${url}`], collected: [id] })
+}, 30_000)
 
 // Someone else's commit on a branch of the remote, `from` main.
 function theirBranch(name: string): string {

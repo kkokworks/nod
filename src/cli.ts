@@ -260,11 +260,11 @@ const USAGE = `usage:
   nod gc [<task...> | --older-than <days>]
                                    close sessions and delete workspaces and worktrees of the named
                                    finished tasks, or of tasks finished that long ago, or, with
-                                   neither, of the finished tasks a signal says are done with:
-                                   dropped, taken over by a newer task on the same todo, its todo
-                                   closed done or dropped by you since (not while nod lands it),
-                                   merged into the default branch, a linked pull request merged,
-                                   closed or
+                                   neither, of the finished tasks a signal says are done with
+                                   (not one nod lands, until its pull request merged): dropped,
+                                   taken over by a newer task on the same todo, its todo closed
+                                   done or dropped by you since, merged into the default branch, a
+                                   linked pull request merged, closed or
                                    approved by you, or finished 7+ days ago (not one nod is to
                                    resume once its usage limit resets; one with commits no
                                    remote has only once a linked pull request of its branch in
