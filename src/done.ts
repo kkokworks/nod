@@ -14,8 +14,9 @@ import { type Left, SELF, Todos } from './todos'
 // once it ends. Held back: commits on the branch that no remote has, since collecting hides the
 // only copy from ls, unless a succeeded task's own pull request merged after the last of them and
 // no other linked one waits; a queued task that starts from this one's branch; a person attached
-// to the session. An errored task goes only with age, as what went wrong is for the person to see
-// first, or, in a repo, once a newer task took its todo over or the person closed its todo.
+// to the session; a task nod lands, until its pull request merged (stillLands). An errored task
+// goes only with age, as what went wrong is for the person to see first, or, in a repo, once a
+// newer task took its todo over or the person closed its todo.
 
 const STALE_DAYS = 7
 const DAY = 86_400_000
@@ -53,6 +54,7 @@ export async function doneTasks(
     // A turn the person types in keeps the status succeeded until it ends.
     if (terminals.attached(sessionName(task.id))) return null
     try {
+      if (await stillLands(ledger, task, prs)) return null
       const reason = await signal(ledger, tasks, task, prs, now)
       return reason === null ? null : { id: task.id, reason }
     } catch (error) {
@@ -119,9 +121,7 @@ async function signal(
   const stale =
     task.finishedAt !== null && Date.parse(task.finishedAt) <= now.getTime() - STALE_DAYS * DAY
   if (stale && !resumes) return `finished ${STALE_DAYS}+ days ago`
-  // Not one nod lands (due in land.ts), which would bring it back at every pass until it merged.
-  const landing = task.status === 'succeeded' && lands(ledger, task)
-  const closed = task.repo === null || resumes || landing ? null : closedTodo(ledger, task)
+  const closed = task.repo === null || resumes ? null : closedTodo(ledger, task)
   if (closed !== null) return closed
   const sameTodo = (t: Task): boolean =>
     t.id > task.id && t.todoId !== null && t.todoId === task.todoId
@@ -200,6 +200,19 @@ export function lands(ledger: Ledger, task: Task, only?: number[]): boolean {
   const since = repo.raisedAt !== null && task.createdAt >= repo.raisedAt
   if (!named && !(only === undefined && since)) return false
   return ledger.links(task.id).every((url) => url === l?.pr)
+}
+
+// Whether landing is at a task and not through with it: each pass (due in land.ts) brings back one
+// gc collected, so the two would go round at every tick. It is at one once a pass recorded where
+// its commits start (`base`), right after the step that brings one back: before that, a landing that
+// only waits on the task before it, or on a fetch, stops short of that step. From then on the task
+// stays whatever landing waits on, until it ends, or nod's own pull request for the task merged,
+// whether or not a pass has recorded that: the one that does is the last.
+async function stillLands(ledger: Ledger, task: Task, prs: PrLookup): Promise<boolean> {
+  if (task.status !== 'succeeded' || !lands(ledger, task)) return false
+  const l = ledger.landing(task.id)
+  if (l === null || l.base === null) return false
+  return l.pr === null || (await prs(l.pr))?.state !== 'merged'
 }
 
 // Where a succeeded task's work leaves its todo (followTasks in todos.ts): done once the task's
