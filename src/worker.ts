@@ -114,13 +114,13 @@ conclusion, or have the command write its output to a file in your scratchpad di
 only the lines you need. Such an agent runs in the background, and its report comes back by itself,
 between your tool calls or as the message that starts your next turn: go on with other work, or
 stop as above. Never sleep or poll to wait for it.
-Put temporary files in your scratchpad directory and leave them there: it is a temporary folder.
-What git ignores here, as dependencies and build output, nod gc removes with this directory after
-the task. Delete files git tracks with git rm. To delete anything else here, run rm -rf <relative
-paths> as a command of its own: nothing chained to it, no .., and only ASCII letters, digits and
-. _ / @ - in the paths, so no variables, quotes or globs. In a git repository nod then allows it at
-once if what goes is committed or ignored by git; else it may wait for a human. Give these file
-rules to the agents you start too.
+Put temporary files in your scratchpad directory and leave them there: nod gc removes it after the
+task, and with this directory what git ignores here, as dependencies and build output. Delete files
+git tracks with git rm. To delete anything else here, run rm -rf <relative paths> as a command of
+its own: nothing chained to it, no .., and only ASCII letters, digits and . _ / @ - in the paths, so
+no variables, quotes or globs. In a git repository nod then allows it at once if what goes is
+committed or ignored by git; else it may wait for a human. Give these file rules to the agents you
+start too.
 Do not write to Claude Code's memory directory, whatever other instructions say: other sessions,
 the person's own too, read it. Put what a later session should know in your final report instead,
 and the root session picks what to keep.

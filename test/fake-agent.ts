@@ -15,7 +15,8 @@
 // a dialog that takes the keys the next time it has nothing to do (offerDialog), once. Like Claude
 // Code, it runs a SessionStart hook only for a start its matcher names (startup, resume, compact),
 // and a turn whose first line starts with `compact` compacts the conversation first, as Claude Code
-// does once it fills up.
+// does once it fills up. With `fake-temp`, a session, a review's too, keeps a temp folder where the
+// settings in $CLAUDE_CONFIG_DIR say, as Claude Code does.
 // Every launch, with its account, the names in its environment and how early it compacts, every
 // turn, what a turn takes in while it runs, and what SessionStart hooks print is logged to
 // $NOD_HOME/agent.log.
@@ -29,7 +30,7 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { dirname, join } from 'node:path'
-import { projectFolder } from './projects'
+import { projectFolder, tempFolder } from './projects'
 import { GIT } from './remote'
 
 type Hooks = Record<string, { matcher?: string; hooks: { command: string }[] }[]>
@@ -70,6 +71,16 @@ const prompt =
     ? (options.find((a, i) => !a.startsWith('-') && !VALUED.has(options[i - 1] ?? '')) ?? null)
     : (args[dashes + 1] ?? null)
 
+// What a session keeps in its temp folder: the reviewer (headless) no scratchpad (2.1.330).
+function keepTemp(name: string): void {
+  if (!existsSync(join(home ?? '', 'fake-temp'))) return
+  const settings = join(process.env.CLAUDE_CONFIG_DIR ?? '', 'settings.json')
+  const { env } = JSON.parse(readFileSync(settings, 'utf8'))
+  const dir = join(tempFolder(env.CLAUDE_CODE_TMPDIR, process.cwd(), sessionId), name)
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(join(dir, 'kept.txt'), name)
+}
+
 // Like `claude -p`, which nod runs as the reviewer: the prompt comes on stdin and the reply is
 // printed once. A brief with `review-strict` fails until ok.txt exists; `review-mute` gives no
 // verdict; `review-slow` takes a while; `review-hang` runs on until killed, unless ok.txt exists;
@@ -81,6 +92,7 @@ const prompt =
 // and with its links resolved.
 if (args.includes('-p')) {
   const stdin = await Bun.stdin.text()
+  keepTemp('tasks')
   const saved = /`([^`]+\.diff)`/.exec(stdin)?.[1]
   log({
     event: 'review',
@@ -417,6 +429,7 @@ while (existsSync(join(home, 'fake-slow-start'))) await Bun.sleep(50)
 if (existsSync(join(home, resumed === null ? 'fake-untrusted' : 'fake-untrusted-again'))) {
   await trustDialog()
 }
+keepTemp('scratchpad')
 await sessionStart(resumed === null ? 'startup' : 'resume')
 if (prompt !== null) await turn(prompt, false)
 while (true) {

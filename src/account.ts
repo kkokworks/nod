@@ -88,8 +88,15 @@ export function openedIn(config: string | null, sessionId: string): string | nul
   const stood = readFileSync(path, 'utf8').matchAll(/"cwd":("(?:[^"\\]|\\.)*")/g)
   for (const [, quoted] of stood) {
     const cwd = z.string().parse(JSON.parse(quoted ?? ''))
-    const name = cwd.replace(/[^a-zA-Z0-9]/g, '-')
-    if (name === folder || (name.length > 200 && folder.startsWith(name.slice(0, 200)))) return cwd
+    if (namedAfter(folder, cwd)) return cwd
   }
   return null
+}
+
+// Whether `folder` is the name Claude Code gives the folder of what it keeps of the sessions opened
+// in `cwd`, transcripts (transcriptPath says the rule) and temp files (claude-tmp.ts) alike. Any
+// hash past 200 characters matches.
+export function namedAfter(folder: string, cwd: string): boolean {
+  const name = cwd.replace(/[^a-zA-Z0-9]/g, '-')
+  return name === folder || (name.length > 200 && folder.startsWith(name.slice(0, 200)))
 }

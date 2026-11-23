@@ -10,9 +10,10 @@ import {
   rebasing,
   unmergedFiles,
 } from './branch'
+import { removeTmp, tmpRoot } from './claude-tmp'
 import type { Ledger, Task } from './ledger'
 import { branchOf } from './place'
-import { OUTPUT_LIMIT, spawn } from './proc'
+import { message, OUTPUT_LIMIT, spawn } from './proc'
 import { PR_TEXT, parseReport, prText, TEXT_ONLY } from './report'
 import { type Changes, reviewBrief } from './review'
 
@@ -100,12 +101,18 @@ async function review(
   // link (macOS keeps temp folders behind one), so the folder it is let read and the file in it are
   // one path however Claude Code compares them.
   const dir = task.repo === null ? null : realpathSync(mkdtempSync(join(tmpdir(), 'nod-review-')))
+  // The reviewer's session, named here so its temp folder can go with the review: the ledger does
+  // not have it, so gc would leave it.
+  // ponytail: a Stop hook cut off leaves both, as no one knows the session then.
+  const session = crypto.randomUUID()
   try {
     const changes = dir === null ? null : await changesOf(cwd, branchOf(task), base, dir)
     const { code, timedOut, stdout, output } = await spawn(
       [
         'claude',
         '-p',
+        '--session-id',
+        session,
         '--settings',
         JSON.stringify({ sandbox: SANDBOX }),
         ...(task.model === null ? [] : ['--model', task.model]),
@@ -154,6 +161,13 @@ async function review(
     return { passed: false, output: stdout.trim().slice(-OUTPUT_LIMIT) }
   } finally {
     if (dir !== null) rmSync(dir, { recursive: true, force: true })
+    // It must not change what the review came to.
+    try {
+      const root = tmpRoot(process.env.CLAUDE_CONFIG_DIR || null)
+      removeTmp(root, realpathSync(cwd), (id) => id === session)
+    } catch (error) {
+      console.error(`nod: could not remove a review's temp folder: ${message(error)}`)
+    }
   }
 }
 

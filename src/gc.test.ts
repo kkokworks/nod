@@ -1,12 +1,14 @@
 import { afterAll, expect, spyOn, test } from 'bun:test'
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
-import { projectFolder } from '../test/projects'
+import { dirname, join } from 'node:path'
+import { projectFolder, tempFolder } from '../test/projects'
 import { tempDirs } from '../test/tmp'
-import { collect, landed } from './gc'
+import { sweep } from './done'
+import { collect, dropTemps, landed } from './gc'
 import { Ledger } from './ledger'
 import { branchOf, workspaceOf } from './place'
 import { Tmux } from './tmux'
+import { Todos } from './todos'
 import { restore } from './worker'
 
 const tmp = tempDirs()
@@ -754,6 +756,202 @@ test('gc --older-than leaves a task a queued one waits for, as sweep does', asyn
   })
   expect(existsSync(workspaceOf(home, ledger.get(base)))).toBe(true)
   expect(ledger.get(base).collectedAt).toBeNull()
+})
+
+// A home whose workers' account keeps its sessions' temp folders in a folder of the test's, and
+// succeeded tasks there, each with the temp folder of a session of its own.
+function withTemps() {
+  const home = tmp.make('nod-gc-')
+  const base = tmp.make('nod-gc-tmp-')
+  const account = tmp.make('nod-gc-claude-')
+  process.env.CLAUDE_CONFIG_DIR = tmp.make('nod-gc-other-')
+  writeFileSync(
+    join(account, 'settings.json'),
+    JSON.stringify({ env: { CLAUDE_CODE_TMPDIR: base } }),
+  )
+  const ledger = new Ledger(home)
+  const temp = (cwd: string, session: string): string => {
+    const dir = tempFolder(base, cwd, session)
+    mkdirSync(join(dir, 'scratchpad'), { recursive: true })
+    writeFileSync(join(dir, 'scratchpad', 'big'), 'x')
+    return dir
+  }
+  const turn = (id: number, session: string): string => {
+    ledger.startAttempt({
+      taskId: id,
+      kind: 'start',
+      decisionId: null,
+      sessionId: session,
+      prompt: 'x',
+    })
+    return temp(workspaceOf(home, ledger.get(id)), session)
+  }
+  const task = (brief: string): { id: number; cwd: string; session: string; kept: string } => {
+    const id = ledger.add({
+      brief,
+      repo: null,
+      branch: null,
+      checkCmd: null,
+      model: null,
+      after: [],
+      issue: null,
+    })
+    const cwd = workspaceOf(home, ledger.get(id))
+    mkdirSync(cwd, { recursive: true })
+    ledger.setRunning(id, cwd)
+    ledger.setAccount(id, account)
+    const session = crypto.randomUUID()
+    const kept = turn(id, session)
+    ledger.succeed(id)
+    return { id, cwd, session, kept }
+  }
+  return { home, base, ledger, temp, turn, task }
+}
+
+test("gc removes the temp folders of a task's sessions, and leaves every other session's", async () => {
+  const { home, ledger, temp, turn, task } = withTemps()
+  const done = task('done')
+  // A conversation Claude Code went on in under another ID.
+  const second = turn(done.id, crypto.randomUUID())
+  const other = task('not collected')
+  const running = task('running')
+  ledger.setRunning(running.id, running.cwd)
+  // Opened in the task's workspace all the same: a session of a person's, one nod open has, and one
+  // another task's turn went to last.
+  const persons = temp(done.cwd, crypto.randomUUID())
+  const opened = crypto.randomUUID()
+  const openedTemp = turn(done.id, opened)
+  new Todos(ledger).addSession({ role: 'orchestrator', name: 'north' }, opened, done.cwd)
+  const moved = crypto.randomUUID()
+  const movedTemp = turn(done.id, moved)
+  turn(running.id, moved)
+
+  expect(await collect(ledger, home, Tmux.of(home), { ids: [done.id, running.id] })).toEqual({
+    removed: [done.id],
+    clean: [],
+    skipped: [{ id: running.id, reason: 'still running' }],
+  })
+  expect([done.kept, second].map((d) => existsSync(d))).toEqual([false, false])
+  const stay = [other.kept, running.kept, persons, openedTemp, movedTemp]
+  expect(stay.map((d) => existsSync(join(d, 'scratchpad', 'big')))).toEqual(stay.map(() => true))
+})
+
+test('gc leaves the temp folder of a task whose workspace Claude Code names as the collected one', async () => {
+  const { home, base, ledger, task } = withTemps()
+  // Each character but a letter or digit turns into `-`, so these two share a folder, as the
+  // worktrees of branches `feat/a.b` and `feat/a-b` do.
+  const dotted = task('dotted')
+  const cwd = join(home, 'work', 'a.b')
+  mkdirSync(cwd)
+  ledger.setRunning(dotted.id, cwd)
+  ledger.succeed(dotted.id)
+  const dashed = task('dashed')
+  mkdirSync(join(home, 'work', 'a-b'))
+  ledger.setRunning(dashed.id, join(home, 'work', 'a-b'))
+  ledger.succeed(dashed.id)
+  const folder = dirname(tempFolder(base, cwd, '-'))
+  for (const t of [dotted, dashed]) mkdirSync(join(folder, t.session), { recursive: true })
+
+  const report = await collect(ledger, home, Tmux.of(home), { ids: [dotted.id] })
+  expect(report.removed).toEqual([dotted.id])
+  expect(existsSync(join(folder, dotted.session))).toBe(false)
+  expect(existsSync(join(folder, dashed.session))).toBe(true)
+})
+
+test('gc collects a task whose temp folder it cannot remove, says why, and nod gc removes it later', async () => {
+  const { home, ledger, task } = withTemps()
+  const locked = task('locked')
+  const other = task('other')
+  chmodSync(join(locked.kept, 'scratchpad'), 0o555)
+  const stays = {
+    id: locked.id,
+    reason: expect.stringMatching(
+      // Bun 1.3.14 says EACCES, 1.4.4 ENOTEMPTY.
+      /^collected, but a temp folder of its sessions stays: (EACCES|ENOTEMPTY)/,
+    ),
+  }
+  try {
+    expect(await collect(ledger, home, Tmux.of(home), { ids: [locked.id, other.id] })).toEqual({
+      removed: [locked.id, other.id],
+      clean: [],
+      skipped: [stays],
+    })
+    expect(ledger.get(locked.id).collectedAt).not.toBeNull()
+    expect(existsSync(other.kept)).toBe(false)
+    expect(dropTemps(ledger, home)).toEqual({ removed: [], skipped: [stays] })
+  } finally {
+    chmodSync(join(locked.kept, 'scratchpad'), 0o755)
+  }
+  expect(dropTemps(ledger, home)).toEqual({ removed: [locked.id], skipped: [] })
+  expect(existsSync(locked.kept)).toBe(false)
+})
+
+test('the temp folders of tasks collected before go once, with nod gc or as it names the task, not as the tick sweeps', async () => {
+  const { home, ledger, temp, task } = withTemps()
+  // As gc left them before it removed temp folders.
+  const [first, named] = [task('first'), task('named')]
+  for (const t of [first, named]) {
+    rmSync(t.cwd, { recursive: true })
+    ledger.collected(t.id, null)
+  }
+  const open = task('not collected')
+  rmSync(open.cwd, { recursive: true })
+  const running = task('brought back')
+  ledger.collected(running.id, null)
+  ledger.uncollected(running.id)
+  ledger.setRunning(running.id, running.cwd)
+  // One outside nod's work folder, as a home moved since leaves: not gc's to remove.
+  const outside = task('outside')
+  const away = tmp.make('nod-gc-away-')
+  ledger.setRunning(outside.id, away)
+  ledger.succeed(outside.id)
+  ledger.collected(outside.id, null)
+  const awayTemp = temp(away, outside.session)
+
+  // sweep is what the tick runs.
+  await sweep(ledger, home, Tmux.of(home), async () => null, new Date())
+  expect(existsSync(first.kept)).toBe(true)
+
+  expect(await collect(ledger, home, Tmux.of(home), { ids: [named.id] })).toEqual({
+    removed: [named.id],
+    clean: [],
+    skipped: [],
+  })
+  expect(existsSync(named.kept)).toBe(false)
+  expect(dropTemps(ledger, home)).toEqual({ removed: [first.id], skipped: [] })
+  expect(existsSync(first.kept)).toBe(false)
+  for (const t of [open.kept, running.kept, awayTemp]) expect(existsSync(t)).toBe(true)
+
+  expect(dropTemps(ledger, home)).toEqual({ removed: [], skipped: [] })
+  expect(await collect(ledger, home, Tmux.of(home), { ids: [named.id] })).toEqual({
+    removed: [],
+    clean: [named.id],
+    skipped: [],
+  })
+})
+
+test("a task told to go on as gc ends it keeps its worker's temp folder", async () => {
+  const { home, ledger, task } = withTemps()
+  const { id, cwd, kept } = task('told')
+  // `nod tell` brings it back right after gc marked it collected.
+  const mark = ledger.collectedAsRead.bind(ledger)
+  const spy = spyOn(ledger, 'collectedAsRead').mockImplementation((...args) => {
+    const marked = mark(...args)
+    ledger.uncollected(id)
+    ledger.setRunning(id, cwd)
+    return marked
+  })
+  try {
+    await collect(ledger, home, Tmux.of(home), { ids: [id] })
+  } finally {
+    spy.mockRestore()
+  }
+  expect(existsSync(kept)).toBe(true)
+
+  // Once it ends again, gc takes the folder too.
+  ledger.succeed(id)
+  expect((await collect(ledger, home, Tmux.of(home), { ids: [id] })).removed).toEqual([id])
+  expect(existsSync(kept)).toBe(false)
 })
 
 function sh(cmd: string[], cwd: string): string {

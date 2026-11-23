@@ -1,14 +1,18 @@
-import { existsSync, readdirSync, rmdirSync, rmSync } from 'node:fs'
-import { dirname, join, resolve } from 'node:path'
+import { existsSync, readdirSync, realpathSync, rmdirSync, rmSync } from 'node:fs'
+import { dirname, join, relative, resolve } from 'node:path'
+import { configDir } from './account'
 import { onRemote } from './branch'
+import { removeTmp, tmpRoot } from './claude-tmp'
 import { FINISHED, type Ledger, type Task } from './ledger'
 import { branchOf, sessionName, settling } from './place'
 import { message, readAtOnce, spawn } from './proc'
 import { forgetStuck } from './sending'
 import type { Terminals } from './tmux'
+import { Todos } from './todos'
 import { endTurnWithoutStop } from './turns'
 
 // `clean`: tasks that had nothing left to remove, because gc or something else already removed it.
+// One whose temp folders stay is in `skipped` too, collected as it is (dropTemp).
 export type GcReport = {
   removed: number[]
   clean: number[]
@@ -20,11 +24,12 @@ export type GcReport = {
 export type GcPick = { before: Date } | { ids: number[] } | { seen: Task[] }
 
 // Removes what the picked finished tasks left behind: the worker's tmux session, the workspace or
-// worktree, and the task's branch once the default branch has its work (dropBranch). Ledger rows
-// stay, so stats survive, and so does Claude Code's session folder, so resume can bring the task
-// back (restore in worker.ts). A plain workspace's files are the task's output, hence the age
-// cutoff unless the human names the task. Every task gc gets through is marked collected, so ls
-// stops listing it: gc is how the human says they have dealt with the task's result.
+// worktree, the temp folders of its Claude Code sessions (dropTemp), and the task's branch once the
+// default branch has its work (dropBranch). Ledger rows stay, so stats survive, and so do Claude
+// Code's transcripts, so resume can bring the task back (restore in worker.ts). A plain workspace's
+// files are the task's output, hence the age cutoff unless the human names the task. Every task gc
+// gets through is marked collected, so ls stops listing it: gc is how the human says they have dealt
+// with the task's result.
 export async function collect(
   ledger: Ledger,
   home: string,
@@ -33,6 +38,7 @@ export async function collect(
 ): Promise<GcReport> {
   const report: GcReport = { removed: [], clean: [], skipped: [] }
   const workRoot = `${join(home, 'work')}/`
+  const tempRoot = rootsOf(home)
   const seen = (id: number): Task | undefined =>
     'seen' in pick ? pick.seen.find((t) => t.id === id) : undefined
   const picked = (task: Task): boolean => {
@@ -71,6 +77,16 @@ export async function collect(
       } catch (error) {
         if (judged.collectedAt === null) ledger.uncollected(id)
         throw error
+      }
+    }
+    // The last of it, and no reason to list the task again: a temp folder gc may not delete would
+    // keep it in ls for good. A `nod gc` tries again (dropTemps).
+    const temp = (): boolean => {
+      try {
+        return dropTemp(ledger, home, id, tempRoot)
+      } catch (error) {
+        skip(tempStays(error))
+        return false
       }
     }
     // One task gc cannot get through, a file it may not delete say, must not stop the rest.
@@ -112,7 +128,8 @@ export async function collect(
           continue
         }
         await afterMark(() => dropBranch(ledger, task))
-        report.clean.push(task.id)
+        const left = temp() ? report.removed : report.clean
+        left.push(task.id)
         continue
       }
       if (!task.workspace.startsWith(workRoot)) {
@@ -179,9 +196,66 @@ export async function collect(
           rmdirSync(dir)
         }
       })
+      temp()
       report.removed.push(task.id)
     } catch (error) {
       skip(message(error))
+    }
+  }
+  return report
+}
+
+// Removes the temp folders Claude Code keeps of a collected task's sessions (claude-tmp.ts): those
+// opened in its workspace whose last turn the ledger has as this task's, and that it does not have as
+// a person's (nod open, nod session claim). A task taken back since (restore) keeps them. `root`:
+// rootsOf. Returns whether there was one.
+function dropTemp(
+  ledger: Ledger,
+  home: string,
+  id: number,
+  root: (account: string | null) => string,
+): boolean {
+  const work = join(home, 'work')
+  const { workspace, account } = ledger.get(id)
+  if (!workspace?.startsWith(`${work}/`) || !existsSync(work)) return false
+  const todos = new Todos(ledger)
+  return removeTmp(
+    root(account),
+    // The workspace's real path, which Claude Code names the folder after; the workspace is gone.
+    join(realpathSync(work), relative(work, workspace)),
+    // Asked of each as it goes, since the one before may take a while.
+    (session) =>
+      ledger.get(id).collectedAt !== null &&
+      ledger.taskOfSession(session) === id &&
+      todos.session(session) === null,
+  )
+}
+
+// The root of the temp folders of an account a worker runs as, where '' is Claude Code's default
+// folder and null an account nod never recorded; each read once, as a rule's command gives the last.
+function rootsOf(home: string): (account: string | null) => string {
+  const roots = new Map<string | null, string>()
+  return (account) => {
+    const root = roots.get(account) ?? tmpRoot(account === null ? configDir(home) : account || null)
+    roots.set(account, root)
+    return root
+  }
+}
+
+const tempStays = (error: unknown): string =>
+  `collected, but a temp folder of its sessions stays: ${message(error)}`
+
+// Removes the temp folders that tasks gc collected before still have (dropTemp): gc left them before
+// it removed them, could not remove them, or was cut off before it did. Only a `nod gc` a person
+// runs does: the tick would take at once, unasked, all that had piled up.
+export function dropTemps(ledger: Ledger, home: string): Pick<GcReport, 'removed' | 'skipped'> {
+  const report: Pick<GcReport, 'removed' | 'skipped'> = { removed: [], skipped: [] }
+  const tempRoot = rootsOf(home)
+  for (const { id } of ledger.list()) {
+    try {
+      if (dropTemp(ledger, home, id, tempRoot)) report.removed.push(id)
+    } catch (error) {
+      report.skipped.push({ id, reason: tempStays(error) })
     }
   }
   return report

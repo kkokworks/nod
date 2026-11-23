@@ -27,7 +27,7 @@ import {
 } from 'node:fs'
 import { basename, dirname, join, resolve } from 'node:path'
 import { FakeTerminals } from '../test/fake-terminals'
-import { projectFolder } from '../test/projects'
+import { projectFolder, tempFolder } from '../test/projects'
 import { git } from '../test/remote'
 import { tempDirs } from '../test/tmp'
 import { testTmux } from '../test/tmux'
@@ -125,8 +125,14 @@ process.env.PATH = `${bin}:${process.env.PATH}`
 if (Bun.which('claude', { PATH: process.env.PATH }) !== join(bin, 'claude')) {
   throw new Error('fake claude is not first on PATH')
 }
-// Workers get the account in the environment; the fake keeps its transcripts there.
+// Workers get the account in the environment; the fake keeps its transcripts there. Its settings say
+// where the sessions' temp folders are, so nod does not look in the real ones.
 process.env.CLAUDE_CONFIG_DIR = tmp.make('nod-claude-')
+const claudeTmp = tmp.make('nod-claude-tmp-')
+writeFileSync(
+  join(process.env.CLAUDE_CONFIG_DIR, 'settings.json'),
+  JSON.stringify({ env: { CLAUDE_CODE_TMPDIR: claudeTmp } }),
+)
 
 let home: string
 let ledger: Ledger
@@ -1528,9 +1534,8 @@ it('a repo worker is told to have a subagent review its branch from where it sta
   // Deleting the way nod allows itself (harmless in allow.ts), or not at all, so no decision opens
   // while the human is away; and no memory other sessions would read unchecked.
   expect(every).toContain(
-    'Put temporary files in your scratchpad directory and leave them there: it is a temporary folder.',
+    'Put temporary files in your scratchpad directory and leave them there: nod gc removes it after the task, and with this directory what git ignores here, as dependencies and build output.',
   )
-  expect(every).toContain('nod gc removes with this directory after the task')
   expect(every).toContain('Delete files git tracks with git rm.')
   expect(every).toContain(
     'run rm -rf <relative paths> as a command of its own: nothing chained to it, no .., and only ASCII letters, digits and . _ / @ - in the paths, so no variables, quotes or globs.',
@@ -1572,6 +1577,29 @@ test('a repo task gets its submodules filled from the repo checkout, and gc stil
   const report = await collect(ledger, home, terminals, { before: new Date(Date.now() + 60_000) })
   expect(report.removed).toContain(id)
   expect(existsSync(workspaceOf(home, ledger.get(id)))).toBe(false)
+})
+
+test("a worker's temp folder stays until gc collects its task, and a review's goes with the review", async () => {
+  writeFileSync(join(home, 'fake-temp'), '')
+  const id = await add('do it')
+  const other = await add('another')
+  await reaches(id, 'succeeded')
+  await reaches(other, 'succeeded')
+  await settled(id)
+  const temps = (of: number): string[] =>
+    readdirSync(dirname(tempFolder(claudeTmp, workspaceOf(home, ledger.get(of)), '-')))
+  // The reviews ran, in sessions of their own, which nod named.
+  const reviews = entries('review').map((r) => r.sessionId)
+  expect(new Set(reviews).size).toBe(2)
+  expect(reviews).not.toContain('missing')
+  const session = ledger.attempts(id)[0]?.sessionId ?? ''
+  expect(temps(id)).toEqual([session])
+  const kept = tempFolder(claudeTmp, workspaceOf(home, ledger.get(id)), session)
+  expect(readFileSync(join(kept, 'scratchpad', 'kept.txt'), 'utf8')).toBe('scratchpad')
+
+  expect((await collect(ledger, home, terminals, { ids: [id] })).removed).toEqual([id])
+  expect(existsSync(dirname(kept))).toBe(false)
+  expect(temps(other)).toEqual([ledger.attempts(other)[0]?.sessionId ?? ''])
 })
 
 // A repo whose own checkout of its submodule `lib` is empty, so there is nothing to fill a
