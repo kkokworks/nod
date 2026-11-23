@@ -204,10 +204,10 @@ export function lands(ledger: Ledger, task: Task, only?: number[]): boolean {
 
 // Whether landing is at a task and not through with it: each pass (due in land.ts) brings back one
 // gc collected, so the two would go round at every tick. It is at one once a pass recorded where
-// its commits start (`base`), right after the step that brings one back: a landing that only waits
-// on the task before it, or on a fetch, stops short of that step. It is through once nod's own pull
-// request for the task merged, whether or not a pass has recorded that: the one that does is the
-// last.
+// its commits start (`base`), right after the step that brings one back: before that, a landing that
+// only waits on the task before it, or on a fetch, stops short of that step. From then on the task
+// stays whatever landing waits on, until it ends, or nod's own pull request for the task merged,
+// whether or not a pass has recorded that: the one that does is the last.
 async function stillLands(ledger: Ledger, task: Task, prs: PrLookup): Promise<boolean> {
   if (task.status !== 'succeeded' || !lands(ledger, task)) return false
   const l = ledger.landing(task.id)
