@@ -20,6 +20,9 @@ const STOP_MARK = '[Request interrupted by user'
 const TRANSCRIPT_TAIL = 256 * 1024
 export const STOPPED_TURN = 'the person stopped it (Escape)'
 export const HELD_BACK = 'a hook held the message back'
+// How long the hooks of a message may keep it on its way in (onItsWay): Claude Code's own limit for
+// most of them.
+const PROMPT_HOOKS_MS = 60_000
 
 // The lines of the transcript of a task's session; null for one there is none of, or that cannot
 // be read, which goes to stderr only.
@@ -113,7 +116,7 @@ const TranscriptEntry = z.object({
   isMeta: z.boolean().optional(),
   queueTranscriptOnly: z.boolean().optional().catch(undefined),
   interruptedByShutdown: z.boolean().optional(),
-  promptSubmitEnding: z.unknown().optional(),
+  promptSubmitEnding: z.object({ promptKept: z.unknown() }).partial().optional().catch({}),
   message: z.object({ content: z.unknown() }).optional(),
   // Of Claude Code's queue (heardOf); an entry they do not fit still reads.
   operation: z.string().optional().catch(undefined),
@@ -155,18 +158,22 @@ function* turnRows(lines: string[]): Generator<Row> {
 // after a tool's result, where Claude Code gives a turn what waits for it (read from nod's own
 // workers, 2.1.312 to 2.1.330), or after a message that started the turn along with it (2.1.330's
 // binary). So one after a row of the person's is none of its end, but for their stop, or a row from
-// before `since`, when that turn began: a turn cut off there.
+// before `since`, when that turn began: a turn cut off there. Nor counts what bash mode left, or the
+// held-back message itself, which a hook that stops it (`continue: false`) keeps in the conversation
+// with no turn (`promptKept`, 2.1.330's binary).
 export function endedWithoutStop(lines: string[], since = 0): string | null {
   let held = false
+  let kept = 0
   for (const row of turnRows(lines)) {
     if (row.type === 'system') {
       held ||= row.promptSubmitEnding !== undefined
+      if (row.promptSubmitEnding?.promptKept === true) kept++
       continue
     }
-    const stopped =
-      row.type === 'user' &&
-      textsOf(row.message?.content).some((t) => typeof t === 'string' && t.startsWith(STOP_MARK))
+    const stopped = row.type === 'user' && says(row, STOP_MARK)
     if (held) {
+      if (row.type === 'user' && says(row, '<bash-')) continue
+      if (row.type === 'user' && resultsOf(row).length === 0 && kept-- > 0) continue
       const before = Date.parse(row.timestamp ?? '') < since
       return row.type === 'user' && !stopped && !before ? null : HELD_BACK
     }
@@ -177,11 +184,15 @@ export function endedWithoutStop(lines: string[], since = 0): string | null {
 }
 
 // Whether `lines` end with a message Claude Code queued, or took from its queue, with nothing written
-// of what came of it: its prompt hooks run (2.1.314 to 2.1.330, about 100 ms).
+// of what came of it: its prompt hooks run (2.1.314 to 2.1.330, about 100 ms). One from longer ago than
+// they may take waits for something else, or went with its Claude Code.
 export function onItsWay(lines: string[]): boolean {
   for (const line of lines.toReversed()) {
     const row = TranscriptEntry.safeParse(jsonOrNull(line)).data
-    if (row?.type === 'queue-operation') return ['enqueue', 'dequeue'].includes(row.operation ?? '')
+    if (row?.type === 'queue-operation') {
+      const age = Date.now() - Date.parse(row.timestamp ?? '')
+      return ['enqueue', 'dequeue'].includes(row.operation ?? '') && age < PROMPT_HOOKS_MS
+    }
     if (['user', 'assistant', 'system'].includes(row?.type ?? '')) return false
   }
   return false
@@ -336,6 +347,10 @@ export function toolCalls(lines: string[]): ToolCall[] {
 const blocksOf = (row: Row) => (Array.isArray(row.message?.content) ? row.message.content : [])
 const resultsOf = (row: Row): unknown[] =>
   blocksOf(row).flatMap((b) => (b?.type === 'tool_result' ? [b.tool_use_id] : []))
+
+// Whether a text of a transcript row's message starts with `mark`.
+const says = (row: Row, mark: string): boolean =>
+  textsOf(row.message?.content).some((t) => typeof t === 'string' && t.startsWith(mark))
 
 // The text of a transcript message's `content`: a string, or the text blocks of a list.
 const textsOf = (content: unknown): unknown[] =>

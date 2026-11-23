@@ -3714,6 +3714,17 @@ it('a typed turn whose transcript shows it ended without a Stop is ended, not ta
     said(result, { timestamp: new Date(Date.now() - 3_600_000).toISOString() }),
     { type: 'system', subtype: 'informational', promptSubmitEnding: {} },
   ])
+  // What they typed stopped by a hook that keeps it in the conversation, with no turn.
+  const kept = typedTurn('kept', [
+    working,
+    said('the first'),
+    said('Operation stopped by hook', { isMeta: true }),
+    {
+      type: 'system',
+      subtype: 'informational',
+      promptSubmitEnding: { ending: { kind: 'stopped_by_hook' }, promptKept: true },
+    },
+  ])
   // Not stopped by the person: Claude Code shut down, a tool printed the words, a subagent's.
   const shutDown = typedTurn('shut-down', [working, said(stop, { interruptedByShutdown: true })])
   const toolSaid = typedTurn('tool-said', [
@@ -3737,14 +3748,15 @@ it('a typed turn whose transcript shows it ended without a Stop is ended, not ta
     const a = ledger.attempts(id).at(-1)
     return [a?.outcome, a?.error]
   }
-  expect([stopped, heldBack, noted, cutBefore].map(last)).toEqual([
+  expect([stopped, heldBack, noted, cutBefore, kept].map(last)).toEqual([
     ['error', 'the person stopped it (Escape)'],
+    ['error', 'a hook held the message back'],
     ['error', 'a hook held the message back'],
     ['error', 'a hook held the message back'],
     ['error', 'a hook held the message back'],
   ])
   // Their question is still the person's to answer.
-  for (const id of [stopped, heldBack, noted, cutBefore]) {
+  for (const id of [stopped, heldBack, noted, cutBefore, kept]) {
     expect(status(id)).toBe('needs_decision')
     expect(ledger.decisions(id).map((d) => d.answer)).toEqual([null])
   }
@@ -3803,8 +3815,12 @@ const heldRow = (words: string, ago = 0) => ({
   content: `UserPromptSubmit operation blocked by hook:\n[guard] matched [the secret]: take it out\n\nOriginal prompt: ${words}`,
   promptSubmitEnding: { ending: { kind: 'blocked_by_hook' }, promptKept: false },
 })
-// What Claude Code does with a message it queued, before the message's own row.
-const queueRow = (operation: string) => ({ type: 'queue-operation', operation })
+// What Claude Code does with a message it queued, before the message's own row, `ago` ms before.
+const queueRow = (operation: string, ago = 0) => ({
+  type: 'queue-operation',
+  operation,
+  timestamp: new Date(Date.now() - ago).toISOString(),
+})
 // The notice of a background agent that finished, which starts no turn.
 const noticeRow = userRow('<task-notification>finished</task-notification>', {
   queueTranscriptOnly: true,
@@ -3884,7 +3900,8 @@ it("a message of nod's that a hook held back is asked about at the next tick, wi
   const { keep, start, look } = restingWorkers()
   // The first message, with nothing in the transcript before it; and one told in a turn, as pasted.
   const brief = start('write the secret', 'brief-held')
-  keep('brief-held', heldRow('write the secret'))
+  // A message that still waits in the queue after a minute is not one on its way in.
+  keep('brief-held', heldRow('write the secret'), queueRow('enqueue', 61_000))
   const told = start('write it', 'told-held')
   ledger.addMessage(told, ledger.openAttempt(told)?.id ?? 0, 'and the\nsecret', null)
   keep('told-held', userRow('write it'), saidRow('Done.'), endRow)
@@ -5695,9 +5712,15 @@ it('what a person typed that a hook of theirs held back leaves the ledger once t
       held,
       said('and in b.txt'),
     ])
-    // Held back, and no more typed.
+    // Held back, after a command in bash mode, and no more typed.
     prompted('ended', 'use the secret')
-    transcript('ended', [said('write it'), answered, held])
+    transcript('ended', [
+      said('write it'),
+      answered,
+      said('<bash-input>ls</bash-input>'),
+      said('<bash-stdout>a.ts</bash-stdout><bash-stderr></bash-stderr>'),
+      held,
+    ])
     prompted('sent', 'use the secret')
     transcript('sent', [said('write it'), said('[Request interrupted by user]'), held])
   })
