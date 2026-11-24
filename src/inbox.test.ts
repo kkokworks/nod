@@ -10,7 +10,7 @@ import { notSentLine, onCommand, onInbox, sendNotices, tellProject, unheardWork 
 import { Ledger, type NewTask } from './ledger'
 import { notify } from './notify'
 import { Tmux } from './tmux'
-import { OPEN_ROLES, Todos } from './todos'
+import { OPEN_ROLES, PROJECT_STATUSES, Todos } from './todos'
 import { CUT, currentTurn, cutOff, openTurn, TYPED } from './turns'
 import { answer, drop } from './worker'
 
@@ -728,23 +728,113 @@ test("nod tell p<n> sends a person's words into the project's session, or keeps 
   await expect(tellProject(ledger, 9, 'nobody', 'human', send)).rejects.toThrow('no project p9')
 })
 
-test('what nod tell p<n> keeps names the session it waits for by its ID, why that takes nothing, and the two ways to one that does', async () => {
+test("words that waited 24 hours or more say when they were told, a helper's too; fresher ones and what nod tells of a task do not", async () => {
+  const { ledger, todos, p, task, sent, send } = setup()
+  todos.addSession(p.id, A, '/work/one')
+  todos.addSession({ role: 'helper', name: 'review', project: p.id }, C, '/work/two')
+  // Puts the latest notice `hours` back, and returns when that is.
+  const ago = (hours: number): string => {
+    const at = new Date(Date.now() - hours * 3_600_000)
+    const last = 'update notices set created_at = ? where id = (select max(id) from notices)'
+    ledger.db.run(last, [at.toISOString()])
+    return localTime(at)
+  }
+  await tellProject(ledger, p.id, 'Two weeks old', 'human', send)
+  const oldest = ago(14 * 24)
+  ledger.succeed(task('Shipped'))
+  ago(48)
+  await tellProject(ledger, p.id, 'A day old', 'human', send)
+  const day = ago(24.1)
+  await tellProject(ledger, p.id, 'Nearly a day old', 'human', send)
+  ago(23.9)
+  await tellProject(ledger, p.id, 'For the helper', 'human', send, 'review')
+  const helpers = ago(30)
+  expect(sent).toEqual([])
+
+  const waited = (at: string) =>
+    `\nnext: told ${at} and waited since; check it still holds (nod todo, nod ls) before acting on it`
+  todos.setSocket(A, '/socks/a')
+  todos.setSocket(C, '/socks/c')
+  await sendNotices(ledger, send)
+  expect(sent.map((s) => [s.session_id, s.message.content])).toEqual([
+    [
+      A,
+      [
+        'nod, project p1 Release: 4 notices, oldest first',
+        `nod tell from human:\nTwo weeks old${waited(oldest)}`,
+        'task n1 t1 succeeded: Shipped\nnext: nod show n1, then send its result out',
+        `nod tell from human:\nA day old${waited(day)}`,
+        'nod tell from human:\nNearly a day old',
+      ].join('\n\n'),
+    ],
+    [
+      C,
+      `nod, project p1 Release: a notice\n\nnod tell from human for helper review:\nFor the helper${waited(helpers)}`,
+    ],
+  ])
+})
+
+test('nod tell refuses a finished project whose session, or the helper told, takes no messages, and keeps nothing; one that takes them hears, and an open project keeps them', async () => {
+  for (const status of PROJECT_STATUSES) {
+    const { home, ledger, todos, p, sent, send } = setup()
+    const closed = status === 'done' || status === 'dropped'
+    const tell = (helper: string | null): Promise<string> =>
+      tellProject(ledger, p.id, 'Hello', 'human', send, helper).then(
+        (now) => (now ? 'sent' : 'kept'),
+        (error) => String(error),
+      )
+    const off = (whose: string): string =>
+      closed
+        ? `Error: p1 is ${status} and ${whose} takes no messages now, so this may never be heard; nothing was sent or kept: tell the project it is for now, or put it in as a todo (nod in <what...>)`
+        : 'kept'
+    const socket = (name: string): string => {
+      const path = join(home, name)
+      writeFileSync(path, '')
+      return path
+    }
+    todos.setProject(p.id, { status }, 'human')
+    // No session yet, then one that is off, and on.
+    expect(await tell(null)).toBe(off('its session'))
+    todos.addSession(p.id, A, '/work/one')
+    expect(await tell(null)).toBe(off('its session'))
+    todos.setSocket(A, socket('a.sock'))
+    expect(await tell(null)).toBe('sent')
+    // A helper's words are for it alone: whether it takes messages counts, not the project's session.
+    todos.addSession({ role: 'helper', name: 'review', project: p.id }, C, '/work/two')
+    expect(await tell('review')).toBe(off('its helper review'))
+    todos.setSocket(A, null)
+    todos.setSocket(C, socket('c.sock'))
+    expect(await tell('review')).toBe('sent')
+    expect(await tell(null)).toBe(off('its session'))
+    expect(sent.at(-1)?.session_id).toBe(C)
+    expect(ledger.unsentNotices()).toHaveLength(closed ? 0 : 1)
+  }
+})
+
+test('what nod tell p<n> keeps names the session it waits for by its ID, why that takes nothing, the two ways to one that does, and the name a conversation of the project may show by', async () => {
   const { ledger, todos, p } = setup()
   const ways = 'it goes once p1 has a session taking messages: nod open p1 opens'
   // Run where p1's conversation is, not by whoever told: a session claiming it takes it over.
   const claim =
     "or nod session claim p1, run in the terminal meant for p1, makes the conversation there p1's session"
+  const hint = (name: string) =>
+    `; a session ListAgents shows on as "${name}" may be that conversation: the name is only a hint, and SendMessage reaches it, but nod's notices still do not`
   const recorded = (key: string) => localTime(new Date(todos.session(key)?.createdAt ?? ''))
   expect(notSentLine(todos, p.id)).toBe(
-    `not sent yet: p1 has no session: nod open never opened one; ${ways} one, ${claim}`,
+    `not sent yet: p1 has no session: nod open never opened one; ${ways} one, ${claim}${hint('Release')}`,
   )
   // The session nod open opened, not the conversation that runs in its terminal since a /clear.
   todos.addSession(p.id, A, '/work/one')
   todos.addSession(p.id, B, '/work/two')
   const waits = `not sent yet: p1's session is ${B} (recorded ${recorded(B)})`
   expect(notSentLine(todos, p.id)).toBe(
-    `${waits}, which takes no messages now; ${ways} that one again, ${claim}`,
+    `${waits}, which takes no messages now; ${ways} that one again, ${claim}${hint('Release')}`,
   )
+  // A title given since shows only once nod open opens it again; one with no session goes by it.
+  todos.setProject(p.id, { title: 'Release 2' }, 'human')
+  expect(notSentLine(todos, p.id)).toEndWith(hint('Release'))
+  const odd = todos.addProject({ title: 'A\u001bB', outcome: null }, 'human')
+  expect(notSentLine(todos, odd.id)).toEndWith(hint('A B'))
   // A socket still there that took nothing (a sandbox, a timeout) is kept: the session likely runs,
   // and hears at the next send, so neither way is offered.
   todos.setSocket(B, '/socks/b')
@@ -1114,8 +1204,9 @@ test("a Claude session that sets a project's work going hears, once per project 
   const theirs = task('Theirs')
   const loose = ofC('In no project', null)
   const health = ofC('Health work', q.id)
-  const deaf = (project: string, why: string, mine = ' --mine', it = 'it again') =>
-    `nod: ${project}'s session hears nothing from nod (${why}), so the decisions and ends of this work wait unheard until nod open ${project} opens ${it}; meanwhile nod${mine} and nod ls${mine} here show them`
+  // `known`: to a session nod knows, which would leave its own place by a claim.
+  const deaf = (project: string, why: string, mine = ' --mine', it = 'it again', known = false) =>
+    `nod: ${project}'s session hears nothing from nod (${why}), so the decisions and ends of this work wait unheard until nod open ${project} opens ${it}${known ? '' : `, or, only if the person says this conversation is ${project}'s, nod session claim ${project} here makes it ${project}'s session`}; meanwhile nod${mine} and nod ls${mine} here show them`
 
   // No session of p1 yet: one line for its two tasks; --mine would leave out another's task.
   const never = 'nod open never opened one'
@@ -1135,6 +1226,15 @@ test("a Claude session that sets a project's work going hears, once per project 
   todos.addSession({ role: 'orchestrator', name: 'north' }, D, '/work/four')
   const ofNorth = todos.delegateNew({ ...brief('Of north'), rootSession: D }, null, 'human')
   for (const by of [D, C, null]) expect(unheardWork(ledger, by, [ofNorth])).toEqual([])
+
+  // A session nod knows hears of no claim: an orchestrator, a relay, another project's session.
+  const known = deaf('p1', never, '', 'one', true)
+  expect(unheardWork(ledger, D, [theirs])).toEqual([known])
+  todos.addSession({ role: 'relay', name: 'gate' }, 'key-relay', '/work/five')
+  expect(unheardWork(ledger, 'key-relay', [theirs])).toEqual([known])
+  todos.addSession(todos.addProject({ title: 'Other', outcome: null }, 'human').id, 'key-o', '/w')
+  expect(unheardWork(ledger, 'key-o', [theirs])).toEqual([known])
+  expect(unheardWork(ledger, null, [theirs])).toEqual([])
 
   // p1's session ended (no socket), ended without its hook (socket file gone), and runs.
   todos.addSession(p.id, A, '/work/one')
@@ -1166,7 +1266,9 @@ test("a Claude session that sets a project's work going hears, once per project 
   // project does, and has all the project's tasks as its own.
   todos.addSession(p.id, B, '/work/two')
   expect(unheardWork(ledger, B, [mine])).toEqual([])
-  expect(unheardWork(ledger, A, [theirs])).toEqual([deaf('p1', 'it takes no messages now')])
+  expect(unheardWork(ledger, A, [theirs])).toEqual([
+    deaf('p1', 'it takes no messages now', undefined, undefined, true),
+  ])
   // In a command, onCommand tells that older session of p1 first, and that is all it hears of p1.
   const older = new Set<number>()
   expect(await onCommand(ledger, A, undefined, send, older)).toStartWith(
@@ -1213,7 +1315,7 @@ test('nod add, tell and an answer run in a Claude session say on stderr that no 
   // No to landing again only stops landing it.
   const landing = ask(task('Land it'), 'Try landing again?', 'land')
   const line =
-    "nod: p1's session hears nothing from nod (nod open never opened one), so the decisions and ends of this work wait unheard until nod open p1 opens one; meanwhile nod --mine and nod ls --mine here show them\n"
+    "nod: p1's session hears nothing from nod (nod open never opened one), so the decisions and ends of this work wait unheard until nod open p1 opens one, or, only if the person says this conversation is p1's, nod session claim p1 here makes it p1's session; meanwhile nod --mine and nod ls --mine here show them\n"
   expect(added).toContain(line)
   expect(nod(C, 'tell', `n${id}`, 'and the docs')).toContain(line)
   expect(nod(B, 'tell', `n${id}`, 'and the docs')).toContain(line.replaceAll(' --mine', ''))

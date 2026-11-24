@@ -213,12 +213,14 @@ const USAGE = `usage:
                                    told of it yet, and all after, goes there
   nod tell <task> <message...>     send a follow-up into the task's session
   nod tell p<project> <message...> send a message into the project's session, as nod tells it of
-                                   its tasks; kept until that session takes messages. From an
+                                   its tasks; kept until that session takes messages, or refused
+                                   while it takes none once the project is done or dropped. What
+                                   waited 24 hours or more says when it was told. From an
                                    orchestrator session it is refused when another orchestrator
                                    is in charge of the project (nod project set --orchestrator)
   nod tell <helper> <message...>   the same into the latest session of a project's helper of that
                                    name, by the socket nod knows of it, whatever name Claude Code
-                                   shows for it; kept until it takes messages. A name that reads as
+                                   shows for it; kept or refused as above. A name that reads as
                                    a task goes as nod open takes it: <name> --role helper --project
                                    <project>
   nod resume <task>                reopen a task whose session ended, from its transcript; one that
@@ -375,7 +377,8 @@ nothing before. A nod command in a project's session that cannot hear (not the p
 or no socket) says so on stderr. So does nod add, tell, resume, restart <task> or an answer in any
 other Claude session, for a project whose latest session cannot hear either (none, no socket known,
 or its socket gone): what that work brings waits unheard until nod open opens the project's
-session, and nod --mine and nod ls --mine show it meanwhile. /clear goes on under an ID nod open
+session, and nod --mine and nod ls --mine show it meanwhile. One nod does not know hears too that
+nod session claim p<n> there makes it the project's, only if you say it is. /clear goes on under an ID nod open
 did not open: it hears nothing until nod open opens the project's session again, or nod session
 claim p<n> run in it makes it the project's session, its new conversation going on. One with no
 hooks cannot say it cleared, so what went to it after, until its next nod command, is lost: once
