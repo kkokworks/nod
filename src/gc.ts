@@ -7,11 +7,12 @@ import { branchOf, sessionName, settling } from './place'
 import { message, readAtOnce, spawn } from './proc'
 import { forgetStuck } from './sending'
 import type { Terminals } from './tmux'
-import { Todos } from './todos'
+import { OPEN, Todos } from './todos'
 import { endTurnWithoutStop } from './turns'
 
 // `clean`: tasks that had nothing left to remove, because gc or something else already removed it.
-// One whose temp folders stay is in `skipped` too, collected as it is (dropTemp).
+// One whose temp folders stay is in `skipped` too, collected as it is (dropTemp): those gc could not
+// remove, and, of a task the human named, those something names.
 export type GcReport = {
   removed: number[]
   clean: number[]
@@ -81,7 +82,7 @@ export async function collect(
     // keep it in ls for good. A `nod gc` tries again (dropTemps).
     const temp = (): boolean => {
       try {
-        return dropTemp(ledger, home, id)
+        return dropTemp(ledger, home, id, 'ids' in pick ? skip : undefined)
       } catch (error) {
         skip(tempStays(error))
         return false
@@ -205,9 +206,14 @@ export async function collect(
 
 // Removes the temp folders Claude Code keeps of a collected task's sessions (claude-tmp.ts): those
 // opened in its workspace whose last turn the ledger has as this task's, and that it does not have as
-// a person's (nod open, nod session claim). A task taken back since (restore) keeps them. Returns
-// whether there was one.
-function dropTemp(ledger: Ledger, home: string, id: number): boolean {
+// a person's (nod open, nod session claim). A task taken back since (restore) keeps them, and so does
+// one whose session something names (namedBy), which `kept` hears of. Returns whether there was one.
+function dropTemp(
+  ledger: Ledger,
+  home: string,
+  id: number,
+  kept: (reason: string) => void = () => {},
+): boolean {
   const work = join(home, 'work')
   const { workspace, account } = ledger.get(id)
   if (!workspace?.startsWith(`${work}/`) || !existsSync(work)) return false
@@ -219,19 +225,61 @@ function dropTemp(ledger: Ledger, home: string, id: number): boolean {
     // The workspace's real path, which Claude Code names the folder after; the workspace is gone.
     join(realpathSync(work), relative(work, workspace)),
     // Asked of each right before it goes, since the one before may take a while.
-    (session) =>
-      ledger.get(id).collectedAt !== null &&
-      ledger.taskOfSession(session) === id &&
-      todos.session(session) === null,
+    (session) => {
+      if (
+        ledger.get(id).collectedAt === null ||
+        ledger.taskOfSession(session) !== id ||
+        todos.session(session) !== null
+      ) {
+        return false
+      }
+      const names = namedBy(ledger, todos, session)
+      if (names.length === 0) return true
+      kept(
+        `collected, but the temp folder of its session ${session} stays, named in ${names.join(', ')}`,
+      )
+      return false
+    },
   )
+}
+
+// The tasks gc has not collected and the todos not closed that name the session, as they may go by
+// what it left in its temp folder: a task's brief or what it was told, a todo's title, notes or links.
+function namedBy(ledger: Ledger, todos: Todos, session: string): string[] {
+  const tasks = ledger
+    .list()
+    .filter(
+      ({ id, brief, collectedAt }) =>
+        collectedAt === null &&
+        [
+          brief,
+          ...ledger.attempts(id).map((a) => a.prompt),
+          ...ledger.messages(id).map((m) => m.text),
+          ...ledger.pendingTells(id).map((m) => m.text),
+        ].some((text) => text.includes(session)),
+    )
+  const open = todos
+    .list({
+      statuses: [...OPEN, 'someday'],
+      projectId: null,
+      hideSomedayProjects: false,
+      day: null,
+    })
+    .filter(({ id, title, notes }) =>
+      [title, notes, ...todos.links(id).flatMap((l) => [l.url, l.title])].some((text) =>
+        text?.includes(session),
+      ),
+    )
+  return [...tasks.map((t) => `n${t.id}`), ...open.map((t) => `t${t.id}`)]
 }
 
 const tempStays = (error: unknown): string =>
   `collected, but gc could not remove its temp folders: ${message(error)}`
 
 // Removes the temp folders that tasks gc collected before still have (dropTemp): gc left them before
-// it removed them, could not remove them, or was cut off before it did. Only `nod gc` does: the tick
-// would take all that had piled up by itself, minutes after a nod that does this comes in.
+// it removed them, could not remove them, kept them as something named their session, or was cut off
+// before it did. Only `nod gc` does: the tick would take all that had piled up by itself, minutes
+// after a nod that does this comes in.
 export function dropTemps(ledger: Ledger, home: string): Pick<GcReport, 'removed' | 'skipped'> {
   const report: Pick<GcReport, 'removed' | 'skipped'> = { removed: [], skipped: [] }
   for (const { id } of ledger.list()) {

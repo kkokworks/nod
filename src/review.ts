@@ -5,7 +5,7 @@ import type { Ledger, Task } from './ledger'
 // it would take the place of the message in a line cut short.
 const rebuilt = (lost: string): string =>
   `nod made this folder again after gc collected it, so it has none of the files git ignores (dependencies, build output)${lost}. Before you stop, install the dependencies as the lock file pins them and run the acceptance check, if you have one, once.`
-export const REBUILT = rebuilt(', and what you left in your scratchpad is gone')
+export const REBUILT = rebuilt(', and what you left in your scratchpad may be gone')
 // Also as it was before it told of the scratchpad, which turns in the ledger still have. Nothing but
 // the whole notice: a person's words may quote some of it.
 export const withoutRebuilt = (text: string): string =>

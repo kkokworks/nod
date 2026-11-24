@@ -948,6 +948,132 @@ test('the temp folders of tasks collected before go once, with nod gc or as it n
   })
 })
 
+test('a temp folder stays while a task not collected or a todo not closed names its session', async () => {
+  const { home, base, ledger, task } = withTemps()
+  const todos = new Todos(ledger)
+  const free = task('named by nothing')
+  const at = (session: string): string => `go by ${base}/x/${session}/scratchpad/bench`
+  const todo = (title: string, notes: string | null, url: string | null): number =>
+    todos.capture({ title, notes, source: 'cli', sourceKey: null, url }, 'human').todo.id
+
+  // Each is named in one place only.
+  const [brief, told, midTurn, yetToStart] = [
+    task('brief'),
+    task('told'),
+    task('mid-turn'),
+    task('yet to start'),
+  ]
+  const reader = task(at(brief.session))
+  const attemptId = ledger.startAttempt({
+    taskId: reader.id,
+    kind: 'followup',
+    decisionId: null,
+    sessionId: reader.session,
+    prompt: at(told.session),
+  })
+  ledger.addMessage(reader.id, attemptId, at(midTurn.session))
+  ledger.setRunning(reader.id, reader.cwd)
+  const queued = ledger.add({
+    brief: 'queued',
+    repo: null,
+    branch: null,
+    checkCmd: null,
+    model: null,
+    after: [reader.id],
+    issue: null,
+  })
+  ledger.keepTell(queued, reader.id, at(yetToStart.session))
+  const [title, notes, link, linkTitle] = [
+    task('title'),
+    task('notes'),
+    task('link'),
+    task('link title'),
+  ]
+  const titled = todo(at(title.session), null, null)
+  const noted = todo('read it', `first\n${at(notes.session)}`, null)
+  todos.set(noted, { status: 'someday' }, 'human')
+  const linked = todo('read it', null, `file://${base}/x/${link.session}/scratchpad/report.md`)
+  todos.link(linked, 'https://example.com', at(linkTitle.session), 'human')
+  // By one that gc collected, and by one that is closed.
+  const [past, closed] = [task('past'), task('closed')]
+  await collect(ledger, home, Tmux.of(home), { ids: [task(at(past.session)).id] })
+  todos.finish([todo('read it', at(closed.session), null)], 'dropped', 'human')
+
+  const namedIn = new Map([
+    [brief, `n${reader.id}`],
+    [told, `n${reader.id}`],
+    [midTurn, `n${reader.id}`],
+    [yetToStart, `n${queued}`],
+    [title, `t${titled}`],
+    [notes, `t${noted}`],
+    [link, `t${linked}`],
+    [linkTitle, `t${linked}`],
+  ])
+  const kept = [...namedIn.keys()]
+  const gone = [free, past, closed]
+  const there = (of: { kept: string }[]): boolean[] => of.map((t) => existsSync(t.kept))
+
+  // As they are collected: the tasks themselves are, and nothing is said of the folders.
+  const all = [...gone, ...kept].map((t) => t.id).sort((a, b) => a - b)
+  expect(
+    await collect(ledger, home, Tmux.of(home), { seen: all.map((id) => ledger.get(id)) }),
+  ).toEqual({ removed: all, clean: [], skipped: [] })
+  expect(there(gone)).toEqual(gone.map(() => false))
+  expect(there(kept)).toEqual(kept.map(() => true))
+  // Nor by the nod gc that looks at those collected before.
+  expect(dropTemps(ledger, home)).toEqual({ removed: [], skipped: [] })
+  expect(there(kept)).toEqual(kept.map(() => true))
+  // Named, each says what names it.
+  expect(await collect(ledger, home, Tmux.of(home), { ids: kept.map((t) => t.id) })).toEqual({
+    removed: [],
+    clean: kept.map((t) => t.id),
+    skipped: [...namedIn].map(([t, ref]) => ({
+      id: t.id,
+      reason: `collected, but the temp folder of its session ${t.session} stays, named in ${ref}`,
+    })),
+  })
+  expect(there(kept)).toEqual(kept.map(() => true))
+
+  // Once the tasks are collected, a nod gc removes what they named; then what the todos did.
+  ledger.succeed(reader.id)
+  expect((await collect(ledger, home, Tmux.of(home), { ids: [reader.id] })).removed).toEqual([
+    reader.id,
+  ])
+  expect(dropTemps(ledger, home)).toEqual({ removed: [brief.id, told.id, midTurn.id], skipped: [] })
+  ledger.cancel(queued, 'dropped')
+  ledger.collected(queued, null)
+  expect(dropTemps(ledger, home)).toEqual({ removed: [yetToStart.id], skipped: [] })
+  todos.finish([titled, linked], 'done', 'human')
+  expect(dropTemps(ledger, home)).toEqual({
+    removed: [title.id, link.id, linkTitle.id],
+    skipped: [],
+  })
+  todos.finish([noted], 'dropped', 'human')
+  expect(await collect(ledger, home, Tmux.of(home), { ids: [notes.id] })).toEqual({
+    removed: [notes.id],
+    clean: [],
+    skipped: [],
+  })
+  expect(there(kept)).toEqual(kept.map(() => false))
+})
+
+test('gc of a named task says all that name its session as it collects it', async () => {
+  const { home, ledger, task } = withTemps()
+  const done = task('done')
+  const reader = task(`as ${done.session} had it`)
+  const { todo } = new Todos(ledger).capture(
+    { title: 'x', notes: done.session, source: 'cli', sourceKey: null, url: null },
+    'human',
+  )
+  const reason = `collected, but the temp folder of its session ${done.session} stays, named in n${reader.id}, t${todo.id}`
+  expect(await collect(ledger, home, Tmux.of(home), { ids: [done.id] })).toEqual({
+    removed: [done.id],
+    clean: [],
+    skipped: [{ id: done.id, reason }],
+  })
+  expect(existsSync(done.kept)).toBe(true)
+})
+
 test("a task told to go on as gc ends it keeps its worker's temp folder", async () => {
   const { home, ledger, task } = withTemps()
   const { id, cwd, kept } = task('told')

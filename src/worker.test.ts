@@ -5482,7 +5482,7 @@ test('the first message after gc collected a repo task tells its worker the work
 
   const [, second, third] = turnsOf(id)
   expect(second).toStartWith('nod made this folder again after gc collected it')
-  expect(second).toContain('what you left in your scratchpad is gone')
+  expect(second).toContain('what you left in your scratchpad may be gone')
   expect(second).toContain('install the dependencies as the lock file pins them')
   expect(second).toEndWith('\n\nsecond')
   expect(third).toBe('third')
@@ -5498,7 +5498,7 @@ test('the first message after gc collected a repo task tells its worker the work
   expect(review).toContain('later words win:\n- second\n- third\n')
   expect(review).not.toContain('nod made this folder again')
   // Nor the notice as nod gave it before it told of the scratchpad, in turns the ledger still has.
-  const before = REBUILT.replace(', and what you left in your scratchpad is gone', '')
+  const before = REBUILT.replace(', and what you left in your scratchpad may be gone', '')
   expect(before).not.toBe(REBUILT)
   expect(withoutRebuilt(`${before}\n\nsecond\n\nthird`)).toBe('second\n\nthird')
   // Words that quote some of it are the person's.
