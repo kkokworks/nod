@@ -92,6 +92,7 @@ const todos = await import('./routes/todos_.$id')
 const { TodoRow, UndoBar } = await import('./todo-parts')
 const { Search } = await import('./search')
 const projects = await import('./routes/projects')
+const focus = await import('./routes/focus')
 const settings = await import('./routes/settings')
 const settingsPages = [
   [await import('./routes/settings.index'), '/'],
@@ -162,6 +163,7 @@ const router = R.createRouter({
       path: '/projects',
       getParentRoute: () => root,
     } as never),
+    focus.Route.update({ id: '/focus', path: '/focus', getParentRoute: () => root } as never),
     settings.Route.update({
       id: '/settings',
       path: '/settings',
@@ -1093,6 +1095,35 @@ test('a task or todo that is not there, an unknown page and a page that fails sh
   answer = (id) => detail(id as number)
   await reload()
   expect(document.querySelector('.layout .task-title')?.textContent).toBe('task 3')
+})
+
+test("Focus shows each project nod could not tell, with how much waits, linked to the project's card, and nothing when none waits", async () => {
+  const trust = { inbox: 0, oldestInbox: null, overdue: [], today: [], stuck: [], stale: [] }
+  const page = (untold: unknown[]) => ({
+    today: '2026-10-23',
+    limit: 6,
+    events: { kind: 'none' },
+    trust: { ...trust, sinceReview: null, untold },
+    focus: [],
+    day: [],
+    next: [],
+    upcoming: [],
+  })
+  answer = () =>
+    page([
+      { project: { id: 1, title: 'Release' }, count: 25, words: 16, since: '2026-10-05' },
+      { project: { id: 2, title: 'Health' }, count: 1, words: 0, since: '2026-10-22' },
+    ])
+  await go('/focus')
+  expect(document.querySelector('.needs')?.textContent).toBe(
+    'Not told: Release (25 since Oct 5, 16 by nod tell), Health (1 since yesterday, 0 by nod tell)',
+  )
+  const links = [...document.querySelectorAll('.needs a')].map((a) => a.getAttribute('href'))
+  expect(links).toEqual(['/projects#p1', '/projects#p2'])
+  answer = () => page([])
+  await reload()
+  expect(document.querySelector('.title')?.textContent).toBe('Focus')
+  expect(document.querySelector('.needs')).toBeNull()
 })
 
 // The real root, in a router of its own, without the document shell around it.

@@ -64,8 +64,10 @@ test('the numbers that say whether the lists can be trusted', () => {
       ]),
       lastReview: at('2026-10-16T17:00'),
       day: { ...none, overdue: [late], scheduled: [call] },
+      unsent: [],
     },
     '2026-10-28',
+    new Date('2026-10-28T12:00'),
   )
   expect(t).toMatchObject({
     inbox: 2,
@@ -83,9 +85,45 @@ test('the numbers that say whether the lists can be trusted', () => {
     'nod · overdue 1 · today 1 · inbox 2 since 10-14 · no next action 1 · waiting long 2 · weekly review 12 days ago',
   )
   const calm = trust(
-    { open: [], projects: [], lastChange: new Map(), lastReview: null, day: none },
+    { open: [], projects: [], lastChange: new Map(), lastReview: null, day: none, unsent: [] },
     '2026-10-28',
+    new Date('2026-10-28T12:00'),
   )
-  expect(calm).toMatchObject({ inbox: 0, oldestInbox: null, sinceReview: null })
+  expect(calm).toMatchObject({ inbox: 0, oldestInbox: null, sinceReview: null, untold: [] })
   expect(nudgeLine(calm, '2026-10-28')).toBeNull()
+})
+
+test('a project nod could not tell for over a day shows all that waits for it', () => {
+  const now = new Date('2026-10-28T12:00')
+  const waited = (id: number, hours: number, words = false) => ({
+    project: project(id, 1),
+    words,
+    createdAt: new Date(now.getTime() - hours * 3_600_000).toISOString(),
+  })
+  const untold = (...unsent: ReturnType<typeof waited>[]) =>
+    trust(
+      { open: [], projects: [], lastChange: new Map(), lastReview: null, day: none, unsent },
+      '2026-10-28',
+      now,
+    )
+  for (const hours of [0, 23.9, 24]) {
+    const calm = untold(waited(1, hours, true))
+    expect(calm.untold).toEqual([])
+    expect(nudgeLine(calm, '2026-10-28')).toBeNull()
+  }
+  const one = untold(waited(1, 24.1))
+  expect(one.untold).toMatchObject([{ project: { id: 1 }, count: 1, words: 0 }])
+  // Project 2 waits too, but not for long; what came for project 1 since counts with its oldest.
+  const t = untold(
+    waited(1, 50.5),
+    waited(2, 23.9, true),
+    waited(3, 24.1, true),
+    waited(1, 24.1, true),
+    waited(1, 0.1, true),
+  )
+  expect(t.untold).toEqual([
+    { project: project(1, 1), count: 3, words: 2, since: '2026-10-26' },
+    { project: project(3, 1), count: 1, words: 1, since: '2026-10-27' },
+  ])
+  expect(nudgeLine(t, '2026-10-28')).toBe('nod · not told p1 3, p3 1')
 })

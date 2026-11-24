@@ -720,8 +720,20 @@ export class Todos {
       lastChange: new Map(changed.map((c) => [c.todoId, c.at])),
       lastReview: reviewed?.at ?? null,
       day: this.day(day),
+      unsent: this.ledger.unsentNotices().flatMap((n) => {
+        // A decision answered before its opening went is told to none (sendNotices).
+        const asked = n.event === 'decision' && n.decisionId !== null ? n.decisionId : null
+        if (asked !== null && this.ledger.decision(asked).answer !== null) return []
+        const task = n.taskId === null ? null : this.ledger.get(n.taskId)
+        const id = n.projectId ?? (task === null ? null : this.projectOf(task))
+        if (id === null) return []
+        const project = this.project(id)
+        // Nobody may open a closed project's session again (tellProject).
+        if (CLOSED_PROJECT.includes(project.status)) return []
+        return [{ project, words: n.event === 'tell', createdAt: n.createdAt }]
+      }),
     }
-    return trust(input, day)
+    return trust(input, day, new Date())
   }
 
   // ── projects ──

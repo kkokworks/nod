@@ -1133,3 +1133,24 @@ test('nod todo --json, check and its once-a-day nudge, and today over several da
     '  t2    next      Call the bank  · scheduled <time>',
   ])
 }, 15_000)
+
+test('nod todo check, its JSON and its nudge show what nod could not tell a project for over a day', async () => {
+  const { ok, home } = runner()
+  const ledger = new Ledger(home)
+  new Todos(ledger).addProject({ title: 'Release', outcome: null }, 'human')
+  ledger.addNotice({ projectId: 1, event: 'tell', note: 'hello' })
+  ledger.addNotice({ projectId: 1, event: 'tell', note: 'again' })
+  expect((await ok('todo', 'check')).join('\n')).not.toContain('untold')
+  const since = new Date('2026-10-20T12:00').toISOString()
+  ledger.db.run('update notices set created_at = ? where id = 1', [since])
+  expect((await ok('todo', 'check')).slice(-2)).toEqual([
+    'untold   p1 Release: 2 since 2026-10-20, 2 of them words (nod tell)',
+    'review   weekly: none done yet',
+  ])
+  expect(JSON.parse((await ok('todo', 'check', '--json')).join('')).untold).toMatchObject([
+    { project: { id: 1, title: 'Release' }, count: 2, words: 2, since: '2026-10-20' },
+  ])
+  expect(JSON.parse((await ok('todo', 'check', '--nudge')).join('')).systemMessage).toBe(
+    'nod · no next action 1 · not told p1 2 → /gtd:today',
+  )
+})
