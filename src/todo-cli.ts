@@ -85,9 +85,9 @@ export const TODO_USAGE = `  nod in <what...> [--notes <text>] [--source <channe
                                    --days goes on for n days, showing those that hold something
   nod todo check [--nudge|--json]  whether the lists can be trusted: the inbox and its oldest
                                    todo, overdue, today, projects with no next action, people
-                                   waited on with nothing recorded for ${STALE_DAYS} days, projects whose
-                                   session has not been told something for over ${UNTOLD_HOURS} hours, days
-                                   since the last weekly review (the last done todo from --source
+                                   waited on with nothing recorded for ${STALE_DAYS} days, projects with
+                                   notices not delivered for over ${UNTOLD_HOURS} hours, days since
+                                   the last weekly review (the last done todo from --source
                                    review). --nudge prints it once a day as a Claude Code
                                    SessionStart message, and nothing when all is well; --json
                                    prints it all as JSON

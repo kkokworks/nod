@@ -47,7 +47,7 @@ function ProjectsView() {
 
 function ProjectCard({ p, today }: { p: ProjectsPage['projects'][number]; today: string }) {
   const { busy, error, run } = useChange()
-  // A link to one project (Focus's "No next action") lands on its card and marks it.
+  // A link to one project (Focus's "No next action" and "Not told") lands on its card and marks it.
   const picked = useLocation({ select: (l) => l.hash === `p${p.id}` })
   const status = (s: string) =>
     run(() => changeProject({ data: { id: p.id, edit: { status: s } } }))

@@ -13,7 +13,7 @@ export const STALE_DAYS = 7
 // GTD's weekly review.
 const REVIEW_DAYS = 7
 // What nod tells a project went within 18.2 hours where a session heard (measured, docs/design.md
-// 「전하지 못한 알림 보이기」); what waits longer than this has no session that hears it.
+// 「전하지 못한 알림 보이기」); what waits longer than this is for a session, or helper, that is off.
 export const UNTOLD_HOURS = 24
 
 export type Trust = {
