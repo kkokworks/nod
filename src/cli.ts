@@ -1100,7 +1100,8 @@ async function permissionHook(): Promise<never> {
   try {
     const event = PermissionEvent.parse(JSON.parse(await Bun.stdin.text()))
     const ledger = new Ledger(home)
-    if (onPermissionRequest(ledger, event)) {
+    const screen = (taskId: number): string => terminals.screen(sessionName(taskId))
+    if (onPermissionRequest(ledger, event, screen)) {
       await Bun.write(Bun.stdout, `${JSON.stringify(ALLOW)}\n`)
       await sendNotices(ledger, (socket, line) => sendLine(socket, line, ALLOWED_SEND_MS))
     } else {
@@ -1437,7 +1438,9 @@ async function show(id: number): Promise<void> {
         : `closed: ${d.answer}`
     console.log(`  decision d${d.id} ${d.reason} — ${answered}`)
   }
-  for (const n of ledger.allowed(id)) console.log(`  allowed by nod ${n.createdAt}: ${n.note}`)
+  for (const n of ledger.allowed(id)) {
+    console.log(`  allowed by nod ${n.createdAt}: ${clean(n.note ?? '')}`)
+  }
   // Each turn's report in order, so the last is the very end, where readers look for it. Several
   // are told apart by the number a notice gives the turn (inbox.ts); one alone needs no heading.
   const attempts = ledger.attempts(id)
