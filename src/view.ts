@@ -4,9 +4,13 @@ import { sessionName } from './place'
 import { quote } from './tmux'
 import type { Change, SessionPlace } from './todos'
 
+// How much of a command nod allowed its line shows: one may hold a whole commit message.
+const ALLOWED_LIMIT = 300
+
 // What nod allowed a task's worker itself (Notice), as the project session hears it: one line in
 // the words the person asked for, with nothing to do next.
-export const allowedLine = (n: Notice): string => `n${n.taskId} 허락: ${n.note}`
+export const allowedLine = (n: Notice): string =>
+  `n${n.taskId} 허락: ${cutLine(n.note ?? '', ALLOWED_LIMIT)}`
 
 // A task as notices and the decision list name it: `task n5 t3 PROJ-1`.
 export function taskLabel(t: Task): string {

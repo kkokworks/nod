@@ -239,7 +239,7 @@ export type Decision = {
 // (`resumed`, resumeDue in worker.ts). `attemptId`: the
 // task's latest turn as it happened. `sessionId` and `sentAt`: the session it went to and when; null
 // and set for one closed unsent, which had no session to go to (a task in no project, a decision's
-// opening once it was answered first).
+// opening once it was answered first) or nothing to tell it (a read nod allowed).
 export type NoticeEvent =
   | 'succeeded'
   | 'error'

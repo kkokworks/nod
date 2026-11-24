@@ -1,4 +1,14 @@
-import { closeSync, fstatSync, openSync, readFileSync, readSync, statSync } from 'node:fs'
+import {
+  closeSync,
+  existsSync,
+  fstatSync,
+  openSync,
+  readdirSync,
+  readFileSync,
+  readSync,
+  statSync,
+} from 'node:fs'
+import { basename, join } from 'node:path'
 import { z } from 'zod'
 import { configDir, transcriptPath } from './account'
 import type { Attempt, Ledger } from './ledger'
@@ -8,10 +18,10 @@ import { pasted } from './tmux'
 
 // Reading the transcript Claude Code keeps of a worker's session (JSONL): whether there is one, its
 // lines or its end, how its last turn ended, whether a tool runs, what became of a message pasted in
-// while a turn ran, and which tool calls the person refused. It only reads: what nod changes in the
-// ledger by it is turns.ts's (endTurnWithoutStop, forgetHeldBack, stoppedDialogs, refusedDialogs,
-// unseenHeldBack) and worker.ts's (carryUnheard, restingTurns). This module imports none of
-// worker.ts, hooks.ts or land.ts.
+// while a turn ran, and which tool calls the person refused or auto mode denied. It only reads: what
+// nod changes in the ledger by it is turns.ts's (endTurnWithoutStop, forgetHeldBack, stoppedDialogs,
+// refusedDialogs, unseenHeldBack), worker.ts's (carryUnheard, restingTurns) and allow.ts's
+// (unjudged). This module imports none of worker.ts, hooks.ts or land.ts.
 
 // How Claude Code marks a turn the person stopped (endTurnWithoutStop), how much of the
 // transcript's end is read for it, and what a typed turn that ended without a Stop ends with in the
@@ -341,6 +351,54 @@ export function toolCalls(lines: string[]): ToolCall[] {
     }
   }
   return [...calls.values()]
+}
+
+// How Claude Code words, and marks, a tool's result that auto mode's check denied as unsafe (2.1.331's
+// binary; on all 13 such results of nod's workers' last two weeks, 2.1.321 to 2.1.331). One the check
+// gave no verdict on has other words, and `classifier:auto-mode:unavailable`.
+const DENIED =
+  /^Permission for this action (was denied by the Claude Code auto mode classifier|has been denied)\b/
+const MAY_BE_DENIED = /Permission for this action|"classifier:auto-mode"/
+const Denied = z.object({
+  permissionDecision: z.object({
+    decision: z.literal('reject'),
+    reasonCode: z.literal('classifier:auto-mode'),
+  }),
+})
+
+// Whether auto mode's check denied a call as unsafe in the session whose transcript is the file
+// `path`, or in a subagent of it (theirs are in a folder beside it), ever: what the check counts
+// toward asking the person goes on past a turn. Throws when the transcript, or that of the subagent
+// `agentId`, cannot be read.
+// ponytail: a call denied beside the one asked about, in the same response, may not be in it yet.
+export function autoModeDenied(path: string, agentId: string | undefined): boolean {
+  const beside = join(path.replace(/\.jsonl$/, ''), 'subagents')
+  const agents = existsSync(beside)
+    ? readdirSync(beside, { recursive: true, encoding: 'utf8' }).filter((f) => f.endsWith('.jsonl'))
+    : []
+  if (agentId !== undefined && !agents.some((f) => basename(f) === `agent-${agentId}.jsonl`)) {
+    throw new Error(`no transcript of subagent ${agentId}`)
+  }
+  return [path, ...agents.map((f) => join(beside, f))].some((file) => {
+    const text = readFileSync(file, 'utf8')
+    return MAY_BE_DENIED.test(text) && text.split('\n').some(denies)
+  })
+}
+
+// A line that may be one, and does not read, counts as one.
+function denies(line: string): boolean {
+  if (!MAY_BE_DENIED.test(line)) return false
+  const json = jsonOrNull(line)
+  const row = TranscriptEntry.safeParse(json)
+  if (!row.success || Denied.safeParse(json).success) return true
+  return blocksOf(row.data).some((block) => {
+    const result = ToolResult.safeParse(block)
+    return (
+      result.success &&
+      result.data.is_error === true &&
+      textsOf(result.data.content).some((t) => typeof t === 'string' && DENIED.test(t))
+    )
+  })
 }
 
 // The blocks of a transcript row's message, and the tool calls whose results it holds, by their ids.
