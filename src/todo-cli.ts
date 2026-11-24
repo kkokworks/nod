@@ -36,7 +36,7 @@ import {
   withLine,
 } from './todos'
 import { SCHEDULE_OFF, scheduleEnv, tryWatch } from './triggers'
-import { nudgeLine, STALE_DAYS, type Trust } from './trust'
+import { nudgeLine, STALE_DAYS, type Trust, UNTOLD_HOURS } from './trust'
 import { changeText, clean, cutLine, helperOpens, indent, oneLine } from './view'
 
 // How much of a description a list shows: a sentence or two, enough to pick a project by.
@@ -85,8 +85,9 @@ export const TODO_USAGE = `  nod in <what...> [--notes <text>] [--source <channe
                                    --days goes on for n days, showing those that hold something
   nod todo check [--nudge|--json]  whether the lists can be trusted: the inbox and its oldest
                                    todo, overdue, today, projects with no next action, people
-                                   waited on with nothing recorded for ${STALE_DAYS} days, days since
-                                   the last weekly review (the last done todo from --source
+                                   waited on with nothing recorded for ${STALE_DAYS} days, projects whose
+                                   session has not been told something for over ${UNTOLD_HOURS} hours, days
+                                   since the last weekly review (the last done todo from --source
                                    review). --nudge prints it once a day as a Claude Code
                                    SessionStart message, and nothing when all is well; --json
                                    prints it all as JSON
@@ -539,6 +540,10 @@ function trustLines(t: Trust): string[] {
     `today    ${t.today.length}${listed(t.today.map(todo))}`,
     `stuck    ${t.stuck.length} active project(s) with no next action${listed(t.stuck.map((p) => `p${p.id} ${p.title}`))}`,
     `waiting  ${t.stale.length} on a person or a watch, unchanged for ${STALE_DAYS}+ days${listed(t.stale.map((x) => `${todo(x.todo)} (${x.todo.waitingOn ?? 'watched'}, ${x.days} days)`))}`,
+    ...t.untold.map(
+      (u) =>
+        `untold   p${u.project.id} ${u.project.title}: ${u.count} since ${u.since}, ${u.words} of them words (nod tell)`,
+    ),
     `review   weekly: ${review}`,
   ]
 }

@@ -73,7 +73,7 @@ function FocusPage() {
 
 // What keeps the lists from being trusted, as the day's first session is nudged, and only what
 // needs the person: what is overdue or due today has its own list below. Each line leads to where
-// it is dealt with; a stuck project to its own card.
+// it is dealt with; a project's to its own card.
 function Attention({ page }: { page: Page }) {
   const t = page.trust
   const since = inboxSince(t, page.today)
@@ -103,6 +103,22 @@ function Attention({ page }: { page: Page }) {
         Waiting long:{' '}
         {t.stale.map((s) => `${s.todo.waitingOn ?? s.todo.title} (${s.days}d)`).join(', ')}
       </Link>
+    ),
+    t.untold.length > 0 && (
+      <span key="untold">
+        <span>
+          Not told:{' '}
+          {t.untold.map((u, i) => (
+            <Fragment key={u.project.id}>
+              {i > 0 && ', '}
+              <Link to="/projects" hash={`p${u.project.id}`}>
+                {u.project.title}
+              </Link>{' '}
+              ({u.count} since {relDay(u.since, page.today)}, {u.words} by nod tell)
+            </Fragment>
+          ))}
+        </span>
+      </span>
     ),
     reviewDue(t) && <span key="review">Weekly review {t.sinceReview} days ago</span>,
   ].filter((x) => x !== false)

@@ -1043,6 +1043,52 @@ test('the weekly review is the last done todo of the review series, and a waited
   expect(todos.trust(today).stale.map((x) => x.todo.id)).toEqual([kim.id])
 })
 
+test('what nod could not tell a project for over a day counts its words and its tasks alike, until told', () => {
+  const { ledger, todos } = books()
+  const today = new Date().toLocaleDateString('sv-SE')
+  const [release, health] = [project(todos, 'Release'), project(todos, 'Health')]
+  const tell = (projectId: number) => ledger.addNotice({ projectId, event: 'tell', note: 'hello' })
+  const aged = (id: number, hours: number) =>
+    ledger.db.run('update notices set created_at = ? where id = ?', [
+      new Date(Date.now() - hours * 3_600_000).toISOString(),
+      id,
+    ])
+  const untold = () => todos.trust(today).untold.map((u) => [u.project.id, u.count, u.words])
+  // A task's end and the decision on another are its todo's project's.
+  ledger.succeed(todos.delegateNew(task, release.id, 'human'))
+  const asked = ask(ledger, todos.delegateNew(task, release.id, 'human'), 'Which branch?')
+  const words = tell(release.id)
+  const other = tell(health.id)
+  // Work in no project is no project's to be told.
+  ledger.succeed(todos.delegateNew(task, null, 'human'))
+  const unsent = ledger.unsentNotices()
+  expect(unsent.map((n) => n.event)).toEqual(['succeeded', 'decision', 'tell', 'tell', 'succeeded'])
+  for (const n of unsent) aged(n.id, 23.9)
+  expect(untold()).toEqual([])
+  for (const n of unsent.slice(-1)) aged(n.id, 240)
+  expect(untold()).toEqual([])
+  for (const n of unsent.slice(0, 1)) aged(n.id, 24.1)
+  expect(untold()).toEqual([[release.id, 3, 1]])
+  aged(other, 24.1)
+  expect(untold()).toEqual([
+    [release.id, 3, 1],
+    [health.id, 1, 1],
+  ])
+  // A finished project's words wait all the same.
+  todos.setProject(health.id, { status: 'done' }, 'human')
+  expect(untold()).toHaveLength(2)
+  // Sent, or closed as sent to none.
+  ledger.claimNotices([other], null)
+  expect(untold()).toEqual([[release.id, 3, 1]])
+  ledger.claimNotices([words], null)
+  expect(untold()).toEqual([[release.id, 2, 0]])
+  // Answered before it was told of, the decision is told to none.
+  ledger.dismiss(asked, 'main')
+  expect(untold()).toEqual([[release.id, 1, 0]])
+  ledger.claimNotices(ids(unsent), null)
+  expect(untold()).toEqual([])
+})
+
 // ── a delegated todo and its task's commits ──
 
 const PR = 'https://git.example.com/o/r/pulls/'
