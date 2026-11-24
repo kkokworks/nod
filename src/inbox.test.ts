@@ -808,6 +808,15 @@ test('nod tell refuses a finished project whose session, or the helper told, tak
     expect(await tell(null)).toBe(off('its session'))
     expect(sent.at(-1)?.session_id).toBe(C)
     expect(ledger.unsentNotices()).toHaveLength(closed ? 0 : 1)
+    // One that ends once its words went heard them: they are not refused.
+    todos.setSocket(A, socket('a.sock'))
+    const ends = async (path: string, line: string): Promise<void> => {
+      await send(path, line)
+      todos.setSocket(A, null)
+    }
+    expect(await tellProject(ledger, p.id, 'Hello', 'human', ends)).toBe(true)
+    expect(sent.at(-1)?.session_id).toBe(A)
+    expect(ledger.unsentNotices()).toEqual([])
     // One whose socket the send finds gone is off too, and keeps nothing either.
     const gone = socket('gone.sock')
     todos.setSocket(A, gone)
@@ -819,7 +828,7 @@ test('nod tell refuses a finished project whose session, or the helper told, tak
     if (closed) await expect(last).rejects.toThrow(off('its session').replace('Error: ', ''))
     else expect(await last).toBe(false)
     expect(todos.latestSession(p.id)?.socket).toBeNull()
-    expect(ledger.unsentNotices()).toHaveLength(closed ? 0 : 2)
+    expect(ledger.unsentNotices()).toHaveLength(closed ? 0 : 1)
   }
 })
 
