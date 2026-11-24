@@ -114,7 +114,7 @@ nod 가 띄우는 Claude Code(워커와 `nod open` 의 세션)는 자동 압축 
 
 자동 모드의 확인창에서는 일상 명령도 허락합니다. 자동 모드 검사가 명령을 본 뒤 훅이 명령을 바꾸면(출력 압축 도구 등) Claude Code 는 2.1.317 부터 그 호출과 같은 응답의 다른 호출을 «판정 없음»으로 막고, 세 번 이어지면 사람에게 묻습니다. nod 는 워커 칸에 뜬 확인창이 바로 이것이고 그 세션(서브 에이전트 포함)의 대화 기록에 검사가 위험하다고 실제로 거절한 호출이 하나도 없을 때만, 아래 명령에 허락을 돌려줍니다. 레포의 ask 규칙이 띄운 창, 실제 거절 때문에 뜬 창, nod 가 읽지 못한 창은 결정으로 올라옵니다.
 
-- 읽기: git 의 `log`·`diff`·`show`·`status`·`grep`·`ls-files`·`rev-parse`·`blame`, `grep`, `sed -n 1,80p` 꼴, `cat`, `head`, `tail`, `wc`, `ls`, `find`. 앞에 `rtk`·`rtk proxy` 가 붙은 것과 `rtk read` 도 같습니다. 경로는 그 작업의 폴더와 그 세션의 scratchpad 안이어야 하고, 비밀값이 들 만한 파일(`.env*`·`*.pem`·`*.key`·`id_*`·`credentials*`·`.npmrc`·`.netrc` 등)이 걸리면 올립니다.
+- 읽기: git 의 `log`·`diff`·`show`·`status`·`grep`·`ls-files`·`rev-parse`·`blame`, `grep`, `sed -n 1,80p` 꼴, `cat`, `head`, `tail`, `wc`, `ls`, `find`. 앞에 `rtk`·`rtk proxy` 가 붙은 것과 `rtk read` 도 같습니다. 경로는 그 작업의 폴더와 그 세션의 scratchpad 안이어야 하고, 비밀값이 들 만한 파일(`.env*`·`*.pem`·`*.key`·`id_*`·`credentials*`·`.npmrc`·`.netrc` 등)이 걸리면 올립니다. git 은 셸이 그 작업의 worktree 에 있을 때만(안에 든 다른 레포나 서브모듈이 아님), 상대 경로로만 읽습니다.
 - 커밋: 그 작업의 worktree, 작업 브랜치에서 `git add <경로>` 와 `git commit` 의 `-m`·`-F`·`-q`.
 - 검사: `bun test …`, 인자 없는 `bun run test`·`typecheck`·`lint`·`check`.
 

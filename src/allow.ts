@@ -77,10 +77,10 @@ export function onPermissionRequest(
   const taskId = ledger.taskOfSession(event.session_id)
   const task = taskId === null ? null : ledger.get(taskId)
   if (task?.workspace == null) return false
-  const { workspace, branch } = task
+  const { workspace, repo, branch } = task
   let kind: Kind | null = 'work'
-  if (!harmless(command, event.cwd, workspace, task.repo !== null)) {
-    kind = routine(command, event.cwd, workspace, branch, event.scratchpad_dir)
+  if (!harmless(command, event.cwd, workspace, repo !== null)) {
+    kind = routine(command, event.cwd, { workspace, repo, branch }, event.scratchpad_dir)
     if (kind === null || !unjudged(event, command, () => screen(task.id))) return false
   }
   const attemptId = ledger.openAttempt(task.id)?.id ?? null
@@ -168,16 +168,19 @@ function committed(root: string, paths: string[]): boolean {
   return status.exitCode === 0 && status.stdout.length === 0
 }
 
-// How long nod waits for the dialog: it may not be drawn yet, or other calls' come first. In the open
-// so a test can shorten it.
-export const DIALOG = { waitMs: 2000 }
+// How long nod waits for the dialog (it may not be drawn yet, or other calls' come first), and how
+// many files it looks through for a secret's name (secretless); past it, it cannot tell. In the open
+// so a test can lower them.
+export const LIMITS = { dialogMs: 2000, files: 20_000 }
 // What the dialog says under the command, around how many times in a row (2.1.331's binary, and as
-// nod's decisions show it since 2.1.321): only of calls a hook changed, or that ran beside one.
+// nod's decisions show it since 2.1.321): only of calls a hook changed, or that ran beside one. And
+// what every dialog of a command's ends with.
 const squeeze = (text: string): string => text.replace(/[─╌]{3,}/g, '─').replace(/[\s│]/g, '')
 const ASKS = squeeze('Auto mode needs your confirmation for this command.')
 const UNJUDGED = squeeze(
   'consecutive actions were blocked. Please review the transcript before continuing. Latest blocked action: A call in this response changed (or may have changed) after auto mode reviewed it, so auto mode could not check what would run',
 )
+const PROCEED = squeeze('Do you want to proceed?')
 
 // Whether auto mode asks the person only as its check gave no verdict, three calls running: a hook
 // changed this command, or one beside it, after the check saw it (2.1.317 on). Not a prompt that a
@@ -193,12 +196,16 @@ function unjudged(
   screen: () => string,
 ): boolean {
   if (event.permission_mode !== 'auto' || !event.transcript_path) return false
-  const dialog = `─${squeeze(command)}─${ASKS}`
+  const dialog = `─${squeeze(command)}─`
   try {
-    for (const until = Date.now() + DIALOG.waitMs; ; Bun.sleepSync(100)) {
-      const says = squeeze(screen()).split(dialog).slice(1).at(-1)?.replace(/^\d+/, '') ?? ''
+    for (const until = Date.now() + LIMITS.dialogMs; ; Bun.sleepSync(100)) {
+      const says = squeeze(screen()).split(dialog).slice(1).at(-1) ?? ''
       // With no other dialog under it, which would be the one that shows.
-      if (says.startsWith(UNJUDGED) && !says.includes('─')) break
+      if (says !== '' && !says.includes('─')) {
+        const [, before, after] = /^(\D*)\d+(.*)$/s.exec(says) ?? []
+        if (before === ASKS && after?.startsWith(UNJUDGED)) break
+        if (says.includes(PROCEED)) return false
+      }
       if (Date.now() >= until) return false
     }
     return !autoModeDenied(event.transcript_path, event.agent_id)
@@ -210,35 +217,36 @@ function unjudged(
 
 // `read` only shows something; `work` is the task's own: a commit on its branch, a check.
 type Kind = 'read' | 'work'
-// Real paths, `scratch` of the session's scratchpad; `branch`: the task's, null with no repo.
-type Place = { root: string; scratch: string | null; here: string; branch: string | null }
+// What of a task says where its commands may reach; `repo` and `branch` are null with no repo.
+type Where = { workspace: string; repo: string | null; branch: string | null }
+// Real paths: `root` of the task's folder, `scratch` of the session's scratchpad, `here` of the shell.
+type Place = Where & { root: string; scratch: string | null; here: string }
 type Command = { words: string[]; piped: boolean }
 
 // What `command`, run in `cwd`, is when every command in it is a routine one: reading in the task's
-// folder `workspace` or the scratchpad, `git add`/`git commit` on the task's branch, the checks; null
-// otherwise. Nothing here deletes or overwrites. The sandbox bounds all of it as any command of the
-// worker's, with what they run by their own config (a pager, a hook, a script): `bun test` runs any
-// code there.
+// folder or the scratchpad, `git add`/`git commit` on the task's branch, the checks; null otherwise.
+// Nothing here deletes or overwrites. The sandbox bounds all of it as any command of the worker's,
+// with what they run by their own config (a pager, a hook, a script): `bun test` runs any code there.
 export function routine(
   command: string,
   cwd: string,
-  workspace: string,
-  branch: string | null,
+  task: Where,
   scratchpad?: string,
 ): Kind | null {
-  const root = realOf(workspace)
+  const root = realOf(task.workspace)
   const here = realOf(cwd)
   if (root === null || here === null || within(root, here) === null || !exists(here)) return null
-  const at = { root, here, branch, scratch: scratchpad ? realOf(scratchpad) : null }
+  const at = { ...task, root, here, scratch: scratchpad ? realOf(scratchpad) : null }
   const kinds = commandsOf(command).map((c) => kindOf(c, at))
   if (kinds.length === 0 || kinds.includes(null)) return null
   return kinds.includes('work') ? 'work' : 'read'
 }
 
 // Spaces, a redirection of errors, what goes between commands, or a word: plain letters, single
-// quotes, double quotes in which the shell expands nothing. No `=` first, which zsh expands.
+// quotes, double quotes in which the shell expands nothing. No `=` first, which zsh expands, also
+// after quotes that hold nothing.
 const TOKEN =
-  / +|2>(?:&1|\/dev\/null)(?=[ ;|&]|$)|&&|[;|]|(?!=)(?:[A-Za-z0-9._/@:,+%=-]|'[^']*'|"(?:[^"\\$`]|\\[^$`\n])*")+/gy
+  / +|2>(?:&1|\/dev\/null)(?=[ ;|&]|$)|&&|[;|]|(?!(?:''|"")*=)(?:[A-Za-z0-9._/@:,+%=-]|'[^']*'|"(?:[^"\\$`]|\\[^$`\n])*")+/gy
 
 // The commands in `command`, in order, joined by `;`, `&&` or `|`; none when it holds anything else.
 function commandsOf(command: string): Command[] {
@@ -326,7 +334,7 @@ const BUN_TEST: Options = {
 
 // Names a secret may be kept under, of a file or of a folder on the way to it.
 const SECRET =
-  /^(\.env.*|.*\.(env|pem|key|p8|p12|pfx|jks|keystore|ppk|kdbx|tfvars)|id_.*|.*credential.*|secrets?(\..*)?|kubeconfig.*|service[-_]?account.*|[._]?(npmrc|netrc|pgpass|pypirc|htpasswd)|\.(yarnrc.*|ssh|aws|gnupg|kube|docker|dockercfg))$/i
+  /^(\.env.*|(.*\.(env|pem|key|p8|p12|pfx|jks|keystore|ppk|kdbx|tfvars)|[._]?(npmrc|netrc|pgpass|pypirc|htpasswd))([.~].*)?|env\.(local|dev|prod|stag).*|\.dev\.vars.*|id_.*|.*credential.*|secrets?(\..*)?|auth\.json|kubeconfig.*|service[-_]?account.*|\.(yarnrc.*|ssh|aws|gnupg|kube|docker|dockercfg))$/i
 
 function kindOf({ words, piped }: Command, at: Place): Kind | null {
   const rtk = words[0] === 'rtk'
@@ -335,13 +343,16 @@ function kindOf({ words, piped }: Command, at: Place): Kind | null {
     paths?.every((p) => all(at, p)) ? 'read' : null
   if (rtk && words[1] === 'read') return reads(operands(args, RTK_READ))
   const reader = READERS.get(name)
-  if (reader !== undefined) return reads(operands(args, reader))
+  // Past the first path, BSD's take an option for a path too.
+  if (reader !== undefined) return reads(operands(args, reader, true))
   if (name === 'sed') {
     const [quiet, script = '', ...paths] = args
     if (quiet !== '-n' || !/^\d+(,\d+)?p$/.test(script)) return null
     return paths.some((p) => p.startsWith('-')) ? null : reads(paths)
   }
   if (name === 'grep') {
+    // rtk's own takes a number: another word is the pattern.
+    if (rtk && words[1] === 'grep' && args.includes('-l')) return null
     const paths = searched(args, GREP)
     if (paths === null) return null
     // With no path it reads what is piped in, or else all of the folder it runs in.
@@ -359,7 +370,6 @@ function kindOf({ words, piped }: Command, at: Place): Kind | null {
 }
 
 function gitKind([sub = '', ...args]: string[], at: Place): Kind | null {
-  if (at.branch === null) return null
   if (sub === 'add') {
     const paths = operands(args, {})
     if (paths === null || paths.length === 0) return null
@@ -369,18 +379,25 @@ function gitKind([sub = '', ...args]: string[], at: Place): Kind | null {
   const options = GIT.get(sub)
   if (options === undefined) return null
   const words = sub === 'grep' ? searched(args, options) : operands(args, options)
-  return words?.every((w) => gitReadable(at, w)) ? 'read' : null
+  if (!words?.every((w) => gitReadable(at, w)) || branchAt(at) === null) return null
+  return sub === 'grep' && !unlinked(at) ? null : 'read'
 }
 
-// The words of `args` that are no option, and none when an option is not one of `options`.
-function operands(args: string[], options: Options): string[] | null {
+// The words of `args` that are no option, and none when an option is not one of `options`, or with
+// `first` comes after such a word. Nor with a word that starts as an option past `--`, which rtk may
+// leave out, or as an option's text.
+function operands(args: string[], options: Options, first = false): string[] | null {
   const words: string[] = []
   for (let i = 0; i < args.length; i++) {
     const word = args[i] ?? ''
-    if (word === '--') return [...words, ...args.slice(i + 1)]
     if (!word.startsWith('-')) words.push(word)
-    else if (options.text?.test(word)) i++
-    else if (options.count?.test(word)) {
+    else if (first && words.length > 0) return null
+    else if (word === '--') {
+      const rest = args.slice(i + 1)
+      return rest.some((w) => w.startsWith('-')) ? null : [...words, ...rest]
+    } else if (options.text?.test(word)) {
+      if (args[++i]?.startsWith('-') !== false) return null
+    } else if (options.count?.test(word)) {
       if (!/^\+?\d+$/.test(args[++i] ?? '')) return null
     } else if (!options.flag?.test(word)) return null
   }
@@ -419,16 +436,44 @@ function commits(args: string[], at: Place): boolean {
   return said
 }
 
-// Whether the shell stands in the task's worktree itself, on its branch. git only reads its own
-// folder here: it runs nothing its config names.
-function onBranch(at: Place): boolean {
-  const asked = Bun.spawnSync(['git', 'rev-parse', '--show-toplevel', '--abbrev-ref', 'HEAD'], {
-    cwd: at.here,
+const onBranch = (at: Place): boolean => at.branch !== null && branchAt(at) === at.branch
+
+// The branch git is on where the shell stands, null when that is not the task's worktree itself: no
+// repo, or another one, in the folder or that a link, a file or a setting there leads git to. git
+// only reads its own folder here: it runs nothing its config names.
+function branchAt({ root, here, repo }: Place): string | null {
+  if (repo === null || !exists(repo)) return null
+  const ask = (cwd: string, ...args: string[]): string[] => {
+    const asked = Bun.spawnSync(['git', 'rev-parse', '--git-common-dir', ...args], {
+      cwd,
+      stdout: 'pipe',
+      stderr: 'ignore',
+    })
+    return asked.exitCode === 0 ? asked.stdout.toString().split('\n') : []
+  }
+  const [shared, top, branch] = ask(here, '--show-toplevel', '--abbrev-ref', 'HEAD')
+  const [own] = ask(repo)
+  if (!shared || !top || !branch || !own || realOf(top) !== root) return null
+  const real = realOf(resolve(repo, own))
+  return real !== null && real === realOf(resolve(here, shared)) ? branch : null
+}
+
+// Whether every folder here that git tracks files in is still one in the task's folder: `git grep`
+// reads past a link put in its place. git only lists its index here.
+function unlinked({ root, here }: Place): boolean {
+  const listed = Bun.spawnSync(['git', '-c', 'core.fsmonitor=false', 'ls-files', '-z'], {
+    cwd: here,
     stdout: 'pipe',
     stderr: 'ignore',
   })
-  const [top = '', head] = asked.stdout.toString().split('\n')
-  return asked.exitCode === 0 && realOf(top) === at.root && head === at.branch
+  const folders = new Set(listed.stdout.toString().split('\0').map(dirname))
+  return (
+    listed.exitCode === 0 &&
+    [...folders].every((f) => {
+      const real = realOf(join(here, f))
+      return real !== null && within(root, real) !== null
+    })
+  )
 }
 
 // Whether bun run finds its scripts in the task's folder, not past it.
@@ -463,9 +508,11 @@ const searchable = (at: Place, path: string): boolean =>
   readable(at, path) && secretless(resolve(at.here, path))
 
 // A commit, or a path or pattern of git's: none of git's own spellings but one that leaves a path out,
-// and of patterns only `*.ts` and the like, which names `.ts` too.
+// and of patterns only `*.ts` and the like, which names `.ts` too. Nor a path that git may take for
+// one outside its worktree: `git diff` then reads files as they are, tracked or not.
 const gitReadable = (at: Place, word: string): boolean => {
-  if (/^:[!^]/.test(word)) return true
+  if (isAbsolute(word)) return false
+  if (/^:[!^]/.test(word)) return !word.split('/').includes('..')
   const named = word.replace(/(^|\/)\*(?=\.[\w.]+$)/, '$1')
   return !/^:|[\\*?[\]]/.test(named) && readable(at, word) && readable(at, named)
 }
@@ -474,16 +521,13 @@ const gitReadable = (at: Place, word: string): boolean => {
 const addable = (at: Place, path: string): boolean =>
   !/[*?[\]\\:]/.test(path) && searchable({ ...at, scratch: null }, path)
 
-// How many files nod looks through for a secret's name; past it, it cannot tell.
-const MOST_FILES = 20_000
-
 // Whether no file or folder under `path` is named as a secret's, or is a git folder; links are not
 // followed, as grep -r does not. True of what is no folder.
 function secretless(path: string): boolean {
   let seen = 0
   const clear = (folder: string): boolean =>
     readdirSync(folder, { withFileTypes: true }).every((e) => {
-      if (++seen > MOST_FILES || SECRET.test(e.name)) return false
+      if (++seen > LIMITS.files || SECRET.test(e.name)) return false
       return !e.isDirectory() || (!isGit(e.name) && clear(join(folder, e.name)))
     })
   try {
