@@ -203,8 +203,8 @@ export function unheardWork(
 // whatever name Claude Code shows for it (a session that claimed it keeps the one it had). Returns
 // whether they went now; else they wait for that session as a notice does (Todos.listener). A
 // finished project whose session is off keeps none: nobody may open that session again.
-// ponytail: a socket file a session that crashed left behind counts as on (takesMessages), so words
-// told before a send finds it gone wait there; notSentLine says they were not sent.
+// ponytail: inside Claude Code's sandbox a socket file a crash left behind still counts as on
+// (ended), so words told from there wait; notSentLine says they were not sent.
 export async function tellProject(
   ledger: Ledger,
   projectId: number,
@@ -218,17 +218,18 @@ export async function tellProject(
   if (helper !== null && todos.helperNamed(helper, projectId) === null) {
     throw noHelper(projectId, helper)
   }
-  if (CLOSED_PROJECT.includes(status) && !takesMessages(todos.listener(projectId, null, helper))) {
-    const whose = helper === null ? 'its session' : `its helper ${clean(helper)}`
-    throw new Error(
-      `p${projectId} is ${status} and ${whose} takes no messages now, so this may never be heard; nothing was sent or kept: tell the project it is for now, or put it in as a todo (nod in <what...>)`,
-    )
-  }
+  const unheard = (): boolean =>
+    CLOSED_PROJECT.includes(status) && !takesMessages(todos.listener(projectId, null, helper))
+  const whose = helper === null ? 'its session' : `its helper ${clean(helper)}`
+  const refused = `p${projectId} is ${status} and ${whose} takes no messages now, so this may never be heard; nothing was sent or kept: tell the project it is for now, or put it in as a todo (nod in <what...>)`
+  if (unheard()) throw new Error(refused)
   // For a helper it says so, as the project's session hears it once the name is no helper of it.
   const to = helper === null ? '' : ` for helper ${clean(helper)}`
   const note = `nod tell from ${actor}${to}:\n${text}`
   const id = ledger.addNotice({ projectId, helper, event: 'tell', note })
   await sendNotices(ledger, send)
+  // Its socket was there, but the send found nobody: what did not go is closed as sent to none.
+  if (unheard() && ledger.claimNotices([id], null).ids.length > 0) throw new Error(refused)
   return ledger.notice(id).sentAt !== null
 }
 
@@ -237,21 +238,21 @@ export async function tellProject(
 // of its own there), why it takes nothing, and the two ways to a session that does: claim run where
 // the project's conversation is, not by whoever told. One whose socket is still there but took
 // nothing (a sandbox, a send that timed out) likely runs, and hears at the next send. Read after the
-// send, which forgets a socket it found gone. With no session that takes any, it names the one to
-// look for in ListAgents, by the name nod open gave it: a conversation nod does not know runs under
-// it too (a /clear), and whoever told can reach that meanwhile; a name does not prove it. Of words
-// for the project's helper `helper`, the same of its latest session, which nod open and claim reach
-// by helperOpens, but no name to look for: SendMessage does not reach one that claimed.
+// send, which forgets a socket it found gone. With no session that takes any, it says what name to
+// look for in ListAgents, the one nod open gives a session of the project: a conversation nod does
+// not know may run under it (a /clear), and whoever told can reach that meanwhile. It proves
+// nothing: one that claimed keeps the name Claude Code gave it, and another project may have the
+// title. Of words for the project's helper `helper`, the same of its latest session, which nod open
+// and claim reach by helperOpens, but no name to look for: nod tell is its way (nod's skill).
 export function notSentLine(todos: Todos, projectId: number, helper: string | null = null): string {
   const helps = helper === null ? null : todos.helperNamed(helper, projectId)
   const p = helps === null ? `p${projectId}` : clean(helps.name)
   const opens = helps === null ? p : helperOpens(helps.name, projectId)
   const latest = helps ?? todos.latestSession(projectId)
   const claim = `or nod session claim ${opens}, run in the terminal meant for ${p}, makes the conversation there ${p}'s session`
-  const name = clean(latest?.name ?? sessionTitle(todos.project(projectId)))
   const hint =
     helps === null
-      ? `; a session ListAgents shows on as "${name}" may be that conversation: the name is only a hint, and SendMessage reaches it, but nod's notices still do not`
+      ? `; a session ListAgents shows on as "${clean(sessionTitle(todos.project(projectId)))}" may be that conversation: the name is only a hint, and SendMessage reaches it, but nod's notices still do not`
       : ''
   if (latest === null) {
     return `not sent yet: ${p} has no session: nod open never opened one; it goes once ${p} has a session taking messages: nod open ${p} opens one, ${claim}${hint}`

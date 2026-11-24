@@ -808,6 +808,18 @@ test('nod tell refuses a finished project whose session, or the helper told, tak
     expect(await tell(null)).toBe(off('its session'))
     expect(sent.at(-1)?.session_id).toBe(C)
     expect(ledger.unsentNotices()).toHaveLength(closed ? 0 : 1)
+    // One whose socket the send finds gone is off too, and keeps nothing either.
+    const gone = socket('gone.sock')
+    todos.setSocket(A, gone)
+    const fails = async (): Promise<void> => {
+      rmSync(gone)
+      throw Object.assign(new Error('Failed to connect'), { code: 'ENOENT' })
+    }
+    const last = tellProject(ledger, p.id, 'Hello', 'human', fails)
+    if (closed) await expect(last).rejects.toThrow(off('its session').replace('Error: ', ''))
+    else expect(await last).toBe(false)
+    expect(todos.latestSession(p.id)?.socket).toBeNull()
+    expect(ledger.unsentNotices()).toHaveLength(closed ? 0 : 2)
   }
 })
 
@@ -830,11 +842,9 @@ test('what nod tell p<n> keeps names the session it waits for by its ID, why tha
   expect(notSentLine(todos, p.id)).toBe(
     `${waits}, which takes no messages now; ${ways} that one again, ${claim}${hint('Release')}`,
   )
-  // A title given since shows only once nod open opens it again; one with no session goes by it.
-  todos.setProject(p.id, { title: 'Release 2' }, 'human')
-  expect(notSentLine(todos, p.id)).toEndWith(hint('Release'))
-  const odd = todos.addProject({ title: 'A\u001bB', outcome: null }, 'human')
-  expect(notSentLine(todos, odd.id)).toEndWith(hint('A B'))
+  // By the title now, as another project may have taken the old one since.
+  todos.setProject(p.id, { title: 'Re\u001blease 2' }, 'human')
+  expect(notSentLine(todos, p.id)).toEndWith(hint('Re lease 2'))
   // A socket still there that took nothing (a sandbox, a timeout) is kept: the session likely runs,
   // and hears at the next send, so neither way is offered.
   todos.setSocket(B, '/socks/b')

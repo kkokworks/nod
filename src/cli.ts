@@ -378,16 +378,17 @@ or no socket) says so on stderr. So does nod add, tell, resume, restart <task> o
 other Claude session, for a project whose latest session cannot hear either (none, no socket known,
 or its socket gone): what that work brings waits unheard until nod open opens the project's
 session, and nod --mine and nod ls --mine show it meanwhile. One nod does not know hears too that
-nod session claim p<n> there makes it the project's, only if you say it is. /clear goes on under an ID nod open
-did not open: it hears nothing until nod open opens the project's session again, or nod session
-claim p<n> run in it makes it the project's session, its new conversation going on. One with no
-hooks cannot say it cleared, so what went to it after, until its next nod command, is lost: once
-nod open opens it again, nod ls --mine and nod --mine show what it missed.
+nod session claim p<n> there makes it the project's session, only if the person says it is. /clear
+goes on under an ID nod open did not open: it hears nothing until nod open opens the project's
+session again, or nod session claim p<n> run in it makes it the project's session, its new
+conversation going on. One with no hooks cannot say it cleared, so what went to it after, until its
+next nod command, is lost: once nod open opens it again, nod ls --mine and nod --mine show what it
+missed.
 A helper hears the same way of the project's tasks it added or was handed (nod hand): the latest
 session of its name, while it takes messages. While it does not, the project's session hears of
 them, so nothing is lost, and a notice not sent yet goes to whichever of the two hears when it is
 sent. What a project hears of no task (nod tell p<n>) goes to the project's session alone, and what
-nod tell <helper> says to that helper alone, waiting while it is off.
+nod tell <helper> says to that helper alone, waiting while it is off (or refused, see nod tell).
 An orchestrator hears the same way of the tasks it added in no project: the latest session of its
 name, even while another orchestrator runs. What comes while it is closed waits for it too. No
 session hears of a task in no project that no orchestrator added (a shell's, say): what
