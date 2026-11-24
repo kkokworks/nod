@@ -244,13 +244,15 @@ export function routine(
 
 // Spaces, a redirection of errors, what goes between commands, or a word: plain letters, single
 // quotes, double quotes in which the shell expands nothing. No `=` first, which zsh expands, also
-// after quotes that hold nothing.
+// after quotes that hold nothing, and no single quote right after the one that ends a text, which zsh
+// may take for one in it (RC_QUOTES).
 const TOKEN =
-  / +|2>(?:&1|\/dev\/null)(?=[ ;|&]|$)|&&|[;|]|(?!(?:''|"")*=)(?:[A-Za-z0-9._/@:,+%=-]|'[^']*'|"(?:[^"\\$`]|\\[^$`\n])*")+/gy
+  / +|2>(?:&1|\/dev\/null)(?=[ ;|&]|$)|&&|[;|]|(?!(?:''|"")*=)(?:[A-Za-z0-9._/@:,+%=-]|'[^']*'(?!')|"(?:[^"\\$`]|\\[^$`\n])*")+/gy
 
 // The commands in `command`, in order, joined by `;`, `&&` or `|`; none when it holds anything else.
 function commandsOf(command: string): Command[] {
-  if (/[^\P{Cc}\n]/u.test(command)) return []
+  // Nor with a `>nul`, quoted too: Claude Code runs it as `>/dev/null` (2.1.331's binary).
+  if (/[^\P{Cc}\n]/u.test(command) || />[ \t]*nul\b/i.test(command)) return []
   const commands: Command[] = [{ words: [], piped: false }]
   let read = 0
   for (const [token] of command.matchAll(TOKEN)) {
@@ -458,22 +460,14 @@ function branchAt({ root, here, repo }: Place): string | null {
   return real !== null && real === realOf(resolve(here, shared)) ? branch : null
 }
 
-// Whether every folder here that git tracks files in is still one in the task's folder: `git grep`
-// reads past a link put in its place. git only lists its index here.
-function unlinked({ root, here }: Place): boolean {
-  const listed = Bun.spawnSync(['git', '-c', 'core.fsmonitor=false', 'ls-files', '-z'], {
-    cwd: here,
-    stdout: 'pipe',
-    stderr: 'ignore',
-  })
+// Whether no folder here that git tracks files in is a link now: `git grep` reads past it. git only
+// lists its index here, with `--sparse` as it is: it would fetch what it lacks to spell a sparse one
+// out, by a program its config may name.
+function unlinked({ here }: Place): boolean {
+  const list = ['git', '-c', 'core.fsmonitor=false', 'ls-files', '--sparse', '-z']
+  const listed = Bun.spawnSync(list, { cwd: here, stdout: 'pipe', stderr: 'ignore' })
   const folders = new Set(listed.stdout.toString().split('\0').map(dirname))
-  return (
-    listed.exitCode === 0 &&
-    [...folders].every((f) => {
-      const real = realOf(join(here, f))
-      return real !== null && within(root, real) !== null
-    })
-  )
+  return listed.exitCode === 0 && [...folders].every((f) => realOf(join(here, f)) === join(here, f))
 }
 
 // Whether bun run finds its scripts in the task's folder, not past it.

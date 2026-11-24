@@ -395,6 +395,8 @@ test('nod reads a routine command: reading in the task’s folder or the scratch
     `grep -rn --include='*.ts' -- x src`,
     'grep -n export src/a.ts -i -C2',
     "grep -n '=ls' src/a.ts",
+    'grep -n "() => null" src/a.ts',
+    `grep -n 'it'"'"'s' src/a.ts`,
     'rtk grep -ln export src',
     'rtk proxy grep -l export src/a.ts',
     'find . -name "*.ts" -type f',
@@ -577,6 +579,13 @@ test('what nod cannot read, or is no routine command, is none: other shell synta
     'git log HEAD^',
     'cat =ls',
     "cat ''=ls",
+    "cat 'a''b'",
+    "cat 'src/a.ts'''",
+    // As Claude Code runs it, it is another path.
+    "cat 'x>nul y'",
+    "sed -n 1,5p 'x>> NUL y'",
+    "git commit -F 'x>nul y'",
+    'git log --grep="a 2>nul; b"',
     'cat ""\'\'=ls',
     'cat src/a\\.ts',
     'git log \\\n-1',
@@ -997,10 +1006,14 @@ test('git is read only in the task’s own worktree, and a commit is one of its 
   // A folder git tracks files in, now a link out, past which git grep reads.
   expect(kind('git grep x')).toBe('read')
   rmSync(join(work, 'src'), { recursive: true })
-  symlinkSync(outside, join(work, 'src'))
-  expect(kind('git grep x')).toBeNull()
-  expect(kind("git grep x -- '*.ts'")).toBeNull()
-  expect(kind('git diff')).toBe('read')
+  for (const to of [outside, 'nested/.git', 'dist']) {
+    symlinkSync(to, join(work, 'src'))
+    expect([to, kind('git grep x')]).toEqual([to, null])
+    expect(kind("git grep x -- '*.ts'")).toBeNull()
+    expect(kind('git diff')).toBe('read')
+    rmSync(join(work, 'src'))
+  }
+  expect(kind('git grep x')).toBe('read')
   // Another worktree of the repo's inside it, and its own set to another folder.
   git(work, 'worktree', 'add', '-q', '-b', 'feat/z', join(work, 'second'))
   expect(kind('git log', join(work, 'second'))).toBeNull()
