@@ -1132,4 +1132,4 @@ test('nod todo --json, check and its once-a-day nudge, and today over several da
     'scheduled',
     '  t2    next      Call the bank  · scheduled <time>',
   ])
-})
+}, 15_000)

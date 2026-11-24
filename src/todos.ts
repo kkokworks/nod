@@ -56,7 +56,7 @@ export type NamedSeat =
 // Todos that still ask something of the person.
 export const OPEN: TodoStatus[] = ['inbox', 'next', 'waiting']
 const FINISHED: TodoStatus[] = ['done', 'dropped']
-const CLOSED_PROJECT: ProjectStatus[] = ['done', 'dropped']
+export const CLOSED_PROJECT: ProjectStatus[] = ['done', 'dropped']
 // Who moves a delegated todo along with its task, or a watched one once its watch passes: nod
 // itself. Not the environment's actor, which in a worker's hook is that worker.
 export const SELF = 'nod'
