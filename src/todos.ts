@@ -727,7 +727,10 @@ export class Todos {
         const task = n.taskId === null ? null : this.ledger.get(n.taskId)
         const id = n.projectId ?? (task === null ? null : this.projectOf(task))
         if (id === null) return []
-        return [{ project: this.project(id), words: n.event === 'tell', createdAt: n.createdAt }]
+        const project = this.project(id)
+        // Nobody may open a closed project's session again (tellProject).
+        if (CLOSED_PROJECT.includes(project.status)) return []
+        return [{ project, words: n.event === 'tell', createdAt: n.createdAt }]
       }),
     }
     return trust(input, day, new Date())

@@ -1074,9 +1074,13 @@ test('what nod could not tell a project for over a day counts its words and its 
     [release.id, 3, 1],
     [health.id, 1, 1],
   ])
-  // A finished project's words wait all the same.
-  todos.setProject(health.id, { status: 'done' }, 'human')
-  expect(untold()).toHaveLength(2)
+  // Nobody opens the session of a closed project; opened again, the project is untold again.
+  for (const status of ['done', 'active', 'dropped', 'someday', 'active'] as const) {
+    todos.setProject(health.id, { status }, 'human')
+    const shown = untold().some(([id]) => id === health.id)
+    expect([status, shown]).toEqual([status, status === 'active' || status === 'someday'])
+    expect(untold()[0]).toEqual([release.id, 3, 1])
+  }
   // Sent, or closed as sent to none.
   ledger.claimNotices([other], null)
   expect(untold()).toEqual([[release.id, 3, 1]])

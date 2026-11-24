@@ -30,8 +30,8 @@ export type Trust = {
   stale: { todo: Todo; since: string; days: number }[]
   // Days since the last weekly review; null before the first.
   sinceReview: number | null
-  // Each project nod has had something to tell for over UNTOLD_HOURS: how many notices wait, how
-  // many of those are words sent with nod tell, and the day of the oldest.
+  // Each project, not done or dropped, nod has had something to tell for over UNTOLD_HOURS: how many
+  // notices wait, how many of those are words sent with nod tell, and the day of the oldest.
   untold: { project: Project; count: number; words: number; since: string }[]
 }
 
@@ -42,7 +42,7 @@ export type TrustInput = {
   lastChange: Map<number, string>
   lastReview: string | null
   day: DayTodos
-  // What waits to be told of each project, oldest first.
+  // What waits to be told of each project not done or dropped, oldest first.
   unsent: { project: Project; words: boolean; createdAt: string }[]
 }
 
