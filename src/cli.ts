@@ -9,7 +9,7 @@ import { localTime } from './days'
 import { finished, NO_PERSON } from './decisions'
 import { followWork, sweep } from './done'
 import { AUTOCOMPACT_PCT } from './env'
-import { collect, type GcPick, type GcReport, remotesHolding } from './gc'
+import { collect, dropTemps, type GcPick, type GcReport, remotesHolding } from './gc'
 import {
   NotificationEvent,
   onCompact,
@@ -272,13 +272,19 @@ const USAGE = `usage:
                                    it succeeded). Branches go
                                    once the remote's default branch has the changes, as a pushed
                                    branch may go unmerged; with neither, gc also fetches the repos
-                                   of the branches it kept and deletes those merged since. Ledger
-                                   rows and session transcripts stay, ls stops listing the tasks,
-                                   and resume or tell brings one back. With neither, it first moves
-                                   the todos nod left open on their tasks' commits: done once the
-                                   commits are in the default branch, waiting while the branch's
-                                   pull request is open, next once none is. The schedule runs both
-                                   every 5 minutes
+                                   of the branches it kept and deletes those merged since. The temp
+                                   folders Claude Code keeps of the workers' sessions (their
+                                   scratchpads, background output) go too, but for those of a
+                                   session that a task gc has not collected (its brief, what it
+                                   was told) or a todo not closed (its title, notes, links) names
+                                   (nod gc <task> says what does). Ledger rows and session
+                                   transcripts stay, ls stops listing the tasks, and resume or tell
+                                   brings one back. With neither, it first moves the todos nod left
+                                   open on their tasks' commits: done once the commits are in the
+                                   default branch, waiting while the branch's pull request is open,
+                                   next once none is. The schedule runs both every 5 minutes. With
+                                   neither, it also deletes the temp folders tasks collected before
+                                   still have and nothing names, which the schedule does not
   nod rule ls                      the rules every worker gets after the built-in ones: each one's
                                    number, on or off, the retrospective r<n> it came from, and
                                    the rule. Answering yes to a rule decision adds one
@@ -1322,8 +1328,14 @@ async function gc(args: string[]): Promise<void> {
     await followWork(ledger, SELF, prs).catch((error) =>
       console.error(`nod: could not follow the todos' tasks: ${message(error)}`),
     )
+    // Before the sweep, whose own it would otherwise try again at once.
+    const before = dropTemps(ledger, home)
     const { report, done, unchecked } = await sweep(ledger, home, terminals, prs, new Date())
     printGc(report)
+    if (before.removed.length > 0) {
+      console.log(`removed temp folders of tasks collected before: ${taskList(before.removed)}`)
+    }
+    for (const s of before.skipped) console.log(`skipped n${s.id}: ${s.reason}`)
     for (const d of done) if (report.removed.includes(d.id)) console.log(`  n${d.id}: ${d.reason}`)
     for (const u of unchecked) console.log(`unchecked n${u.id}: ${u.error}`)
     await reportLostTells(ledger, home)

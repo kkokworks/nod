@@ -1,16 +1,19 @@
 import { afterAll, expect, test } from 'bun:test'
 import {
+  chmodSync,
   closeSync,
   constants,
+  existsSync,
   mkdirSync,
   openSync,
+  readdirSync,
   readFileSync,
   realpathSync,
   rmSync,
   writeFileSync,
 } from 'node:fs'
-import { join, resolve } from 'node:path'
-import { projectFolder } from '../test/projects'
+import { dirname, join, resolve } from 'node:path'
+import { projectFolder, tempFolder } from '../test/projects'
 import { tempDirs } from '../test/tmp'
 import { Ledger } from './ledger'
 import { workspaceOf } from './place'
@@ -1157,6 +1160,58 @@ test('nod open has claude compact at 60% of its window, unless the shell says ho
   expect(open({})).toBe('60\n')
   expect(open({ CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: '50' })).toBe('50\n')
 })
+
+test('gc says which tasks collected before had temp folders left, and why one stays', () => {
+  const home = tmp.make('nod-gc-temps-')
+  const base = tmp.make('nod-gc-temps-base-')
+  const account = tmp.make('nod-gc-temps-account-')
+  writeFileSync(
+    join(account, 'settings.json'),
+    JSON.stringify({ env: { CLAUDE_CODE_TMPDIR: base } }),
+  )
+  const ledger = new Ledger(home)
+  const [removed, locked] = [crypto.randomUUID(), crypto.randomUUID()].map((sessionId) => {
+    const taskId = ledger.add({
+      brief: 'collected',
+      repo: null,
+      branch: null,
+      checkCmd: null,
+      model: null,
+      after: [],
+      issue: null,
+    })
+    const cwd = workspaceOf(home, ledger.get(taskId))
+    mkdirSync(cwd, { recursive: true })
+    const kept = join(tempFolder(base, cwd, sessionId), 'scratchpad')
+    mkdirSync(kept, { recursive: true })
+    writeFileSync(join(kept, 'a.txt'), '')
+    rmSync(cwd, { recursive: true })
+    ledger.setRunning(taskId, cwd)
+    ledger.startAttempt({ taskId, kind: 'start', decisionId: null, sessionId, prompt: 'x' })
+    ledger.setAccount(taskId, account)
+    ledger.succeed(taskId)
+    ledger.collected(taskId, null)
+    return { taskId, kept }
+  })
+  if (removed === undefined || locked === undefined) throw new Error('no tasks')
+  chmodSync(locked.kept, 0o555)
+  const gc = (): string =>
+    Bun.spawnSync(['bun', cli, 'gc'], {
+      env: { ...process.env, NOD_HOME: home },
+    }).stdout.toString()
+  const lines = gc().split('\n')
+  const temps = dirname(dirname(locked.kept))
+  const [left = ''] = readdirSync(temps)
+  chmodSync(join(temps, left, 'scratchpad'), 0o755)
+  expect(lines[0]).toBe('removed 0 task(s): -')
+  expect(lines[1]).toBe(`removed temp folders of tasks collected before: n${removed.taskId}`)
+  expect(lines[2]).toStartWith(
+    `skipped n${locked.taskId}: collected, but gc could not remove its temp folders: E`,
+  )
+  expect(existsSync(removed.kept)).toBe(false)
+  expect(gc()).toContain(`collected before: n${locked.taskId}\n`)
+  expect(gc()).toBe('removed 0 task(s): -\n')
+}, 20_000)
 
 test('ls hides tasks gc collected unless --all, and lists links in their row', async () => {
   const home = tmp.make('nod-ls-')

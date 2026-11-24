@@ -1,6 +1,10 @@
 import { mkdtempSync, realpathSync, rmdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { TMP } from '../src/claude-tmp'
+
+// No test looks in the folder the person's own Claude Code sessions keep temp files in.
+TMP.base = join(tmpdir(), 'nod-no-claude-tmp')
 
 // Temp dirs a test file removes when it is done: `const tmp = tempDirs(); afterAll(tmp.removeAll)`.
 // `parent`: where to make one, the temp dir unless said.

@@ -1,5 +1,5 @@
 import { realpathSync } from 'node:fs'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 
 // The folder Claude Code keeps the transcripts of sessions run in `cwd` in, in the config dir
 // `config` (2.1.309): named after the real path with each character but a letter or digit turned
@@ -13,4 +13,11 @@ export function projectFolder(config: string, cwd: string): string {
   let hash = 0
   for (let i = 0; i < path.length; i++) hash = ((hash << 5) - hash + path.charCodeAt(i)) | 0
   return join(config, 'projects', `${name.slice(0, 200)}-${Math.abs(hash).toString(36)}`)
+}
+
+// The temp folder Claude Code keeps of a session run in `cwd`, with CLAUDE_CODE_TMPDIR `base`
+// (2.1.330): named as the transcripts' folder is.
+export function tempFolder(base: string, cwd: string, sessionId: string): string {
+  const folder = basename(projectFolder('', cwd))
+  return join(realpathSync(base), `claude-${process.getuid?.()}`, folder, sessionId)
 }
