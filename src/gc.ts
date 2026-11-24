@@ -206,8 +206,9 @@ export async function collect(
 
 // Removes the temp folders Claude Code keeps of a collected task's sessions (claude-tmp.ts): those
 // opened in its workspace whose last turn the ledger has as this task's, and that it does not have as
-// a person's (nod open, nod session claim). A task taken back since (restore) keeps them, and so does
-// one whose session something names (namedBy), which `kept` hears of. Returns whether there was one.
+// a person's (nod open, nod session claim). A task taken back since (restore) keeps them all, and one
+// of a session that something names (namedBy) stays, which `kept` hears of. Returns whether it removed
+// any.
 function dropTemp(
   ledger: Ledger,
   home: string,

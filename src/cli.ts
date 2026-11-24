@@ -276,16 +276,15 @@ const USAGE = `usage:
                                    folders Claude Code keeps of the workers' sessions (their
                                    scratchpads, background output) go too, but for those of a
                                    session that a task gc has not collected (its brief, what it
-                                   was told) or a todo not closed (its title, notes, links) names,
-                                   which go at a later gc (nod gc <task> says what names it).
-                                   Ledger rows and session transcripts stay, ls stops listing the
-                                   tasks, and resume or tell brings one back. With neither, it
-                                   first moves the todos nod left open on their tasks' commits:
-                                   done once the commits are in the default branch, waiting while
-                                   the branch's pull request is open, next once none is. The
-                                   schedule runs both
-                                   every 5 minutes. With neither, it also deletes the temp folders
-                                   tasks collected before still have, which the schedule does not
+                                   was told) or a todo not closed (its title, notes, links) names
+                                   (nod gc <task> says what does). Ledger rows and session
+                                   transcripts stay, ls stops listing the tasks, and resume or tell
+                                   brings one back. With neither, it first moves the todos nod left
+                                   open on their tasks' commits: done once the commits are in the
+                                   default branch, waiting while the branch's pull request is open,
+                                   next once none is. The schedule runs both every 5 minutes. With
+                                   neither, it also deletes the temp folders tasks collected before
+                                   still have and nothing names, which the schedule does not
   nod rule ls                      the rules every worker gets after the built-in ones: each one's
                                    number, on or off, the retrospective r<n> it came from, and
                                    the rule. Answering yes to a rule decision adds one
