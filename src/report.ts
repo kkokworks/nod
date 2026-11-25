@@ -2,8 +2,9 @@ import { z } from 'zod'
 
 // What a worker's report says, read from its text: the last `NOD: <status> | <text>` line, the
 // `NOD: in` and `NOD: tell` lines above it, and as it lands the pull request's text above them all,
-// with what the worker is asked for that text. What nod does with them is in worker.ts (settle),
-// and with the pull request's text in verify.ts (verifyLanding).
+// with what the worker is asked for that text, and what a decision shows of it (reportStart). What
+// nod does with them is in worker.ts (settle), and with the pull request's text in verify.ts
+// (verifyLanding).
 
 // More than this in one report is more than a person can clarify, or a worker gone wrong.
 const MAX_CAPTURES = 50
@@ -191,6 +192,27 @@ function fences(lines: string[]): { inside: boolean[]; unclosed: number } {
   }
   return { inside, unclosed }
 }
+
+// What a decision shows of a report: all of it, or, past `limit` characters, its start, where a
+// worker is told to put what it asks, then `rest` (where all of it is), and the report line, which
+// nod reads as the gist of it, when the start does not reach that. A code fence the cut leaves open
+// closes there, as indented as it opened (one in a list would open another at the line's start), as
+// the web UI would show all that follows as code.
+export function reportStart(report: string, limit: number, rest: string): string {
+  if (report.length <= limit) return report
+  const lines = report.split('\n')
+  const at = lines.findLastIndex(isStatus)
+  const reached = lines.slice(0, at + 1).join('\n').length <= limit
+  const status = reached ? '' : cut(lines[at] ?? '', limit)
+  const start = cut(report, limit - status.length).trimEnd()
+  const shown = start.split('\n')
+  const fence = /^ {0,3}(?:`{3,}|~{3,})/.exec(shown[fences(shown).unclosed] ?? '')?.[0]
+  const closed = fence === undefined ? start : `${start}\n${fence}`
+  return [closed, `… ${rest}`, status].filter((s) => s !== '').join('\n\n')
+}
+
+// Not half of a character beyond U+FFFF, which prints as U+FFFD.
+const cut = (s: string, max: number): string => s.slice(0, max).replace(/[\uD800-\uDBFF]$/, '')
 
 // What a worker is asked when nod needs the pull request's text (land.ts), in a turn with nothing
 // else to do (TEXT_ONLY).

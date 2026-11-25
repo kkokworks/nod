@@ -1,5 +1,5 @@
 import { expect, it } from 'bun:test'
-import { parseCaptures, parseReport, parseTells, prText } from './report'
+import { parseCaptures, parseReport, parseTells, prText, reportStart } from './report'
 
 it('the report line is read from the end, through Markdown emphasis', () => {
   expect(parseReport('NOD: question | old\nmore\n**NOD: Done** | `shipped`')).toEqual({
@@ -67,6 +67,52 @@ it('a report says what to tell other tasks in NOD: tell lines, which nod reads o
       error: expect.stringContaining(bad),
     })
   }
+})
+
+it('a decision shows a long report from its start, then where all of it is and its report line', () => {
+  const shown = (report: string): string => reportStart(report, 100, 'See n1')
+  const status = '**NOD: question | A or B?**'
+  const asks = (xs: number): string => `A or B?\n${'x'.repeat(xs)}\n${status}`
+  // All of one that fits, to the character.
+  const room = 100 - asks(0).length
+  expect(shown(asks(room))).toBe(asks(room))
+  // Of a longer one its start, and the line at its end as the worker wrote it: 100 characters of it.
+  const long = `A or B?\n${'x'.repeat(5000)}`
+  for (const xs of [room + 2, 5000]) {
+    expect(shown(asks(xs))).toBe(`A or B?\n${'x'.repeat(room + 1)}\n\n… See n1\n\n${status}`)
+  }
+  // A NOD: failed is asked about too. The line read is the last one, not one quoted above it.
+  expect(shown(`${long}\nNOD: question | old\n${long}\nNOD: failed | no way`)).toEndWith(
+    'x\n\n… See n1\n\nNOD: failed | no way',
+  )
+  // A line the start reaches, as the report goes on after it, is not repeated.
+  expect(shown(`NOD: question | A or B?\n${long}`)).toBe(
+    `NOD: question | A or B?\nA or B?\n${'x'.repeat(100 - 24 - 8)}\n\n… See n1`,
+  )
+  // No report line: only the start.
+  expect(shown(long)).toBe(`A or B?\n${'x'.repeat(92)}\n\n… See n1`)
+  // A report line longer than all a decision shows is cut too, from its own start.
+  expect(shown(`${long}\nNOD: question | ${'y'.repeat(500)}`)).toBe(
+    `… See n1\n\nNOD: question | ${'y'.repeat(84)}`,
+  )
+  // No half of a character beyond U+FFFF.
+  expect(shown('😀'.repeat(100)).isWellFormed()).toBe(true)
+  expect(shown(`x${'😀'.repeat(100)}`)).toBe(`x${'😀'.repeat(49)}\n\n… See n1`)
+})
+
+it('a code fence the cut leaves open closes, and one it does not stays as it is', () => {
+  const shown = (report: string): string => reportStart(report, 60, 'See n1')
+  const code = 'x\n'.repeat(100)
+  for (const marks of ['```', '~~~~', '   ```']) {
+    expect(shown(`A or B?\n${marks}sh\n${code}${marks}\nNOD: question | A or B?`)).toMatch(
+      new RegExp(`x\n${marks}\n\n… See n1\n\nNOD: question \\| A or B\\?$`),
+    )
+  }
+  const closed = `A or B?\n\`\`\`\nx\n\`\`\`\n${'y'.repeat(500)}`
+  expect(shown(closed)).toBe(`${closed.slice(0, 60)}\n\n… See n1`)
+  // Cut right after the fence's last line: it stays closed.
+  const at = `${'y'.repeat(50)}\n\`\`\`\n\`\`\`\n${'z'.repeat(500)}`
+  expect(reportStart(at, 59, 'See n1')).toBe(`${'y'.repeat(50)}\n\`\`\`\n\`\`\`\n\n… See n1`)
 })
 
 it('the pull request title is its # heading, and a status line above it goes, out of the body too', () => {
