@@ -3,7 +3,7 @@ import { join, resolve } from 'node:path'
 import { marking, workerSubmodules } from '../test/git-commands'
 import { git } from '../test/remote'
 import { tempDirs } from '../test/tmp'
-import { onRemote, unmergedFiles, worktreeStatus } from './branch'
+import { NO_LAZY_FETCH, onRemote, rebaseEnv, unmergedFiles, worktreeStatus } from './branch'
 
 const tmp = tempDirs()
 afterAll(tmp.removeAll)
@@ -52,3 +52,11 @@ test("nod's fetch does not go on into a submodule, whose config names its own re
   expect(ran()).toEqual([])
   expect(fetched.code).toBe(0)
 }, 30_000)
+
+test('a rebase fetches nothing it lacks, unless the repo is a partial clone itself', () => {
+  const ws = tmp.make('nod-branch-')
+  git(ws, 'init', '-q')
+  expect(rebaseEnv(ws)).toEqual(NO_LAZY_FETCH)
+  git(ws, 'config', 'extensions.partialClone', 'origin')
+  expect(rebaseEnv(ws)).toEqual({})
+})

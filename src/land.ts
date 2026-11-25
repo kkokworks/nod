@@ -7,6 +7,7 @@ import {
   NOD_GIT,
   onRemote,
   ownStart,
+  rebaseEnv,
   rebasing,
   worktreeStatus,
 } from './branch'
@@ -273,6 +274,7 @@ async function landTask(
     const r = await spawn(
       [...GIT, 'rebase', '--merge', '--no-update-refs', '--onto', tip.commit, base],
       ws,
+      { env: rebaseEnv(ws) },
     )
     if (r.code === 0) {
       const moved = await git(ws, 'rev-parse', 'HEAD')

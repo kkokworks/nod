@@ -353,6 +353,46 @@ test('landing runs none of the commands named in the config of a submodule its w
   expect(ran()).toEqual([])
 }, 30_000)
 
+test('the landing rebase fetches nothing for a submodule both sides moved, whose config its worker can write', async () => {
+  setRepo('pr')
+  const { command, ran } = marking(tmp.make('nod-land-marks-'))
+  const files = ['-c', 'protocol.file.allow=always']
+  const lib = tmp.make('nod-land-lib-')
+  git(lib, 'init', '-q')
+  git(lib, 'commit', '-q', '--allow-empty', '-m', 'one')
+  // The default branch gets the submodule, and the repo its checkout of it.
+  const other = tmp.make('nod-other-')
+  git(other, 'clone', '-q', origin, '.')
+  git(other, ...files, 'submodule', 'add', '-q', lib, 'lib')
+  git(other, 'commit', '-q', '-m', 'add lib')
+  git(other, 'push', '-q', 'origin', 'main')
+  git(repo, 'pull', '-q')
+  git(repo, ...files, 'submodule', 'update', '-q', '--init')
+  const id = finished('feat/lib', { 'w.txt': 'w\n' })
+  // Filled as initSubmodules fills it.
+  const url = `submodule.lib.url=${join(repo, 'lib')}`
+  git(ws(id), ...files, '-c', url, 'submodule', 'update', '-q', '--init', 'lib')
+  // The default branch moves it to a commit the worktree's lacks, and the worker to another.
+  git(lib, 'commit', '-q', '--allow-empty', '-m', 'two')
+  git(join(other, 'lib'), 'pull', '-q')
+  git(other, 'commit', '-q', '-am', 'move lib')
+  git(other, 'push', '-q', 'origin', 'main')
+  git(join(ws(id), 'lib'), 'commit', '-q', '--allow-empty', '-m', 'mine')
+  git(ws(id), 'commit', '-q', '-am', 'move lib too')
+  // In its git folder in the worktree's: a partial clone whose fetch runs the upload-pack.
+  const config = {
+    'core.repositoryformatversion': '1',
+    'extensions.partialClone': 'origin',
+    'remote.origin.promisor': 'true',
+    'remote.origin.uploadpack': command('upload-pack'),
+  }
+  for (const [key, value] of Object.entries(config)) git(join(ws(id), 'lib'), 'config', key, value)
+
+  const [landed] = await land(ledger, home, Tmux.of(home), { send })
+  expect(ran()).toEqual([])
+  expect(landed?.did).toBe('its worker resolves a conflict')
+}, 30_000)
+
 test('the review reads a submodule as the commits it moved between, whatever diff.submodule the person set', async () => {
   const id = working('feat/t', { 't.txt': 't\n' })
   const { command, ran } = marking(tmp.make('nod-land-marks-'))

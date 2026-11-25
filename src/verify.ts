@@ -7,6 +7,7 @@ import {
   headOf,
   NOD_GIT,
   ownStart,
+  rebaseEnv,
   rebasing,
   unmergedFiles,
   worktreeStatus,
@@ -235,7 +236,7 @@ export async function verifyLanding(
       }
     }
     const onto = readFileSync(gitPath(ws, 'rebase-merge/onto'), 'utf8').trim()
-    const r = await spawn([...NOD_GIT, 'rebase', '--continue'], ws)
+    const r = await spawn([...NOD_GIT, 'rebase', '--continue'], ws, { env: rebaseEnv(ws) })
     if (r.code !== 0) {
       // Stopped at the next commit's conflict: the landing goes on. Anything else (an unstaged
       // change left beside the resolution, say) is the worker's to fix, as a failed check is, so

@@ -3303,23 +3303,25 @@ nod 가 샌드박스 밖에서 워커의 worktree 에 돌리는 git 이, 워커�
   - 서브모듈: `git status` 와, 작업 트리를 인덱스와 견주는 `git diff` 는 서브모듈마다 그 서브모듈의 설정으로 `git status` 를 다시 띄웁니다. 레포의 서브모듈(`modules/<이름>`)도, 워커가 만든 것(이름을 바꾼 git 폴더, 그것을 가리키는 `.git` 파일, 커밋한 gitlink. `.gitmodules` 는 없어도 됨)도 그렇습니다. 그 안에서 `core.fsmonitor`, 훅(인덱스를 쓸 때의 `post-index-change`), clean 필터, 부분 클론의 지연 fetch 가 원격 명령(`core.sshCommand`, `remote.<이름>.uploadpack`)으로 돌았습니다. 자리는 Stop 훅의 `verify`, 착지, `nod gc`(`--ignore-submodules=none`)의 `git status`, 충돌 때의 `unmergedFiles`(`git diff --diff-filter=U`), 경로가 서브모듈을 덮을 때 rm 판정의 `committed` 입니다. gc 의 `onlyCopy` 는 worktree 의 `modules/<이름>` 에서 `rev-list` 를, 본 체크아웃의 서브모듈에서 `cat-file` 을 돌려 지연 fetch 가 닿았습니다(리뷰에서 찾음).
   - 서브모듈로 들어가는 fetch: 가져온 커밋이 서브모듈을 옮기면 fetch 는 기본값(`fetch.recurseSubmodules=on-demand`)대로 그 서브모듈도 그 설정으로 fetch 해, 설정이 이름 붙인 원격 명령이 돌았습니다. nod 의 fetch(착지, gc 의 `dropMerged`)는 본 체크아웃에서 돕니다(리뷰에서 찾음).
   - 사람의 설정이 `diff.submodule=diff` 일 때: 커밋끼리의 `diff` 도 서브모듈마다 그 설정으로 diff 해, 설정이 이름 붙인 textconv 가 돌았습니다. 자리는 리뷰어에게 주는 diff(`changesOf`, worktree 에서)와 gc 의 `landed`(`diff --quiet`, 본 체크아웃에서)입니다. `--stat`·`--shortstat`·`--name-only` 는 들어가지 않았습니다(리뷰에서 찾음).
+  - 착지의 rebase: 기본 브랜치와 작업 브랜치가 같은 서브모듈을 서로 다른 커밋으로 옮겼으면, 병합이 worktree 의 `modules/<이름>` 에서 그 커밋들을 찾습니다. 그 서브모듈이 부분 클론이면 없는 커밋을 지연 fetch 해 설정의 원격 명령이 돌았습니다. 사람의 설정이 없어도 닿고, `verifyLanding` 의 `rebase --continue` 도 같은 길입니다(두 번째 리뷰에서 찾음).
   - 사람의 설정이 worktree 안의 훅 폴더를 가리킬 때(husky 의 `core.hooksPath=.husky/_`): 워커가 거기 둔 훅이 인덱스를 쓰는 `git status`(`--ignore-submodules=all` 인 `clearCutOff` 도)에서 돌았습니다. 커밋한 훅은 그 브랜치를 꺼내는 `worktree add`(앞 작업의 브랜치에서 시작하는 작업, `nod resume`)에서 돌았습니다(`post-index-change`·`reference-transaction`).
-  - 닿지 않은 것: 읽기만 하는 `rev-parse`·`merge-base`·`reflog`·`log`·`rev-list`, 기본 설정에서의 커밋끼리의 `diff`, `worktree remove --force`, 그리고 `initSubmodules` 의 `submodule update`(husky 모양 훅을 돌리지 않음, 리뷰에서 잼). fetch·push 자신은 레포의 설정으로 돌아 워커가 원격 명령을 고를 수 없습니다.
+  - 닿지 않은 것: worktree 와 본 체크아웃에서 읽기만 하는 `rev-parse`·`merge-base`·`reflog`·`log`·`rev-list`(위 `onlyCopy` 처럼 서브모듈 git 폴더에서 도는 것 말고), 기본 설정에서의 커밋끼리의 `diff`, `worktree remove --force`, 그리고 `initSubmodules` 의 `submodule update`(husky 모양 훅을 돌리지 않음, 리뷰에서 잼). fetch·push 자신은 레포의 설정으로 돌아 워커가 원격 명령을 고를 수 없습니다.
 - **막은 것.**
   - `NOD_GIT` 에 `-c core.fsmonitor=false` 를 더했습니다. `-c` 로 준 설정은 git 이 서브모듈에 띄우는 git 에도 넘어가므로, 이미 있던 `core.hooksPath=/dev/null` 과 함께 서브모듈의 감시와 훅도 막습니다.
   - nod 의 fetch(`onRemote`)는 `-c fetch.recurseSubmodules=false` 로 서브모듈에 들어가지 않습니다. 리뷰어에게 주는 diff 와 `landed` 의 diff 는 `--submodule=short` 로, 서브모듈을 옮긴 커밋 둘로만 봅니다(사람의 설정이 없을 때의 모양).
-  - worktree 나 서브모듈 git 폴더를 읽는 nod 의 git(`worktreeStatus`, `unmergedFiles`, `onlyCopy` 의 `rev-list`·`cat-file`, `committed`)에는 `GIT_NO_LAZY_FETCH=1` 을 줍니다(`NO_LAZY_FETCH`). rebase 에는 주지 않습니다. 레포가 부분 클론이면 rebase 가 없는 객체를 받아 와야 합니다. git 2.44 보다 오래된 git 은 이 변수를 모르고 받아 옵니다.
+  - worktree 나 서브모듈 git 폴더를 읽는 nod 의 git(`worktreeStatus`, `unmergedFiles`, `onlyCopy` 의 `rev-list`·`cat-file`, `committed`)에는 `GIT_NO_LAZY_FETCH=1` 을 줍니다(`NO_LAZY_FETCH`). 착지의 rebase 와 `rebase --continue` 에도 주되, 레포 자신이 부분 클론(`extensions.partialClone`)이면 주지 않습니다(`rebaseEnv`). 그런 레포의 rebase 는 없는 객체를 받아 와야 합니다. git 2.44 보다 오래된 git 은 이 변수를 모르고 받아 옵니다.
+  - `unmergedFiles` 는 `--ignore-submodules=all` 로 서브모듈에 들어가지 않습니다. 충돌한 서브모듈 경로는 그래도 나옵니다(두 번째 리뷰에서 잼).
   - 위 자리를 모두 `NOD_GIT` 으로 돌립니다. `verify`·착지·gc·`clearCutOff` 의 `git status` 는 `worktreeStatus` 하나로 모았고, `unmergedFiles`, `committed`, 작업 시작과 `restore` 의 `worktree add` 도 `NOD_GIT` 을 씁니다.
   - 바뀐 동작: nod 가 만드는 worktree 에서는 사람의 `post-checkout` 같은 훅도 돌지 않습니다. 앞 작업의 브랜치가 가져온 훅과 사람의 훅을 git 이 가르지 못해서입니다. nod 의 fetch 는 서브모듈의 새 커밋을 본 체크아웃의 서브모듈로 받아 오지 않습니다. 그래서 기본 브랜치가 옮긴 서브모듈 커밋을 가리키는 브랜치에서 작업을 시작하면, 본 체크아웃의 서브모듈에 그 커밋이 없어 `initSubmodules` 가 채우라는 안내와 함께 실패할 수 있습니다. `onlyCopy` 는 부분 클론인 본 체크아웃 서브모듈에 없는 커밋을 받아 오지 않고 「그 커밋은 여기만 있다」로 읽어 worktree 를 남깁니다. 착지의 검사(`--check`)와 점검(`--gate`)은 그대로 돕니다.
 - **남은 것.**
   - 서브모듈의 clean·process 필터. `git status` 가 바뀐 파일을 다시 읽을 때, 그 서브모듈의 `.gitattributes` 와 설정이 이름 붙인 필터를 돌립니다. 필터를 한꺼번에 끄는 git 설정은 없습니다. 서브모듈을 건너뛰면(`--ignore-submodules=all`) gc 가 서브모듈의 커밋하지 않은 변경을 보지 못한 채 worktree 를 지웁니다.
   - 사람의 설정이 worktree 안의 프로그램을 가리키는 경우(상대 경로의 필터 스크립트 등). 훅과 감시만 막습니다.
-  - 사람의 설정(`submodule.recurse=true`)으로 rebase 가 서브모듈에 들어가면, 거기서의 지연 fetch. rebase 에는 `GIT_NO_LAZY_FETCH` 를 주지 않기 때문입니다.
+  - 레포 자신이 부분 클론일 때 rebase 가 서브모듈에서 하는 지연 fetch(서로 옮긴 서브모듈의 병합, 사람의 `submodule.recurse=true`). 그 rebase 에는 `GIT_NO_LAZY_FETCH` 를 주지 않기 때문입니다.
   - 사람의 설정(`push.recurseSubmodules`, `submodule.recurse=true`)으로 착지의 push 가 worktree 의 서브모듈에 들어가면, 그 서브모듈 설정의 원격 명령. 재 보지 않았고, 사람이 고른 push 의 안전장치(`check`)를 nod 가 덮지 않으려고 두었습니다.
   - 착지의 검사·점검과 등록한 실행(`NOD: run`)은 처음부터 워커의 코드를 밖에서 돌립니다(「샌드박스에 막힌 검증을 nod 가 대신 돌리기」).
 - **시험.** 표지를 남기고 실패하는 명령을 설정에 이름 대고(`test/git-commands.ts`), 시작 커밋에서는 표지가 남고 고친 뒤에는 남지 않는 것을 보았습니다. 자리마다 nod 의 함수를 거칩니다.
-  - `src/branch.test.ts`: 워커가 만든 서브모듈 둘(감시·훅, 지연 fetch)이 있을 때의 `unmergedFiles` 와 `worktreeStatus`, 서브모듈을 옮긴 커밋을 가져오는 `onRemote` 의 fetch.
-  - `src/verify.test.ts`: 같은 서브모듈이 있을 때의 `verify`. `src/land.test.ts`: 같은 서브모듈이 있을 때의 착지, `diff.submodule=diff` 아래의 리뷰 diff.
+  - `src/branch.test.ts`: 워커가 만든 서브모듈 둘(감시·훅, 지연 fetch)이 있을 때의 `unmergedFiles` 와 `worktreeStatus`, 서브모듈을 옮긴 커밋을 가져오는 `onRemote` 의 fetch, 부분 클론에 따른 `rebaseEnv`.
+  - `src/verify.test.ts`: 같은 서브모듈이 있을 때의 `verify`. `src/land.test.ts`: 같은 서브모듈이 있을 때의 착지, 서로 옮긴 서브모듈의 착지 rebase, `diff.submodule=diff` 아래의 리뷰 diff.
   - `src/gc.test.ts`: 같은 서브모듈이 있을 때의 `nod gc`, `onlyCopy` 의 지연 fetch 둘(worktree 의 `modules/<이름>`, 본 체크아웃의 서브모듈), `diff.submodule=diff` 아래의 `landed`, husky 모양 훅 폴더의 gc 와 `nod resume`(시작 커밋에서는 커밋한 `reference-transaction` 훅이 `worktree add` 를 막기까지 함).
   - `src/worker.test.ts`: 앞 작업 브랜치의 훅이 있을 때의 작업 시작, 끊긴 시작을 이어받는 `clearCutOff`. `src/allow.test.ts`: 서브모듈을 덮는 `rm -rf` 의 판정.
 

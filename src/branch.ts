@@ -70,9 +70,17 @@ export const NOD_GIT = [
 
 // For nod's git that reads a worktree's files or a submodule's git folder: no lazy fetch of an
 // object a partial clone lacks, which runs the remote command (core.sshCommand, an upload-pack) that
-// a submodule's config names. Not for a rebase, which the repo's own partial clone may need it for.
+// a submodule's config names. A rebase takes it unless the repo is a partial clone (rebaseEnv).
 // Before 2.44 git ignores it.
 export const NO_LAZY_FETCH = { GIT_NO_LAZY_FETCH: '1' }
+
+// For a rebase in a task's worktree: NO_LAZY_FETCH, unless the repo is a partial clone itself, whose
+// rebase fetches what it lacks. To merge a submodule both sides moved, git looks for its commits in
+// that submodule's git folder, and a lazy fetch there would go by that one's config.
+export function rebaseEnv(ws: string): Record<string, string> {
+  const partial = Bun.spawnSync(['git', '-C', ws, 'config', '--get', 'extensions.partialClone'])
+  return partial.exitCode === 0 ? {} : NO_LAZY_FETCH
+}
 
 // git status --porcelain in a task's worktree, as nod's checks read it.
 export const worktreeStatus = (ws: string, ...args: string[]) =>
@@ -105,8 +113,9 @@ export function rebasing(ws: string): boolean {
 }
 
 // The files a stopped rebase left unmerged, one per line.
+// A submodule in conflict is one too; git status in each submodule is not needed to tell.
 export async function unmergedFiles(ws: string): Promise<string> {
-  const diff = [...NOD_GIT, 'diff', '--name-only', '--diff-filter=U']
+  const diff = [...NOD_GIT, 'diff', '--name-only', '--diff-filter=U', '--ignore-submodules=all']
   return (await spawn(diff, ws, { env: NO_LAZY_FETCH })).stdout.trim()
 }
 
