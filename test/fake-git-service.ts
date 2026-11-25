@@ -5,7 +5,11 @@
 // overrides what gh reports a pull request's mergeStateStatus is (tea's `mergeable` is false for
 // anything but CLEAN), a file `refuse` makes creating and merging fail with its text, and a file
 // `head-repo` overrides which repo a pull request's head branch is in: a fork's `owner/repo`, say,
-// or none when it is empty, as for a fork since deleted.
+// or none when it is empty, as for a fork since deleted. For what happens on pull requests (pr-events.ts),
+// files hold the service's own JSON, the same for each of them: `reviews`, `comments-<review>` (tea's)
+// `checks` (gh's statusCheckRollup, or tea's combined status of a commit) and `author`, who opened it. A file `down` makes each
+// read fail with its text: gh prints it and exits 1; tea, as it does whatever is answered, exits 0, with
+// its first line, the status, on stderr and the rest as the answer. tea prints a status with -i only.
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
@@ -48,6 +52,12 @@ const mergeState = (): string =>
   existsSync(join(dir, 'merge-state'))
     ? readFileSync(join(dir, 'merge-state'), 'utf8').trim()
     : 'CLEAN'
+// What a file holds as JSON, or `none`.
+const kept = (file: string, none: unknown): unknown =>
+  existsSync(join(dir, file)) ? JSON.parse(readFileSync(join(dir, file), 'utf8')) : none
+const answered = (status: string): void => {
+  if (args.includes('-i')) console.error(`${status}\nContent-Type: application/json\n`)
+}
 const refuse = (): void => {
   if (!existsSync(join(dir, 'refuse'))) return
   console.error(readFileSync(join(dir, 'refuse'), 'utf8').trim())
@@ -62,6 +72,11 @@ const opt = (name: string): string => {
 const byUrl = (url: string): Pr => {
   const pr = prs.find((p) => p.url === url)
   if (pr === undefined) {
+    if (args.includes('-i')) {
+      answered('HTTP/2.0 404 Not Found')
+      console.log('{"message":"not found"}')
+      process.exit(0)
+    }
     console.error(`no pull request ${url}`)
     process.exit(1)
   }
@@ -107,6 +122,17 @@ const squash = (pr: Pr, head: string, title: string): void => {
   save()
 }
 
+const failing = existsSync(join(dir, 'down')) ? readFileSync(join(dir, 'down'), 'utf8') : null
+if (failing !== null && tool === 'gh') {
+  console.error(failing)
+  process.exit(1)
+}
+if (failing !== null && tool === 'tea') {
+  const [status = '', ...body] = failing.split('\n')
+  answered(status)
+  console.log(body.join('\n'))
+  process.exit(0)
+}
 if (tool === 'gh') {
   const [, sub] = args
   if (args[0] === 'api') {
@@ -142,7 +168,9 @@ if (tool === 'gh') {
         headRepository: name === undefined ? null : { id: 'R_1', name },
         headRepositoryOwner: owner === undefined ? null : { id: 'U_1', login: owner },
         mergedAt: pr.mergedAt ?? null,
-        reviews: [],
+        author: { login: kept('author', 'me') },
+        reviews: kept('reviews', []),
+        statusCheckRollup: kept('checks', []),
       }),
     )
   } else if (sub === 'merge') {
@@ -163,6 +191,7 @@ if (tool === 'gh') {
     state: p.state === 'open' ? 'open' : 'closed',
     merged: p.state === 'merged',
     merged_at: p.mergedAt ?? null,
+    user: { login: kept('author', 'me') },
     mergeable: mergeState() === 'CLEAN',
     // As Gitea and Forgejo answer: `ref` is the branch only while the branch exists.
     head: {
@@ -172,10 +201,19 @@ if (tool === 'gh') {
       repo: headRepo(p) === null ? null : { full_name: headRepo(p) },
     },
   })
+  const comments = /\/reviews\/(\d+)\/comments$/.exec(endpoint)
+  if (one === null) answered('HTTP/2.0 200 OK')
   if (endpoint === 'user') {
     console.log(JSON.stringify({ login: 'me' }))
   } else if (endpoint.includes('/reviews?')) {
-    console.log('[]')
+    const asked = new URLSearchParams(endpoint.split('?')[1])
+    const [page, limit] = [Number(asked.get('page')), Number(asked.get('limit'))]
+    const reviews = kept('reviews', []) as unknown[]
+    console.log(JSON.stringify(reviews.slice((page - 1) * limit, page * limit)))
+  } else if (comments !== null) {
+    console.log(JSON.stringify(kept(`comments-${comments[1]}`, [])))
+  } else if (/\/commits\/[0-9a-f]+\/status\?/.test(endpoint)) {
+    console.log(JSON.stringify(kept('checks', { state: 'pending', statuses: [] })))
   } else if (list !== null) {
     console.log(JSON.stringify(prs.map(toApi)))
   } else if (post && /^repos\/[^/]+\/[^/]+\/pulls$/.test(endpoint)) {
@@ -184,6 +222,7 @@ if (tool === 'gh') {
     console.log(JSON.stringify(toApi(pr)))
   } else if (one !== null) {
     const pr = byUrl(`https://git.example.com/${one[1]}/pulls/${one[2]}`)
+    answered('HTTP/2.0 200 OK')
     if (one[3] === undefined) console.log(JSON.stringify(toApi(pr)))
     else {
       if (body.Do !== 'squash') throw new Error('only squash merges')

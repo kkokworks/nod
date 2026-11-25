@@ -48,7 +48,8 @@ nod 는 여러 에이전트를 동시에 돌려 일을 처리하고, 사람에�
 | `src/account.ts` | 워커가 쓸 계정(Claude 설정 폴더) 규칙. 기본은 띄우는 셸의 `CLAUDE_CONFIG_DIR`, 그 밖에 파일에서 읽기와 명령 출력(`<홈>/account.json`). 설정 폴더에서 세션의 대화 기록 찾기(`transcriptPath`). |
 | `src/claude-tmp.ts` | Claude Code 가 세션마다 두는 임시 폴더. 그 뿌리(`tmpRoot`)와, 한 폴더에서 연 세션 가운데 고른 것의 임시 폴더 지우기(`removeTmp`). 어느 세션이 작업의 것인지는 `gc.ts`(`dropTemp`)가 장부로 고르고, 리뷰는 `verify.ts` 가 제 것을 지웁니다. |
 | `src/env.ts` | 워커 환경. 워커가 받는 환경 변수 전부(`workerEnv`: 허용 목록 `PASS_ENV` 로 고른 nod 의 환경, `PATH`, `NOD_HOME`·`NOD_TASK`·`NOD_SOCKETS`, 계정 `CLAUDE_CONFIG_DIR`, 자동 압축 경계 `AUTOCOMPACT_PCT`)와, OS 스케줄러와 화면 서버(`desktop/launchd/ui.sh`)가 저장해 두는 환경(`savedEnv`: 그 가운데 비밀과 SSH 에이전트를 뺀 것). nod 의 모듈 가운데 `account.ts`(`configDir`)와 `place.ts`(`socketsDir`)만 부릅니다. |
-| `src/triggers.ts` | tick. 매분 사용 한도가 풀린 작업 다시 돌리기와 끝난 작업의 칸 닫기, 5분마다 대기 감시와 끝난 작업 정리, OS 스케줄러에 매분 tick 등록·해제. |
+| `src/triggers.ts` | tick. 매분 사용 한도가 풀린 작업 다시 돌리기와 끝난 작업의 칸 닫기, 5분마다 대기 감시와 끝난 작업의 PR 알림(`pr-events.ts`)과 끝난 작업 정리, OS 스케줄러에 매분 tick 등록·해제. |
+| `src/pr-events.ts` | 끝났지만 정리하지 않은 작업에 링크한 열린 PR 의 리뷰(승인·변경 요청·댓글)와 지금 head 의 CI 실패를 그 작업의 알림을 받는 세션에 한 번씩 알립니다. 무엇을 알렸는지는 그 알림에 적은 키로 기억합니다(`addPrNotice`, 「PR 의 리뷰와 CI 실패 알리기」). |
 | `src/limit.ts` | Claude Code 의 사용 한도 줄(`You've hit your … · resets …`)에서 풀리는 순간 읽기(`limitReset`). 글자만 다루고 nod 의 다른 모듈을 부르지 않습니다. |
 | `src/notify.ts` | 결정이 열리거나 작업이 끝나는 등의 일이 생기면 사람이 둔 `<홈>/notify` 를 부릅니다. |
 | `src/rules.ts` | 워커가 받는 규칙(장부의 `rules` 중 켜진 것)과, 문제가 있었던 작업의 회고 지시. |
@@ -56,7 +57,7 @@ nod 는 여러 에이전트를 동시에 돌려 일을 처리하고, 사람에�
 | `src/verify.ts` | 워커의 done 검증. 수락 검사, 레포면 커밋 안 된 변경이 없는지, 독립 리뷰(리뷰어를 `claude -p` 로 돌려 판정 읽기, `review`)를 차례로 봅니다(`verify`). 착지 일이면 그 앞에 멈춘 rebase 를 이어 가고 PR 글을 챙깁니다(`verifyLanding`). 리뷰어가 그대로 쓰고 워커 설정이 소켓 폴더를 더해 쓰는 샌드박스 설정(`SANDBOX`)도 여기 있습니다. `worker.ts`·`land.ts` 를 부르지 않습니다. |
 | `src/gc.ts` | 끝난 작업의 세션을 닫고 작업 폴더·worktree 와 워커 세션의 Claude Code 임시 폴더를 지웁니다. 대화 기록은 남겨 resume 으로 되살릴 수 있게 하고, 브랜치를 지우기 전 끝 커밋을 장부에 남깁니다. |
 | `src/done.ts` | 끝난 작업을 정리해도 되는지 알려 주는 신호. 그만둠, 같은 할 일을 새 작업이 이어받음, 작업이 끝난 뒤 사람이 그 할 일을 done·dropped 로 닫음, 기본 브랜치에 들어감, 링크한 PR(작업과 그 할 일에 단 링크)이 모두 머지·닫힘·내 승인, 끝난 지 7일. 레포 없는 작업은 7일만, 오류로 끝난 작업은 7일과 오류 뒤의 이어받음·할 일 닫힘만 보고, 회고 작업은 끝나면 바로 정리합니다. push 안 한 커밋이 있으면 성공한 작업만, 같은 브랜치의 링크한 PR 이 마지막 커밋 뒤에 머지됐고 링크한 다른 PR 이 기다리지 않을 때 정리합니다. 이 작업 브랜치에서 시작할 작업이 기다리거나, 사람이 세션에 붙어 있거나, 사람이 칸에 친 차례가 돌거나, nod 가 착지 중이면(nod 가 연 PR 이 머지될 때까지) 정리하지 않습니다. |
-| `src/prs.ts` | 링크한 PR 의 상태와 내 마지막 승인·변경 요청을 git 서비스 CLI 로 읽습니다(GitHub 는 `gh`, Gitea·Forgejo 는 `tea api`). 착지를 허락한 레포에서는 nod 의 PR 을 찾고 열고 squash 머지합니다(`serviceOf`). nod 가 git 서비스에 묻는 유일한 곳입니다. |
+| `src/prs.ts` | 링크한 PR 의 상태와 내 마지막 승인·변경 요청, 올린 계정·head·리뷰를 git 서비스 CLI 로 읽고(GitHub 는 `gh`, Gitea·Forgejo 는 `tea api`), 리뷰의 댓글과 head 의 CI 실패도 읽습니다(`prReads`). 서비스가 실패하거나 한도로 거절한 읽기는 `ServiceDown` 으로 가릅니다. 착지를 허락한 레포에서는 nod 의 PR 을 찾고 열고 squash 머지합니다(`serviceOf`). nod 가 git 서비스에 묻는 유일한 곳입니다. |
 | `src/land.ts` | 착지. 허락한 레포의 성공한 작업을 fetch·rebase·검증·점검·push·PR·머지로 원격 기본 브랜치에 올리고, 판단이 필요한 일은 그 작업의 워커에게, 사람만 풀 수 있는 일은 결정으로 넘깁니다. Stop 훅이 착지를 따로 띄우는 `landSoon` 도 여기 있습니다. |
 | `src/todos.ts` | 사람의 할 일과 프로젝트(GTD). 받아 적기, 명료화·정리, 완료, 칸마다 누가 무엇을 바꿨는지의 이력. `nod open` 세션의 역할과 이름(`sessions`), 누가 어느 일을 듣는지(`listener`). |
 | `src/days.ts` | 할 일의 날짜. 사람이 쓴 날짜 읽기, 반복할 때 다음 날짜 계산. |
@@ -65,7 +66,7 @@ nod 는 여러 에이전트를 동시에 돌려 일을 처리하고, 사람에�
 | `src/todo-cli.ts` | `nod in`, `nod todo`(`check` 포함), `nod project`, `nod today` |
 | `ui/` | 이 컴퓨터에서만 여는 웹 화면. 작업·결정 화면(`nod.server.ts`)과 할 일 화면(`todos.server.ts`, `todo-fns.ts`)이 같은 장부 연결을 씁니다. 작업 화면의 실시간 터미널은 `terminal.server.ts`(서버, tmux 에 붙음)와 `terminal.tsx`(페이지, xterm.js)입니다. |
 | `desktop/` | macOS 데스크톱 앱(Tauri). 화면 서버를 창에 띄우는 껍데기와 메뉴·전역 단축키·받아 적기 창(`src-tauri/src/main.rs`, `src/`), 화면 서버를 로그인할 때 띄우는 launchd 설정(`launchd/`). |
-| `src/inbox.ts` | 세션에 직접 알리기. 장부에 쌓인 알림(작업의 끝·결정·`nod tell p<n>`·nod 가 허락한 명령·사람이 그 세션 밖에서 답한 결정)을 프로젝트의 마지막 세션이나 프로젝트 없는 작업을 듣는 오케스트레이터의 수신 소켓에 한 메시지로 쓰고, `nod open` 이 붙인 훅으로 그 소켓 경로를 받습니다. |
+| `src/inbox.ts` | 세션에 직접 알리기. 장부에 쌓인 알림(작업의 끝·결정·`nod tell p<n>`·nod 가 허락한 명령·사람이 그 세션 밖에서 답한 결정·작업의 PR 에 생긴 리뷰와 CI 실패)을 프로젝트의 마지막 세션이나 프로젝트 없는 작업을 듣는 오케스트레이터의 수신 소켓에 한 메시지로 쓰고, `nod open` 이 붙인 훅으로 그 소켓 경로를 받습니다. |
 | `src/cli.ts` | `nod`, `nod <결정> <답>`, `nod drop`, `nod cancel`, `nod add`, `nod open`, `nod tell`, `nod resume`, `nod attach`, `nod ls`, `nod show`, `nod search`, `nod stats`, `nod gc`, `nod rule ls·add·edit·off·on`, `nod repo`, `nod land`, `nod tick`, `nod restart`, `nod account`, `nod hook`, `nod run` |
 | `skills/nod/SKILL.md` | Claude 세션을 앞단으로 만드는 스킬입니다. 요청을 작업으로 나눠 넣고, 결정과 끝난 작업을 바로 전합니다. 프로젝트·오케스트레이터 세션은 nod 가 보내는 알림으로 받고, 그 밖의 세션은 `nod --mine`·`nod ls --mine` 으로 봅니다. 결정은 대신 내리지 않습니다. |
 | `skills/gtd/` | 할 일 장부로 GTD 를 하는 스킬 묶음(`gtd:capture`·`scan`·`clarify`·`focus`·`tomorrow`·`review` 등)과 업무 도구 연결부(`sources/`). 켠 도구와 도구별 값은 `<홈>/config.json` 에서 읽습니다. |
@@ -94,6 +95,7 @@ nod 는 여러 에이전트를 동시에 돌려 일을 처리하고, 사람에�
 | 사람 | 이 작업의 결과는 어디로 갔지? 아직 안 내보낸 건 뭐지? | 작업의 링크(PR·게시한 리뷰 주소), 링크 전에는 작업이 만든 커밋을 품은 원격 브랜치 | `nod link`, `nod ls`, `nod show <작업>` |
 | 사람 | 아직 손볼 작업은 뭐지? | gc 한 시각(`collected_at`) | `nod ls` (gc 한 작업은 `--all` 로만) |
 | 프로젝트·오케스트레이터 세션 | 내 프로젝트의, 또는 프로젝트 없는 작업이 끝났나? 결정이 열렸나? 꺼져 있던 사이에는? | 알림(`notices`): 작업의 끝(그때의 요약·시도)·결정·사람의 말·nod 가 허락한 명령·사람이 그 세션 밖에서 답한 결정, 보낸 세션과 때 | nod 가 보냄(알림 이벤트마다·tick·세션이 열릴 때), `nod tell p<n>` |
+| 프로젝트·오케스트레이터 세션 | 내 작업의 PR 에 리뷰나 CI 실패가 생겼나? nod 는 무엇을 이미 알렸지? | 알림(`notices`, 종류 `pr`): 알리는 한 줄과 그 아래 알린 사건의 키(리뷰·댓글 번호, CI 가 실패한 head, 리뷰마다 읽은 댓글 수) | tick 이 보냄(다섯째 분), `nod tick` |
 | 사람 | 하루 넘게 알림을 전하지 못한 프로젝트가 있나? | 보내지 않은 알림(`notices`)의 프로젝트와 만든 때 | `nod todo check`, 웹 Focus |
 | 사람·루트 세션 | nod 가 이 작업에 무엇을 스스로 허락했지? | 알림(`notices`, 종류 `allowed`): 작업, 그때의 차례, 명령(또는 레포 신뢰와 근거 결정), 때 | `nod show <작업>`, 프로젝트·오케스트레이터 세션의 알림(읽기 명령은 `nod show` 에만) |
 | nod | `nod open` 세션은 지금 어디서 메시지를 받지? | 세션의 수신 소켓 경로(`sessions.socket`), 그 세션의 훅이나(훅이 없으면) 그 세션의 nod 명령이 적음 | `nod hook inbox`, 세션 안의 nod 명령 |
@@ -3170,6 +3172,26 @@ ponytail 로 남긴 틈은 `src/sending.ts` 에 적었습니다.
   - 웹 화면에 넣기. 그 통계는 5초마다 새로 고칩니다.
 - **남은 한계.** 위처럼 Claude Code 가 스스로 하는 호출은 빠집니다. 리뷰가 돈 횟수는 장부가 따로 세지 않아, 리뷰 기록 가운데 일부만 지워지면 모르고 빠집니다. 하위 에이전트와 리뷰의 기록은 워커의 기록이 있는 곳에서 찾으므로, 워커의 기록만 지워지면 함께 없다고 나옵니다(위 544개에는 그런 작업이 없음). Claude Code 가 줄의 모양을 바꾸면 그 줄은 세지 못합니다.
 - **시험.** `src/tokens.test.ts`: 되풀이된 응답, `<synthetic>`, 안쪽 폴더의 하위 에이전트, 본체와 겹친 응답, 옛 번호의 리뷰·다른 작업의 리뷰·리뷰를 말하는 다른 세션·막힌 리뷰. 이름이 `__proto__` 인 모델. 기록·하위 에이전트·두 세션 가운데 하나가 없을 때. 7일의 경계, 그 전에 끝난 차례와 그 뒤에 돈 리뷰(통과한 것과 결정을 기다리는 것), 끝난 작업에 열린 채 남은 차례, 읽지 못하는 기록. `nod show`·`nod stats` 의 출력과 거기에 대화 내용이 없는지.
+
+## PR 의 리뷰와 CI 실패 알리기 (2026-11-25)
+
+최근 30일 동안 사람이 다시 지시한 264건을 표본으로 보면 PR 리뷰를 세션에 옮겨 준 것이 꽤 있었습니다. nod 는 PR 의 상태와 내 승인만 읽고(`src/prs.ts`) 다른 리뷰와 CI 는 읽지 않았습니다. CI 이야기는 264건 가운데 8건뿐이었습니다.
+
+- **정한 것.**
+  - 대상은 끝났지만 gc 하지 않은 작업에 링크한 열린 PR 입니다. 링크는 정리 신호와 같이 작업과 그 할 일에 단 것(`linksOf`)이고, `prs.ts` 가 읽는 GitHub·Gitea·Forgejo 의 PR 주소만 씁니다(`prAddress`, 뒤의 `/files`·`#…` 는 떼고 같은 PR 로 봄). 여러 작업이 같은 PR 을 링크하면 마지막 작업의 것으로 한 번만 알립니다.
+  - 알리는 곳은 그 작업의 다른 알림과 같습니다(`notices` 의 새 종류 `pr`, `sendNotices`). 워커에게는 넘기지 않습니다. 리뷰를 반영하려면 순서를 정하거나 일부를 빼는 판단이 필요해서, 세션이 사람과 정한 뒤 `nod tell <작업>` 으로 넘깁니다. `<홈>/notify` 에는 보내지 않습니다.
+  - 사건은 승인, 변경 요청, 새 리뷰 댓글(GitHub `COMMENTED`, Gitea·Forgejo `COMMENT`와 리뷰 안의 댓글), 지금 head 의 CI 실패입니다. CI 는 실패만 알립니다. 보내지 않은 리뷰(`PENDING`), 리뷰 요청(`REQUEST_REVIEW`), 기각된 리뷰는 알리지 않습니다.
+  - 글은 `task n<작업> … pull request <PR 주소>: <누가> <사건>` 한 줄과 `next:` 줄입니다. 작업 번호, PR 주소, 누가, 무슨 사건인지만 담고 리뷰 본문·댓글·검사 이름은 담지 않습니다. 바깥 글이라 세션이 지시로 읽을 수 있기 때문입니다(불변식 4). 로그인도 바깥 글이라 서비스가 로그인에 허락하는 글자(영문·숫자·`_.-@[]`) 밖은 `?` 로, 64자까지만 씁니다. 한 사람이 한 번에 단 같은 사건(여러 줄에 단 댓글)은 한 줄로 묶습니다.
+  - 빼는 것: PR 을 올린 계정이 쓴 것(GitHub 는 `author.login` 에서 앱의 `app/` 을 떼고 비교), 작업을 넣기 전에 있던 것(남의 PR 을 리뷰하는 작업은 그 앞의 리뷰가 많음), 시각이 없는 것.
+  - 한 번만 알리기. 새 표나 칸을 두지 않고, 알림의 `note` 에 알리는 줄과 그 아래 줄마다 사건의 키(리뷰 번호, 댓글 번호, CI 가 실패한 head, 리뷰마다 마지막으로 읽은 댓글 수)를 적습니다. 다음 차례는 `pr` 알림의 키를 모두 읽어 이미 있는 것을 뺍니다(`prKeys`). 알릴 것 없이 키만 남길 때(댓글 수, PR 을 올린 계정만 단 댓글)는 보낸 곳 없이 닫은 알림으로 둡니다. 적을 때 그 트랜잭션 안에서 키를 다시 읽어, 두 tick 이 겹쳐도 한 번만 적습니다. 같은 head 의 CI 가 다시 실패해도 다시 알리지 않고, 새 head 가 실패하면 알립니다.
+  - GitHub 의 리뷰는 `gh pr view --json reviews` 의 것으로, 스레드에 단 답글도 리뷰 하나가 됩니다. 리뷰의 키는 누가·언제입니다(한 사람이 한 번에 리뷰 둘을 내지 않음). Gitea·Forgejo 는 기존 스레드에 단 답글이 그 리뷰에 들어가 리뷰가 새로 생기지 않으므로(Forgejo `services/pull/review.go` 의 `CreateCodeCommentKnownReviewID`), 리뷰의 댓글 수(`comments_count`, 남이 단 답글도 셈)가 지난번과 다를 때만 그 리뷰의 댓글(`pulls/<n>/reviews/<id>/comments`)을 읽어 댓글마다 누가 썼는지 봅니다. 리뷰 목록은 50개씩 마지막 쪽까지 읽습니다(새것이 뒤에 옴).
+  - CI. GitHub 는 `gh pr view --json headRefOid,statusCheckRollup` 에서 검사마다(검사 실행은 워크플로·이름, 커밋 상태는 context) 가장 늦게 시작한 실행만 보고, `FAILURE`·`ERROR`·`TIMED_OUT`·`STARTUP_FAILURE` 면 실패입니다. 다시 돌린 검사는 앞 실행이 목록에 남기 때문입니다. 기다림(`ACTION_REQUIRED`)·취소·건너뜀은 실패가 아닙니다. Gitea·Forgejo 는 head 커밋의 합친 상태(`commits/<sha>/status`)가 `failure`·`error` 일 때입니다. Actions 실행 목록(`actions/runs`)은 서비스에 무거운 질의라 부르지 않습니다. Forgejo 는 상태를 모두 모아 합치고 목록만 쪽으로 나누며, 상태가 없으면 `pending` 을 줍니다(`routers/api/v1/repo/status.go`).
+  - 확인은 tick 의 다섯째 분(감시·착지와 같은 때)에, 할 일 따르기 뒤·정리(sweep) 앞에 합니다. 승인이 그 작업을 정리 신호로 끝낼 수 있어 정리 전에 알립니다. PR 은 정리와 같은 조회(`pullRequests`)로 한 번만 읽고, 하나씩 차례로 읽습니다.
+  - 서버 오류와 한도. 서비스가 실패하거나 한도로 거절한 읽기(`ServiceDown`)를 만나면 그 호스트의 나머지 읽기는 그 차례에 건너뛰고, 키를 남기지 않아 다음 차례에 다시 봅니다. PR 하나만의 실패(없는 PR, 권한 없음)는 그 PR 만 건너뜁니다. gh 는 출력의 `HTTP 429`·`HTTP 5xx`·`rate limit`·`error connecting` 으로 가립니다. tea 의 `api` 는 응답이 오면 상태와 상관없이 본문을 내고 0 으로 끝나므로(tea 0.12.0·0.14.2 의 `cmd/api.go`·`modules/api/client.go`), `-i` 로 stderr 에 낸 상태 줄을 읽습니다. `-i` 는 0.12.0 에도 있고, 0.11.1 에는 `tea api` 자체가 없습니다(`cmd/api.go` 없음). 429·5xx 와 JSON 이 아닌 응답(앞단의 프록시·로그인 화면)은 서비스의 것, 그 밖의 4xx 는 그 PR 의 것으로 봅니다. 응답 없이 실패한 tea(연결 실패, 로그인 없음)와 시간 초과도 서비스의 것입니다. 기존 정리 신호의 읽기도 같은 판정을 쓰는데, 정리는 실패를 `unchecked` 로 두는 것이 전과 같습니다.
+- **잰 것.** 지금 장부에서 이 대상은 작업 7개·PR 7개라, tick 의 다섯째 분마다 PR 하나에 gh 두 번(PR, 검사) 또는 tea 세 번(PR, 리뷰, head 상태)과 바뀐 리뷰마다 한 번이 늡니다. tea 의 동작을 로컬 HTTP 서버로 재려 했지만 이 샌드박스는 포트를 열지 못해(`EADDRINUSE`), 위의 tea·Forgejo 동작은 소스로 확인했습니다.
+- **하지 않은 것.** 워커에게 바로 넘기기(위). PR 대화의 댓글(리뷰가 아닌 것). CI 의 성공과 도는 중. 리뷰 본문 요약. 새 표(키를 알림에 적음).
+- **남은 한계.** 남의 PR 을 리뷰하는 작업이면 세션이 올린 리뷰도 사람의 것과 같이 알립니다(그 PR 을 올린 계정이 아님). 작업을 넣기 전에 쓰기 시작해 뒤에 낸 Gitea·Forgejo 리뷰는 시각이 처음 쓴 때라 빠집니다. 두 차례 사이에 댓글 하나가 지워지고 하나가 달리면 수가 같아 보지 못합니다(`ponytail:` 주석). GitHub 의 같은 이름 검사를 다른 이벤트(push·pull_request)가 돌리면 하나로 봅니다(`--json` 에 이벤트가 없음). 키는 `pr` 알림을 모두 읽어 모으므로 쌓이면 느려질 수 있습니다(`ponytail:` 주석).
+- **시험.** `src/pr-events.test.ts`(가짜 조회와 가짜 gh·tea): 사건마다 한 번, 같은 head 의 CI 는 한 번·새 head 는 다시, Gitea·Forgejo 의 상태 이름, 한 사람의 댓글 묶기, 올린 계정·보내지 않은·요청한·기각된 리뷰·작업 전의 것 빼기, 리뷰 안의 답글과 댓글 수가 바뀔 때만 읽기, 대상(도는 작업·결정 대기·gc 한 작업·머지·닫힌 PR 은 빼고, 링크 둘·할 일의 링크), 한 번에 하나씩, 서비스 실패 뒤 그 서비스만 건너뛰고 다음 차례에 알리기, PR 하나·댓글·CI 의 실패, 겹친 두 tick, 로그인 글자, 세션이 꺼졌을 때 기다리기, 하루 넘게 못 전한 알림의 집계, tick 의 다섯째 분과 정리 전에 알리기, 장부에 본문이 남지 않는지. `src/prs.test.ts`: 리뷰·댓글·쪽 넘기기, GitHub 검사의 마지막 실행과 상태들, Gitea·Forgejo 의 합친 상태와 `actions` 를 부르지 않음, gh·tea 의 오류 출력마다 서비스의 것인지.
 
 ## 할 일 (G1, 2026-10-20)
 

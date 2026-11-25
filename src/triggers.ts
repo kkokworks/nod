@@ -7,8 +7,9 @@ import { sendNotices } from './inbox'
 import { land, type Moved } from './land'
 import { Ledger } from './ledger'
 import { notify } from './notify'
+import { tellPrEvents } from './pr-events'
 import { message, runGroup } from './proc'
-import { pullRequests } from './prs'
+import { prReads, pullRequests } from './prs'
 import { homeId, type Terminals, Tmux } from './tmux'
 import { SELF, Todos } from './todos'
 import { oneLine } from './view'
@@ -24,10 +25,11 @@ import {
 } from './worker'
 
 // The tick: what nod does on its own between commands (tick), and the watches that tell when what a
-// waiting todo waits on has happened. Once `nod schedule on` registers it, the OS scheduler (launchd
-// on macOS, crontab on Linux, through Bun.cron) runs tick every minute; nod itself still never stays
-// running. ponytail: the file keeps the name it had while it ran triggers too (until v32), as the
-// tick module `nod schedule on` wrote imports it by path (tickModule).
+// waiting todo waits on has happened; what happens on the tasks' pull requests is pr-events.ts's.
+// Once `nod schedule on` registers it, the OS scheduler (launchd on macOS, crontab on Linux, through
+// Bun.cron) runs tick every minute; nod itself still never stays running. ponytail: the file keeps
+// the name it had while it ran triggers too (until v32), as the tick module `nod schedule on` wrote
+// imports it by path (tickModule).
 
 // A hung watch must not stall every later tick.
 const WATCH_TIMEOUT_MS = 60_000
@@ -38,8 +40,9 @@ const WATCH_EVERY_MINUTES = 5
 // Asks about the turns whose terminal is gone or whose worker rests at its prompt, and the tasks that
 // waited too long on background work, goes on from the checks Stop hooks did not finish, restarts the
 // workers due a restart, resumes the tasks whose usage limit reset, and closes the terminals of tasks
-// finished a while ago (worker.ts), then, with `watches`, the watches and gc of the finished tasks a
-// signal says are done with (done.ts).
+// finished a while ago (worker.ts), then, with `watches`, the watches, the sessions told what happened
+// on the tasks' pull requests (pr-events.ts) and gc of the finished tasks a signal says are done with
+// (done.ts).
 export async function tick(
   ledger: Ledger,
   home: string,
@@ -82,12 +85,16 @@ export async function tick(
         return []
       })
     : []
-  // One lookup for both, so a pull request is read once. The todos first: the sweep may delete a
-  // branch they are read by.
+  // One lookup for all, so a pull request is read once. The todos first: the sweep may delete a
+  // branch they are read by. The pull requests' events before the sweep too: an approval may end the
+  // task it is told of.
   const prs = pullRequests(home)
   if (watches) {
     await followWork(ledger, SELF, prs).catch((error) =>
       console.error(`nod: could not follow the todos' tasks: ${message(error)}`),
+    )
+    await tellPrEvents(ledger, prs, prReads(home)).catch((error) =>
+      console.error(`nod: could not tell of the pull requests: ${message(error)}`),
     )
   }
   // Clean: one whose workspace was gone already, collected all the same.

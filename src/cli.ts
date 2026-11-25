@@ -333,10 +333,11 @@ const USAGE = `usage:
                                    runs with this shell's PATH and Claude config dir, which the
                                    watches and the workers it restarts use. It stays on until off.
                                    For work at a set time, have cron or launchd run nod add
-  nod tick                         run the watches, land what the repos let nod land, and gc the
-                                   finished tasks a signal says are done with (as nod gc does);
-                                   the scheduled tick does the watches, landing and gc every
-                                   fifth minute.
+  nod tick                         run the watches, land what the repos let nod land, tell the
+                                   sessions of the reviews and failed CI on the open pull requests
+                                   of finished tasks, and gc the finished tasks a signal says are
+                                   done with (as nod gc does); the scheduled tick does the
+                                   watches, landing, pull requests and gc every fifth minute.
                                    It also asks about turns whose terminal is gone (a restart of
                                    the machine or tmux) or whose worker rests at its prompt (a
                                    hook held its message back, or nothing came of the turn for an

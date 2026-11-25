@@ -236,10 +236,12 @@ export type Decision = {
 // ledger's record of it, or a decision a person answered or dropped elsewhere than in that session
 // (`answered`, decisions.ts's noticeAnswered; the answer is the decision's, or `note` for one a
 // person's tell went on past), or nod resuming a task once the usage limit that stopped it reset
-// (`resumed`, resumeDue in worker.ts). `attemptId`: the
+// (`resumed`, resumeDue in worker.ts), or a review or failed CI on the task's pull request (`pr`,
+// addPrNotice). `attemptId`: the
 // task's latest turn as it happened. `sessionId` and `sentAt`: the session it went to and when; null
 // and set for one closed unsent, which had no session to go to (a task in no project, a decision's
-// opening once it was answered first) or nothing to tell it (a read nod allowed).
+// opening once it was answered first) or nothing to tell it (a read nod allowed, comments on a pull
+// request that were none to tell).
 export type NoticeEvent =
   | 'succeeded'
   | 'error'
@@ -249,6 +251,7 @@ export type NoticeEvent =
   | 'allowed'
   | 'answered'
   | 'resumed'
+  | 'pr'
 export type Notice = {
   id: number
   taskId: number | null
@@ -2057,6 +2060,27 @@ export class Ledger {
 
   unsentNotices(): Notice[] {
     return this.run(q.selectFrom('notices').selectAll().where('sentAt', 'is', null).orderBy('id'))
+  }
+
+  // Something on a task's pull request (pr-events.ts) as one line, and below it, a line each, the keys
+  // of what it tells of, which are how nod knows what it has told (prKeys). Not when all of them are
+  // known by now: another tick told it. `line` null only keeps the keys, with nothing to tell.
+  addPrNotice(taskId: number, line: string | null, keys: string[]): void {
+    this.db.transaction(() => {
+      // One line each, whatever a key or the line was made of.
+      const one = (s: string): string => s.replace(/[\r\n]/g, ' ')
+      const known = this.prKeys()
+      if (keys.every((k) => known.has(one(k)))) return
+      const note = [one(line ?? ''), ...keys.map(one)].join('\n')
+      const id = this.addNotice({ taskId, event: 'pr', note })
+      if (line === null) this.claimNotices([id], null)
+    })()
+  }
+
+  // ponytail: reads every such notice there ever was; keep to the open pull requests' if it grows.
+  prKeys(): Set<string> {
+    const notes = this.run(q.selectFrom('notices').select('note').where('event', '=', 'pr'))
+    return new Set(notes.flatMap((n) => (n.note ?? '').split('\n').slice(1)))
   }
 
   // What nod allowed a task's worker itself (Notice), oldest first.
