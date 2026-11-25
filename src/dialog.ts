@@ -64,14 +64,25 @@ function readDialog(lines: string[], whole: boolean): Dialog | null {
   }
 }
 
-// Without the warning of the time left, which is gone once a person is there. It may wrap; a blank
-// line or the question follows it.
+// Without the warning of the time left (2.1.331's words), which is gone once a person is there. It
+// may wrap, at any width; a blank line or the question follows it.
+const WARNING = squeeze('⚠ Claude Code will automatically block this request')
 function untimed(lines: string[]): string[] {
-  let warns = false
-  return lines.filter((l) => {
-    warns = /^\s*⚠/.test(l) || (warns && l.trim() !== '' && !/^\s*Do you want/.test(l))
-    return !warns
-  })
+  const kept: string[] = []
+  for (let i = 0; i < lines.length; i++) {
+    let end = i + 1
+    while (
+      end < lines.length &&
+      lines[end]?.trim() !== '' &&
+      !/^\s*Do you/.test(lines[end] ?? '')
+    ) {
+      end++
+    }
+    const warns = /^\s*⚠/.test(lines[i] ?? '')
+    if (warns && squeeze(lines.slice(i, end).join('')).startsWith(WARNING)) i = end - 1
+    else kept.push(lines[i] ?? '')
+  }
+  return kept
 }
 
 function shown(terminals: Terminals, taskId: number): Dialog | null {
@@ -106,10 +117,15 @@ function isFor(d: Decision, dialog: Dialog): boolean {
   return !dialog.subagents && dialog.holds === squeeze(bodyOf(d))
 }
 
-// Whether the hook worded it from a Bash command, and one its dialog holds whole, and shows whole.
+// Whether the hook worded it from a Bash command; and from one short enough that its dialog holds it
+// whole (2.1.332 shows a command whole or not at all) and fits the terminal (50 rows, 200 columns, as
+// nod opens it; a person's narrower one only refuses a yes): at most 20 rows of 200, 1000 characters.
 const isBash = (d: Decision): boolean =>
   d.question.startsWith('Claude needs your permission to use Bash.')
-const isShort = (d: Decision): boolean => isBash(d) && /^.{1,200}$/.test(bodyOf(d))
+const rowsOf = (text: string): number =>
+  text.split('\n').reduce((n, l) => n + Math.max(1, Math.ceil(l.length / 200)), 0)
+const isShort = (d: Decision): boolean =>
+  isBash(d) && bodyOf(d).length <= 1000 && rowsOf(bodyOf(d)) <= 20
 
 // Whether it may be: one the hook worded, for all nod can tell of a long command's or another tool's;
 // of a dialog whose top is out of sight, not a short command's, but one nod could not read.
@@ -129,12 +145,18 @@ const isOther = (d: Decision, dialog: Dialog): boolean =>
   !isFor(d, dialog) &&
   (!isBash(d) || isShort(d))
 
+// Whether a yes to it may go to `dialog`.
+const mayTake = (d: Decision, dialog: Dialog): boolean => mayBe(d, dialog) && !isOther(d, dialog)
+
 const ofTurn = (ledger: Ledger, taskId: number, attemptId: number): Decision[] =>
   ledger.decisions(taskId).filter((d) => d.reason === 'permission' && d.attemptId === attemptId)
 
 // Whether one of `decisions` is open for the dialog that shows; any, when nod reads none there.
 const covered = (decisions: Decision[], dialog: Dialog | null): boolean =>
-  decisions.some((d) => d.answer === null && (dialog === null || mayBe(d, dialog)))
+  decisions.some((d) => d.answer === null && (dialog === null || mayTake(d, dialog)))
+// The decision of `turn` answered whose dialog `dialog` is: one that still shows for a moment.
+const answeredFor = (turn: Decision[], dialog: Dialog): Decision | undefined =>
+  turn.find((d) => d.answer !== null && isFor(d, dialog))
 
 const answeredNow = (d: Decision): boolean =>
   d.answeredAt !== null && Date.now() - Date.parse(d.answeredAt) < ANSWERED_MS
@@ -153,7 +175,7 @@ export async function askOnScreen(
     const dialog = shown(terminals, taskId)
     const turn = ofTurn(ledger, taskId, attemptId)
     if (covered(turn, dialog) || (dialog === null && turn.some(answeredNow))) return
-    const stands = dialog?.whole && !turn.some((d) => d.answer !== null && isFor(d, dialog))
+    const stands = dialog?.whole && answeredFor(turn, dialog) === undefined
     if (stands || Date.now() >= until) {
       await open(ledger, home, taskId, attemptId, dialog, said)
       return
@@ -196,6 +218,7 @@ async function open(
 // The dialog a yes to the permission decision `decision` goes to, null when nod reads none. Refuses
 // one that would go to another dialog, and opens that one's decision if it has none: one answered in
 // the terminal, or tools that ran at once, leave a decision whose dialog is not the one that shows.
+// Not of one that a decision answered just now, which may still show for a moment.
 export async function toAnswer(
   ledger: Ledger,
   home: string,
@@ -205,14 +228,23 @@ export async function toAnswer(
   const { id, taskId, attemptId } = decision
   const dialog = shown(terminals, taskId)
   if (dialog === null || isFor(decision, dialog)) return dialog
+  // The one it is for: of one whose top is out of sight, one nod could not read.
   const itsOwn = (): Decision | undefined =>
-    ofTurn(ledger, taskId, attemptId).find((d) => d.answer === null && isFor(d, dialog))
-  const mayTake = mayBe(decision, dialog) && !isOther(decision, dialog)
-  if (mayTake && itsOwn() === undefined) return dialog
-  await open(ledger, home, taskId, attemptId, dialog)
+    ofTurn(ledger, taskId, attemptId).find(
+      (d) =>
+        d.answer === null && d.id !== id && (isFor(d, dialog) || (!dialog.whole && isUnseen(d))),
+    )
+  if (mayTake(decision, dialog) && itsOwn() === undefined) return dialog
+  const answered = answeredFor(ofTurn(ledger, taskId, attemptId), dialog)
+  if (answered === undefined) await open(ledger, home, taskId, attemptId, dialog)
   const own = itsOwn()
-  const first = own === undefined ? `look at it (nod attach n${taskId})` : `answer d${own.id}`
-  throw new Error(`n${taskId}'s terminal shows another dialog than d${id}'s: ${first} first`)
+  const then =
+    own !== undefined
+      ? `answer d${own.id} first`
+      : answered !== undefined
+        ? `that of d${answered.id}, answered, may still show: try again in a moment`
+        : `look at it (nod attach n${taskId}) first`
+  throw new Error(`n${taskId}'s terminal shows another dialog than d${id}'s: ${then}`)
 }
 
 // Once `dialog` is answered: the one behind it shows, and its Notification comes some 6 s later. Its

@@ -511,8 +511,11 @@ export async function answer(
   await restore(ledger, home, decision.taskId)
   const asksYes = decision.reason === 'permission' && yes
   const dialog = asksYes ? await toAnswer(ledger, home, terminals, decision) : null
-  // Closed first, so of two answers at once only one reaches the worker.
+  // Closed first, so of two answers at once only one reaches the worker. The permission dialog has
+  // "Yes" selected first (measured on 2.1.290): Enter goes right after nod read what shows, before
+  // what may take a while (told, whose notify may take seconds).
   ledger.answer(decisionId, text)
+  if (asksYes) terminals.keys(sessionName(decision.taskId), 'Enter')
   await told()
   // The decision is closed, so a message that cannot go in (an account rule that cannot be read,
   // say) leaves the task in error, and the person tells it again.
@@ -539,9 +542,7 @@ export async function answer(
     )
     return true
   }
-  // The permission dialog has "Yes" selected first (measured on 2.1.290).
-  if (yes) {
-    terminals.keys(name, 'Enter')
+  if (asksYes) {
     await askNext(ledger, home, terminals, decision, dialog)
     return true
   }

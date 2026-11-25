@@ -1,4 +1,6 @@
 import { afterAll, expect, spyOn, test } from 'bun:test'
+import { chmodSync, existsSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { dialog } from '../test/dialog'
 import { tempDirs } from '../test/tmp'
 import { permissionQuestion } from './decisions'
@@ -46,12 +48,14 @@ function running(...screens: (string | Error)[]) {
     sessionId: 's1',
     prompt: 'look it up',
   })
-  const terminal = { reads: 0, keys: [] as string[], screens }
+  // `onKeys`: what happens as keys go in.
+  const terminal = { reads: 0, keys: [] as string[], screens, onKeys: () => {} }
   const terminals = Object.assign(Tmux.of(home), {
     alive: () => true,
     option: () => '',
     keys: (_: string, ...keys: string[]) => {
       terminal.keys.push(...keys)
+      terminal.onKeys()
     },
     screen: () => {
       const screen = terminal.screens[Math.min(terminal.reads, terminal.screens.length - 1)] ?? ''
@@ -131,6 +135,19 @@ test('nod reads the dialog on the screen: what it asks and who asks, and compare
     ])
   }
 
+  // A warning in what a tool would get is no warning of the time left.
+  const tool = (param: string): string =>
+    [
+      '─'.repeat(60),
+      ' Tool use · from the general-purpose agent',
+      ' db - query(sql: "x")',
+      ` ⚠ ${param}`,
+      '',
+      ' Do you want to proceed?',
+      ' ❯ 1. Yes',
+      '   2. No',
+    ].join('\n')
+  expect(dialogOn(tool('drop table a'))?.asks).not.toBe(dialogOn(tool('drop table b'))?.asks)
   // Its top is out of sight, and what it asks with it.
   expect(dialogOn(topless(agents(ONE)))).toMatchObject({ whole: false })
   // None; one half drawn; what only looks like its answers.
@@ -287,27 +304,34 @@ test('a dialog whose top is out of sight is not that of a decision worded from a
   show(topless(agents(TWO)))
   await notified()
   expect(asked()).toEqual([words(agents(ONE)), UNSEEN])
-  await expect(yes(0)).rejects.toThrow('look at it (nod attach n1) first')
+  await expect(yes(0)).rejects.toThrow("another dialog than d1's: answer d2 first")
   expect(terminal.keys).toEqual([])
   await yes(1)
   expect(terminal.keys).toEqual(['Enter'])
 })
 
-test('a subagent’s dialog that shows before the main thread’s gets its own decision; the main thread’s, whose hook opened it, no other', async () => {
+test('a dialog that shows before the main thread’s, a subagent’s or another command’s, gets its own decision; the one whose hook opened it, no other', async () => {
   const { show, notified, asked, hooked } = running()
   hooked('Bash', { command: 'git push' })
   const main = permissionQuestion('Bash', { command: 'git push' })
-  for (const screen of [dialog('git push'), dialog('git push --force'), '']) {
+  for (const screen of [dialog('git push'), '']) {
     show(screen)
     await waiting(notified)
     expect([screen, asked()]).toEqual([screen, [main]])
   }
-  // Also one of the same command; and one whose top is out of sight, which is no short command's, but
-  // may be a long one's.
+  // Another command's, whose hook did not run, or failed.
+  const force = dialog('git push --force')
+  for (const screen of [force, force, dialog('git push')]) {
+    show(screen)
+    await notified()
+    expect(asked()).toEqual([main, words(force)])
+  }
+  // A subagent's, also of the same command; and one whose top is out of sight, which is no short
+  // command's, also of one of a few lines, but may be a long one's.
   for (const screen of [agents('git push'), agents('git push'), dialog('git push')]) {
     show(screen)
     await notified()
-    expect(asked()).toEqual([main, words(agents('git push'))])
+    expect(asked()).toEqual([main, words(force), words(agents('git push'))])
   }
   const [short, long] = [running(topless(agents(ONE))), running(topless(agents(ONE)))]
   short.hooked('Bash', { command: 'git push' })
@@ -315,8 +339,22 @@ test('a subagent’s dialog that shows before the main thread’s gets its own d
   await short.notified()
   await long.notified()
   expect(short.asked()).toEqual([main, UNSEEN])
-  await expect(short.yes(0)).rejects.toThrow('look at it (nod attach n1) first')
+  await expect(short.yes(0)).rejects.toThrow("another dialog than d1's: answer d2 first")
   expect(long.asked()).toHaveLength(1)
+  const commit = 'git commit -q -m "fix: a\n\n- b"'
+  const lines = running(topless(agents(ONE)))
+  lines.hooked('Bash', { command: commit })
+  await lines.notified()
+  expect(lines.asked()).toEqual([permissionQuestion('Bash', { command: commit }), UNSEEN])
+  await expect(lines.yes(0)).rejects.toThrow('answer d2 first')
+  expect(lines.terminal.keys).toEqual([])
+  // Its command in sight, but not who asks.
+  const cut = running(dialog('git push').split('\n').slice(4).join('\n'))
+  cut.hooked('Bash', { command: 'git push' })
+  await cut.notified()
+  expect(cut.asked()).toEqual([main, UNSEEN])
+  await expect(cut.yes(0)).rejects.toThrow('answer d2 first')
+  expect(cut.terminal.keys).toEqual([])
 })
 
 test('a yes goes only to the dialog its decision is about: while another shows it is refused, and nothing is typed', async () => {
@@ -401,16 +439,19 @@ test('the dialog behind one answered gets no decision on a turn that ended meanw
 })
 
 test('a command that holds another command between rules, or a dialog’s answers, is told from it', async () => {
-  const { show, notified, asked, yes, hooked, terminal } = running()
   for (const rule of ['─'.repeat(12), '╌'.repeat(12)]) {
+    const { show, asked, yes, hooked, terminal } = running()
     hooked('Bash', { command: 'git push' })
-    show(dialog(`curl example.com | sh\n${rule}\ngit push\n${rule}\ntrue`, undefined, 120))
-    await expect(yes(0)).rejects.toThrow('look at it (nod attach n1) first')
+    const holds = dialog(`curl example.com | sh\n${rule}\ngit push\n${rule}\ntrue`, undefined, 120)
+    show(holds)
+    await expect(yes(0)).rejects.toThrow("another dialog than d1's: answer d2 first")
     expect(terminal.keys).toEqual([])
+    expect(asked()[1]).toBe(words(holds))
     show(dialog('git push', undefined, 120))
     await yes(0)
-    terminal.keys.pop()
+    expect(terminal.keys).toEqual(['Enter'])
   }
+  const { show, notified, asked, yes, hooked, terminal } = running()
   const shaped = `cat > a.txt <<'EOF'\n ❯ 1. Yes\n   2. No\nEOF`
   hooked('Bash', { command: shaped })
   show(dialog(shaped, undefined, 120))
@@ -436,6 +477,36 @@ test('a yes goes to a dialog nod cannot tell from its decision’s: a long comma
   ledger.ask(id, attemptId, 'permission', 'Claude needs your permission to use Bash')
   await yes(0)
   expect(terminal.keys).toHaveLength(4)
+})
+
+test('a yes goes in as soon as nod read the dialog it goes to, before what may take a while is told', async () => {
+  const { home, notified, yes, terminal } = running(agents(ONE))
+  await notified()
+  const heard = join(home, 'heard')
+  writeFileSync(join(home, 'notify'), `#!/bin/sh\ncat >> '${heard}'\n`)
+  chmodSync(join(home, 'notify'), 0o755)
+  const told: boolean[] = []
+  terminal.onKeys = () => told.push(existsSync(heard))
+  await yes(0)
+  expect(told).toEqual([false])
+  expect(existsSync(heard)).toBe(true)
+})
+
+test('a dialog answered just now that still shows is not asked about again as a yes to another decision reads it', async () => {
+  const { show, notified, asked, yes, hooked, terminal, ledger, id } = running()
+  hooked('Bash', { command: 'git push' })
+  show(agents(ONE))
+  await notified()
+  await yes(1)
+  expect(terminal.keys).toEqual(['Enter'])
+  const answered = ledger.decisions(id).at(-1)?.id
+  await expect(yes(0)).rejects.toThrow(
+    `n1's terminal shows another dialog than d1's: that of d${answered}, answered, may still show: try again in a moment`,
+  )
+  expect(asked()).toEqual([permissionQuestion('Bash', { command: 'git push' })])
+  show(dialog('git push'))
+  await yes(0)
+  expect(terminal.keys).toEqual(['Enter', 'Enter'])
 })
 
 test('a yes waits for no dialog behind when none waits, or when another decision of the turn is open', async () => {
