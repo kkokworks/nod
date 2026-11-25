@@ -1,8 +1,10 @@
 import { z } from 'zod'
+import { QUESTION_LIMIT } from './decisions'
 import { type Dialog, dialogOn, isFor, isUnseen } from './dialog'
 import { type Decision, type Ledger, type Task, YES_OR_NO } from './ledger'
 import { sessionName } from './place'
 import { message } from './proc'
+import { heldUp } from './sending'
 import type { Terminals } from './tmux'
 import { firstLineOf, parseRef, type Session, Todos } from './todos'
 import { clean, taskLabel } from './view'
@@ -20,19 +22,16 @@ import { answer } from './worker'
 // (ui/package.json's port).
 const UI = 'http://127.0.0.1:4800/tasks'
 // The most a dialog's text takes, in rows of a terminal 80 columns wide; a longer one is read on the
-// UI, so the person sees all of what they say yes to. A character drawn in no column counts as one,
-// so none hides that a command was cut (QUESTION_LIMIT, decisions.ts) behind a short line.
+// UI, so the person sees all of what they say yes to: one an auto mode dialog read off the worker's
+// screen words takes some 24. A character drawn in no column counts as one, and a question as long
+// as nod keeps one (QUESTION_LIMIT, decisions.ts) may have been cut, so none looks whole that is not.
 // ponytail: not measured how Claude Code draws a tall dialog; a narrower terminal wraps more.
 const COLUMNS = 80
-const ROWS = 20
+const ROWS = 30
 // An answer sooner than `soonMs` after the dialog went out is a key pressed before it showed, or a
 // hook's (Elicitation), and is not used; nothing waits longer than `maxMs` on a person who is away.
 // In the open so a test can change them.
 export const WAIT = { soonMs: 1000, maxMs: 600_000 }
-// How old a permission decision is once Claude Code may have blocked its dialog by itself (2.1.332
-// counts down some 2 minutes in auto mode) and shown the next, less a margin for the 6 s a
-// Notification may open it after it showed.
-const BLOCKS_MS = 100_000
 const PROTOCOLS = ['2025-06-18', '2025-11-25']
 
 // What No does, as the dialog says it (answer in worker.ts).
@@ -81,23 +80,28 @@ export function mcpServer(o: {
   const send = (m: object): void => o.write(JSON.stringify({ jsonrpc: '2.0', ...m }))
   const todos = new Todos(o.ledger)
   let elicits = false
+  let gone = false
   let asked = 0
-  const waiting = new Map<string, (r: Reply) => void>()
+  // Each dialog nod shows, by its request's id: the tool call it is for, and what ends the wait.
+  const waiting = new Map<string, { call: string | number; done: (r: Reply) => void }>()
+  // Takes a dialog back that no one is to answer now, telling the client so it closes it.
+  const withdraw = (id: string, why: string): void => {
+    send({ method: 'notifications/cancelled', params: { requestId: id, reason: why } })
+    waiting.get(id)?.done({ failed: why })
+  }
 
-  // Shows `text` as a dialog and waits up to `ms` for the person; one given up on is withdrawn.
-  const elicit = (text: string, ms: number): Promise<Reply> => {
+  // Shows `text` as a dialog for tool call `call` and waits up to `ms` for the person.
+  const elicit = (text: string, ms: number, call: string | number): Promise<Reply> => {
+    if (gone) return Promise.resolve({ failed: 'the client went away' })
     const id = `nod-${++asked}`
     const { promise, resolve } = Promise.withResolvers<Reply>()
-    const timer = setTimeout(() => {
-      waiting.delete(id)
-      send({ method: 'notifications/cancelled', params: { requestId: id, reason: 'nod waited' } })
-      resolve({ failed: 'no answer came in time' })
-    }, ms)
-    waiting.set(id, (r) => {
+    const timer = setTimeout(() => withdraw(id, 'no answer came in time'), ms)
+    const done = (r: Reply): void => {
       clearTimeout(timer)
       waiting.delete(id)
       resolve(r)
-    })
+    }
+    waiting.set(id, { call, done })
     const schema = { type: 'object', properties: {} }
     send({
       id,
@@ -107,10 +111,13 @@ export function mcpServer(o: {
     return promise
   }
 
-  // Why a yes or no to permission decision `d` would not go to its own dialog, the one the Enter or
+  // Why a yes or no to permission decision `d` might not go to its own dialog, the one the Enter or
   // Escape goes to: its worker's terminal shows none (Claude Code blocks a request left unanswered
-  // by itself, or a person answered it there), or one nod cannot tell is its own once Claude Code
-  // may have blocked it and shown the next. Null when it would, as far as nod tells (toAnswer).
+  // by itself, or a person answered it there), or one nod cannot tell is its own (isFor): another
+  // tool's or command's in front of it, or the next once Claude Code blocked it. Null when it goes
+  // there for sure, as the person reads only nod's words of it.
+  // ponytail: so a long command's and another tool's decision, worded from the hook's input and not
+  // the dialog, goes to the UI; nod d<n> yes answers those as far as toAnswer tells.
   const astray = (d: Decision): string | null => {
     if (d.reason !== 'permission') return null
     let dialog: Dialog | null
@@ -119,15 +126,19 @@ export function mcpServer(o: {
     } catch (error) {
       return `nod could not read n${d.taskId}'s terminal (${message(error)}): d${d.id} stays open`
     }
-    const stays = `nod did not answer d${d.id}, which stays open; nod peek n${d.taskId} shows the terminal`
     if (dialog === null) {
-      return `n${d.taskId}'s terminal shows no dialog nod can read now: Claude Code blocks a request left unanswered by itself (in some 2 minutes, in auto mode), or it was answered there. ${stays}`
+      return `n${d.taskId}'s terminal shows no dialog nod can read now: Claude Code blocks a request left unanswered by itself (in some 2 minutes, in auto mode), or it was answered there. nod did not answer d${d.id}, which stays open; nod peek n${d.taskId} shows the terminal`
     }
-    if (isFor(d, dialog) || Date.now() - Date.parse(d.createdAt) < BLOCKS_MS) return null
-    return `n${d.taskId}'s terminal shows a dialog nod cannot tell is d${d.id}'s, which opened over ${BLOCKS_MS / 1000} s ago: Claude Code may have blocked its own by itself and shown the next. ${stays}`
+    if (isFor(d, dialog)) return null
+    return `n${d.taskId}'s terminal shows a dialog nod cannot tell is d${d.id}'s (another tool's or command's in front of it, or the next once Claude Code blocked it): the person looks at it (nod attach n${d.taskId}) and answers on ${UI}/${d.taskId}; d${d.id} stays open`
   }
 
-  const one = async (me: Session, d: Decision, until: number): Promise<Outcome> => {
+  const one = async (
+    me: Session,
+    d: Decision,
+    until: number,
+    call: string | number,
+  ): Promise<Outcome> => {
     const task = o.ledger.get(d.taskId)
     const page = `${UI}/${task.id}`
     if (!mayShow(todos, me, task)) {
@@ -144,7 +155,8 @@ export function mcpServer(o: {
       }
     }
     const text = dialogText(todos, d, task)
-    if (rows(text) > ROWS) {
+    const body = d.question.slice(d.question.indexOf('\n') + 1)
+    if (rows(text) > ROWS || body.length >= QUESTION_LIMIT) {
       const whole = d.reason === 'permission' ? ` (the dialog itself: nod attach n${task.id})` : ''
       return {
         line: `d${d.id} is too long for a dialog: the person reads${whole} and answers it on ${page}`,
@@ -158,7 +170,7 @@ export function mcpServer(o: {
     const before = astray(d)
     if (before !== null) return { line: before }
     const shown = now()
-    const reply = await elicit(text, until - shown)
+    const reply = await elicit(text, until - shown, call)
     if (typeof reply === 'object') {
       return { line: `d${d.id} stays open: ${reply.failed}`, stop: true }
     }
@@ -181,8 +193,9 @@ export function mcpServer(o: {
     try {
       // The person's answer: the model's session is only where they gave it, which hears it here.
       const took = await answer(o.ledger, o.home, o.terminals, d.id, said, 'human', me.sessionKey)
+      const sent = heldUp(o.ledger, task.id) ?? `sent to task n${task.id}`
       return {
-        line: `d${d.id} ${d.reason}: the person answered ${said}${did(task.id, d.reason, said, took)}`,
+        line: `d${d.id} ${d.reason}: the person answered ${said}${did(task.id, d.reason, said, took, sent)}`,
       }
     } catch (error) {
       const closed = o.ledger.decision(d.id).answer
@@ -193,7 +206,7 @@ export function mcpServer(o: {
   }
 
   // The tool call: one decision, or each open one of the session's in turn.
-  const decide = async (ref: string | undefined): Promise<Outcome> => {
+  const decide = async (ref: string | undefined, call: string | number): Promise<Outcome> => {
     if (o.env.NOD_TASK !== undefined || o.env.SANDBOX_RUNTIME === '1') {
       return { line: 'nod shows no decision from a nod worker or a sandbox', refused: true }
     }
@@ -205,7 +218,7 @@ export function mcpServer(o: {
       }
     }
     const until = now() + WAIT.maxMs
-    if (ref !== undefined) return one(me, o.ledger.decision(parseRef(ref, 'd', true)), until)
+    if (ref !== undefined) return one(me, o.ledger.decision(parseRef(ref, 'd', true)), until, call)
     const lines: string[] = []
     const seen = new Set<number>()
     for (;;) {
@@ -219,14 +232,18 @@ export function mcpServer(o: {
         )
       if (d === undefined) break
       seen.add(d.id)
-      const { line, stop } = await one(me, d, until)
+      const { line, stop } = await one(me, d, until, call)
       lines.push(line)
       if (stop || now() >= until) break
     }
     return { line: lines.join('\n') || 'no decision of this session that takes yes or no is open' }
   }
 
-  const result = async (method: string, params: Record<string, unknown>): Promise<object> => {
+  const result = async (
+    method: string,
+    params: Record<string, unknown>,
+    id: string | number,
+  ): Promise<object> => {
     if (method === 'initialize') {
       const asks = z
         .object({
@@ -256,7 +273,7 @@ export function mcpServer(o: {
     if (method === 'tools/call') {
       const call = Called.parse(params)
       if (call.name !== 'decide') throw new Error(`no tool ${call.name}`)
-      const out = await decide(call.arguments?.decision).catch(
+      const out = await decide(call.arguments?.decision, id).catch(
         (error): Outcome => ({ line: message(error), refused: true }),
       )
       return { content: [{ type: 'text', text: out.line }], isError: out.refused === true }
@@ -274,24 +291,31 @@ export function mcpServer(o: {
     }
     // The client's answer to a dialog nod showed.
     if (m.method === undefined) {
-      const done = typeof m.id === 'string' ? waiting.get(m.id) : undefined
+      const shown = typeof m.id === 'string' ? waiting.get(m.id) : undefined
       const got = Elicited.safeParse(m.result)
-      done?.(
+      shown?.done(
         got.success ? got.data.action : { failed: m.error?.message ?? 'the client said nothing' },
       )
       return
     }
-    // A notification (initialized, cancelled) needs nothing.
+    // A tool call the client cancelled (the person stopped the turn) shows no dialog any more.
+    if (m.method === 'notifications/cancelled') {
+      const call = m.params?.requestId
+      for (const [id, w] of waiting) if (w.call === call) withdraw(id, 'the call was cancelled')
+    }
+    // Any other notification (initialized) needs nothing.
     if (m.id === undefined || m.id === null) return
     try {
-      send({ id: m.id, result: await result(m.method, m.params ?? {}) })
+      send({ id: m.id, result: await result(m.method, m.params ?? {}, m.id) })
     } catch (error) {
       const code = (error as { code?: number }).code ?? -32603
       send({ id: m.id, error: { code, message: message(error) } })
     }
   }
+  // Nothing goes to a client that went away: its stdout may be closed.
   const close = (): void => {
-    for (const done of waiting.values()) done({ failed: 'the client went away' })
+    gone = true
+    for (const w of waiting.values()) w.done({ failed: 'the client went away' })
   }
   return { handle, close }
 }
@@ -308,13 +332,16 @@ function mayShow(todos: Todos, me: Session, task: Task): boolean {
 
 // What the dialog says, all from the ledger: the task and its title, the decision and its kind,
 // what it asks whole, and what each answer does. Control characters show as spaces, so none hides
-// part of a command.
+// part of a command, the issue key a session gave included. A rule line of a dialog read off the
+// worker's 200-column screen is drawn short, as it holds nothing.
 function dialogText(todos: Todos, d: Decision, task: Task): string {
   const todo = task.todoId === null ? null : todos.get(task.todoId)
+  const title = `${taskLabel(task)}: ${todo?.title ?? firstLineOf(task.brief)}`
+  const rule = (l: string): string => (/^\s*[─╌]{3,}$/.test(l) ? l.replace(/[─╌]+/, '╌╌╌') : l)
   return [
-    `nod d${d.id} ${d.reason} · ${taskLabel(task)}: ${clean(todo?.title ?? firstLineOf(task.brief))}`,
+    clean(`nod d${d.id} ${d.reason} · ${title}`),
     '',
-    ...d.question.split('\n').map(clean),
+    ...d.question.split('\n').map((l) => rule(clean(l))),
     '',
     `Accept says yes. Decline says no, which ${NO[d.reason]}. Esc leaves it open.`,
   ].join('\n')
@@ -322,12 +349,13 @@ function dialogText(todos: Todos, d: Decision, task: Task): string {
 
 // What the answer did, as the tool says it: a no as the dialog said it would, and a yes to landing
 // waits for the next pass, as the web UI's does (a pass runs the check, which may take minutes).
-function did(taskId: number, reason: string, said: string, took: boolean): string {
+// `sent`: what nod d<n> says of the message to the worker (heldUp).
+function did(taskId: number, reason: string, said: string, took: boolean, sent: string): string {
   if (!took) return `; task n${taskId} had ended, so it only closed`
   if (said === 'no') return `, which ${NO[reason]}`
   return reason === 'land'
     ? `; nod lands n${taskId} again at its next pass (nod land n${taskId} does now)`
-    : `; sent to task n${taskId}`
+    : `; ${sent}`
 }
 
 const rows = (text: string): number =>

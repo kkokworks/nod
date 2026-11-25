@@ -386,7 +386,8 @@ const USAGE = `usage:
                                    Claude Code's, worded by nod, and answers it as theirs: Accept
                                    yes, Decline no, Esc or no answer in 10 minutes leaves it open,
                                    as does an answer within a second of showing. One too long for
-                                   the dialog, one whose command nod could not read, and any in a
+                                   the dialog, one whose command nod could not read or whose
+                                   worker shows a dialog nod cannot tie to it, and any in a
                                    Claude Code without dialogs are answered on the web UI's task
                                    page instead. It refuses a worker, a sandbox, and decisions
                                    that are not the session's work (an orchestrator's: also those

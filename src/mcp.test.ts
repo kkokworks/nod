@@ -3,6 +3,7 @@ import { resolve } from 'node:path'
 import { dialog } from '../test/dialog'
 import { tempDirs } from '../test/tmp'
 import { decide, permissionQuestion } from './decisions'
+import { dialogOn } from './dialog'
 import { type DecisionReason, Ledger, type NewTask } from './ledger'
 import { mcpServer, WAIT } from './mcp'
 import { Tmux } from './tmux'
@@ -52,8 +53,10 @@ function setup() {
     question: string,
     project: number | null = p.id,
     root: string | null = null,
+    issue: string | null = null,
   ): Promise<number> => {
-    const id = todos.delegateNew({ ...brief(`Ship it ${reason}`), rootSession: root }, project, 'h')
+    const task = { ...brief(`Ship it ${reason}`), rootSession: root, issue }
+    const id = todos.delegateNew(task, project, 'h')
     ledger.setRunning(id, home)
     const attemptId = ledger.startAttempt({
       taskId: id,
@@ -123,7 +126,16 @@ function setup() {
     const capabilities =
       o.elicitation === null ? {} : { elicitation: o.elicitation ?? { form: {} } }
     await request('initialize', { protocolVersion: '2025-11-25', capabilities })
-    return { out, shown, handle, close, request, call, reply }
+    // The client cancels its last call, as when the person stops the turn.
+    const cancel = (): Promise<void> =>
+      handle(
+        JSON.stringify({
+          jsonrpc: '2.0',
+          method: 'notifications/cancelled',
+          params: { requestId: n },
+        }),
+      )
+    return { out, shown, handle, close, cancel, request, call, reply }
   }
   const answers = () =>
     ledger
@@ -163,7 +175,13 @@ test('nod mcp answers initialize, ping and tools/list, and nothing for a notific
 test("the person's Accept is yes and Decline no, in a dialog nod words from its ledger; Esc leaves it open", async () => {
   const { ledger, asking, client, answers } = setup()
   const [d1, d2, d3] = [
-    await asking('land', 'The push was refused.\nPush\r again?\u001b[2K'),
+    await asking(
+      'land',
+      'The push was refused.\nPush\r again?\u001b[2K',
+      undefined,
+      null,
+      'A-1\u001b[8m\u202e',
+    ),
     await asking('land', 'Again?'),
     await asking('land', 'Once more?'),
   ]
@@ -174,7 +192,7 @@ test("the person's Accept is yes and Decline no, in a dialog nod words from its 
   })
   expect(c.shown).toEqual([
     // A control character shows as a space, so none hides part of what it asks.
-    `nod d${d1} land · task n1 t1: Ship it land\n\nThe push was refused.\nPush  again? [2K\n\nAccept says yes. Decline says no, which stops landing the task; its work stands. Esc leaves it open.`,
+    `nod d${d1} land · task n1 t1 A-1 [8m : Ship it land\n\nThe push was refused.\nPush  again? [2K\n\nAccept says yes. Decline says no, which stops landing the task; its work stands. Esc leaves it open.`,
   ])
   expect(ledger.decision(d1).answer).toBe('yes')
   const no = await client({ person: () => ({ action: 'decline' }) })
@@ -226,6 +244,28 @@ test('an answer within a second of showing is not used, nor one to a decision an
   expect(answers()).toEqual([f])
 })
 
+test("a rule the person accepts is added as theirs, not the session's", async () => {
+  const { home, ledger, todos, p, client } = setup()
+  const of = todos.delegateNew(brief('Fix the build'), p.id, 'h')
+  const retro = ledger.addRetro(ledger.get(of), 'Look back on it')
+  ledger.setRunning(retro, home)
+  const turn = ledger.startAttempt({
+    taskId: retro,
+    kind: 'start',
+    decisionId: null,
+    sessionId: 'r',
+    prompt: 'p',
+  })
+  ledger.endAttempt(turn, { outcome: 'needs_decision', summary: 'Keep commits small', report: 'r' })
+  await decide(ledger, home, retro, turn, 'rule', 'Add the rule?\nKeep commits small')
+  const d = ledger.decisions(retro)[0]?.id
+  expect((await (await client()).call(`d${d}`)).text).toBe(
+    `d${d} rule: the person answered yes; sent to task n${retro}`,
+  )
+  expect(ledger.rules().map((r) => r.text)).toEqual(['Keep commits small'])
+  expect(ledger.db.query('select actor from rule_changes').all()).toEqual([{ actor: 'human' }])
+})
+
 test('refuses a worker, a sandbox, a session nod open did not open, and decisions not of the session', async () => {
   const { todos, p, q, asking, client, worker } = setup()
   worker.screen = dialog('ls')
@@ -265,7 +305,7 @@ test('refuses a worker, a sandbox, a session nod open did not open, and decision
 test('shows no dialog where the person could not read all of it, nor in a Claude Code without dialogs, but names the task page', async () => {
   const { asking, client } = setup()
   const short = await asking('land', 'Push again?')
-  const long = await asking('rule', `Add the rule?\n${'x'.repeat(1600)}`)
+  const long = await asking('rule', `Add the rule?\n${'x\n'.repeat(30)}`)
   const unseen = await asking(
     'permission',
     'Claude needs your permission. Answer yes to allow; anything else denies.\n어느 명령인지 확인하지 못함 (nod attach n3)',
@@ -330,20 +370,27 @@ test("a permission is answered only while its worker's dialog shows", async () =
     `d${d} permission: the person answered yes; sent to task n1`,
   )
   expect([ledger.decision(d).answer, worker.keys]).toEqual(['yes', ['Enter']])
-  // Answered late: Claude Code blocked ls's dialog by itself and shows another tool's, which nod
-  // cannot tell from its own; the Enter would allow that one.
-  const late = await asking('permission', permissionQuestion('Bash', { command: 'ls' }))
-  const old = new Date(Date.now() - 101_000).toISOString()
-  ledger.db.query('UPDATE decisions SET created_at = ?1 WHERE id = ?2').run(old, late)
-  worker.screen = dialog('src/a.ts', 'Edit the file?', 60, 'Edit file')
-  expect((await ok.call(`d${late}`)).text).toContain(
-    `n2's terminal shows a dialog nod cannot tell is d${late}'s, which opened over 100 s ago`,
+  // A dialog nod cannot tell is the decision's: another tool's in front of it (two fetches at once,
+  // or the next once Claude Code blocked ls's). The Enter would allow that one.
+  const late = await asking('permission', permissionQuestion('WebFetch', { url: 'b.example' }))
+  worker.screen = dialog('a.example', 'Fetch it?', 60, 'Fetch 1 of 2')
+  expect((await ok.call(`d${late}`)).text).toBe(
+    `n2's terminal shows a dialog nod cannot tell is d${late}'s (another tool's or command's in front of it, or the next once Claude Code blocked it): the person looks at it (nod attach n2) and answers on http://127.0.0.1:4800/tasks/2; d${late} stays open`,
   )
   worker.screen = new Error('no server running')
   expect((await ok.call(`d${late}`)).text).toBe(
     `nod could not read n2's terminal (no server running): d${late} stays open`,
   )
   expect([ledger.decision(late).answer, worker.keys]).toEqual([null, ['Enter']])
+  // One opened from the dialog's words, read off the worker's 200 columns: its rules drawn short.
+  const screen = dialog('git push', undefined, 200)
+  const head = 'Claude needs your permission. Answer yes to allow; anything else denies.'
+  const read = await asking('permission', `${head} Its dialog:\n${dialogOn(screen)?.text}`)
+  worker.screen = screen
+  expect((await ok.call(`d${read}`)).text).toBe(
+    `d${read} permission: the person answered yes; sent to task n3`,
+  )
+  expect(ok.shown.at(-1)).toContain('\n╌╌╌\n │ git push\n╌╌╌\n')
 })
 
 test('gives up on a person who does not answer, withdrawing the dialog, and leaves the decision open', async () => {
@@ -356,16 +403,25 @@ test('gives up on a person who does not answer, withdrawing the dialog, and leav
   expect(c.out.at(-2)).toEqual({
     jsonrpc: '2.0',
     method: 'notifications/cancelled',
-    params: { requestId: asked?.id, reason: 'nod waited' },
+    params: { requestId: asked?.id, reason: 'no answer came in time' },
   })
   // An answer after that is no one's.
   await c.reply({ action: 'accept' }, asked?.id)
   expect(ledger.decision(d).answer).toBeNull()
-  // The client went away while the person had the dialog.
+  // The person stopped the turn: the client cancels the call, and nod takes its dialog back.
   WAIT.maxMs = 600_000
+  const stopped = c.call(`d${d}`)
+  const shown = c.out.findLast((m) => m.method === 'elicitation/create')?.id
+  await c.cancel()
+  expect((await stopped).text).toBe(`d${d} stays open: the call was cancelled`)
+  expect(c.out.at(-2)?.params).toEqual({ requestId: shown, reason: 'the call was cancelled' })
+  // The client went away while the person had the dialog, and before the next.
   const waited = c.call(`d${d}`)
   c.close()
   expect((await waited).text).toBe(`d${d} stays open: the client went away`)
+  const asks = c.out.filter((m) => m.method === 'elicitation/create').length
+  expect((await c.call(`d${d}`)).text).toBe(`d${d} stays open: the client went away`)
+  expect(c.out.filter((m) => m.method === 'elicitation/create')).toHaveLength(asks)
 })
 
 test('nod mcp speaks on stdout alone, a line a message', async () => {
