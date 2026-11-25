@@ -103,12 +103,13 @@ it('a decision shows a long report from its start, then where all of it is and i
 it('a code fence the cut leaves open closes, unless it is indented, and one it does not stays as it is', () => {
   const shown = (report: string): string => reportStart(report, 60, 'See n1')
   const code = 'x\n'.repeat(100)
-  for (const marks of ['```', '~~~~', '   ```']) {
-    const close = marks.startsWith(' ') ? '' : `${marks}\n`
+  for (const marks of ['```', '~~~~']) {
     expect(shown(`A or B?\n${marks}sh\n${code}${marks}\nNOD: question | A or B?`)).toMatch(
-      new RegExp(`x\n${close}\n… See n1\n\nNOD: question \\| A or B\\?$`),
+      new RegExp(`x\n${marks}\n\n… See n1\n\nNOD: question \\| A or B\\?$`),
     )
   }
+  const inList = `1. A or B?\n   \`\`\`sh\n${'   x\n'.repeat(100)}   \`\`\`\nNOD: question | A or B?`
+  expect(shown(inList)).toMatch(/x\n\n… See n1\n\nNOD: question \| A or B\?$/)
   // Closed on a line that is indented, or that ends in CRLF, or a list's that opens beside its mark.
   for (const closed of [
     '```\nx\n```\n',

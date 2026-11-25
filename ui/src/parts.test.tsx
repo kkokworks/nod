@@ -42,6 +42,9 @@ test('a cut question keeps its report line a paragraph, with a link to all of it
     `- \`\`\`sh\n  echo hi\n  \`\`\`\n\n${words}`,
     `- A:\n  \`\`\`sh\n  echo hi\n\n${words}`,
     `\`\`\`sh\r\necho hi\r\n\`\`\`\r\n${words}`,
+    // One in a list does not stand for the one after it: cut in that, or closed at the line's start.
+    `- \`\`\`sh\n  echo hi\n  \`\`\`\n\nThen:\n\`\`\`sh\n${code('')}\`\`\`\n`,
+    `- A:\n  \`\`\`sh\n  echo hi\n\`\`\`\n${words}`,
   ]) {
     const report = `Which?\n\n${body}NOD: question | A or B?`
     const html = renderToString(<Markdown text={reportStart(report, 2000, `nod show n7, ${at}`)} />)

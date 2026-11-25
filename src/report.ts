@@ -198,10 +198,11 @@ function fences(lines: string[], indent = 3): { inside: boolean[]; unclosed: num
 // What a decision shows of a report: all of it, or, past `limit` characters, its start, where a
 // worker is told to put what it asks, then `rest` (where all of it is), and the report line, which
 // nod reads as the gist of it, when the start does not reach that. A code fence the cut leaves open
-// closes there, or the web UI would show what follows as code. Not an indented one, which is a
-// list's: it ends with the list, at the first line that is not indented, and a line to close it would
-// open another.
-// ponytail: an indented fence in no list stays open; tell those apart when one bites.
+// closes there, or the web UI would show what follows as code. Not an indented one: a list's ends
+// with the list, at the first line that is not indented, and its lines alone do not tell whether it
+// has; a line to close one that ended would open another.
+// ponytail: an indented fence Markdown takes as no list's (in none, or indented less than its item's
+// words) stays open; tell those apart when one bites.
 export function reportStart(report: string, limit: number, rest: string): string {
   if (report.length <= limit) return report
   const lines = report.split('\n')
