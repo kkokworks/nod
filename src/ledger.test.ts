@@ -1,5 +1,5 @@
 import { Database } from 'bun:sqlite'
-import { afterAll, expect, test } from 'bun:test'
+import { afterAll, expect, setSystemTime, test } from 'bun:test'
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tempDirs } from '../test/tmp'
@@ -1106,6 +1106,33 @@ test('median decision wait uses answered decisions only', () => {
   }
   ledger.ask(taskId, attemptId, 'question', 'still open')
   expect(ledger.stats().decisions).toEqual({ total: 4, open: 1, medianWaitSecs: 20 })
+})
+
+test('stats count the calls sent back by day, the latest days of them; each is told to nobody', () => {
+  const ledger = new Ledger(freshHome())
+  const id = task(ledger)
+  let calls = 0
+  const sendBack = (at: Date): void => {
+    setSystemTime(at)
+    expect(ledger.sendBack(id, `git log -${++calls}`, () => true)).toBe(true)
+  }
+  try {
+    sendBack(new Date(2026, 0, 15, 23, 59))
+    sendBack(new Date(2026, 0, 16, 0, 1))
+    sendBack(new Date(2026, 0, 16, 23, 59))
+    ledger.addNotice({ taskId: id, attemptId: null, event: 'allowed', note: 'bun install' })
+    expect(ledger.stats().sentBack).toEqual({ '2026-01-15': 1, '2026-01-16': 2 })
+    for (let day = 1; day <= 14; day += 1) sendBack(new Date(2026, 1, day, 12))
+    expect(Object.keys(ledger.stats().sentBack)).toEqual(
+      Array.from({ length: 14 }, (_, i) => `2026-02-${String(i + 1).padStart(2, '0')}`),
+    )
+  } finally {
+    setSystemTime()
+  }
+  expect(ledger.unsentNotices().map((n) => n.event)).toEqual(['allowed'])
+  expect(ledger.sentBack(id).map((n) => n.sessionId)).toEqual(Array(calls).fill(null))
+  expect(ledger.sendBack(id, 'git log', () => false)).toBe(false)
+  expect(ledger.sentBack(id)).toHaveLength(calls)
 })
 
 const task = (ledger: Ledger, t: { repo?: string; after?: number[] } = {}): number =>

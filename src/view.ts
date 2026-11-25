@@ -4,7 +4,7 @@ import { sessionName } from './place'
 import { quote } from './tmux'
 import type { Change, SessionPlace } from './todos'
 
-// How much of a command nod allowed its line shows: one may hold a whole commit message.
+// How much of a command nod allowed its line shows: one may name a great many paths.
 const ALLOWED_LIMIT = 300
 
 // What nod allowed a task's worker itself (Notice), as the project session hears it: one line in

@@ -2,7 +2,6 @@ import { z } from 'zod'
 import type { PermissionEvent } from './allow'
 import {
   announce,
-  asking,
   closeDecisions,
   decide,
   ended,
@@ -11,6 +10,7 @@ import {
   permissionQuestion,
   QUESTION_LIMIT,
 } from './decisions'
+import { askOnScreen } from './dialog'
 import { followWork, lands } from './done'
 import { landSoon } from './land'
 import type { Attempt, Ledger } from './ledger'
@@ -50,7 +50,7 @@ import {
 // What nod does as a worker's Claude Code hooks come (`nod hook <event>` in cli.ts): what each
 // hook passes on stdin, and the step of the worker's lifecycle (worker.ts, its turns and decisions
 // in turns.ts and decisions.ts) it takes. Which hooks a session gets is settings.ts's; the
-// PermissionRequest hook's allow is allow.ts's, a project session's inbox hook inbox.ts's.
+// PermissionRequest hook's answer is allow.ts's, a project session's inbox hook inbox.ts's.
 // worker.ts does not import this module.
 
 // What a permission decision gets once the tool it asked for ran (onToolRan): the person allowed it
@@ -283,18 +283,18 @@ function pastedByNod(ledger: Ledger, open: Attempt, prompt: string, left: string
   return rest.trim() === ''
 }
 
-// Called by the PermissionRequest hook for a prompt nod does not allow itself (allow.ts). A permission
+// Called by the PermissionRequest hook for a prompt nod does not answer itself (allow.ts). A permission
 // prompt pauses the worker mid-turn, so it becomes a decision. Claude Code runs the hook as it shows
 // the dialog (2.1.310's binary), some 6 s before the dialog's Notification, so the decision opens
 // here: from then on deliver sends no message into the turn, whose Enter would answer the dialog.
 // Each dialog opens its own, as each Notification did. The dialog may not be on the screen yet, so
 // the question gives what the worker asked for. The decision goes in before what the turn's start
 // closed is told, which may take a while (notify). Not a subagent's: a background one's runs this
-// hook too, then is denied with no dialog (2.1.310's binary), so its decision waits for the
-// Notification, which comes only for a dialog shown, as before.
+// hook before its dialog (2.1.332's binary), which need not follow (2.1.310 denied it with none), so
+// its decision waits for the Notification, which comes only for a dialog (askOnScreen).
 // ponytail: beside the dialog, not before it: while the hook starts (Bun, the ledger), a message
-// can still go in; only Claude Code could close that. A foreground subagent's dialog keeps the 6 s
-// to its Notification; the hook cannot tell it from a background one's.
+// can still go in; only Claude Code could close that. A subagent's dialog keeps the 6 s to its
+// Notification.
 export async function onPermissionAsk(
   ledger: Ledger,
   home: string,
@@ -350,8 +350,8 @@ export async function onToolRan(
   await announce(home, ledger.get(taskId), closed, ALLOWED_HERE)
 }
 
-// Called by the Notification hook: a permission prompt still shown after some 6 s. The other
-// notifications need nothing from nod.
+// Called by the Notification hook: a permission prompt still shown after some 6 s, or that waits
+// behind one (2.1.330 on). The other notifications need nothing from nod.
 export async function onNotification(
   ledger: Ledger,
   home: string,
@@ -362,20 +362,10 @@ export async function onNotification(
   const taskId = ledger.taskOfSession(event.session_id)
   if (taskId === null) return
   const attemptId = await currentAttempt(ledger, home, taskId, event.session_id)
-  // The PermissionRequest hook opened the dialog's decision as it showed (onPermissionAsk). One
-  // Claude Code runs no hook for, a prompt only a person may answer (2.1.310), or whose hook
-  // failed, opens here.
-  if (asking(ledger, taskId, attemptId) !== undefined) return
-  const screen = terminals.screen(sessionName(taskId))
-  const prompt = screen.trimEnd().split('\n').slice(-15).join('\n')
-  await decide(
-    ledger,
-    home,
-    taskId,
-    attemptId,
-    'permission',
-    `${event.message}. Answer yes to allow; anything else denies.\n${prompt}`,
-  )
+  // The PermissionRequest hook opened the dialog's decision as it showed (onPermissionAsk). A
+  // subagent's, one Claude Code runs no hook for, a prompt only a person may answer (2.1.310), and
+  // one whose hook failed open here.
+  await askOnScreen(ledger, home, terminals, taskId, attemptId, event.message)
 }
 
 // Called by the SessionStart hook once Claude Code has compacted a worker's conversation: what it
