@@ -621,7 +621,7 @@ exit 3
   }
   const key = (): string => todos.latestSession(p.id)?.sessionKey ?? ''
   const told = (session: string): string =>
-    `--append-system-prompt nod open opened this session for project p1 Release: nod add here puts work in that project, and the project's tasks and decisions are this session's. --settings ${openSettings()} ${openMcp(session, home).join(' ')}`
+    `--append-system-prompt nod open opened this session for project p1 Release: nod add here puts work in that project, and the project's tasks and decisions are this session's. --settings ${openSettings()} ${openMcp(session, { ...env, CLAUDE_CONFIG_DIR: account }).join(' ')}`
 
   const first = open(here, 'Release')
   expect(first.code).toBe(3)

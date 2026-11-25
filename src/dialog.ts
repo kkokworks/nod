@@ -110,7 +110,7 @@ const drawnIn = (d: Decision): Dialog | null =>
 
 // Whether decision `d` is about `dialog`, for sure: worded from that dialog, or from the command it
 // holds.
-function isFor(d: Decision, dialog: Dialog): boolean {
+export function isFor(d: Decision, dialog: Dialog): boolean {
   if (!dialog.whole) return false
   const drawn = drawnIn(d)
   if (drawn !== null) return dialog.asks === drawn.asks

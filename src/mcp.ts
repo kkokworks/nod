@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { dialogOn, isUnseen } from './dialog'
+import { type Dialog, dialogOn, isFor, isUnseen } from './dialog'
 import { type Decision, type Ledger, type Task, YES_OR_NO } from './ledger'
 import { sessionName } from './place'
 import { message } from './proc'
@@ -20,14 +20,19 @@ import { answer } from './worker'
 // (ui/package.json's port).
 const UI = 'http://127.0.0.1:4800/tasks'
 // The most a dialog's text takes, in rows of a terminal 80 columns wide; a longer one is read on the
-// UI, so the person sees all of what they say yes to.
+// UI, so the person sees all of what they say yes to. A character drawn in no column counts as one,
+// so none hides that a command was cut (QUESTION_LIMIT, decisions.ts) behind a short line.
 // ponytail: not measured how Claude Code draws a tall dialog; a narrower terminal wraps more.
 const COLUMNS = 80
 const ROWS = 20
-// An accept sooner than `soonMs` after the dialog went out is a key pressed before it showed, or a
+// An answer sooner than `soonMs` after the dialog went out is a key pressed before it showed, or a
 // hook's (Elicitation), and is not used; nothing waits longer than `maxMs` on a person who is away.
 // In the open so a test can change them.
 export const WAIT = { soonMs: 1000, maxMs: 600_000 }
+// How old a permission decision is once Claude Code may have blocked its dialog by itself (2.1.332
+// counts down some 2 minutes in auto mode) and shown the next, less a margin for the 6 s a
+// Notification may open it after it showed.
+const BLOCKS_MS = 100_000
 const PROTOCOLS = ['2025-06-18', '2025-11-25']
 
 // What No does, as the dialog says it (answer in worker.ts).
@@ -55,12 +60,14 @@ const Called = z.object({
 })
 
 type Reply = 'accept' | 'decline' | 'cancel' | { failed: string }
+type Server = { handle: (line: string) => Promise<void>; close: () => void }
 // What became of one decision; `stop`: show no more in this call.
 type Outcome = { line: string; refused?: boolean; stop?: boolean }
 
-// Handles one line from the client, and returns once its answer is written. A tool call waits on
-// the client's answer to its dialog, a later line, so lines must not wait on each other (cli.ts).
-// `session`: the Claude session nod open ran the server for.
+// `handle`: one line from the client, done once its answer is written. A tool call waits on the
+// client's answer to its dialog, a later line, so lines must not wait on each other (cli.ts).
+// `close`: the client is gone, so no dialog of nod's is answered any more. `session`: the Claude
+// session nod open ran the server for.
 export function mcpServer(o: {
   ledger: Ledger
   home: string
@@ -69,7 +76,7 @@ export function mcpServer(o: {
   env: Record<string, string | undefined>
   write: (line: string) => void
   now?: () => number
-}): (line: string) => Promise<void> {
+}): Server {
   const now = o.now ?? Date.now
   const send = (m: object): void => o.write(JSON.stringify({ jsonrpc: '2.0', ...m }))
   const todos = new Todos(o.ledger)
@@ -100,17 +107,24 @@ export function mcpServer(o: {
     return promise
   }
 
-  // A permission decision's dialog is gone once its worker's terminal shows none: Claude Code blocks
-  // a request left unanswered by itself (2.1.332 counts down some 2 minutes in auto mode), or a
-  // person answered it there. Then Enter would go to what shows instead, and Escape stop the turn.
-  const gone = (d: Decision): string | null => {
+  // Why a yes or no to permission decision `d` would not go to its own dialog, the one the Enter or
+  // Escape goes to: its worker's terminal shows none (Claude Code blocks a request left unanswered
+  // by itself, or a person answered it there), or one nod cannot tell is its own once Claude Code
+  // may have blocked it and shown the next. Null when it would, as far as nod tells (toAnswer).
+  const astray = (d: Decision): string | null => {
     if (d.reason !== 'permission') return null
-    let screen = ''
+    let dialog: Dialog | null
     try {
-      screen = o.terminals.screen(sessionName(d.taskId))
-    } catch {}
-    if (dialogOn(screen) !== null) return null
-    return `n${d.taskId}'s terminal shows no dialog nod can read now: Claude Code blocks a request left unanswered by itself (in some 2 minutes, in auto mode), or it was answered there. nod did not answer d${d.id}, which stays open; nod peek n${d.taskId} shows the terminal`
+      dialog = dialogOn(o.terminals.screen(sessionName(d.taskId)))
+    } catch (error) {
+      return `nod could not read n${d.taskId}'s terminal (${message(error)}): d${d.id} stays open`
+    }
+    const stays = `nod did not answer d${d.id}, which stays open; nod peek n${d.taskId} shows the terminal`
+    if (dialog === null) {
+      return `n${d.taskId}'s terminal shows no dialog nod can read now: Claude Code blocks a request left unanswered by itself (in some 2 minutes, in auto mode), or it was answered there. ${stays}`
+    }
+    if (isFor(d, dialog) || Date.now() - Date.parse(d.createdAt) < BLOCKS_MS) return null
+    return `n${d.taskId}'s terminal shows a dialog nod cannot tell is d${d.id}'s, which opened over ${BLOCKS_MS / 1000} s ago: Claude Code may have blocked its own by itself and shown the next. ${stays}`
   }
 
   const one = async (me: Session, d: Decision, until: number): Promise<Outcome> => {
@@ -131,8 +145,9 @@ export function mcpServer(o: {
     }
     const text = dialogText(todos, d, task)
     if (rows(text) > ROWS) {
+      const whole = d.reason === 'permission' ? ` (the dialog itself: nod attach n${task.id})` : ''
       return {
-        line: `d${d.id} is too long for a dialog: the person reads and answers it on ${page}`,
+        line: `d${d.id} is too long for a dialog: the person reads${whole} and answers it on ${page}`,
       }
     }
     if (!elicits) {
@@ -140,7 +155,7 @@ export function mcpServer(o: {
         line: `this Claude Code shows nod no dialog (it said no elicitation): the person answers d${d.id} on ${page}`,
       }
     }
-    const before = gone(d)
+    const before = astray(d)
     if (before !== null) return { line: before }
     const shown = now()
     const reply = await elicit(text, until - shown)
@@ -150,9 +165,9 @@ export function mcpServer(o: {
     if (reply === 'cancel') {
       return { line: `the person closed the dialog of d${d.id}, which stays open`, stop: true }
     }
-    if (reply === 'accept' && now() - shown < WAIT.soonMs) {
+    if (now() - shown < WAIT.soonMs) {
       return {
-        line: `d${d.id} was accepted within a second of showing, sooner than a person reads it (a key pressed before it showed, or a hook): nod did not use it, and it stays open`,
+        line: `d${d.id} was answered within a second of showing, sooner than a person reads it (a key pressed before it showed, or a hook): nod did not use it, and it stays open`,
       }
     }
     const said = reply === 'accept' ? 'yes' : 'no'
@@ -161,7 +176,7 @@ export function mcpServer(o: {
     })
     const was = o.ledger.decision(d.id).answer
     if (was !== null) return elsewhere(was)
-    const after = gone(d)
+    const after = astray(d)
     if (after !== null) return { line: after }
     try {
       // The person's answer: the model's session is only where they gave it, which hears it here.
@@ -249,7 +264,7 @@ export function mcpServer(o: {
     throw Object.assign(new Error(`no method ${method}`), { code: -32601 })
   }
 
-  return async (line) => {
+  const handle = async (line: string): Promise<void> => {
     let m: z.infer<typeof Message>
     try {
       m = Message.parse(JSON.parse(line))
@@ -275,6 +290,10 @@ export function mcpServer(o: {
       send({ id: m.id, error: { code, message: message(error) } })
     }
   }
+  const close = (): void => {
+    for (const done of waiting.values()) done({ failed: 'the client went away' })
+  }
+  return { handle, close }
 }
 
 // Whether the session may show a decision of `task`: its work (Todos.isMine); for an orchestrator
@@ -312,4 +331,9 @@ function did(taskId: number, reason: string, said: string, took: boolean): strin
 }
 
 const rows = (text: string): number =>
-  text.split('\n').reduce((n, l) => n + Math.max(1, Math.ceil(Bun.stringWidth(l) / COLUMNS)), 0)
+  text
+    .split('\n')
+    .reduce(
+      (n, l) => n + Math.max(1, Math.ceil(Math.max(Bun.stringWidth(l), l.length) / COLUMNS)),
+      0,
+    )

@@ -385,7 +385,7 @@ const USAGE = `usage:
                                    the session's decisions that take yes or no as a dialog of
                                    Claude Code's, worded by nod, and answers it as theirs: Accept
                                    yes, Decline no, Esc or no answer in 10 minutes leaves it open,
-                                   as does an accept within a second of showing. One too long for
+                                   as does an answer within a second of showing. One too long for
                                    the dialog, one whose command nod could not read, and any in a
                                    Claude Code without dialogs are answered on the web UI's task
                                    page instead. It refuses a worker, a sandbox, and decisions
@@ -1180,11 +1180,13 @@ async function toolHook(): Promise<never> {
 
 // `nod mcp`: nod's MCP server (mcp.ts) for the session nod open names, until Claude Code closes
 // stdin. Its stdout is the protocol's alone, and each line is handled as it comes: a tool call
-// waits on the client's answer to its dialog, a later line.
+// waits on the client's answer to its dialog, a later line. An answer the person gave goes all the
+// way before it exits (a no's Escape and the message after it, say); a dialog no one can answer now
+// stays open.
 async function mcpCommand(): Promise<never> {
   console.log = console.error
   const { values } = parseArgs({ args: rest, options: { session: { type: 'string' } } })
-  const handle = mcpServer({
+  const { handle, close } = mcpServer({
     ledger: new Ledger(home),
     home,
     terminals,
@@ -1192,7 +1194,10 @@ async function mcpCommand(): Promise<never> {
     env: process.env,
     write: (line) => process.stdout.write(`${line}\n`),
   })
-  for await (const line of console) if (line.trim() !== '') void handle(line)
+  const lines: Promise<void>[] = []
+  for await (const line of console) if (line.trim() !== '') lines.push(handle(line))
+  close()
+  await Promise.allSettled(lines)
   process.exit(0)
 }
 
