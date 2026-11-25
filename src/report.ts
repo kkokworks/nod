@@ -173,16 +173,18 @@ function keptCode(lines: string[]): boolean[] {
 // Which lines are in a code fence, its mark lines too, and the line where a fence never closed
 // opens (`lines.length` with none). A fence closes on a line of its own marks, at least as many and
 // nothing after them: a "```sh" line inside it is its code. Ticks with more ticks after them on the
-// line are inline code, and open none.
-function fences(lines: string[]): { inside: boolean[]; unclosed: number } {
+// line are inline code, and open none. `indent`: how many spaces the line that opens one may have
+// before its marks.
+function fences(lines: string[], indent = 3): { inside: boolean[]; unclosed: number } {
   const inside: boolean[] = []
   let fence: string | null = null
   let unclosed = lines.length
   for (const [i, line] of lines.entries()) {
     const marks = /^ {0,3}(`{3,}(?=[^`]*$)|~{3,})/.exec(line)?.[1]
     const closes = marks?.startsWith(fence ?? '\n') && /^ {0,3}(`+|~+)[ \t]*$/.test(line)
-    inside.push(fence !== null || marks !== undefined)
-    if (fence === null && marks !== undefined) {
+    const opens = fence === null && marks !== undefined && line.search(/\S/) <= indent
+    inside.push(fence !== null || opens)
+    if (opens) {
       fence = marks
       unclosed = i
     } else if (closes) {
@@ -196,8 +198,10 @@ function fences(lines: string[]): { inside: boolean[]; unclosed: number } {
 // What a decision shows of a report: all of it, or, past `limit` characters, its start, where a
 // worker is told to put what it asks, then `rest` (where all of it is), and the report line, which
 // nod reads as the gist of it, when the start does not reach that. A code fence the cut leaves open
-// closes there, as indented as it opened (one in a list would open another at the line's start), as
-// the web UI would show all that follows as code.
+// closes there, or the web UI would show what follows as code. Not an indented one, which is a
+// list's: it ends with the list, at the first line that is not indented, and a line to close it would
+// open another.
+// ponytail: an indented fence in no list stays open; tell those apart when one bites.
 export function reportStart(report: string, limit: number, rest: string): string {
   if (report.length <= limit) return report
   const lines = report.split('\n')
@@ -205,8 +209,8 @@ export function reportStart(report: string, limit: number, rest: string): string
   const reached = lines.slice(0, at + 1).join('\n').length <= limit
   const status = reached ? '' : cut(lines[at] ?? '', limit)
   const start = cut(report, limit - status.length).trimEnd()
-  const shown = start.split('\n')
-  const fence = /^ {0,3}(?:`{3,}|~{3,})/.exec(shown[fences(shown).unclosed] ?? '')?.[0]
+  const shown = start.split(/\r?\n/)
+  const fence = /^(?:`{3,}|~{3,})/.exec(shown[fences(shown, 0).unclosed] ?? '')?.[0]
   const closed = fence === undefined ? start : `${start}\n${fence}`
   return [closed, `… ${rest}`, status].filter((s) => s !== '').join('\n\n')
 }

@@ -100,16 +100,25 @@ it('a decision shows a long report from its start, then where all of it is and i
   expect(shown(`x${'😀'.repeat(100)}`)).toBe(`x${'😀'.repeat(49)}\n\n… See n1`)
 })
 
-it('a code fence the cut leaves open closes, and one it does not stays as it is', () => {
+it('a code fence the cut leaves open closes, unless it is indented, and one it does not stays as it is', () => {
   const shown = (report: string): string => reportStart(report, 60, 'See n1')
   const code = 'x\n'.repeat(100)
   for (const marks of ['```', '~~~~', '   ```']) {
+    const close = marks.startsWith(' ') ? '' : `${marks}\n`
     expect(shown(`A or B?\n${marks}sh\n${code}${marks}\nNOD: question | A or B?`)).toMatch(
-      new RegExp(`x\n${marks}\n\n… See n1\n\nNOD: question \\| A or B\\?$`),
+      new RegExp(`x\n${close}\n… See n1\n\nNOD: question \\| A or B\\?$`),
     )
   }
-  const closed = `A or B?\n\`\`\`\nx\n\`\`\`\n${'y'.repeat(500)}`
-  expect(shown(closed)).toBe(`${closed.slice(0, 60)}\n\n… See n1`)
+  // Closed on a line that is indented, or that ends in CRLF, or a list's that opens beside its mark.
+  for (const closed of [
+    '```\nx\n```\n',
+    '```\nx\n  ```\n',
+    '```\r\nx\r\n```\r\n',
+    '- ```sh\n  x\n  ```\n\n',
+  ]) {
+    const report = `A or B?\n${closed}${'y'.repeat(500)}`
+    expect(shown(report)).toBe(`${report.slice(0, 60)}\n\n… See n1`)
+  }
   // Cut right after the fence's last line: it stays closed.
   const at = `${'y'.repeat(50)}\n\`\`\`\n\`\`\`\n${'z'.repeat(500)}`
   expect(reportStart(at, 59, 'See n1')).toBe(`${'y'.repeat(50)}\n\`\`\`\n\`\`\`\n\n… See n1`)
