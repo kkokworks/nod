@@ -65,8 +65,8 @@ export function taskTokens(
 }
 
 // What the tasks' calls since `since` used together, and which of the tasks with a turn or an end
-// since then have a session or subagent with no transcript, or one that cannot be read (which goes to
-// stderr).
+// since then, or no end yet, have a session or subagent with no transcript, or one that cannot be read
+// (which goes to stderr).
 export function tokensSince(
   ledger: Ledger,
   home: string,
@@ -77,11 +77,10 @@ export function tokensSince(
   const from = since.toISOString()
   const now = new Date().toISOString()
   for (const task of ledger.list()) {
-    // A turn still open goes on now, unless its task ended past it.
-    const open = FINISHED.has(task.status) ? null : now
-    const ends = ledger.attempts(task.id).map((a) => a.finishedAt ?? open ?? a.startedAt)
-    // Its end too: the review of its last turn runs once that is closed (settle in worker.ts).
-    if (![task.finishedAt ?? '', ...ends].some((at) => at >= from)) continue
+    // Not by its turns alone: the review of one runs once that is closed (settle in worker.ts).
+    const end = FINISHED.has(task.status) ? (task.finishedAt ?? '') : now
+    const turns = ledger.attempts(task.id).map((a) => a.finishedAt ?? a.startedAt)
+    if (![end, ...turns].some((at) => at >= from)) continue
     try {
       if (addTask(tokens, ledger, home, task, since.getTime()).length > 0)
         missing.push(`n${task.id}`)

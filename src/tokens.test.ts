@@ -212,7 +212,7 @@ test('what no transcript is left of is said, never counted as 0', () => {
   expect(tokenLines(count(id)).slice(0, 3)).toEqual(gone)
 })
 
-test('the last days’ tokens are those of the calls made then, of every task together, with the tasks of a turn then that some transcript is missing of', () => {
+test('the last days’ tokens are those of the calls made then, of every task together, with the tasks of then that some transcript is missing of', () => {
   const { home, config, ledger, start, keep } = setup()
   const since = new Date(Date.now() - 7 * DAY)
   const before = new Date(since.getTime() - 1)
@@ -220,6 +220,12 @@ test('the last days’ tokens are those of the calls made then, of every task to
     ledger.db
       .query('update attempts set started_at = $start, finished_at = $end where task_id = $id')
       .run({ id, start: startedAt.toISOString(), end: finishedAt?.toISOString() ?? null })
+  }
+  const endedBefore = (id: number): void => {
+    ledger.succeed(id)
+    ledger.db
+      .query('update tasks set finished_at = $at where id = $id')
+      .run({ id, at: before.toISOString() })
   }
   // A turn that began before then and goes on, and one of then.
   const one = start()
@@ -229,24 +235,32 @@ test('the last days’ tokens are those of the calls made then, of every task to
   keep(`${s}/subagents/agent-a1.jsonl`, says('m3', 'small', 4, before), says('m4', 'small', 8))
   const two = start()
   turnAt(two, before, since)
+  endedBefore(two)
   keep(`session-${two}.jsonl`, says('m5', 'big', 16))
-  // A turn that ended before then, reviewed since, and the task ended with it.
-  const reviewed = start()
-  turnAt(reviewed, before, before)
-  ledger.succeed(reviewed)
-  keep(`session-${reviewed}.jsonl`, says('m6', 'big', 32, before))
-  const brief = reviewBrief(ledger, ledger.get(reviewed), 'the report', null)
-  keep('r1.jsonl', user(brief), says('m7', 'small', 64, since))
-  // With no transcript: a task of then, and three with no turn then: an earlier one, one whose turn
-  // was left open as it ended, and one that has not started.
+  // Turns that ended before then, reviewed since: one task ended with it, one asks the person.
+  const passed = start()
+  turnAt(passed, before, before)
+  ledger.succeed(passed)
+  const failed = start()
+  turnAt(failed, before, before)
+  ledger.ask(failed, ledger.lastAttempt(failed)?.id ?? 0, 'check_failed', 'what now?')
+  for (const [id, size] of [
+    [passed, 64],
+    [failed, 128],
+  ] as const) {
+    keep(`session-${id}.jsonl`, says('m6', 'big', 32, before))
+    const brief = reviewBrief(ledger, ledger.get(id), 'the report', null)
+    keep(`review-${id}.jsonl`, user(brief), says('m7', 'small', size, since))
+  }
+  // With no transcript: a task of then, and three of before: one that ended, one whose turn was left
+  // open as it did, and one that has not started.
   const gone = start()
-  turnAt(start(), before, before)
+  const earlier = start()
+  turnAt(earlier, before, before)
+  endedBefore(earlier)
   const left = start()
   turnAt(left, before, null)
-  ledger.succeed(left)
-  ledger.db
-    .query('update tasks set finished_at = $at where id = $id')
-    .run({ id: left, at: before.toISOString() })
+  endedBefore(left)
   ledger.add({ ...NEW, after: [one] })
   // One that cannot be read.
   const broken = start()
@@ -259,7 +273,7 @@ test('the last days’ tokens are those of the calls made then, of every task to
       since: since.toISOString(),
       worker: { big: use(2, 18) },
       subagents: { small: use(1, 8) },
-      review: { small: use(1, 64) },
+      review: { small: use(2, 192) },
       missing: [`n${gone}`, `n${broken}`],
     })
   } finally {
