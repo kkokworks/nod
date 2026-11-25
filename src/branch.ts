@@ -53,9 +53,30 @@ export async function headOf(worktree: string): Promise<string> {
   return stdout.trim()
 }
 
-// nod's own git calls run no hooks: one the branch brings (a core.hooksPath into the worktree) would
-// run outside the sandbox. A rebase going on takes its messages as they are.
-export const NOD_GIT = ['git', '-c', 'core.hooksPath=/dev/null', '-c', 'core.editor=true']
+// nod's own git calls run no hooks and no file system monitor that a config names: a core.hooksPath
+// into the worktree (husky's) runs what the branch brings there, and git status and diff run git in
+// each submodule with that one's own config, which the worker can write (docs/design.md, 「워커가 쓸
+// 수 있는 git 설정」). Either would run outside the sandbox. git passes these settings on to the git
+// it runs in submodules. A rebase going on takes its messages as they are.
+export const NOD_GIT = [
+  'git',
+  '-c',
+  'core.hooksPath=/dev/null',
+  '-c',
+  'core.fsmonitor=false',
+  '-c',
+  'core.editor=true',
+]
+
+// For nod's git that reads a worktree's files or a submodule's git folder: no lazy fetch of an
+// object a partial clone lacks, which runs the remote command (core.sshCommand, an upload-pack) that
+// a submodule's config names. Not for a rebase, which the repo's own partial clone may need it for.
+// Before 2.44 git ignores it.
+export const NO_LAZY_FETCH = { GIT_NO_LAZY_FETCH: '1' }
+
+// git status --porcelain in a task's worktree, as nod's checks read it.
+export const worktreeStatus = (ws: string, ...args: string[]) =>
+  spawn([...NOD_GIT, '-C', ws, 'status', '--porcelain', ...args], undefined, { env: NO_LAZY_FETCH })
 
 // fetch and push reach the remote: a network that hangs, or a login that would ask for a password
 // no one is there to type, must not hold the tick. They run in a process group of their own, so the
@@ -83,7 +104,8 @@ export function rebasing(ws: string): boolean {
 
 // The files a stopped rebase left unmerged, one per line.
 export async function unmergedFiles(ws: string): Promise<string> {
-  return (await spawn(['git', 'diff', '--name-only', '--diff-filter=U'], ws)).stdout.trim()
+  const diff = [...NOD_GIT, 'diff', '--name-only', '--diff-filter=U']
+  return (await spawn(diff, ws, { env: NO_LAZY_FETCH })).stdout.trim()
 }
 
 // The commit a stopped rebase is on and the files in conflict, with how to resolve them.

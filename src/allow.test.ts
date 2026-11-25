@@ -10,6 +10,7 @@ import {
 } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { blocked, dialog, UNCHECKED } from '../test/dialog'
+import { marking, workerSubmodules } from '../test/git-commands'
 import { git } from '../test/remote'
 import { tempDirs } from '../test/tmp'
 import { ALLOW, back, harmless, LIMITS, loses, onPermissionRequest } from './allow'
@@ -204,6 +205,15 @@ test('nod allows rm -rf of what a worktree can make again, and dependency instal
   writeFileSync(join(magic, 'work', 'mine.ts'), 'mine\n')
   expect(allows('rm -rf work', magic)).toBe(false)
 })
+
+test("nod's look at what rm -rf takes runs none of the commands named in the config of a submodule its worker made", () => {
+  const { work } = worktree()
+  const { command, ran } = marking(tmp.make('nod-allow-marks-'))
+  workerSubmodules(work, command)
+
+  expect(harmless('rm -rf a b', work, work, true)).toBe(false)
+  expect(ran()).toEqual([])
+}, 30_000)
 
 const spec = (repo: string | null): NewTask => ({
   brief: 'clean up',

@@ -36,7 +36,7 @@ nod 는 여러 에이전트를 동시에 돌려 일을 처리하고, 사람에�
 | `src/proc.ts` | 명령 실행. 자기 프로세스 그룹에서 돌리기(`runGroup`, `spawn`), 여러 개를 한 번에 8개까지 읽기(`readAtOnce`), 오류 문구(`message`)와 메시지에 넣는 출력 길이(`OUTPUT_LIMIT`). nod 의 다른 모듈을 부르지 않아 어느 모듈이든 씁니다. |
 | `src/place.ts` | 작업이 있는 곳. 워커의 tmux 세션 이름(`sessionName`), 작업 폴더(`workspaceOf`), 브랜치(`branchOf`), 워커가 Unix 소켓을 둘 폴더(`socketsDir`). nod 가 워커의 tmux 세션에 두는 옵션 가운데 `worker.ts` 밖에서도 읽는 것(Stop 훅이 도는 중 `SETTLING_OPTION`, 칸이 띄운 Claude Code 의 pid `CLAUDE_OPTION`, 차례를 끝낸 API 오류 `STALLED_OPTION`)도 여기 있고, `worker.ts` 만 읽는 것은 `worker.ts` 에 있습니다. 장부의 타입 말고는 nod 의 다른 모듈을 부르지 않습니다. |
 | `src/report.ts` | 워커 보고 읽기. 마지막 보고 줄(`parseReport`), nod 에 명령을 부탁하는 마지막 줄(`parseRun`), 그 위의 `NOD: in` 줄(`parseCaptures`)과 `NOD: tell` 줄(`parseTells`), 착지 때 보고 위에 쓰는 PR 글(`prText`)과 그 글을 워커에게 청하는 문구(`PR_TEXT`·`TEXT_ONLY`), 긴 보고에서 결정에 싣는 앞부분(`reportStart`). 글자만 다루고 nod 의 다른 모듈을 부르지 않습니다. |
-| `src/branch.ts` | 작업 브랜치의 git 상태. 브랜치를 만든 곳(`createdFrom`)과 자기 커밋이 시작하는 곳(`ownStart`), HEAD(`headOf`), 멈춘 rebase(`rebasing`·`conflictBrief`)와 훅 없이 도는 nod 의 git(`NOD_GIT`). 작업 검증(`verify.ts`)과 착지(`land.ts`)가 함께 씁니다. `proc.ts` 말고는 nod 의 다른 모듈을 부르지 않습니다. |
+| `src/branch.ts` | 작업 브랜치의 git 상태. 브랜치를 만든 곳(`createdFrom`)과 자기 커밋이 시작하는 곳(`ownStart`), HEAD(`headOf`), 멈춘 rebase(`rebasing`·`conflictBrief`)와 훅·파일 시스템 감시 없이 도는 nod 의 git(`NOD_GIT`), worktree 를 읽는 git 의 지연 fetch 끄기(`NO_LAZY_FETCH`)와 worktree 의 `git status`(`worktreeStatus`). 작업 검증(`verify.ts`)과 착지(`land.ts`)가 함께 씁니다. `proc.ts` 말고는 nod 의 다른 모듈을 부르지 않습니다. |
 | `src/transcript.ts` | Claude Code 가 남기는 워커 세션의 대화 기록(JSONL) 읽기. 기록이 있는지(`hasTranscript`), 전체 줄(`transcriptLines`)과 끝 부분(`transcriptTail`), 마지막 차례가 Stop 없이 끝났는지(`endedWithoutStop`: 사람이 Escape 로 멈춤 `STOPPED_TURN`, 훅이 메시지를 막음 `HELD_BACK`), 훅이 마지막으로 막은 메시지(`lastHeldBack`), 하위 에이전트의 기록이 있는 곳(`subagentsOf`), 도구가 도는지(`toolRuns`), 차례 도중 붙여 넣은 메시지가 어떻게 됐는지(`heardOf`), 자동 모드 검사가 세션의 어느 호출을 실제로 거절했는지(`autoModeDenied`), 서브 에이전트가 백그라운드인지(`inBackground`). 읽기만 하고, 그 결과로 장부를 바꾸는 일은 `turns.ts`(`endTurnWithoutStop`·`forgetHeldBack`·`stoppedDialogs`)와 `worker.ts`(`carryUnheard`)·`allow.ts`(`unjudged`)에 있습니다. `worker.ts`·`hooks.ts`·`land.ts` 를 부르지 않습니다. |
 | `src/tokens.ts` | 작업이 쓴 토큰. 대화 기록의 usage 를 본체·하위 에이전트·독립 리뷰와 모델로 나눠 세기(한 작업 `taskTokens`, 최근 며칠의 합 `tokensSince`)와 `nod show` 의 줄(`tokenLines`). 장부에 적지 않습니다(「작업이 쓴 토큰」). |
 | `src/decisions.ts` | 결정 장부. 결정 열기(`decide`, 착지 결정 `askToLand`), 기다릴 것이 없어진 결정 닫기(`closeDecisions`)와 그 뒤 작업을 다시 도는 상태로 돌리기(`goesOn`), 열린 결정을 따라 보이는 할 일 목록에 닫혔다고 알리기(`announce`), 사람이 닫은 결정을 프로젝트 세션에 알리기(`noticeAnswered`), 작업이 끝났는지(`ended`·`finished`·`refuseEnded`). 장부와 알림(`notify.ts`)만 다루고 터미널은 받지 않습니다. 답이 워커의 칸에서 하는 일(`answer`)은 `worker.ts` 에 있습니다. `worker.ts`·`hooks.ts`·`land.ts` 를 부르지 않습니다. |
@@ -914,6 +914,7 @@ nod add --after <작업> ─▶ 대기(queued) ─▶ 앞 작업이 모두 성�
   `sh` 만 끊으면 멈춘 자식이 출력을 쥔 채 기다림이 이어집니다(리뷰).
   nod 의 git 은 훅 없이 돌립니다(`core.hooksPath=/dev/null`).
   브랜치가 바꾼 훅(husky 처럼 worktree 안을 가리키는 훅 경로)이 샌드박스 밖에서 돌지 않게 하려는 것입니다.
+  파일 시스템 감시도 끕니다(「워커가 쓸 수 있는 git 설정」).
   rebase 에는 `--no-update-refs` 를 붙여, 사용자 설정 `rebase.updateRefs` 가 뒤 작업의 브랜치까지 옮기지 않게 합니다.
   nod 가 worktree 에서 rebase·검증을 하는 동안에는(`landings.busy`) 사람의 `nod tell`·답을 거절합니다.
   워커가 움직이는 파일 위에서 일하지 않게 하려는 것입니다.
@@ -1882,7 +1883,7 @@ ask 규칙은 auto mode 와 샌드박스의 `autoAllowBashIfSandboxed` 보다 �
     경로마다 상대 경로이고, `-` 로 시작하지 않고, `..`·`.git`(대소문자 무관) 마디가 없어야 합니다.
     링크를 모두 풀어(없는 경로는 가장 가까운 있는 폴더를 풀고 나머지를 붙임, 끊긴 링크가 있으면 올림) 그 작업의 폴더 안이되 폴더 자체가 아니고, 푼 경로에도 `.git` 마디가 없어야 합니다.
     그래서 공용 git 폴더나 다른 폴더를 가리키는 링크, 그 링크를 거친 경로는 올립니다.
-    마지막으로 그 경로들 아래에 커밋하지 않은 변경과 git 이 무시하지 않는 새 파일이 없어야 합니다(worktree 맨 위에서 `git -c core.fsmonitor=false --no-optional-locks --literal-pathspecs status --porcelain --untracked-files=all -- <경로…>` 가 비어 있음. `--literal-pathspecs` 는 `:(top)x` 처럼 이름 지은 폴더가 git 에게 다른 경로를 가리키지 못하게 합니다, 리뷰에서 찾음).
+    마지막으로 그 경로들 아래에 커밋하지 않은 변경과 git 이 무시하지 않는 새 파일이 없어야 합니다(worktree 맨 위에서 `NOD_GIT` 으로 `--no-optional-locks --literal-pathspecs status --porcelain --untracked-files=all -- <경로…>` 가 지연 fetch 없이 비어 있음. `--literal-pathspecs` 는 `:(top)x` 처럼 이름 지은 폴더가 git 에게 다른 경로를 가리키지 못하게 합니다, 리뷰에서 찾음).
     git 에는 친 경로와 실제 경로(링크와 파일 시스템의 대소문자를 푼 것)를 둘 다 묻습니다.
     친 경로만 물으면 둘이 다를 때 rm 이 닿는 곳을 git 이 보지 않습니다.
     macOS 에서 `rm -rf SRC` 는 `src` 를 지우는데 `git status -- SRC` 는 아무것도 내지 않았고(잼), `node_modules/<패키지>` 가 worktree 안 다른 폴더를 가리키는 링크면(작업 공간 패키지) `rm -rf node_modules/<패키지>/` 가 그 폴더를 지우는데 git 은 무시된 경로로 봤습니다(리뷰에서 찾음).
@@ -1921,10 +1922,9 @@ ask 규칙은 auto mode 와 샌드박스의 `autoAllowBashIfSandboxed` 보다 �
   훅이 6초 넘게 걸리면(장부가 바쁨) 결정이 열린 뒤 확인이 닫힐 수 있고, 그 결정은 그 차례가 끝날 때 `(its turn ended)` 로 닫힙니다.
   장부에는 허락을 내기 전에 적으므로, 훅이 한도(지금 30초)에 걸려 Claude Code 가 그 허락을 버리면 장부와 알림은 nod 가 허락했다고 하는데 확인은 결정으로 갑니다.
   장부 열기가 5초에 묶이고 보내기가 1초에 묶여 일어나기 어렵습니다.
-  git 은 샌드박스 밖에서, 워커가 쓸 수 있는 설정(worktree 와 공용 git 폴더의 config, `.gitattributes`)으로 돕니다.
-  그 설정이 이름 붙인 명령 가운데 파일 시스템 감시(`core.fsmonitor`)는 끄지만, 바뀐 파일에 걸린 clean 필터는 `git status` 가 돌릴 수 있습니다.
-  Stop 훅이 커밋을 확인하는 `git status`, gc·착지의 `git status` 도 같은 곳에서 같은 설정으로 돌아 새로 열리는 것은 아니지만, 이 훅은 워커가 차례 도중에 부를 수 있습니다(리뷰에서 찾음).
-  설정을 무시한 채 git 을 돌리는 방법이 따로 없어 그대로 두었습니다.
+  git 은 샌드박스 밖에서 돌고, 경로가 서브모듈을 덮으면 그 서브모듈의 설정(워커가 쓸 수 있음)으로 그 안에서도 돕니다.
+  그 설정이 이름 붙인 명령 가운데 파일 시스템 감시·훅·지연 fetch 는 끄지만, 바뀐 파일에 걸린 clean 필터는 `git status` 가 돌릴 수 있습니다(「워커가 쓸 수 있는 git 설정」).
+  Stop 훅이 커밋을 확인하는 `git status`, gc·착지의 `git status` 도 같은 설정으로 돌아 새로 열리는 것은 아니지만, 이 훅은 워커가 차례 도중에 부를 수 있습니다(리뷰에서 찾음).
 - **워커 안내 (2026-11-06).**
   장부의 권한 결정 110건(10/07~11/06) 가운데 `rm` 이 62건이었습니다.
   53건은 다른 명령과 이어 썼고(`&&`·`;`·`|`), 30건은 변수 경로였고, 28건은 작업 폴더 밖 임시 폴더를 지웠습니다(겹침 있음).
@@ -3239,7 +3239,7 @@ ponytail 로 남긴 틈은 `src/sending.ts` 에 적었습니다.
 - **위험.** 코드로 확인한 것입니다. 등록은 이것을 받아들인다는 결정입니다.
   - 등록한 명령이 부르는 스크립트와 시험은 워커가 고칠 수 있습니다. 그래서 **워커의 코드가 리뷰 없이, 샌드박스 밖에서, 사용자의 권한으로 그대로 돕니다.** 네트워크, 홈 폴더, 키체인, SSH 에이전트, 환경 변수에 닿고, 환경의 `NOD_HOME` 으로 장부도 고칠 수 있습니다. `NOD_TASK` 를 지우고 `nod repo` 를 불러 명령을 더 등록하거나 결정에 답할 수도 있습니다. 이름과 경로만 고르게 하는 것은 실수와 남의 글에 속은 요청의 폭을 줄일 뿐, 작정한 코드를 막지 못합니다.
   - 한 번 도는 것의 권한은 인수 검사와 같습니다. 인수 검사도 같은 Stop 훅에서(`verify`), 같은 폴더와 환경으로, 독립 리뷰보다 먼저, 커밋했는지와 상관없이 워커의 시험을 돌립니다(「아직 하지 않은 것」의 검증 명령을 샌드박스 안에서 돌리기).
-  - 같지 않은 것: 횟수가 늘고, 워커가 때와 파일을 고르며, **인수 검사가 없는 작업까지 넓어집니다.** 워커가 고칠 수 있는 시험·스크립트를 nod 가 밖에서 돌리는 자리는 작업의 인수 검사(`verify`), 착지의 검사(`land.ts`, 레포의 것이 없으면 작업의 것), 브랜치의 스크립트를 부르는 점검(`--gate`)이었습니다(`src/` 에서 명령을 띄우는 자리를 모두 봄). 셋 다 없는 작업에서도 nod 는 그 worktree 에서 `git status` 를 밖에서 돌립니다(Stop 훅의 `verify`, `clearCutOff`, 착지, `nod gc`). 그 git 은 워커가 쓸 수 있는 git 설정이 이름을 대는 명령(`core.fsmonitor`)을 부를 수 있어(`src/allow.ts` 의 `committed` 는 끕니다), 작정한 워커의 코드는 전에도 밖에서 돌 수 있었습니다. 뒤의 둘만 있는 작업의 시험은 독립 리뷰를 지난 뒤에야 돌았습니다. 이제 등록한 레포의 모든 작업에서, 리뷰보다 먼저, 워커가 고른 시험이 그대로 돕니다.
+  - 같지 않은 것: 횟수가 늘고, 워커가 때와 파일을 고르며, **인수 검사가 없는 작업까지 넓어집니다.** 워커가 고칠 수 있는 시험·스크립트를 nod 가 밖에서 돌리는 자리는 작업의 인수 검사(`verify`), 착지의 검사(`land.ts`, 레포의 것이 없으면 작업의 것), 브랜치의 스크립트를 부르는 점검(`--gate`)이었습니다(`src/` 에서 명령을 띄우는 자리를 모두 봄). 셋 다 없는 작업에서도 nod 는 그 worktree 에서 `git status` 를 밖에서 돌립니다(Stop 훅의 `verify`, `clearCutOff`, 착지, `nod gc`). 그 git 은 워커가 쓸 수 있는 git 설정이 이름을 대는 명령(`core.fsmonitor`)을 부를 수 있어, 작정한 워커의 코드는 전에도 밖에서 돌 수 있었습니다(지금은 막은 것과 남은 것: 「워커가 쓸 수 있는 git 설정」). 뒤의 둘만 있는 작업의 시험은 독립 리뷰를 지난 뒤에야 돌았습니다. 이제 등록한 레포의 모든 작업에서, 리뷰보다 먼저, 워커가 고른 시험이 그대로 돕니다.
   - nod 는 워커가 정한 환경 변수를 넘기지 않습니다. 하지만 명령이 스스로 읽는 파일(`.env`, `bunfig.toml`, `package.json` 등)은 워커가 고칠 수 있습니다.
   - 그래서 **운영 DB 나 비밀값을 쓰는 명령은 등록하지 않습니다.** README 와 `nod repo --run` 의 출력이 그렇게 말합니다.
 - **등록.** `nod repo <경로> --run '<이름>=<명령>'`, `--run <이름>=` 이면 없앱니다. `repos.runs` 에 이름별 JSON 으로 두어 `setRepo` 의 이력(`repo_changes`)을 그대로 씁니다. 워커는 못 하고 Claude 세션은 없애기만 됩니다. 명령이 비었는지는 읽은 값으로 봅니다(`pg=env A=` 는 없애기가 아님). 등록이 없는 레포는 워커 지시도, `NOD: run` 줄이 그냥 글인 것도 전과 같습니다.
@@ -3289,6 +3289,30 @@ ponytail 로 남긴 틈은 `src/sending.ts` 에 적었습니다.
   `--session` 은 인증이 아닙니다. 세션의 모델이 Bash 에서 `nod mcp` 를 띄워 클라이언트 노릇을 하면 1초 뒤 스스로 답할 수 있고, 답은 사람(`human`)으로 남습니다. 할 수 있는 일은 그 모델이 `nod d<n> yes` 로 이미 할 수 있는 것과 같아(샌드박스 안에서는 둘 다 막힘) 새 권한은 아니지만, 규칙의 기록자가 `claude:…` 대신 `human` 이 됩니다.
   Claude Code 가 창의 글을 Markdown 으로 그리는지 재지 않았습니다. 그렇다면 `**`·백틱이 명령의 모양을 바꿀 수 있습니다.
 - **시험.** `src/mcp.test.ts`: 가짜 클라이언트로 initialize·ping·tools/list·모르는 메서드, accept·decline·Esc 와 창의 글(제어 문자는 공백), 1초 안의 accept·decline, 그 사이 다른 곳의 답과 두 세션, 워커·샌드박스·모르는 세션·다른 프로젝트·말로 답하는 결정·보조와 오케스트레이터의 범위, 긴 결정·폭 0 글자로 짧아 보이는 잘린 명령·확인하지 못한 결정·elicitation 없는 클라이언트, 차례로 띄우기, 워커 칸의 창이 없거나 사라진 권한 결정, 다른 도구의 창이 앞에 보이는 권한 결정, 화면에서 읽은 200칸 창, 칸을 읽지 못함, rule 결정의 yes 를 사람이 넣은 것으로 남기기, 10분(시험에서는 줄임) 뒤 거두기, 호출 취소, 클라이언트가 떠남과 그 뒤의 호출, stdout 에는 프로토콜만 나오는지. `src/todo-cli.test.ts`·`src/cli.test.ts`: `nod open` 이 넘기는 인자(릴레이는 뺌). `src/inbox.test.ts`: 예/아니오 결정 알림의 `next:`. 실제 창은 샌드박스에서 띄울 수 없어 손으로 확인합니다.
+
+## 워커가 쓸 수 있는 git 설정 (2026-11-25)
+
+nod 가 샌드박스 밖에서 워커의 worktree 에 돌리는 git 이, 워커가 고칠 수 있는 설정의 명령(`core.fsmonitor` 등)을 사용자 권한으로 돌릴 수 있었습니다. 「샌드박스에 막힌 검증을 nod 가 대신 돌리기」의 일을 하다 찾았습니다. 실제로 닿는 길을 재고, 그 길만 막았습니다.
+
+- **워커가 쓸 수 있는 곳.** 워커 샌드박스에서 파일을 열거나 만들어 보았습니다(Claude Code 2.1.332, 내용은 바꾸지 않음).
+  - 막힘: 공용 git 폴더의 `config` 와 `hooks/`, worktree git 폴더(`.git/worktrees/<worktree>`)의 `config.worktree`·`commondir`·`gitdir`, worktree 의 `.git` 파일, 그리고 어디서든 `.git/config`·`.git/hooks/` 아래·`.gitmodules` 라는 이름의 파일.
+  - 됨: worktree 안의 다른 파일(`.gitattributes`, 하위 폴더의 `.git` 파일, `.git` 이 아닌 이름의 git 폴더와 그 `config`), worktree git 폴더의 `HEAD`·`index`·`modules/<이름>/config`(그 worktree 서브모듈의 설정), 공용 git 폴더의 `HEAD`·`index`·`packed-refs`·`info/exclude`.
+  - 그래서 레포 자신의 설정은 워커가 못 씁니다. `config.worktree` 는 레포 설정에 `extensions.worktreeConfig` 가 있어야 읽히기도 합니다. 공용 git 폴더의 `HEAD`·`packed-refs` 에 쓸 수 있다는 것은 본 체크아웃과 다른 브랜치를 워커가 바꿀 수 있다는 뜻이지만, 설정의 명령과는 다른 일이라 여기서 고치지 않았습니다.
+- **닿는 길.** git 2.53 으로, 워커가 쓸 수 있는 곳에 명령을 두고 nod 의 호출 모양 그대로 돌려 보았습니다(nod 의 환경처럼 샌드박스가 넣는 `GIT_SSH_COMMAND`·`GIT_CONFIG_*` 를 지우고).
+  - 서브모듈: `git status` 와, 작업 트리를 인덱스와 견주는 `git diff` 는 서브모듈마다 그 서브모듈의 설정으로 `git status` 를 다시 띄웁니다. 레포의 서브모듈(`modules/<이름>`)도, 워커가 만든 것(이름을 바꾼 git 폴더, 그것을 가리키는 `.git` 파일, 커밋한 gitlink. `.gitmodules` 는 없어도 됨)도 그렇습니다. 그 안에서 `core.fsmonitor`, 훅(인덱스를 쓸 때의 `post-index-change`), clean 필터, 부분 클론의 지연 fetch 가 원격 명령(`core.sshCommand`, `remote.<이름>.uploadpack`)으로 돌았습니다. 자리는 Stop 훅의 `verify`, 착지, `nod gc`(`--ignore-submodules=none`)의 `git status`, 충돌 때의 `unmergedFiles`(`git diff --diff-filter=U`), 경로가 서브모듈을 덮을 때 rm 판정의 `committed` 입니다. gc 의 `onlyCopy` 는 `modules/<이름>` 에서 `rev-list` 를 돌려 지연 fetch 가 닿았습니다.
+  - 사람의 설정이 worktree 안의 훅 폴더를 가리킬 때(husky 의 `core.hooksPath=.husky/_`): 워커가 거기 둔 훅이 인덱스를 쓰는 `git status`(`--ignore-submodules=all` 인 `clearCutOff` 도)에서 돌았습니다. 커밋한 훅은 그 브랜치를 꺼내는 `worktree add`(앞 작업의 브랜치에서 시작하는 작업, `nod resume`)에서 돌았습니다(`post-index-change`·`reference-transaction`).
+  - 닿지 않은 것: 읽기만 하는 `rev-parse`·`merge-base`·`reflog`·`log`·`rev-list`·커밋끼리의 `diff`, 그리고 `worktree remove --force`. fetch·push 는 레포의 설정으로 돌아 워커가 원격 명령을 고를 수 없습니다.
+- **막은 것.**
+  - `NOD_GIT` 에 `-c core.fsmonitor=false` 를 더했습니다. `-c` 로 준 설정은 git 이 서브모듈에 띄우는 git 에도 넘어가므로, 이미 있던 `core.hooksPath=/dev/null` 과 함께 서브모듈의 감시와 훅도 막습니다.
+  - worktree 나 서브모듈 git 폴더를 읽는 nod 의 git(`worktreeStatus`, `unmergedFiles`, `onlyCopy`, `committed`)에는 `GIT_NO_LAZY_FETCH=1` 을 줍니다(`NO_LAZY_FETCH`). rebase 에는 주지 않습니다. 레포가 부분 클론이면 rebase 가 없는 객체를 받아 와야 합니다. git 2.44 보다 오래된 git 은 이 변수를 모르고 받아 옵니다.
+  - 위 자리를 모두 `NOD_GIT` 으로 돌립니다. `verify`·착지·gc·`clearCutOff` 의 `git status` 는 `worktreeStatus` 하나로 모았고, `unmergedFiles`, `committed`, 작업 시작과 `restore` 의 `worktree add` 도 `NOD_GIT` 을 씁니다.
+  - 바뀐 동작: nod 가 만드는 worktree 에서는 사람의 `post-checkout` 같은 훅도 돌지 않습니다. 앞 작업의 브랜치가 가져온 훅과 사람의 훅을 git 이 가르지 못해서입니다. 착지의 검사(`--check`)와 점검(`--gate`)은 그대로 돕니다.
+- **남은 것.**
+  - 서브모듈의 clean·process 필터. `git status` 가 바뀐 파일을 다시 읽을 때, 그 서브모듈의 `.gitattributes` 와 설정이 이름 붙인 필터를 돌립니다. 필터를 한꺼번에 끄는 git 설정은 없습니다. 서브모듈을 건너뛰면(`--ignore-submodules=all`) gc 가 서브모듈의 커밋하지 않은 변경을 보지 못한 채 worktree 를 지웁니다.
+  - 사람의 설정이 worktree 안의 프로그램을 가리키는 경우(상대 경로의 필터 스크립트 등). 훅과 감시만 막습니다.
+  - 사람의 설정(`submodule.recurse=true`)으로 rebase 가 서브모듈에 들어가면, 거기서의 지연 fetch. rebase 에는 `GIT_NO_LAZY_FETCH` 를 주지 않기 때문입니다.
+  - 착지의 검사·점검과 등록한 실행(`NOD: run`)은 처음부터 워커의 코드를 밖에서 돌립니다(「샌드박스에 막힌 검증을 nod 가 대신 돌리기」).
+- **시험.** 표지를 남기고 실패하는 명령을 설정에 이름 대고(`test/git-commands.ts`), 시작 커밋에서는 표지가 남고 고친 뒤에는 남지 않는 것을 보았습니다. `src/branch.test.ts`: 워커가 만든 서브모듈 둘(감시·훅, 지연 fetch)이 있을 때의 `unmergedFiles` 와 `worktreeStatus`. `src/gc.test.ts`: 같은 서브모듈이 있을 때의 `nod gc`, `modules/<이름>` 의 지연 fetch(`onlyCopy`), husky 모양 훅 폴더의 gc 와 `nod resume`(시작 커밋에서는 커밋한 `reference-transaction` 훅이 `worktree add` 를 막기까지 함). `src/allow.test.ts`: 서브모듈을 덮는 `rm -rf` 의 판정.
 
 ## 할 일 (G1, 2026-10-20)
 

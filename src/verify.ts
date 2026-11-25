@@ -9,6 +9,7 @@ import {
   ownStart,
   rebasing,
   unmergedFiles,
+  worktreeStatus,
 } from './branch'
 import { removeTmp, tmpRoot } from './claude-tmp'
 import type { Ledger, Task } from './ledger'
@@ -325,7 +326,7 @@ function failedOutput(output: string): string {
 }
 
 async function uncommittedChanges(worktree: string): Promise<string> {
-  const { code, stdout, output } = await spawn(['git', 'status', '--porcelain'], worktree)
+  const { code, stdout, output } = await worktreeStatus(worktree)
   if (code !== 0) throw new Error(`git status failed: ${output.trim()}`)
   return stdout.trim().slice(-OUTPUT_LIMIT)
 }

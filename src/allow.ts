@@ -1,6 +1,7 @@
 import { lstatSync, realpathSync } from 'node:fs'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { z } from 'zod'
+import { NO_LAZY_FETCH, NOD_GIT } from './branch'
 import { squeeze, WAIT } from './dialog'
 import type { Ledger, Notice } from './ledger'
 import { message } from './proc'
@@ -161,14 +162,12 @@ function removable(root: string, here: string, path: string): string[] | null {
 
 // No uncommitted change and no untracked file under the paths: what goes is in git or ignored
 // (dependencies, build output, all made in the task: `worktree add` brings nothing ignored), so it
-// comes back. git runs outside the sandbox on config the worker can write, as the Stop hook's does;
-// the file system monitor, a command that config names, is off.
+// comes back. git runs outside the sandbox, and in a submodule among the paths with that one's
+// config, which the worker can write: the commands it names are off (NOD_GIT, NO_LAZY_FETCH).
 function committed(root: string, paths: string[]): boolean {
   const status = Bun.spawnSync(
     [
-      'git',
-      '-c',
-      'core.fsmonitor=false',
+      ...NOD_GIT,
       '--no-optional-locks',
       // A folder may be named like pathspec magic (`:(top)x`), which would point git elsewhere.
       '--literal-pathspecs',
@@ -179,7 +178,7 @@ function committed(root: string, paths: string[]): boolean {
       '--',
       ...paths,
     ],
-    { cwd: root, stdout: 'pipe', stderr: 'pipe' },
+    { cwd: root, stdout: 'pipe', stderr: 'pipe', env: { ...process.env, ...NO_LAZY_FETCH } },
   )
   return status.exitCode === 0 && status.stdout.length === 0
 }

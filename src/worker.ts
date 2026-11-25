@@ -2,7 +2,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileS
 import { join } from 'node:path'
 import { z } from 'zod'
 import { accountChanged, accountRule, configDir } from './account'
-import { headOf, NOD_GIT, rebasing } from './branch'
+import { headOf, NOD_GIT, rebasing, worktreeStatus } from './branch'
 import {
   ASKED,
   announce,
@@ -991,7 +991,7 @@ async function clearCutOff(ledger: Ledger, home: string, task: Task): Promise<vo
   if ((await git(cwd, 'symbolic-ref', '-q', 'HEAD')).stdout.trim() === ref) {
     if (ledger.list().some((t) => t.id !== task.id && t.workspace === cwd)) return
     // Submodules' files aside: the cut-off start may have been filling them.
-    const changed = await git(cwd, 'status', '--porcelain', '--ignored', '--ignore-submodules=all')
+    const changed = await worktreeStatus(cwd, '--ignored', '--ignore-submodules=all')
     if (changed.code !== 0 || changed.stdout.trim() !== '') return
     try {
       if (onlyCopy(repo, cwd, branch) !== null) return
@@ -2627,8 +2627,9 @@ async function prepareWorkspace(
   const base = baseOf(ledger, task)
   const had = hasRef(repo, `refs/heads/${branch}`)
   // 32 concurrent `worktree add` on one repo all succeeded when measured, so no lock here.
+  // NOD_GIT: the earlier task's branch brings its worker's files, hooks too.
   const { code, output } = await spawn([
-    'git',
+    ...NOD_GIT,
     '-C',
     repo,
     'worktree',
@@ -2706,7 +2707,8 @@ async function rebuildWorktree(
   // its branch checked out.
   await spawn(['git', '-C', repo, 'worktree', 'prune'])
   const args = has(`refs/heads/${branch}`) ? [cwd, branch] : ['-b', branch, cwd, from()]
-  const { code, output } = await spawn(['git', '-C', repo, 'worktree', 'add', ...args])
+  // NOD_GIT: the branch brings its worker's files, hooks too.
+  const { code, output } = await spawn([...NOD_GIT, '-C', repo, 'worktree', 'add', ...args])
   if (code !== 0) throw new Error(`git worktree add failed: ${output.trim()}`)
   await initSubmodules(repo, cwd)
 }
