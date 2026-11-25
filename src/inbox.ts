@@ -385,6 +385,8 @@ const NEXT = {
       : `nod show n${id} says why; settle with the person what to do`,
   cancelled: (id: number) => `tell the person (nod show n${id})`,
   resumed: (id: number) => `nothing yet; nod tells you how n${id} goes on`,
+  // Only the ledger's record, never sent (Notice).
+  sent_back: () => 'nothing',
 }
 
 // A notice as the session hears it, with the turn it came on (its attempt, counted from 1, or the

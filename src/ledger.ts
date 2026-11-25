@@ -13,6 +13,7 @@ import {
   SqliteQueryCompiler,
   sql,
 } from 'kysely'
+import { localDay } from './days'
 import { limitReset } from './limit'
 
 export type TaskStatus =
@@ -237,11 +238,12 @@ export type Decision = {
 // (`answered`, decisions.ts's noticeAnswered; the answer is the decision's, or `note` for one a
 // person's tell went on past), or nod resuming a task once the usage limit that stopped it reset
 // (`resumed`, resumeDue in worker.ts), or a review or failed CI on the task's pull request (`pr`,
-// addPrNotice). `attemptId`: the
+// addPrNotice). One is only the ledger's record, told to no session: a call nod sent back
+// (`sent_back`, with the command in `note`, allow.ts). `attemptId`: the
 // task's latest turn as it happened. `sessionId` and `sentAt`: the session it went to and when; null
 // and set for one closed unsent, which had no session to go to (a task in no project, a decision's
-// opening once it was answered first) or nothing to tell it (a read nod allowed, comments on a pull
-// request that were none to tell).
+// opening once it was answered first) or nothing to tell it (`sent_back`, comments on a pull request
+// that were none to tell, and until 2026-11-25 a read nod allowed).
 export type NoticeEvent =
   | 'succeeded'
   | 'error'
@@ -252,6 +254,7 @@ export type NoticeEvent =
   | 'answered'
   | 'resumed'
   | 'pr'
+  | 'sent_back'
 export type Notice = {
   id: number
   taskId: number | null
@@ -274,6 +277,8 @@ export type Stats = {
   attempts: number
   retries: number
   decisions: { total: number; open: number; medianWaitSecs: number | null }
+  // The calls nod sent back (Notice), by local day, of the last SENT_BACK_DAYS days with any.
+  sentBack: Record<string, number>
 }
 
 // Append-only: never edit a shipped migration, add a new one. Exported so a test can build a ledger
@@ -928,6 +933,7 @@ const EMPTY_LANDING: Omit<Landing, 'taskId' | 'updatedAt'> = {
   mergedAt: null,
 }
 const count = q.fn.countAll<number>().as('n')
+const SENT_BACK_DAYS = 14
 
 const WAL_WAIT_MS = 5000
 const WAL_RETRY_MS = 20
@@ -2096,14 +2102,36 @@ export class Ledger {
     return keys
   }
 
-  // What nod allowed a task's worker itself (Notice), oldest first.
+  // What nod allowed a task's worker itself (Notice), oldest first; and the calls it sent back.
   allowed(taskId: number): Notice[] {
+    return this.noticesOf(taskId, 'allowed')
+  }
+
+  sentBack(taskId: number): Notice[] {
+    return this.noticesOf(taskId, 'sent_back')
+  }
+
+  // Records that nod sends a call back, when `may` says so of those sent back before: in one
+  // transaction, so of two hooks at once (calls of one response) each knows of the other's.
+  sendBack(taskId: number, command: string, may: (before: Notice[]) => boolean): boolean {
+    return this.db
+      .transaction(() => {
+        if (!may(this.sentBack(taskId))) return false
+        const attemptId = this.openAttempt(taskId)?.id ?? null
+        const id = this.addNotice({ taskId, attemptId, event: 'sent_back', note: command })
+        this.claimNotices([id], null)
+        return true
+      })
+      .immediate()
+  }
+
+  private noticesOf(taskId: number, event: NoticeEvent): Notice[] {
     return this.run(
       q
         .selectFrom('notices')
         .selectAll()
         .where('taskId', '=', taskId)
-        .where('event', '=', 'allowed')
+        .where('event', '=', event)
         .orderBy('id'),
     )
   }
@@ -2178,7 +2206,19 @@ export class Ledger {
         open: one(q.selectFrom('decisions').select(count).where('answer', 'is', null)),
         medianWaitSecs: median(waits),
       },
+      sentBack: this.sentBackByDay(),
     }
+  }
+
+  private sentBackByDay(): Record<string, number> {
+    const days: Record<string, number> = {}
+    for (const { createdAt } of this.run(
+      q.selectFrom('notices').select('createdAt').where('event', '=', 'sent_back').orderBy('id'),
+    )) {
+      const day = localDay(new Date(createdAt))
+      days[day] = (days[day] ?? 0) + 1
+    }
+    return Object.fromEntries(Object.entries(days).slice(-SENT_BACK_DAYS))
   }
 
   // Each end is a notice for the task's project session, in one transaction with it.

@@ -38,7 +38,7 @@ export function workerSettings(started: string | null, sockets: string): string 
         { hooks: [{ type: 'command', command: hook('stop'), timeout: STOP_HOOK_TIMEOUT_SECS }] },
       ],
       Notification: [{ hooks: [{ type: 'command', command: hook('notification') }] }],
-      // Every tool's prompts: nod allows only Bash commands (allow.ts), and any prompt it does not
+      // Every tool's prompts: nod answers only Bash commands' (allow.ts), and any prompt it does not
       // becomes a decision here (onPermissionAsk). Claude Code shows the prompt while the hook runs,
       // and the Notification for it comes only after it has waited about 6 s (docs).
       PermissionRequest: [

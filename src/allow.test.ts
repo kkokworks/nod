@@ -5,14 +5,13 @@ import {
   mkdirSync,
   readFileSync,
   realpathSync,
-  rmSync,
   symlinkSync,
   writeFileSync,
 } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { git } from '../test/remote'
 import { tempDirs } from '../test/tmp'
-import { ALLOW, harmless, LIMITS, onPermissionRequest, routine } from './allow'
+import { ALLOW, back, harmless, LIMITS, loses, onPermissionRequest } from './allow'
 import { NO_PERSON } from './decisions'
 import { onNotification, onPrompt } from './hooks'
 import { sendNotices } from './inbox'
@@ -246,7 +245,7 @@ test('what nod allows goes into the ledger with its turn, and to the project ses
 
   const allows = (e: Parameters<typeof onPermissionRequest>[1]) =>
     onPermissionRequest(ledger, e, () => '')
-  expect(allows(event('rm -rf node_modules'))).toBe(true)
+  expect(allows(event('rm -rf node_modules'))).toBe(ALLOW)
   expect(ledger.allowed(id).map((n) => [n.attemptId, n.note])).toEqual([
     [attemptId, 'rm -rf node_modules'],
   ])
@@ -256,11 +255,11 @@ test('what nod allows goes into the ledger with its turn, and to the project ses
     ...event('rm -rf node_modules'),
     tool_name: 'mcp__chat__send_message',
   }
-  expect(allows(mcp)).toBe(false)
-  expect(allows(event('git push'))).toBe(false)
-  expect(allows({ ...event('rm -rf dist'), session_id: 'other' })).toBe(false)
+  expect(allows(mcp)).toBeNull()
+  expect(allows(event('git push'))).toBeNull()
+  expect(allows({ ...event('rm -rf dist'), session_id: 'other' })).toBeNull()
   const unsandboxed = event('rm -rf dist', { dangerouslyDisableSandbox: true })
-  expect(allows(unsandboxed)).toBe(false)
+  expect(allows(unsandboxed)).toBeNull()
   expect(ledger.allowed(id)).toHaveLength(1)
 
   const sent: { socket: string; content: string }[] = []
@@ -276,6 +275,17 @@ test('what nod allows goes into the ledger with its turn, and to the project ses
   // It opened no decision and left the task running.
   expect(ledger.decisions(id)).toEqual([])
   expect(ledger.get(id).status).toBe('running')
+
+  // One is a line, cut, whatever it holds.
+  const long = `rm -rf a\n\n  b ${'c'.repeat(400)}`
+  ledger.addNotice({ taskId: id, attemptId, event: 'allowed', note: long })
+  await sendNotices(ledger, async (socket, line) => {
+    sent.push({ socket, content: JSON.parse(line).message.content })
+  })
+  const line = sent[1]?.content.split('\n\n')[1] ?? ''
+  expect(line).toStartWith(`n${id} 허락: rm -rf a`)
+  expect(line).toContain(' b ccc')
+  expect(line.length).toBeLessThan(320)
 })
 
 // Runs `nod hook <name>` on `home` as Claude Code does, with `stdin`; returns what it printed.
@@ -330,698 +340,6 @@ test('nod hook permission prints the allow only for what nod allows, nothing oth
   expect(show.stdout.toString()).toMatch(/\n {2}allowed by nod \S+: rm -rf node_modules\n/)
 }, 15_000)
 
-// The session's scratchpad, beside the worktree, with a commit message in it; and a secret outside
-// both, with a link to it in the worktree.
-function places() {
-  const { repo, work, outside } = worktree()
-  const scratch = join(tmp.make('nod-allow-session-'), 'scratchpad')
-  mkdirSync(scratch)
-  writeFileSync(join(scratch, 'commit-msg.txt'), 'msg\n')
-  writeFileSync(join(outside, 'x', 'key.txt'), 'key\n')
-  return { repo, work, outside, scratch, task: { workspace: work, repo, branch: 'feat/x' } }
-}
-
-test('nod reads a routine command: reading in the task’s folder or the scratchpad, alone or joined, with quotes; and tells the task’s own commits and checks from it', () => {
-  const { work, scratch, task } = places()
-  const kind = (command: string, cwd = work) => routine(command, cwd, task, scratch)
-  const msg = join(scratch, 'commit-msg.txt')
-
-  for (const command of [
-    // As they came up as decisions.
-    'sed -n 1,50p app/src/store.tsx',
-    String.raw`rtk grep -n "a\|b" -A 8 src/todos.ts`,
-    'rtk git status --short',
-    'rtk git log -1 --format=%B',
-    'git ls-files qa tests scripts/qa',
-    'git grep -ln "/x" -- . ":!app/src" ":!docs"',
-    'rtk read .githooks/pre-push',
-    `sed -n '1,60p' a.ts; rtk grep -n "open" b.ts | head`,
-    'rtk git log --oneline -4 origin/main',
-    `rtk proxy grep -nE "buildMap|^import|from \\"" src/a.ts`,
-    String.raw`rtk proxy grep -cE "^\(fail\)" ${msg}`,
-    `rtk read ${msg} --tail-lines 6`,
-    'git grep -l inbox',
-    'rtk git diff src/a.ts',
-    // git.
-    'git log',
-    'git log -p -- src/a.ts',
-    'git log -n 5 --since="two days ago" main..HEAD',
-    `git log -S'a b' --pretty=format:'%h %s' --no-merges --stat`,
-    'git diff',
-    'git diff --stat main...HEAD',
-    'git diff --cached -U0 src/a.ts',
-    'git show HEAD:src/a.ts',
-    'git show --stat --format= HEAD',
-    'git status',
-    'git status -sb',
-    `git grep -n -e one -e 'two$' -- 'src/*.ts'`,
-    "git log -- . ':^docs' ':!app/a.ts'",
-    'git ls-files -o --exclude-standard',
-    'git rev-parse --abbrev-ref HEAD',
-    'git rev-parse --short HEAD',
-    'git blame -L 1,1 src/a.ts',
-    'rtk proxy git log --oneline',
-    // Files.
-    'cat src/a.ts app/a.ts',
-    'cat -n ./src/a.ts',
-    'head -20 src/a.ts',
-    'head -n 20 src/a.ts',
-    'tail -n +5 src/a.ts',
-    'wc -l src/a.ts package.json',
-    'ls',
-    'ls -la src app',
-    'grep -c "a|b" src/a.ts',
-    'grep -rn export src app',
-    `grep -rn --include='*.ts' -- x src`,
-    'grep -n export src/a.ts -i -C2',
-    "grep -n '=ls' src/a.ts",
-    'grep -n "() => null" src/a.ts',
-    `grep -n 'it'"'"'s' src/a.ts`,
-    'rtk grep -ln export src',
-    'rtk proxy grep -l export src/a.ts',
-    'find . -name "*.ts" -type f',
-    `find src app -maxdepth 2 '!' -name 'a*' -print`,
-    'rtk ls src',
-    'rtk find src -name a.ts',
-    `cat ${join(work, 'src', 'a.ts')}`,
-    `cat ${msg}`,
-    `ls ${scratch}`,
-    'cat src/gone.ts',
-    // Joined, and what only quotes hold.
-    'git status --short && git diff | head -50',
-    'git log 2>&1 | tail -3',
-    'git show HEAD 2>/dev/null;cat src/a.ts',
-    'cat src/a.ts|grep -n export|wc -l',
-    'git log | grep fix | sed -n 1,5p',
-    `grep -n "a && b; rm -rf c | d > e" src/a.ts`,
-    `grep -n 'x $HOME \`pwd\` $(ls) *' src/a.ts`,
-    `git log --grep='rm -rf'`,
-    `gr"ep" -n ''export src/a.ts`,
-    'sed -n 3p src/a.ts',
-  ]) {
-    expect([command, kind(command)]).toEqual([command, 'read'])
-  }
-
-  for (const command of [
-    'git add src/a.ts app',
-    'git add -- src/a.ts',
-    'git commit -m "msg"',
-    `git commit -q -m 'fix: a' -m "- b; rm -rf c\n- \\"d\\""`,
-    `git commit -qF ${msg}`,
-    `rtk proxy git commit -F ${msg}`,
-    'rtk git add src && rtk git commit -q -m x && git log -1',
-    'bun test',
-    'bun test src/worker.test.ts -t "held back|rests|an hour of ticks"',
-    'bun test --timeout 20000 src',
-    'rtk bun test 2>&1 | tail -5',
-    'bun run typecheck 2>&1 | tail -5',
-    'bun run test',
-    'bun run lint && bun run check',
-  ]) {
-    expect([command, kind(command)]).toEqual([command, 'work'])
-  }
-  // After a `cd`, paths are the shell's; the scripts are the package's above.
-  expect(kind('cat a.ts', join(work, 'src'))).toBe('read')
-  expect(kind('bun run test', join(work, 'src'))).toBe('work')
-  // Through a link that stays in the worktree.
-  symlinkSync('src', join(work, 'also'))
-  expect(kind('cat also/a.ts')).toBe('read')
-  // With no repo there is no git to read; the files are the task's.
-  const bare = tmp.make('nod-allow-bare-')
-  const alone = { workspace: bare, repo: null, branch: null }
-  expect(routine('cat a.txt', bare, alone)).toBe('read')
-  expect(routine('git log', bare, alone)).toBeNull()
-  expect(routine('git add a.txt', bare, alone)).toBeNull()
-  expect(routine('bun run test', bare, alone)).toBeNull()
-  // A session with no scratchpad.
-  expect(routine(`cat ${msg}`, work, task)).toBeNull()
-  // A folder that is gone.
-  expect(kind('cat a.ts', join(work, 'gone'))).toBeNull()
-})
-
-test('no routine command deletes or overwrites: rm in any command of a joined one or with quotes, find and git that delete, mv, cp and redirections stay prompts', () => {
-  const { work, scratch, task } = places()
-  writeFileSync(join(work, 'dist', 'a.js'), 'a\n')
-  for (const command of [
-    // What nod allows of rm is a plain command of its own, as before.
-    'rm -rf dist; git status',
-    'git status; rm -rf dist',
-    'git status;rm -rf dist',
-    'git status && rm -rf dist',
-    'rm -rf dist && rm -rf node_modules',
-    'cat src/a.ts | rm -rf dist',
-    'rm -rf dist 2>/dev/null',
-    'rm -rf "dist"',
-    "rm -rf 'dist'",
-    "'rm' -rf dist",
-    'r"m" -rf dist',
-    'rtk rm -rf dist',
-    'rtk proxy rm -rf dist',
-    'rmdir dist',
-    'unlink dist/a.js',
-    'bun install && bun test',
-    'find . -delete',
-    'find dist -name a.js -delete',
-    `find dist -exec rm {} ';'`,
-    `find dist -type f -exec rm -f '{}' '+'`,
-    `find dist -execdir rm a.js ';'`,
-    `find dist -ok rm a.js ';'`,
-    `find dist -okdir rm a.js ';'`,
-    'find dist -fprint src/a.ts',
-    'find dist -fprint0 src/a.ts',
-    'find dist -fprintf src/a.ts x',
-    'find dist -fls src/a.ts',
-    'rtk find dist -delete',
-    'git clean -fd',
-    'git rm src/a.ts',
-    'git rm --cached src/a.ts',
-    'git mv src/a.ts src/b.ts',
-    'git checkout -- src/a.ts',
-    'git checkout main',
-    'git switch main',
-    'git restore src/a.ts',
-    'git reset --hard',
-    'git reset',
-    'git stash',
-    'git stash drop',
-    'git stash list',
-    'git branch -D feat/y',
-    'git tag -d v1',
-    'git update-ref -d refs/heads/feat/y',
-    'git worktree remove x',
-    'git revert HEAD',
-    'git merge main',
-    'git rebase main',
-    'git push',
-    'git fetch',
-    'git config core.pager x',
-    'mv src/a.ts src/b.ts',
-    'cp src/a.ts app/a.ts',
-    'ln -sf a b',
-    'touch src/a.ts',
-    'tee src/a.ts',
-    'cat app/a.ts | tee src/a.ts',
-    'truncate -s 0 src/a.ts',
-    'dd if=app/a.ts of=src/a.ts',
-    'cat app/a.ts > src/a.ts',
-    'cat app/a.ts >src/a.ts',
-    'cat app/a.ts >> src/a.ts',
-    'cat app/a.ts 2> src/a.ts',
-    'cat app/a.ts 1>src/a.ts',
-    'cat app/a.ts &> src/a.ts',
-    'cat app/a.ts >| src/a.ts',
-    'git log --output=src/a.ts',
-    'git diff --output src/a.ts',
-    // rtk leaves the `--` out.
-    'rtk git log -- --output=src/a.ts',
-    'rtk git show -- --output=src/a.ts',
-    'git diff -- --output=src/a.ts',
-    'git log -S --output=src/a.ts',
-    'sed -i 1,5p src/a.ts',
-    'sed -n 1,5p src/a.ts -i',
-    'sed -n 1,5p src/a.ts --in-place',
-    "sed -n '1,5w src/a.ts' app/a.ts",
-    "sed -n '1,5p;w src/a.ts' app/a.ts",
-    'bun test -u',
-    'bun test --update-snapshots',
-  ]) {
-    const allowed = harmless(command, work, work, true) || routine(command, work, task, scratch)
-    expect([command, allowed]).toEqual([command, null])
-  }
-  // The one nod allowed before is as it was.
-  expect(harmless('rm -rf dist', work, work, true)).toBe(true)
-  expect(routine('rm -rf dist', work, task, scratch)).toBeNull()
-})
-
-test('what nod cannot read, or is no routine command, is none: other shell syntax, options that run, write or read elsewhere, commits and checks of another shape', () => {
-  const { work, scratch, task } = places()
-  const kind = (command: string) => routine(command, work, task, scratch)
-  for (const command of [
-    // Expansions, joins and redirections nod does not read.
-    '',
-    ' ',
-    'git log $HOME',
-    'git log $' + '{x}',
-    'git log "$HOME"',
-    'git log "\\$HOME"',
-    'git log $(rm -rf dist)',
-    'git log "$(rm -rf dist)"',
-    'git log `rm -rf dist`',
-    'git log "`rm -rf dist`"',
-    'git log "a\\\\$(rm -rf dist)"',
-    "git log $'a'",
-    'cat src/*.ts',
-    'cat src/a.t?',
-    'cat src/[a].ts',
-    'cat {src,app}/a.ts',
-    'cat ~/a.ts',
-    'git log HEAD~1',
-    'git log HEAD^',
-    'cat =ls',
-    "cat ''=ls",
-    "cat 'a''b'",
-    "cat 'src/a.ts'''",
-    // As Claude Code runs it, it is another path.
-    "cat 'x>nul y'",
-    "sed -n 1,5p 'x>> NUL y'",
-    "git commit -F 'x>nul y'",
-    'git log --grep="a 2>nul; b"',
-    'cat ""\'\'=ls',
-    'cat src/a\\.ts',
-    'git log \\\n-1',
-    'cat < src/a.ts',
-    'cat << EOF',
-    'cat <<< x',
-    'cat <(git log)',
-    'git log &',
-    'git log & git status',
-    'git log || git status',
-    'git log |& cat',
-    'git log;; git status',
-    'git log;',
-    'git log &&',
-    '; git log',
-    '| cat',
-    'git log | | cat',
-    'git log\ngit push',
-    'git log\n',
-    'git log\r',
-    'git log\tsrc',
-    'git log "a\tb"',
-    '(git log)',
-    '{ git log; }',
-    'git log # x',
-    '! git log',
-    'git log "x',
-    "git log 'x",
-    'git log "a\n"\ngit push',
-    "git log 'a'\n'b'",
-    'git log 2>&1x',
-    'git log 2>&2',
-    'git log 2>/dev/nullx',
-    'git log 2>/dev/null/../x',
-    'git log 2>&1>x',
-    'FOO=1 bun test',
-    'GIT_EXTERNAL_DIFF=x git diff',
-    'env bun test',
-    'time git log',
-    'command git log',
-    'exec git log',
-    'eval git log',
-    'noglob cat a',
-    'xargs cat',
-    'sudo cat src/a.ts',
-    'sh -c "git log"',
-    // git run elsewhere, or with a program, a file or a folder an option names.
-    'git',
-    'git -C app log',
-    'git --git-dir=x log',
-    'git --git-dir x log',
-    'git --work-tree=x status',
-    'git -c core.pager=x log',
-    'git --exec-path=x log',
-    'git --config-env=core.pager=X log',
-    'git -p log',
-    'git --paginate log',
-    'rtk git -C app log',
-    'rtk proxy git -c diff.external=x diff',
-    'git log --outp=x',
-    'git diff -Oorder',
-    'git diff -O order',
-    'git grep -Oless x',
-    'git grep -O x',
-    'git grep -nO x',
-    'git grep --open-files-in-pager x',
-    'git grep --open=less x',
-    'git diff --ext-diff',
-    'git log -p --ext-diff',
-    'git log -p --textconv',
-    'git diff --textc',
-    'git log --show-signature',
-    "git log --format='%h %G?'",
-    'git log --pretty=format:%GS',
-    "git log --format='%h%+G?'",
-    "git show --format='% GK'",
-    'git diff --no-index a b',
-    'git grep --no-index x',
-    'git grep --untracked x',
-    'git grep -f pats',
-    'git grep -fpats',
-    'git blame --contents x src/a.ts',
-    'git ls-files -X x',
-    'git ls-files --exclude-from=x',
-    'git rev-parse --git-dir',
-    'git rev-parse --parseopt',
-    'git log --stdin',
-    "git log -- ':(top)src'",
-    'git show :/fix',
-    "git ls-files '*'",
-    "git grep x -- 'src/[a].ts'",
-    'git remote -v',
-    'git ls-remote',
-    'git cat-file -p HEAD',
-    'git archive HEAD',
-    'git bisect run x',
-    // A commit of another shape, and what hooks or the last commit it passes by.
-    'git commit',
-    'git commit -a -m x',
-    'git commit -am x',
-    'git commit --amend',
-    'git commit --amend -m x',
-    'git commit -m x --amend',
-    'git commit -m x --no-verify',
-    'git commit --no-veri -m x',
-    'git commit -n -m x',
-    'git commit -nm x',
-    'git commit -qnm x',
-    'git commit -m',
-    'git commit -q',
-    'git commit -m x -- src/a.ts',
-    'git commit -m x src/a.ts',
-    'git commit -F -',
-    'git commit -F /etc/hosts',
-    'git commit -C HEAD',
-    'git commit --fixup HEAD',
-    'git commit -S -m x',
-    'git commit -m x -e',
-    'git add',
-    'git add -A',
-    'git add -u',
-    'git add -f dist',
-    'git add -- -A',
-    'rtk git add -- -f',
-    'git add -p src/a.ts',
-    'git add --chmod=+x src/a.ts',
-    "git add '*.ts'",
-    "git add ':/src'",
-    `git add ${scratch}/commit-msg.txt`,
-    'git add shared/config',
-    // A check of another shape.
-    'bun',
-    'bun run build',
-    'bun run',
-    'bun run test src',
-    'bun run test --watch',
-    'bun run test:e2e',
-    'bun run ./evil.ts',
-    'bun evil.ts',
-    'bun -e 1',
-    'bun x biome',
-    'bunx biome check',
-    'bun --cwd=app test',
-    'bun --preload x test',
-    'bun test --preload ./x.ts',
-    'bun test /tmp/x.test.ts',
-    'bun test ../x.test.ts',
-    'npm test',
-    'rtk test ls',
-    // Reading of another shape.
-    'sed 1,5p src/a.ts',
-    'sed -n /x/p src/a.ts',
-    "sed -n '1e ls' src/a.ts",
-    "sed -n '1,5p;6,9p' src/a.ts",
-    "sed -n '$p' src/a.ts",
-    'sed -n -f x src/a.ts',
-    'sed -ne 1,5p src/a.ts',
-    'tail -f src/a.ts',
-    'tail --follow src/a.ts',
-    'wc --files0-from=x',
-    'ls -L src',
-    'grep -f pats src/a.ts',
-    'grep -e -f src/a.ts',
-    'grep -rn -- -f src',
-    // BSD's, past the first path, take an option for a path.
-    'cat src/a.ts -n',
-    'head src/a.ts -5',
-    'tail src/a.ts -n 5',
-    'tail 5 -n 5',
-    'wc src/a.ts -l',
-    'ls src -la',
-    'ls src -- app',
-    'rtk cat src/a.ts -n',
-    'cat -- -n',
-    // rtk's own -l takes a number.
-    'rtk grep -l 5 -r TOKEN',
-    'rtk grep -l +5 -r TOKEN',
-    'rtk grep -n -l 5 TOKEN',
-    'grep -R x src',
-    'grep -S x src',
-    'grep --file=x src/a.ts',
-    'grep -nf pats src/a.ts',
-    'grep --pre=x y src',
-    'grep -rd recurse x src',
-    'find -L . -name x',
-    'find . -follow',
-    'find . -newer x',
-    'find . -files0-from x',
-    'less src/a.ts',
-    'awk 1 src/a.ts',
-    'env',
-    'rtk',
-    'rtk proxy',
-    'rtk env',
-    'rtk -v git log',
-    'rtk rtk git log',
-    'rtk proxy rtk git log',
-    'rtk proxy read src/a.ts',
-    'read src/a.ts',
-    'rtk read src/a.ts --write',
-  ]) {
-    expect([command, kind(command)]).toEqual([command, null])
-  }
-})
-
-test('a routine command reaches only the task’s folder and the scratchpad, by real paths, and no secret’s name', () => {
-  const { repo, work, outside, scratch, task } = places()
-  const kind = (command: string, cwd = work) => routine(command, cwd, task, scratch)
-  const none = (command: string, cwd = work) =>
-    expect([command, kind(command, cwd)]).toEqual([command, null])
-
-  // Out of them, as typed, through links or by `..`, which may go through one.
-  for (const path of [
-    outside,
-    join(outside, 'x', 'key.txt'),
-    join(repo, 'src', 'a.ts'),
-    join(repo, '.git', 'config'),
-    '/etc/hosts',
-    '/dev/stdin',
-    '..',
-    '../x',
-    'src/../../x',
-    'src/../app/a.ts',
-    'out',
-    'out/x/key.txt',
-    'shared/config',
-    'dangling',
-    'dangling/x',
-    '.git',
-    '.GIT',
-    '.git/config',
-    `${scratch}/../x`,
-    `${scratch}-2/x`,
-    `${work}-2/x`,
-  ]) {
-    for (const command of ['cat', 'ls', 'find', 'grep x', 'git log --', 'rtk read', 'git add']) {
-      none(`${command} ${path}`)
-    }
-    none(`sed -n 1,5p '${path}'`)
-    none(`git commit -F ${path}`)
-    none(`bun test ${path}`)
-  }
-  symlinkSync(join(outside, 'x'), join(scratch, 'out'))
-  none(`cat ${scratch}/out/key.txt`)
-  none(`git diff ${outside} src`)
-  // What git diff takes for outside its worktree, it reads as files, tracked or not.
-  for (const path of [
-    scratch,
-    join(work, 'app'),
-    work.toUpperCase(),
-    `/System/Volumes/Data${work}`,
-  ]) {
-    none(`git diff ${path} app`)
-    none(`git diff -- app ${path}`)
-    none(`git diff --stat app '${path}'`)
-  }
-  none("git diff src ':!o/../../x/key.txt'")
-  none("git diff src ':^/../x'")
-  none('cat src/a.ts out/x/key.txt')
-  none('cat src/a.ts; cat out/x/key.txt')
-  none('cat src/a.ts | grep -r x out')
-  // From outside: the repo's own checkout, another folder.
-  none('git log', repo)
-  none('cat src/a.ts', repo)
-  none('ls', outside)
-  none('git log', scratch)
-  // Where a secret may be.
-  for (const name of [
-    '.env',
-    '.ENV',
-    '.env.local',
-    '.env.example',
-    '.envrc',
-    'prod.env',
-    'a.pem',
-    'a.KEY',
-    'id_rsa',
-    'id_ed25519.pub',
-    'credentials',
-    'credentials.json',
-    'aws-credentials',
-    '.npmrc',
-    '.netrc',
-    '.pgpass',
-    '.ssh/config',
-    '.aws/config',
-    'prod.env.local',
-    'env.production',
-    'server.key.bak',
-    'server.pem~',
-    '.npmrc.bak',
-    '.dev.vars',
-    'auth.json',
-  ]) {
-    const path = join('app', name)
-    for (const command of ['cat', 'ls', 'grep x', 'git log --', 'git add', 'rtk read', 'wc -l']) {
-      none(`${command} ${path}`)
-    }
-    none(`cat ${join(work, path)}`)
-    none(`cat ${join(scratch, name)}`)
-    none(`git show HEAD:${path}`)
-    none(`git show HEAD:${name}`)
-    none(`git grep x -- ${path}`)
-    none(`head -5 '${path}'`)
-  }
-  none("git grep x -- '*.pem'")
-  none("git grep x -- '*.npmrc'")
-  none("git grep x -- 'app/*.env.local'")
-  none("git grep x -- '.e*.local'")
-  none("git grep x -- '.en*'")
-  none(String.raw`git grep x -- '\.env'`)
-  none("git grep x -- ':(icase).ENV'")
-  // By another name, or in a folder read whole.
-  for (const command of [
-    'grep -rn x .',
-    'grep -rn x app',
-    'rtk grep x',
-    'grep -r x',
-    'git add app',
-  ]) {
-    expect([command, kind(command)]).toEqual([command, command === 'git add app' ? 'work' : 'read'])
-  }
-  writeFileSync(join(work, 'app', '.env'), 'TOKEN=1\n')
-  symlinkSync('app/.env', join(work, 'notes'))
-  none('cat notes')
-  symlinkSync('../src/a.ts', join(work, 'app', '.netrc'))
-  none('cat app/.netrc')
-  none(`cat ${join(work, 'app', '.netrc')}`)
-  for (const command of [
-    'grep -rn x .',
-    'grep -rn x app',
-    'rtk grep x',
-    'grep -r x',
-    'git add app',
-  ]) {
-    none(command)
-  }
-  none('cat src/a.ts | grep -r x')
-  none('cat src/a.ts | rtk grep x')
-  expect(kind('cat src/a.ts | grep x')).toBe('read')
-  expect(kind('grep -rn x src')).toBe('read')
-  // A git folder in it, and more files than nod looks through.
-  mkdirSync(join(work, 'src', 'in', '.git'), { recursive: true })
-  none('grep -rn x src')
-  expect(kind('grep -n x src/a.ts')).toBe('read')
-  rmSync(join(work, 'src', 'in'), { recursive: true })
-  LIMITS.files = 0
-  try {
-    none('grep -rn x src')
-    expect(kind('grep -n x src/a.ts')).toBe('read')
-  } finally {
-    LIMITS.files = 20_000
-  }
-  // The scripts of a package outside.
-  expect(kind('bun run test')).toBe('work')
-  rmSync(join(work, 'package.json'))
-  symlinkSync(join(outside, 'x', 'key.txt'), join(work, 'package.json'))
-  none('bun run test')
-  // Beside what is read, its name only.
-  expect(kind('ls app')).toBe('read')
-})
-
-test('git is read only in the task’s own worktree, and a commit is one of its own only there, on its branch', () => {
-  const { repo, work, outside, scratch, task } = places()
-  const kind = (command: string, cwd = work) => routine(command, cwd, task, scratch)
-  expect(kind('git commit -m x')).toBe('work')
-  expect(kind('git commit -m x', join(work, 'src'))).toBe('work')
-  expect(kind('git log', join(work, 'src'))).toBe('read')
-  // Another repo inside it: its own, one that a link or a file leads to, and by its setting the
-  // task's folder or one outside.
-  const other = join(outside, 'other')
-  const inner = (name: string) => {
-    mkdirSync(join(work, name))
-    return join(work, name)
-  }
-  const start = (cwd: string) => {
-    git(cwd, 'init', '-q', '-b', 'feat/x')
-    git(cwd, 'commit', '-q', '--allow-empty', '-m', 'init')
-  }
-  mkdirSync(other)
-  start(other)
-  const nested = inner('nested')
-  start(nested)
-  const linked = inner('linked')
-  symlinkSync(join(other, '.git'), join(linked, '.git'))
-  const pointed = inner('pointed')
-  writeFileSync(join(pointed, '.git'), `gitdir: ${join(other, '.git')}\n`)
-  const out = inner('set-out')
-  start(out)
-  git(out, 'config', 'core.worktree', outside)
-  const back = inner('set-back')
-  start(back)
-  git(back, 'config', 'core.worktree', work)
-  for (const cwd of [nested, linked, pointed, out, back]) {
-    for (const command of [
-      'git commit -m x',
-      'git add a',
-      'git log',
-      'git show HEAD:x',
-      'git grep x',
-    ]) {
-      expect([cwd, command, kind(command, cwd)]).toEqual([cwd, command, null])
-    }
-    expect(kind('ls', cwd)).toBe('read')
-  }
-  // No repo to compare with, or another task's.
-  expect(routine('git log', work, { ...task, repo: null }, scratch)).toBeNull()
-  expect(routine('git log', work, { ...task, repo: join(repo, 'gone') }, scratch)).toBeNull()
-  expect(routine('git log', work, { ...task, repo: other }, scratch)).toBeNull()
-  // No branch, and another one.
-  git(work, 'checkout', '-q', '--detach')
-  expect(kind('git commit -m x')).toBeNull()
-  expect(kind('git add src')).toBeNull()
-  git(work, 'checkout', '-q', '-b', 'feat/y')
-  expect(kind('git commit -m x')).toBeNull()
-  expect(kind('git add src && git status')).toBeNull()
-  expect(kind('git log && git status')).toBe('read')
-  // A folder git tracks files in, now a link out, past which git grep reads.
-  expect(kind('git grep x')).toBe('read')
-  rmSync(join(work, 'src'), { recursive: true })
-  for (const to of [outside, 'nested/.git', 'dist']) {
-    symlinkSync(to, join(work, 'src'))
-    expect([to, kind('git grep x')]).toEqual([to, null])
-    expect(kind("git grep x -- '*.ts'")).toBeNull()
-    expect(kind('git diff')).toBe('read')
-    rmSync(join(work, 'src'))
-  }
-  expect(kind('git grep x')).toBe('read')
-  // Another worktree of the repo's inside it, and its own set to another folder.
-  git(work, 'worktree', 'add', '-q', '-b', 'feat/z', join(work, 'second'))
-  expect(kind('git log', join(work, 'second'))).toBeNull()
-  git(work, 'config', 'extensions.worktreeConfig', 'true')
-  git(work, 'config', '--worktree', 'core.worktree', outside)
-  expect(kind('git grep x')).toBeNull()
-})
-
 // The dialog as Claude Code draws it (2.1.331), under what the terminal showed before: `says`, why
 // it shows; for auto mode's, the last call it blocked.
 const UNCHECKED =
@@ -1052,14 +370,11 @@ function dialog(command: string, says = blocked(), width = 60): string {
   ].join('\n')
 }
 
-// A prompt of auto mode's in a running task's session: its transcript, kept as Claude Code keeps it,
-// and its scratchpad.
+// A prompt of auto mode's in a running task's session: its transcript, kept as Claude Code keeps it.
 function asking() {
   const task = running()
   const config = tmp.make('nod-allow-transcripts-')
   const transcript = join(config, 's1.jsonl')
-  const scratch = join(tmp.make('nod-allow-session-'), 'scratchpad')
-  mkdirSync(scratch)
   const row = (content: string, more: object = {}) =>
     `${JSON.stringify({
       type: 'user',
@@ -1079,45 +394,189 @@ function asking() {
     ...task.event(command),
     permission_mode: 'auto',
     transcript_path: transcript,
-    scratchpad_dir: scratch,
     ...extra,
   })
-  return { ...task, config, transcript, scratch, row, event }
+  return { ...task, config, transcript, row, event }
 }
 
-test('a routine command is allowed as auto mode had nothing to judge: a read goes into the ledger only, a commit or a check to the session too', async () => {
+test('a call auto mode had nothing to judge goes back, whatever it runs: nothing is allowed, and nobody is told or asked', async () => {
   const { ledger, todos, project, id, attemptId, event } = asking()
   todos.addSession(project.id, 'root-1', '/work/one')
   todos.setSocket('root-1', '/socks/root-1')
-  const allows = (command: string) =>
-    onPermissionRequest(ledger, event(command), () => dialog(command))
-
-  expect(allows('rtk git status --short')).toBe(true)
-  expect(allows(`sed -n '1,60p' src/a.ts; rtk grep -n "open" src/a.ts | head`)).toBe(true)
-  expect(allows('git commit -q -m "fix: a\n\n- b"')).toBe(true)
-  expect(allows('bun run typecheck 2>&1 | tail -5')).toBe(true)
-  expect(ledger.allowed(id).map((n) => [n.attemptId, n.note])).toEqual([
-    [attemptId, 'rtk git status --short'],
-    [attemptId, `sed -n '1,60p' src/a.ts; rtk grep -n "open" src/a.ts | head`],
-    [attemptId, 'git commit -q -m "fix: a\n\n- b"'],
-    [attemptId, 'bun run typecheck 2>&1 | tail -5'],
-  ])
+  const commands = [
+    'rtk git status --short',
+    'TZ=UTC bun test src/a.test.ts',
+    'git commit --amend -q -m "fix: a\n\n- \\`b\\`"',
+    'cat src/a.ts | sh',
+    'git push origin feat/x',
+  ]
+  for (const command of commands) {
+    const answer = onPermissionRequest(ledger, event(command), () => dialog(command))
+    expect(answer).toEqual(back(command))
+  }
+  // One that asks for a host goes back too: nothing is opened for it.
+  const input = { tool_input: { command: 'curl example.com', allowed_domains: ['example.com'] } }
+  const asks = onPermissionRequest(ledger, event('', input), () => dialog('curl example.com'))
+  expect(asks).toEqual(back('curl example.com'))
+  expect(ledger.sentBack(id).map((n) => [n.attemptId, n.note])).toEqual(
+    [...commands, 'curl example.com'].map((command) => [attemptId, command]),
+  )
+  expect(ledger.allowed(id)).toEqual([])
+  expect(ledger.decisions(id)).toEqual([])
+  expect(ledger.get(id).status).toBe('running')
   const sent: string[] = []
   await sendNotices(ledger, async (_, line) => {
-    sent.push(JSON.parse(line).message.content)
+    sent.push(line)
   })
-  expect(sent).toHaveLength(1)
-  expect(sent[0]?.split('\n\n').filter((l) => l.startsWith(`n${id} `))).toEqual([
-    `n${id} 허락: git commit -q -m "fix: a  - b"`,
-    `n${id} 허락: bun run typecheck 2>&1 | tail -5`,
-  ])
-  expect(ledger.decisions(id)).toEqual([])
+  expect(sent).toEqual([])
+  expect(ledger.unsentNotices()).toEqual([])
 })
 
-test('a routine command is not allowed on a prompt with another reason: a rule of the repo’s, a denial of the check’s, another command’s dialog, none nod can see', () => {
+test('what goes back tells the worker to send it alone, in the form the hook left it in, and does not end its turn', () => {
+  const { decision } = back('rtk git log -1').hookSpecificOutput
+  expect(Object.keys(decision)).toEqual(['behavior', 'message'])
+  expect(decision.behavior).toBe('deny')
+  expect(decision.message).toContain('Send it again as the only tool call of a response')
+  expect(decision.message).toContain('in the form the hook leaves it, here:\nrtk git log -1\n')
+  // A long one is not said over.
+  const long = back(`echo ${'x'.repeat(500)}`).hookSpecificOutput.decision.message
+  expect(long).toContain('in the form the hook leaves it.\n')
+  expect(long).not.toContain('xx')
+})
+
+test('a command goes back once in a task, so it never goes round; and no more than so many of them in so long', () => {
+  const { ledger, id, attemptId, work, event } = asking()
+  const asks = (command: string, extra: Record<string, unknown> = {}) =>
+    onPermissionRequest(ledger, event(command, extra), () => dialog(command))
+  const turn = (taskId: number, sessionId: string) =>
+    ledger.startAttempt({ taskId, kind: 'start', decisionId: null, sessionId, prompt: '' })
+  expect(asks('git log -1')).toEqual(back('git log -1'))
+  expect([1, 2, 3].map(() => asks('git log -1'))).toEqual([null, null, null])
+  expect(asks('git log -2')).toEqual(back('git log -2'))
+  // In a later turn too; for another worker's nothing of this counts.
+  ledger.endAttempt(attemptId, { outcome: 'succeeded', summary: '', report: '' })
+  turn(id, 's1')
+  expect(asks('git log -1')).toBeNull()
+  const other = ledger.add(spec(null))
+  ledger.setRunning(other, work)
+  turn(other, 's2')
+  expect(asks('git log -1', { session_id: 's2' })).toEqual(back('git log -1'))
+  expect(asks('git log -1', { session_id: 's2' })).toBeNull()
+  expect(ledger.sentBack(id).map((n) => n.note)).toEqual(['git log -1', 'git log -2'])
+
+  // One whose command is another each time: the same loop, with nothing else to stop it.
+  const { backs, backsMs } = LIMITS
+  LIMITS.backs = 4
+  try {
+    expect([3, 4, 5, 6].map((n) => asks(`git log -${n}`) !== null)).toEqual([
+      true,
+      true,
+      false,
+      false,
+    ])
+    LIMITS.backsMs = 0
+    expect(asks('git log -7')).toEqual(back('git log -7'))
+  } finally {
+    Object.assign(LIMITS, { backs, backsMs })
+  }
+})
+
+test('of two calls of the same command that ask at once, one goes back', () => {
+  const { home, ledger, id, event } = asking()
+  const command = 'git log -1'
+  // The other's hook, a process of its own, runs to its end while this one's reads the screen.
+  const other: unknown[] = []
+  const screen = (): string => {
+    other.push(onPermissionRequest(new Ledger(home), event(command), () => dialog(command)))
+    return dialog(command)
+  }
+  expect(onPermissionRequest(ledger, event(command), screen)).toBeNull()
+  expect(other).toEqual([back(command)])
+  expect(ledger.sentBack(id)).toHaveLength(1)
+})
+
+test('what loses files never goes back: its prompt is the person’s, but for the rm nod allows', () => {
+  const { ledger, id, work, event, config } = asking()
+  const agents = join(config, 's1', 'subagents')
+  mkdirSync(agents, { recursive: true })
+  writeFileSync(join(agents, 'agent-a1.jsonl'), '')
+  writeFileSync(join(agents, 'agent-a1.meta.json'), '{"requestShape":"background"}')
+  for (const command of [
+    'rm -rf .git',
+    'rm -rf "src"',
+    'rm -r src',
+    'rm src/a.ts',
+    '/bin/rm -f src/a.ts',
+    'rtk rm -rf src',
+    'TZ=UTC rm -f src/a.ts',
+    'cd src && rm -rf a.ts',
+    'bash -c "rm -rf src"',
+    'ls src | xargs rm',
+    'find src -name "*.ts" -exec rm {} +',
+    'find src -name "*.ts" -delete',
+    'rsync -a --delete-after a/ b/',
+    'shred -u src/a.ts',
+    'unlink src/a.ts',
+    'git clean -fdx',
+    'git -C src clean -fd',
+    'rtk git reset --hard',
+    'git -c core.pager=cat --no-pager reset --hard HEAD~1',
+    'git checkout -- src/a.ts',
+    'git checkout .',
+    'git checkout main',
+    'git restore src/a.ts',
+    'git rm -r src',
+    'git stash drop',
+    'git stash clear',
+    'git branch -D feat/y',
+    'git branch feat/y --delete',
+    'git branch -f main HEAD~1',
+    'git switch -f main',
+    'git switch main --discard-changes',
+    'git worktree remove x',
+    'git reflog expire --all',
+    'git update-ref -d refs/heads/feat/y',
+    'git push origin --delete feat/y',
+    `python3 -c "import shutil; shutil.rmtree('src')"`,
+    `bun -e "fs.rmSync('src', { recursive: true })"`,
+    `node -e "fs.unlinkSync('src/a.ts')"`,
+    `perl -e 'unlink glob "src/*"'`,
+  ]) {
+    expect([command, loses(command)]).toEqual([command, true])
+    const asks = (extra: Record<string, unknown>) =>
+      onPermissionRequest(ledger, event(command, extra), () => dialog(command))
+    expect([command, asks({}), asks({ agent_id: 'a1' })]).toEqual([command, null, null])
+  }
+  expect(ledger.sentBack(id)).toEqual([])
+  for (const command of [
+    'git log -1 --diff-filter=D',
+    'git checkout -b feat/y',
+    'git switch -c feat/y',
+    'git switch main',
+    'git branch --list',
+    'git branch -a --merged main',
+    'git stash list',
+    'git worktree list',
+    'git commit -m "form the rms of it"',
+    'cat src/rm.ts src/rm/a.ts',
+    'bun run rm-cache',
+    'rtk grep -rn "delete" src/a.ts',
+    'bun test src/reset.test.ts && git diff --stat',
+    'mv src/a.ts src/b.ts',
+  ]) {
+    expect([command, loses(command)]).toEqual([command, false])
+  }
+  // Long, and nearly one: read at once.
+  const long = `git ${'-c '.repeat(20_000)}x; git branch ${'-a '.repeat(20_000)}x`
+  expect(loses(long)).toBe(false)
+  expect(onPermissionRequest(ledger, event('rm -rf dist'), () => dialog('rm -rf dist'))).toBe(ALLOW)
+  expect(existsSync(join(work, 'dist'))).toBe(true)
+})
+
+test('a call does not go back on a prompt with another reason: a rule of the repo’s, a denial of the check’s, another command’s dialog, none nod can see', () => {
   const { ledger, id, event } = asking()
   const command = 'git log -1'
-  const allows = (screen: string, extra: Record<string, unknown> = {}) =>
+  const answers = (screen: string, extra: Record<string, unknown> = {}) =>
     onPermissionRequest(ledger, event(command, extra), () => screen)
 
   for (const screen of [
@@ -1141,7 +600,7 @@ test('a routine command is not allowed on a prompt with another reason: a rule o
     `${dialog(command)}\n${dialog(command, 'Ask rule Bash(git log*) overrides auto mode for this command')}`,
     `${dialog(command)}\n${dialog('git push')}`,
   ]) {
-    expect([screen, allows(screen)]).toEqual([screen, false])
+    expect([screen, answers(screen)]).toEqual([screen, null])
   }
   // Not in auto mode, or with no transcript to read.
   for (const extra of [
@@ -1151,71 +610,74 @@ test('a routine command is not allowed on a prompt with another reason: a rule o
     { transcript_path: '' },
     { transcript_path: '/nowhere/s1.jsonl' },
   ]) {
-    expect([extra, allows(dialog(command), extra)]).toEqual([extra, false])
+    expect([extra, answers(dialog(command), extra)]).toEqual([extra, null])
   }
   const unseen = () => {
     throw new Error('tmux capture-pane failed')
   }
-  expect(onPermissionRequest(ledger, event(command), unseen)).toBe(false)
-  // What may open the sandbox for it.
+  expect(onPermissionRequest(ledger, event(command), unseen)).toBeNull()
+  // One that asks to leave the sandbox, also rm; and for rm, what may open it.
+  for (const sandbox of [true, 'true']) {
+    const input = { tool_input: { command, dangerouslyDisableSandbox: sandbox } }
+    expect([sandbox, answers(dialog(command), input)]).toEqual([sandbox, null])
+  }
   for (const extra of [
     { dangerouslyDisableSandbox: true },
     { dangerouslyDisableSandbox: 'true' },
     { allowed_domains: ['example.com'] },
     { to_come: 1 },
   ]) {
-    const input = { tool_input: { command, ...extra } }
-    expect([extra, allows(dialog(command), input)]).toEqual([extra, false])
-    const before = { tool_input: { command: 'rm -rf dist', ...extra } }
-    expect(onPermissionRequest(ledger, event('', before), unseen)).toBe(false)
+    const input = { tool_input: { command: 'rm -rf dist', ...extra } }
+    expect([extra, onPermissionRequest(ledger, event('', input), unseen)]).toEqual([extra, null])
   }
-  expect(ledger.allowed(id)).toEqual([])
-  expect(allows(dialog(command))).toBe(true)
+  expect([ledger.allowed(id), ledger.sentBack(id)]).toEqual([[], []])
   // Drawn wider, narrower, for the fifteenth call in a row, under another.
-  expect(allows(dialog(command, blocked(), 190))).toBe(true)
-  expect(allows(dialog(command, blocked(), 7))).toBe(true)
   const fifteenth = blocked(UNCHECKED, '15 consecutive actions were blocked.')
-  expect(allows(dialog(command, fifteenth))).toBe(true)
-  for (const above of [
-    dialog('git push', blocked('[Unauthorized Access]')),
-    dialog(command, 'x'),
-  ]) {
-    expect(allows(`${above}\n${dialog(command)}`)).toBe(true)
+  const drawn: ((c: string) => string)[] = [
+    (c) => dialog(c),
+    (c) => dialog(c, blocked(), 190),
+    (c) => dialog(c, blocked(), 7),
+    (c) => dialog(c, fifteenth),
+    (c) => `${dialog('git push', blocked('[Unauthorized Access]'))}\n${dialog(c)}`,
+    (c) => `${dialog(c, 'x')}\n${dialog(c)}`,
+  ]
+  for (const [i, draw] of drawn.entries()) {
+    const c = `git log -${i}`
+    const answer = onPermissionRequest(ledger, event(c), () => draw(c))
+    expect([draw(c), answer]).toEqual([draw(c), back(c)])
   }
   // rm, as before, whatever put its prompt up.
   expect(
     onPermissionRequest(ledger, event('rm -rf dist', { permission_mode: 'default' }), unseen),
-  ).toBe(true)
+  ).toBe(ALLOW)
 })
 
-test('nod waits for the dialog of a routine command: until it is drawn, and while another call’s comes first', () => {
+test('nod waits for the dialog: until it is drawn, and while another call’s comes first', () => {
   const { ledger, event } = asking()
   const command = 'git log -1'
   const shown = ['', dialog('git status'), dialog(command)]
   LIMITS.dialogMs = 60_000
   try {
-    expect(onPermissionRequest(ledger, event(command), () => shown.shift() ?? '')).toBe(true)
-  } finally {
-    LIMITS.dialogMs = 0
-  }
-  expect(shown).toEqual([])
-  // Its own, whole, with another reason: there is nothing to wait for.
-  const other = [dialog(command, 'Ask rule Bash(git log*) overrides auto mode for this command')]
-  LIMITS.dialogMs = 60_000
-  try {
-    expect(onPermissionRequest(ledger, event(command), () => other.pop() ?? dialog(command))).toBe(
-      false,
+    expect(onPermissionRequest(ledger, event(command), () => shown.shift() ?? '')).toEqual(
+      back(command),
     )
+    expect(shown).toEqual([])
+    // Its own, whole, with another reason: there is nothing to wait for.
+    const again = 'git log -2'
+    const other = [dialog(again, 'Ask rule Bash(git log*) overrides auto mode for this command')]
+    expect(onPermissionRequest(ledger, event(again), () => other.pop() ?? dialog(again))).toBeNull()
   } finally {
     LIMITS.dialogMs = 0
   }
 })
 
-test('a session whose check denied a call, in any turn or subagent, keeps its routine commands prompts; no verdict, or the words elsewhere, does not', () => {
+test('in a session whose check denied a call, in any turn or subagent, no call goes back; no verdict, the words elsewhere, or a call nod sent back, does not count', () => {
   const { ledger, config, transcript, row, event } = asking()
-  const command = 'git log -1'
-  const allows = (extra: Record<string, unknown> = {}) =>
-    onPermissionRequest(ledger, event(command, extra), () => dialog(command))
+  let calls = 0
+  const goesBack = (extra: Record<string, unknown> = {}): boolean => {
+    const command = `git log -${++calls}`
+    return onPermissionRequest(ledger, event(command, extra), () => dialog(command)) !== null
+  }
   const DENIAL =
     'Permission for this action was denied by the Claude Code auto mode classifier. Reason: [Unauthorized Access]. If you have other tasks'
   const decision = (reasonCode: string, decision = 'reject') => ({
@@ -1226,7 +688,8 @@ test('a session whose check denied a call, in any turn or subagent, keeps its ro
   const start = readFileSync(transcript, 'utf8')
 
   // Not denied: no verdict, in its words and marks; the words in a file it read or a message; a
-  // prompt of auto mode's the person allowed; another refusal.
+  // prompt of auto mode's the person allowed; another refusal; what nod sent back, as Claude Code
+  // keeps it (2.1.331's binary).
   const fine = [
     row(
       'The server-side auto mode classifier gave no verdict for Bash: another call in this response was changed',
@@ -1238,9 +701,17 @@ test('a session whose check denied a call, in any turn or subagent, keeps its ro
     row("The user doesn't want to proceed with this tool use."),
     row('Permission to use Bash with command x has been denied.'),
     row(DENIAL).replace('"is_error":true', '"is_error":false'),
+    row(back('git log -1').hookSpecificOutput.decision.message, {
+      permissionDecision: {
+        decision: 'reject',
+        source: 'hook',
+        reasonType: 'hook',
+        reasonCode: 'hook:PermissionRequest',
+      },
+    }),
   ].join('')
   writeFileSync(transcript, start + fine)
-  expect(allows()).toBe(true)
+  expect(goesBack()).toBe(true)
 
   for (const denied of [
     row(DENIAL, decision('classifier:auto-mode')),
@@ -1254,51 +725,125 @@ test('a session whose check denied a call, in any turn or subagent, keeps its ro
     row(DENIAL) + said('go on') + fine,
   ]) {
     writeFileSync(transcript, start + denied)
-    expect([denied, allows()]).toEqual([denied, false])
+    expect([denied, goesBack()]).toEqual([denied, false])
   }
 
   // A subagent's prompt is judged the same, with its own transcript there to read.
   writeFileSync(transcript, start)
-  expect(allows({ agent_id: 'a1' })).toBe(false)
+  expect(goesBack({ agent_id: 'a1' })).toBe(false)
   const agents = join(config, 's1', 'subagents')
   mkdirSync(agents, { recursive: true })
   writeFileSync(join(agents, 'agent-a1.jsonl'), fine)
-  expect(allows({ agent_id: 'a1' })).toBe(true)
-  expect(allows({ agent_id: 'a2' })).toBe(false)
-  expect(allows()).toBe(true)
+  expect(goesBack({ agent_id: 'a1' })).toBe(true)
+  expect(goesBack({ agent_id: 'a2' })).toBe(false)
+  expect(goesBack()).toBe(true)
   writeFileSync(join(agents, 'agent-a2.jsonl'), row(DENIAL))
-  expect(allows({ agent_id: 'a1' })).toBe(false)
-  expect(allows({ agent_id: 'a2' })).toBe(false)
-  expect(allows()).toBe(false)
+  writeFileSync(join(agents, 'agent-a3.jsonl'), '')
+  writeFileSync(join(agents, 'agent-a3.meta.json'), '{"requestShape":"background"}')
+  for (const agent of ['a1', 'a2', 'a3', undefined]) {
+    expect([agent, goesBack({ agent_id: agent })]).toEqual([agent, false])
+  }
 })
 
-test('nod hook permission reads the dialog off the worker’s terminal, and opens a decision for a routine command when it cannot', () => {
-  const { home, ledger, id, attemptId, event } = asking()
+test('a background subagent’s call goes back without its dialog, which shows only once the hook is done; another subagent’s needs it', () => {
+  const { ledger, id, config, event } = asking()
+  const agents = join(config, 's1', 'subagents')
+  const started = (agent: string, meta: string | null, dir = agents): void => {
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, `agent-${agent}.jsonl`), '')
+    if (meta !== null) writeFileSync(join(dir, `agent-${agent}.meta.json`), meta)
+  }
+  const background = JSON.stringify({ agentType: 'general-purpose', requestShape: 'background' })
+  started('a1', background)
+  started('a2', background, join(agents, 'workflows', 'w1'))
+  started('b1', JSON.stringify({ agentType: 'general-purpose', requestShape: 'foreground' }))
+  started('b2', '{"agentType":"general-purpose"}')
+  started('b3', 'not json')
+  started('b4', null)
+  const unseen = () => {
+    throw new Error('read the screen')
+  }
+  // Each time another command: they go back once.
+  let calls = 0
+  const command = () => `sed -n '1,${++calls}p' src/a.ts`
+  const ask = (agent_id: string, c: string, screen: () => string, extra = {}) =>
+    onPermissionRequest(ledger, event(c, { agent_id, ...extra }), screen)
+  for (const agent of ['a1', 'a2']) {
+    const c = command()
+    expect([agent, ask(agent, c, unseen)]).toEqual([agent, back(c)])
+    // Its second prompt is the person's: one a rule forces, say, or the check denied, which nod
+    // cannot tell from these.
+    expect([agent, ask(agent, c, unseen), ask(agent, c, () => dialog(c))]).toEqual([
+      agent,
+      null,
+      null,
+    ])
+  }
+  for (const agent of ['b1', 'b2', 'b3', 'b4']) {
+    const c = command()
+    expect([agent, ask(agent, c, unseen)]).toEqual([agent, null])
+    expect([agent, ask(agent, c, () => dialog('git push'))]).toEqual([agent, null])
+    expect([agent, ask(agent, c, () => dialog(c))]).toEqual([agent, back(c)])
+  }
+  // Not one that asks to leave the sandbox, not in auto mode, nor one whose transcript is gone.
+  const c = command()
+  const input = { command: c, dangerouslyDisableSandbox: true }
+  expect(ask('a1', c, unseen, { tool_input: input })).toBeNull()
+  expect(ask('a1', c, unseen, { permission_mode: 'default' })).toBeNull()
+  writeFileSync(join(agents, 'agent-a3.meta.json'), background)
+  expect(ask('a3', c, unseen)).toBeNull()
+  expect(ledger.sentBack(id)).toHaveLength(6)
+  expect(ledger.allowed(id)).toEqual([])
+})
+
+test('nod hook permission reads the dialog off the worker’s terminal and prints the deny; a decision opens when it cannot, and the second time; nod show and nod stats have it', () => {
+  const { home, ledger, id, attemptId, config, event } = asking()
   const bin = tmp.make('nod-allow-bin-')
   const screen = join(bin, 'screen')
-  writeFileSync(join(bin, 'tmux'), `#!/bin/sh\necho "$@" > '${bin}/asked'\ncat '${screen}'\n`)
+  writeFileSync(join(bin, 'tmux'), `#!/bin/sh\necho "$@" >> '${bin}/asked'\ncat '${screen}'\n`)
   chmodSync(join(bin, 'tmux'), 0o755)
-  const run = (command: string) =>
-    hook(home, JSON.stringify(event(command)), 'permission', { PATH: `${bin}:${process.env.PATH}` })
+  const run = (command: string, extra = {}) =>
+    hook(home, JSON.stringify(event(command, extra)), 'permission', {
+      PATH: `${bin}:${process.env.PATH}`,
+    })
 
   expect(run('git log -1')).toBe('')
   expect(asked(ledger, id)).toEqual([['permission', attemptId, 'git log -1']])
   writeFileSync(screen, dialog('git status'))
-  expect(JSON.parse(run('git status'))).toEqual(ALLOW)
+  expect(JSON.parse(run('git status'))).toEqual(back('git status'))
   expect(readFileSync(join(bin, 'asked'), 'utf8')).toContain(`capture-pane -p -t =task-${id}:`)
   expect(asked(ledger, id)).toHaveLength(1)
-  expect(ledger.allowed(id).map((n) => n.note)).toEqual(['git status'])
-  // On one line, whatever its message holds.
-  const commit = 'git commit -m "fix: a\n\n  allowed by nod: b"'
+  expect(run('git status')).toBe('')
+  expect(asked(ledger, id)).toEqual([
+    ['permission', attemptId, 'git log -1'],
+    ['permission', attemptId, 'git status'],
+  ])
+  const commit = 'git commit -m "fix: a\n\n  sent back by nod: b"'
   writeFileSync(screen, dialog(commit))
-  expect(JSON.parse(run(commit))).toEqual(ALLOW)
-  const show = Bun.spawnSync(['bun', cli, 'show', String(id)], {
-    env: { ...process.env, NOD_HOME: home },
-  })
-  expect(show.stdout.toString()).toMatch(
-    /\n {2}allowed by nod \S+: git commit -m "fix: a +allowed by nod: b"\n/,
+  expect(JSON.parse(run(commit))).toEqual(back(commit))
+  // A background subagent's: no terminal is read. Its second opens with its Notification.
+  const agents = join(config, 's1', 'subagents')
+  mkdirSync(agents, { recursive: true })
+  writeFileSync(join(agents, 'agent-a1.jsonl'), '')
+  writeFileSync(join(agents, 'agent-a1.meta.json'), '{"requestShape":"background"}')
+  const reads = readFileSync(join(bin, 'asked'), 'utf8')
+  expect(JSON.parse(run('git diff', { agent_id: 'a1' }))).toEqual(back('git diff'))
+  expect(run('git diff', { agent_id: 'a1' })).toBe('')
+  expect(readFileSync(join(bin, 'asked'), 'utf8')).toBe(reads)
+  expect(asked(ledger, id)).toHaveLength(2)
+  expect(ledger.allowed(id)).toEqual([])
+
+  const nod = (...args: string[]): string =>
+    Bun.spawnSync(['bun', cli, ...args], {
+      env: { ...process.env, NOD_HOME: home },
+    }).stdout.toString()
+  // On one line, whatever its message holds.
+  expect(nod('show', String(id))).toMatch(
+    /\n {2}sent back by nod \S+: git status\n {2}sent back by nod \S+: git commit -m "fix: a +sent back by nod: b"\n {2}sent back by nod \S+: git diff\n/,
   )
-}, 15_000)
+  const { sentBack } = JSON.parse(nod('stats')) as { sentBack: Record<string, number> }
+  expect(Object.values(sentBack).reduce((a, b) => a + b, 0)).toBe(3)
+}, 20_000)
 
 // The PermissionRequest hook runs as the dialog shows, its Notification some 6 s later (2.1.310).
 test('a prompt nod does not allow holds back nod tell from its turn as it shows, before its Notification, which opens no second decision; so does the next prompt of the turn once the first is answered', async () => {

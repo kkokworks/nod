@@ -1102,23 +1102,24 @@ async function inboxHook(): Promise<never> {
   process.exit(0)
 }
 
-// A worker's PermissionRequest hook (allow.ts), the same way: it prints Claude Code's allow only for
-// a command nod allows, and else nothing, so the prompt shows, whatever goes wrong. One it does not
-// allow becomes a decision here, as it shows (onPermissionAsk); if that fails, the prompt's
-// Notification opens it. Claude Code acts on an allow once the hook exits, so the task's project
-// session hears of it with a short limit: what does not go in time waits for the next send (a tick,
-// an event), and the allow is not held toward the prompt's Notification (about 6 s).
+// A worker's PermissionRequest hook (allow.ts), the same way: it prints Claude Code's allow for a
+// command nod allows, its deny for a call nod sends back, and else nothing, so the prompt shows,
+// whatever goes wrong. That one becomes a decision here, as it shows (onPermissionAsk); if that fails,
+// the prompt's Notification opens it. Claude Code acts on an allow once the hook exits, so the task's
+// project session hears of it with a short limit: what does not go in time waits for the next send (a
+// tick, an event), and the allow is not held toward the prompt's Notification (about 6 s). Of a call
+// sent back nobody hears (nod show, nod stats).
 async function permissionHook(): Promise<never> {
   console.log = console.error
   try {
     const event = PermissionEvent.parse(JSON.parse(await Bun.stdin.text()))
     const ledger = new Ledger(home)
     const screen = (taskId: number): string => terminals.screen(sessionName(taskId))
-    if (onPermissionRequest(ledger, event, screen)) {
-      await Bun.write(Bun.stdout, `${JSON.stringify(ALLOW)}\n`)
+    const answer = onPermissionRequest(ledger, event, screen)
+    if (answer === null) await onPermissionAsk(ledger, home, event)
+    else await Bun.write(Bun.stdout, `${JSON.stringify(answer)}\n`)
+    if (answer === ALLOW) {
       await sendNotices(ledger, (socket, line) => sendLine(socket, line, ALLOWED_SEND_MS))
-    } else {
-      await onPermissionAsk(ledger, home, event)
     }
   } catch (error) {
     console.error(`nod: could not judge or record the permission prompt: ${message(error)}`)
@@ -1454,6 +1455,9 @@ async function show(id: number): Promise<void> {
   }
   for (const n of ledger.allowed(id)) {
     console.log(`  allowed by nod ${n.createdAt}: ${clean(n.note ?? '')}`)
+  }
+  for (const n of ledger.sentBack(id)) {
+    console.log(`  sent back by nod ${n.createdAt}: ${clean(n.note ?? '')}`)
   }
   // Each turn's report in order, so the last is the very end, where readers look for it. Several
   // are told apart by the number a notice gives the turn (inbox.ts); one alone needs no heading.

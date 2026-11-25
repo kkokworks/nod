@@ -18,10 +18,11 @@ import { pasted } from './tmux'
 
 // Reading the transcript Claude Code keeps of a worker's session (JSONL): whether there is one, its
 // lines or its end, how its last turn ended, whether a tool runs, what became of a message pasted in
-// while a turn ran, and which tool calls the person refused or auto mode denied. It only reads: what
-// nod changes in the ledger by it is turns.ts's (endTurnWithoutStop, forgetHeldBack, stoppedDialogs,
-// refusedDialogs, unseenHeldBack), worker.ts's (carryUnheard, restingTurns) and allow.ts's
-// (unjudged). This module imports none of worker.ts, hooks.ts or land.ts.
+// while a turn ran, which tool calls the person refused or auto mode denied, and whether a subagent
+// runs in the background. It only reads: what nod changes in the ledger by it is turns.ts's
+// (endTurnWithoutStop, forgetHeldBack, stoppedDialogs, refusedDialogs, unseenHeldBack), worker.ts's
+// (carryUnheard, restingTurns) and allow.ts's (unjudged). This module imports none of worker.ts,
+// hooks.ts or land.ts.
 
 // How Claude Code marks a turn the person stopped (endTurnWithoutStop), how much of the
 // transcript's end is read for it, and what a typed turn that ended without a Stop ends with in the
@@ -389,6 +390,19 @@ export function autoModeDenied(path: string, agentId: string | undefined): boole
     const text = readFileSync(file, 'utf8')
     return MAY_BE_DENIED.test(text) && text.split('\n').some(denies)
   })
+}
+
+const SubagentMeta = z.object({ requestShape: z.string() })
+
+// Whether the subagent `agentId` of the session whose transcript is the file `path` was started to run
+// in the background, as Claude Code keeps it beside that subagent's transcript (2.1.326 to 2.1.332; of
+// all 13 whose dialogs became decisions, read from nod's own workers). False for all this can tell.
+export function inBackground(path: string, agentId: string): boolean {
+  const transcript = subagentsOf(path).find((f) => basename(f) === `agent-${agentId}.jsonl`)
+  const meta = transcript?.replace(/\.jsonl$/, '.meta.json')
+  if (meta === undefined || !existsSync(meta)) return false
+  const parsed = SubagentMeta.safeParse(jsonOrNull(readFileSync(meta, 'utf8')))
+  return parsed.data?.requestShape === 'background'
 }
 
 // A line that may be one, and does not read, counts as one.
