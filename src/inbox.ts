@@ -1,8 +1,9 @@
 import { lstatSync } from 'node:fs'
 import { z } from 'zod'
 import { localTime } from './days'
-import { Ledger, type Notice, type Task } from './ledger'
+import { Ledger, type Notice, type Task, YES_OR_NO } from './ledger'
 import { message, unbroken } from './proc'
+import { DECIDE_TOOL } from './settings'
 import {
   CLOSED_PROJECT,
   noHelper,
@@ -418,10 +419,14 @@ function noticeText(ledger: Ledger, n: Notice): string {
   }
   if (n.event === 'decision') {
     const d = ledger.decision(n.decisionId ?? 0)
+    // One of yes or no the person picks in a dialog nod words, in a session nod open gave the tool.
+    const picks = YES_OR_NO.includes(d.reason)
+      ? `${DECIDE_TOOL} d${d.id} lets the person pick yes or no in a dialog; without that tool, `
+      : ''
     return [
       `decision d${d.id} ${d.reason} (${taskLabel(task)}: ${oneLine(task.brief, 60)})`,
       indent(d.question),
-      `next: tell the person; nod d${d.id} <their answer> answers it, nod drop d${d.id} drops it`,
+      `next: ${picks}tell the person; nod d${d.id} <their answer> answers it, nod drop d${d.id} drops it`,
     ].join('\n')
   }
   const turn = ledger.attempts(task.id).findIndex((a) => a.id === n.attemptId) + 1

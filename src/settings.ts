@@ -1,4 +1,5 @@
 import { join } from 'node:path'
+import { nodHome } from './ledger'
 import { quote } from './tmux'
 import { SANDBOX } from './verify'
 
@@ -69,4 +70,16 @@ const hook = (event: string): string => `${quote(process.execPath)} ${quote(CLI)
 export function openSettings(): string {
   const inbox = [{ hooks: [{ type: 'command', command: hook('inbox'), timeout: INBOX_HOOK_SECS }] }]
   return JSON.stringify({ hooks: { SessionStart: inbox, SessionEnd: inbox } })
+}
+
+// The tool of nod's MCP server (mcp.ts) as the model calls it, allowed so no prompt asks for it:
+// all it does is show the person a dialog.
+export const DECIDE_TOOL = 'mcp__nod__decide'
+// What `nod open` gives a project, orchestrator or helper session besides: nod's MCP server, run
+// for that session, as flags of its own (--mcp-config), so no settings file of the person's changes.
+// NOD_HOME given, as a client may pass a server only some of its environment.
+export function openMcp(session: string, home = nodHome()): string[] {
+  const nod = { command: process.execPath, args: [CLI, 'mcp', '--session', session] }
+  const servers = { nod: { type: 'stdio', ...nod, env: { NOD_HOME: home } } }
+  return ['--mcp-config', JSON.stringify({ mcpServers: servers }), '--allowedTools', DECIDE_TOOL]
 }

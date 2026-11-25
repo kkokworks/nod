@@ -6,7 +6,7 @@ import { type CalendarEvent, calendarBuild, readEvents } from './calendar'
 import { addDays, dayOf, localDay, localTime, parseWhen, REPEATS, type Repeat } from './days'
 import { unheardWork } from './inbox'
 import { message } from './proc'
-import { openSettings } from './settings'
+import { openMcp, openSettings } from './settings'
 import { quote } from './tmux'
 import {
   type Change,
@@ -313,7 +313,16 @@ export function openSession(
   // The session's name is for the person; Claude in it learns its project or role from this line
   // alone. Claude Code keeps a conversation's first system prompt on resume until it compacts, so a
   // resume passes it too. Its hooks tell nod where it takes its notices (inbox.ts).
-  const told = ['--append-system-prompt', line, '--settings', openSettings()]
+  // Nod's MCP server (mcp.ts), for the session's ID, in every role but a relay's, which hears of no
+  // decision.
+  const relays = typeof owner === 'object' && owner.role === 'relay'
+  const told = (key: string): string[] => [
+    '--append-system-prompt',
+    line,
+    '--settings',
+    openSettings(),
+    ...(relays ? [] : openMcp(key)),
+  ]
   const last = fresh ? null : latest
   const kept = last === null ? null : transcriptPath(config, last.sessionKey)
   // ponytail: reads the whole transcript once per open; one of 69 MB took about 50 ms.
@@ -329,7 +338,7 @@ export function openSession(
   if (again?.role === 'project') todos.setSessionName(again.id, name)
   if (again !== null && said) {
     return {
-      argv: ['claude', '--resume', again.sessionKey, '--name', name, ...told],
+      argv: ['claude', '--resume', again.sessionKey, '--name', name, ...told(again.sessionKey)],
       cwd: again.cwd,
     }
   }
@@ -343,7 +352,8 @@ export function openSession(
     )
   }
   const session = again ?? todos.addSession(owner, crypto.randomUUID(), cwd)
-  const argv = ['claude', '--name', name, '--session-id', session.sessionKey, ...told]
+  const key = session.sessionKey
+  const argv = ['claude', '--name', name, '--session-id', key, ...told(key)]
   return { argv, cwd: session.cwd }
 }
 

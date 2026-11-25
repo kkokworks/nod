@@ -45,6 +45,8 @@ export type DecisionReason =
   // Landing the task stopped on something only the person can clear (a push or merge the git
   // service refused, say): yes tries again, anything else stops landing it.
   | 'land'
+// What a person answers with yes or no: the web UI's buttons, nod's dialog in a session (mcp.ts).
+export const YES_OR_NO: readonly DecisionReason[] = ['permission', 'trust', 'rule', 'land']
 
 export type Task = {
   id: number

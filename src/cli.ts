@@ -51,6 +51,7 @@ import {
   type Rule,
   type Task,
 } from './ledger'
+import { mcpServer } from './mcp'
 import { branchOf, sessionName } from './place'
 import { message, readAtOnce, spawn } from './proc'
 import { pullRequests } from './prs'
@@ -174,7 +175,8 @@ const USAGE = `usage:
                                    as Claude Code does. Each session of a project has all its
                                    tasks as its own (--mine), whichever session added them, and
                                    nod add there keeps to the project. nod tells it each of
-                                   them that ends and each decision that opens (see below)
+                                   them that ends and each decision that opens (see below).
+                                   It runs nod mcp for the session, as a relay's does not
   nod open <name> --role orchestrator|relay [--new]
                                    a session of that role and no project: the first of that
                                    name, or the same as nod open <name>. A name another role has,
@@ -378,6 +380,17 @@ const USAGE = `usage:
                                    tells a project session). Any other prompt becomes a decision
                                    as it shows
   nod run <task> <claude...>       what runs in a worker's terminal: keeps its Claude Code running
+  nod mcp --session <id>           the MCP server nod open gives a project, orchestrator or helper
+                                   session (--mcp-config). Its tool decide shows the person one of
+                                   the session's decisions that take yes or no as a dialog of
+                                   Claude Code's, worded by nod, and answers it as theirs: Accept
+                                   yes, Decline no, Esc or no answer in 10 minutes leaves it open,
+                                   as does an accept within a second of showing. One too long for
+                                   the dialog, one whose command nod could not read, and any in a
+                                   Claude Code without dialogs are answered on the web UI's task
+                                   page instead. It refuses a worker, a sandbox, and decisions
+                                   that are not the session's work (an orchestrator's: also those
+                                   of the projects in its charge)
 
 A <task> is n<n>, t<n> for the latest task doing todo t<n>, or r<n> for the task retrospective r<n>
 runs in. A <decision> is d<n>. Each also takes its bare number <n>.
@@ -430,6 +443,7 @@ if (command === 'hook' && rest[0] === 'prompt') await promptHook()
 if (command === 'hook' && rest[0] === 'inbox') await inboxHook()
 if (command === 'hook' && rest[0] === 'permission') await permissionHook()
 if (command === 'hook' && rest[0] === 'tool') await toolHook()
+if (command === 'mcp') await mcpCommand()
 const ledger = new Ledger(home)
 // The projects this command told stderr nobody hears, each told once (onCommand, warnUnheard).
 const warned = new Set<number>()
@@ -1161,6 +1175,24 @@ async function toolHook(): Promise<never> {
   } catch (error) {
     console.error(`nod: could not close the decision of the tool's dialog: ${message(error)}`)
   }
+  process.exit(0)
+}
+
+// `nod mcp`: nod's MCP server (mcp.ts) for the session nod open names, until Claude Code closes
+// stdin. Its stdout is the protocol's alone, and each line is handled as it comes: a tool call
+// waits on the client's answer to its dialog, a later line.
+async function mcpCommand(): Promise<never> {
+  console.log = console.error
+  const { values } = parseArgs({ args: rest, options: { session: { type: 'string' } } })
+  const handle = mcpServer({
+    ledger: new Ledger(home),
+    home,
+    terminals,
+    session: values.session ?? null,
+    env: process.env,
+    write: (line) => process.stdout.write(`${line}\n`),
+  })
+  for await (const line of console) if (line.trim() !== '') void handle(line)
   process.exit(0)
 }
 

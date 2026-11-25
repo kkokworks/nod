@@ -103,7 +103,7 @@ const READ = '(nod can read its dialog now)'
 
 const FIRST = /^.*/
 const bodyOf = (d: Decision): string => d.question.replace(FIRST, '').slice(1)
-const isUnseen = (d: Decision): boolean => bodyOf(d).startsWith(UNSEEN)
+export const isUnseen = (d: Decision): boolean => bodyOf(d).startsWith(UNSEEN)
 // The dialog it was worded from, if one: one the hook words (permissionQuestion) is worded from none.
 const drawnIn = (d: Decision): Dialog | null =>
   FIRST.exec(d.question)?.[0].endsWith(SHOWS) ? readDialog(bodyOf(d).split('\n'), true) : null

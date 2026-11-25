@@ -17,7 +17,7 @@ import { projectFolder, tempFolder } from '../test/projects'
 import { tempDirs } from '../test/tmp'
 import { Ledger } from './ledger'
 import { workspaceOf } from './place'
-import { openSettings } from './settings'
+import { openMcp, openSettings } from './settings'
 import { OPEN_ROLES, Todos } from './todos'
 
 const tmp = tempDirs()
@@ -620,22 +620,25 @@ exit 3
     return { code: r.exitCode, out: r.stdout.toString(), err: r.stderr.toString() }
   }
   const key = (): string => todos.latestSession(p.id)?.sessionKey ?? ''
-  const told = `--append-system-prompt nod open opened this session for project p1 Release: nod add here puts work in that project, and the project's tasks and decisions are this session's. --settings ${openSettings()}`
+  const told = (session: string): string =>
+    `--append-system-prompt nod open opened this session for project p1 Release: nod add here puts work in that project, and the project's tasks and decisions are this session's. --settings ${openSettings()} ${openMcp(session, home).join(' ')}`
 
   const first = open(here, 'Release')
   expect(first.code).toBe(3)
   const opened = key()
-  expect(first.out).toBe(`${here} | --name Release --session-id ${opened} ${told} | ${account}\n`)
+  expect(first.out).toBe(
+    `${here} | --name Release --session-id ${opened} ${told(opened)} | ${account}\n`,
+  )
   expect(open(there, 'p1')).toMatchObject({
     code: 3,
-    out: `${here} | --resume ${opened} --name Release ${told} | ${account}\n`,
+    out: `${here} | --resume ${opened} --name Release ${told(opened)} | ${account}\n`,
   })
   expect(open(there, 'p1', '--new').out).toBe(
-    `${there} | --name Release --session-id ${key()} ${told} | ${account}\n`,
+    `${there} | --name Release --session-id ${key()} ${told(key())} | ${account}\n`,
   )
   expect(key()).not.toBe(opened)
   expect(open(here, 'p1').out).toBe(
-    `${there} | --resume ${key()} --name Release ${told} | ${account}\n`,
+    `${there} | --resume ${key()} --name Release ${told(key())} | ${account}\n`,
   )
 
   // A session of no project opens by its name, the same way, once --role gave it one.
