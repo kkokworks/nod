@@ -2063,35 +2063,37 @@ export class Ledger {
   }
 
   // Something on a task's pull request (pr-events.ts) as one line, and below it, a line each, the keys
-  // of what it tells of, which are how nod knows what it has told (prKeys). Not when all of them are
-  // known by now: another tick told it. `line` null only keeps the keys, with nothing to tell, again
-  // and again if need be: the last says how things stand.
-  addPrNotice(taskId: number, line: string | null, keys: string[]): void {
+  // of what it tells of, which are how nod knows what it has told (prKeys). Only of the keys not known
+  // yet, as read in the same transaction: another tick may have told the rest meanwhile. `line` makes
+  // the line of those, by their places in `keys`; null only keeps the keys, with nothing to tell, again
+  // if need be, as the last of a key says how things stand.
+  addPrNotice(taskId: number, keys: string[], line: ((fresh: number[]) => string) | null): void {
     this.db.transaction(() => {
       // One line each, whatever a key or the line was made of.
       const one = (s: string): string => s.replace(/[\r\n]/g, ' ')
       const known = this.prKeys()
-      if (line !== null && keys.every((k) => known.has(one(k)))) return
-      const note = [one(line ?? ''), ...keys.map(one)].join('\n')
+      const fresh = keys.flatMap((k, i) => (line === null || !known.has(one(k)) ? [i] : []))
+      if (fresh.length === 0) return
+      const note = [one(line?.(fresh) ?? ''), ...fresh.map((i) => one(keys[i] ?? ''))].join('\n')
       const id = this.addNotice({ taskId, event: 'pr', note })
       if (line === null) this.claimNotices([id], null)
     })()
   }
 
-  // Each key, with the notice that last held it. ponytail: reads every such notice there ever was;
-  // keep to the open pull requests' if it grows.
+  // Each key, with the notice that last held it, in the order they were last held. ponytail: reads
+  // every such notice there ever was; keep to the open pull requests' if it grows.
   prKeys(): Map<string, number> {
     const notes = this.run(
       q.selectFrom('notices').select(['id', 'note']).where('event', '=', 'pr').orderBy('id'),
     )
-    return new Map(
-      notes.flatMap((n) =>
-        (n.note ?? '')
-          .split('\n')
-          .slice(1)
-          .map((k) => [k, n.id]),
-      ),
-    )
+    const keys = new Map<string, number>()
+    for (const n of notes) {
+      for (const key of (n.note ?? '').split('\n').slice(1)) {
+        keys.delete(key)
+        keys.set(key, n.id)
+      }
+    }
+    return keys
   }
 
   // What nod allowed a task's worker itself (Notice), oldest first.

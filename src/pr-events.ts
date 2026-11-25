@@ -21,7 +21,8 @@ const WHAT = new Map([
   ['COMMENTED', COMMENTED],
   ['COMMENT', COMMENTED],
 ])
-// How many comments a review held when nod last read them, by the key of the review.
+// How many comments a review held when nod last read them, by the key of the review: the last of
+// these keys to be kept (prKeys) is the latest.
 const HELD = / has (\d+)$/
 
 type Happened = { who: string | null; what: string; at: string | null; key: string }
@@ -91,20 +92,19 @@ export async function tellPrEvents(
     )
     // What one person did is one line: a review with a comment on each of ten lines too.
     for (const same of Map.groupBy(news, (h) => h.who).values()) {
-      const what = [...new Set(same.map((h) => h.what))].join(', ')
-      const line = `${url}: ${shownLogin(same[0]?.who ?? null)} ${what}`
+      const who = shownLogin(same[0]?.who ?? null)
       ledger.addPrNotice(
         task.id,
-        line,
         same.map((h) => h.key),
+        (fresh) => `${url}: ${who} ${[...new Set(fresh.map((i) => same[i]?.what))].join(', ')}`,
       )
     }
-    if (counts.length > 0) ledger.addPrNotice(task.id, null, counts)
+    if (counts.length > 0) ledger.addPrNotice(task.id, counts, null)
 
     const failed = await read(url, () => reads.failedHead(url, pr.sha))
     if (failed === null) continue
     const line = `${url}: CI failed on its head ${failed.slice(0, 8)}`
-    ledger.addPrNotice(task.id, line, [`${url}#ci ${failed}`])
+    ledger.addPrNotice(task.id, [`${url}#ci ${failed}`], () => line)
   }
 }
 

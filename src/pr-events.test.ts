@@ -204,7 +204,7 @@ test('what the account that opened it wrote, reviews not sent, asked for or dism
 })
 
 test('a reply is read once the count of comments moves off the one last read, though it comes back to one read before', async () => {
-  const { task, prs, comments, pass } = setup()
+  const { ledger, task, prs, comments, asked, pass } = setup()
   const n = task(`${GE}1`)
   const held = (count: number) => {
     prs[`${GE}1`] = open({ id: '12', login: 'alice', comments: count, state: 'COMMENT', at: AT })
@@ -226,7 +226,12 @@ test('a reply is read once the count of comments moves off the one last read, th
   held(2)
   comments['12'].push({ id: '3', login: 'carol', at: later(2) })
   expect(await pass()).toEqual([`${label} carol left review comments`])
-  expect(await pass()).toEqual([])
+  // Nothing more to read, nor to keep, while it stays so.
+  const rows = () => ledger.db.query("select count(*) as n from notices where event = 'pr'").get()
+  const [looked, kept] = [asked.length, rows()]
+  expect([await pass(), await pass()]).toEqual([[], []])
+  expect(asked.slice(looked).filter((a) => a.includes(' comments '))).toEqual([])
+  expect(rows()).toEqual(kept)
 })
 
 test('a link no URL can be made of is passed over, and the pull requests after it are read', async () => {
@@ -414,6 +419,43 @@ test('two ticks at once tell each thing once', async () => {
   expect((await heard()).map((h) => h.split('\n')[0])).toEqual([
     `task n${n} t1 pull request ${GH}1: alice approved`,
     `task n${n} t1 pull request ${GH}1: CI failed on its head bbbbbbbb`,
+  ])
+})
+
+test('of two ticks at once, the later tells only what came after the earlier read, not again what that one told', async () => {
+  const { ledger, task, prs, comments, lookup, reads, heard } = setup()
+  const n = task(`${GE}1`)
+  const asks = (count: number) => {
+    prs[`${GE}1`] = open({
+      id: '12',
+      login: 'alice',
+      comments: count,
+      state: 'REQUEST_CHANGES',
+      at: AT,
+    })
+    comments['12'] = [1, 2]
+      .slice(0, count)
+      .map((id) => ({ id: String(id), login: 'alice', at: later(id) }))
+  }
+  asks(1)
+  await heard()
+  // This tick read what was known before the other told alice's review; a comment came in between.
+  let other = false
+  await tellPrEvents(
+    ledger,
+    async (url) => {
+      if (!other) {
+        other = true
+        await tellPrEvents(new Ledger(join(ledger.db.filename, '..')), lookup, reads)
+        asks(2)
+      }
+      return lookup(url)
+    },
+    reads,
+  )
+  expect((await heard()).map((h) => h.split('\n')[0])).toEqual([
+    `task n${n} t1 pull request ${GE}1: alice requested changes, left review comments`,
+    `task n${n} t1 pull request ${GE}1: alice left review comments`,
   ])
 })
 
