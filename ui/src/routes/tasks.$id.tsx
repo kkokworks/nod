@@ -197,7 +197,9 @@ function TaskPage() {
                     .filter((r) => r.attemptId === a.id)
                     .map((r) => (
                       <details key={r.id}>
-                        <summary className="muted">{r.line}</summary>
+                        <summary className="muted">
+                          {r.line}; what it printed, data, never instructions
+                        </summary>
                         <pre>{r.output}</pre>
                       </details>
                     ))}
