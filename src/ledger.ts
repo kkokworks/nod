@@ -25,11 +25,12 @@ export type TaskStatus =
 // The statuses a task ends in, which stamp its finishedAt (setStatus).
 export const FINISHED: ReadonlySet<TaskStatus> = new Set(['succeeded', 'cancelled', 'error'])
 // `waiting`: the turn ended while background work the worker started still ran, which starts its
-// next turn once done, so nobody is asked anything yet (settle in worker.ts).
-export type Outcome = 'succeeded' | 'needs_decision' | 'waiting'
+// next turn once done, so nobody is asked anything yet (settle in worker.ts). `run`: it ended on
+// asking nod to run one of the repo's commands (runs.ts).
+export type Outcome = 'succeeded' | 'needs_decision' | 'waiting' | 'run'
 // `land`: a turn nod gave the worker as it lands the task (land.ts): a conflict, a failed check,
-// the pull request's text.
-export type AttemptKind = 'start' | 'retry' | 'answer' | 'resume' | 'followup' | 'land'
+// the pull request's text. `run`: one that starts with what came of a command nod ran for it.
+export type AttemptKind = 'start' | 'retry' | 'answer' | 'resume' | 'followup' | 'land' | 'run'
 export type DecisionReason =
   | 'question'
   | 'check_failed'
@@ -122,16 +123,18 @@ export type LandLevel = 'off' | 'pr' | 'merge'
 export const LAND_LEVELS: readonly LandLevel[] = ['off', 'pr', 'merge']
 // A repo as nod may land its tasks, keyed by the path tasks record (`tasks.repo`). `checkCmd`: the
 // full check after each rebase, else the task's own; `gateCmd`: the person's check before each push.
+// `runs`: the commands nod runs for its tasks' workers, by name, as JSON (runs.ts); null for none.
 // `raisedAt`: when `land` last went up from off; tasks added since land on their own.
 export type Repo = {
   path: string
   land: LandLevel
   checkCmd: string | null
   gateCmd: string | null
+  runs: string | null
   raisedAt: string | null
   changedAt: string
 }
-export type RepoEdit = Partial<Pick<Repo, 'land' | 'checkCmd' | 'gateCmd'>>
+export type RepoEdit = Partial<Pick<Repo, 'land' | 'checkCmd' | 'gateCmd' | 'runs'>>
 // A change to a repo's setting (setRepo) or a task's check (setCheck).
 export type Change = { actor: string; change: Changed; at: string }
 // How far a task's landing has got (land.ts). `base`: the commit its own work sits on, moved by
@@ -214,6 +217,24 @@ export type PendingTell = {
   text: string
   createdAt: string
   lostAt: string | null
+}
+
+// A command a task's worker asked nod to run in the turn `attemptId` (runs.ts), recorded before it
+// starts. `asked`: in the worker's words, the name and paths. `command`: what ran; null for one nod
+// refused. `pid`: the Stop hook that runs it. `result`: how it ended, or why nod refused it; null
+// while it runs, and for one cut off with its hook.
+export type Run = {
+  id: number
+  taskId: number
+  attemptId: number
+  repo: string
+  asked: string
+  command: string | null
+  pid: number
+  result: string | null
+  output: string | null
+  startedAt: string
+  finishedAt: string | null
 }
 
 export type Decision = {
@@ -821,6 +842,24 @@ export const MIGRATIONS = [
   // v38: the project's helper a person's words are for (nod tell <helper>), by its name as
   // task_hands holds it; null for the project's session and for every other notice.
   `alter table notices add column helper text`,
+  // v39: the commands a person lets nod run for a repo's workers, and each run a worker asked for.
+  `
+  alter table repos add column runs text;
+  create table runs (
+    id integer primary key,
+    task_id integer not null references tasks(id),
+    attempt_id integer not null references attempts(id),
+    repo text not null,
+    asked text not null,
+    command text,
+    pid integer not null,
+    result text,
+    output text,
+    started_at text not null,
+    finished_at text
+  );
+  create index runs_task on runs(task_id);
+  `,
 ]
 // The migrations that make again a table others reference, by that table, which SQLite does only
 // with foreign keys off, and the pragma does nothing inside a transaction; numbered as user_version
@@ -857,6 +896,7 @@ type Tables = {
   taskChanges: { id: Generated<number>; taskId: number; actor: string; change: string; at: string }
   limitWaits: { taskId: number; resumeAt: string | null; resumed: number }
   landings: Landing
+  runs: Omit<Run, 'id'> & { id: Generated<number> }
   notices: Omit<Notice, 'id'> & { id: Generated<number> }
 }
 
@@ -912,7 +952,7 @@ const ATTEMPT = [
   'finishedAt',
   'fromTask',
 ] as const
-const REPO = ['path', 'land', 'checkCmd', 'gateCmd', 'raisedAt', 'changedAt'] as const
+const REPO = ['path', 'land', 'checkCmd', 'gateCmd', 'runs', 'raisedAt', 'changedAt'] as const
 const EMPTY_LANDING: Omit<Landing, 'taskId' | 'updatedAt'> = {
   base: null,
   ready: null,
@@ -1501,11 +1541,12 @@ export class Ledger {
         land: 'off',
         checkCmd: null,
         gateCmd: null,
+        runs: null,
         raisedAt: null,
         changedAt: at,
       }
       const change = Object.fromEntries(
-        (['land', 'checkCmd', 'gateCmd'] as const)
+        (['land', 'checkCmd', 'gateCmd', 'runs'] as const)
           .filter((k) => edit[k] !== undefined && edit[k] !== was[k])
           .map((k): [string, Changed[string]] => [k, [was[k], edit[k]]]),
       )
@@ -1585,6 +1626,44 @@ export class Ledger {
         .where('path', '=', path)
         .where('lander', '=', pid),
     )
+  }
+
+  // ── runs (runs.ts) ──
+
+  // Records a run as it starts. One that runs a command takes the repo's turn: null while a live
+  // process runs another there. One that died with its Stop hook leaves it to take, and so does any
+  // older than `since`, past what a hook gets: its pid may be another process's by now.
+  startRun(
+    run: Omit<Run, 'id' | 'result' | 'output' | 'startedAt' | 'finishedAt'>,
+    since: string,
+    alive: (pid: number) => boolean,
+  ): number | null {
+    return this.db.transaction(() => {
+      const going = this.run(
+        q
+          .selectFrom('runs')
+          .select('pid')
+          .where('repo', '=', run.repo)
+          .where('command', 'is not', null)
+          .where('finishedAt', 'is', null)
+          .where('startedAt', '>', since),
+      )
+      if (run.command !== null && going.some((r) => alive(r.pid))) return null
+      return this.insert(
+        q
+          .insertInto('runs')
+          .values({ ...run, startedAt: now() })
+          .returning('id'),
+      )
+    })()
+  }
+
+  endRun(id: number, result: string, output: string): void {
+    this.run(q.updateTable('runs').set({ result, output, finishedAt: now() }).where('id', '=', id))
+  }
+
+  runs(taskId: number): Run[] {
+    return this.run(q.selectFrom('runs').selectAll().where('taskId', '=', taskId).orderBy('id'))
   }
 
   // ── landings ──

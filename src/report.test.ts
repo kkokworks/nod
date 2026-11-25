@@ -1,5 +1,5 @@
 import { expect, it } from 'bun:test'
-import { parseCaptures, parseReport, parseTells, prText, reportStart } from './report'
+import { parseCaptures, parseReport, parseRun, parseTells, prText, reportStart } from './report'
 
 it('the report line is read from the end, through Markdown emphasis', () => {
   expect(parseReport('NOD: question | old\nmore\n**NOD: Done** | `shipped`')).toEqual({
@@ -7,6 +7,32 @@ it('the report line is read from the end, through Markdown emphasis', () => {
     text: 'shipped',
   })
   expect(parseReport('no report here')).toBeNull()
+})
+
+it('a message asks for a run only by its last line nod reads, and no other reading of it changes', () => {
+  expect(parseRun('Blocked.\n**NOD: run | pg  a.test.ts ./b/c.ts**\n')).toEqual({
+    name: 'pg',
+    paths: ['a.test.ts', './b/c.ts'],
+  })
+  expect(parseRun('nod: Run | `pg`')).toEqual({ name: 'pg', paths: [] })
+  expect(parseRun('NOD: run |')).toEqual({ name: '', paths: [] })
+  expect(parseRun('NOD: done | old\nNOD: run | pg\nThat is all.')).toEqual({
+    name: 'pg',
+    paths: [],
+  })
+  for (const none of [
+    'NOD: run | pg\nNOD: done | it passed',
+    'NOD: run | pg\nNOD: question | May I?',
+    'NOD: run pg',
+    'Say NOD: run | pg to run it.',
+    'NOD: runs | pg',
+    '',
+  ]) {
+    expect(parseRun(none)).toBeNull()
+  }
+  // A reviewer, or a worker of a repo with no commands, is read as ever.
+  expect(parseReport('NOD: run | pg')).toBeNull()
+  expect(parseReport('NOD: done | ok\nNOD: run | pg')).toEqual({ status: 'done', text: 'ok' })
 })
 
 it('a report may ask for at most 50 captures, each with JSON nod can read', () => {

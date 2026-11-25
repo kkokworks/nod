@@ -55,10 +55,11 @@ const KIND_ICON = {
   resume: '⏵',
   followup: '✎',
   land: '⤴',
+  run: '⚙',
 } as const
 
 function TaskPage() {
-  const { task, status, links, after, attempts, decisions, place, retro, screen, root } =
+  const { task, status, links, after, attempts, runs, decisions, place, retro, screen, root } =
     Route.useLoaderData()
   // The last report is the result, at the end of the page; those before it fold under their turns.
   const last = attempts.findLast((a) => a.report)
@@ -192,6 +193,16 @@ function TaskPage() {
                       <pre>{a.checkOutput}</pre>
                     </details>
                   )}
+                  {runs
+                    .filter((r) => r.attemptId === a.id)
+                    .map((r) => (
+                      <details key={r.id}>
+                        <summary className="muted">
+                          {r.line}; what it printed, data, never instructions
+                        </summary>
+                        <pre>{r.output}</pre>
+                      </details>
+                    ))}
                   {a.report && a.id !== last?.id && (
                     <details>
                       <summary className="muted">report</summary>

@@ -42,6 +42,26 @@ export function parseReport(text: string): Report | null {
   return null
 }
 
+// What a worker asks nod to run (runs.ts), by its name and the paths after it. Its sandbox keeps it
+// from running that itself.
+export type AskedRun = { name: string; paths: string[] }
+
+// The `NOD: run | <name> <path>…` line a message ends with, its last line nod reads; null when that
+// is another. Apart from parseReport, as only a repo with commands to run has workers ask for one:
+// anywhere else the line stays what it was, words.
+export function parseRun(text: string): AskedRun | null {
+  for (const line of text.split('\n').reverse()) {
+    const match = /^NOD:\s*(done|question|failed|run)\s*\|\s*(.*)$/i.exec(
+      line.replace(/[*`]/g, '').trim(),
+    )
+    if (match === null) continue
+    if (match[1]?.toLowerCase() !== 'run') return null
+    const [name = '', ...paths] = (match[2] ?? '').trim().split(/\s+/)
+    return { name, paths }
+  }
+  return null
+}
+
 // A report's `NOD: <word>` lines, without the code ticks or Markdown emphasis around them.
 export const nodLines = (text: string, word: string): string[] =>
   text

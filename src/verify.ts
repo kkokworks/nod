@@ -262,17 +262,21 @@ export async function verifyLanding(
   return verdict === null ? null : { ...verdict, head }
 }
 
-// A check nod runs: the task's acceptance check (verify), and the check as the branch lands
-// (land.ts). Without `timeoutMs`, it is not killed.
+// A check nod runs: the task's acceptance check (verify), the check as the branch lands (land.ts),
+// and a command a worker asked for (runs.ts), as its words with no shell. Without `timeoutMs`, it is
+// not killed.
 export async function runCheck(
-  cmd: string,
+  cmd: string | string[],
   cwd: string,
   timeoutMs?: number,
-): Promise<{ passed: boolean; output: string }> {
-  const { code, output } = await spawn(['sh', '-c', cmd], cwd, { timeoutMs })
+): Promise<{ passed: boolean; output: string; code: number; timedOut: boolean }> {
+  const argv = typeof cmd === 'string' ? ['sh', '-c', cmd] : cmd
+  const { code, timedOut, output } = await spawn(argv, cwd, { timeoutMs })
   return {
     passed: code === 0,
     output: code === 0 ? output.slice(-OUTPUT_LIMIT) : failedOutput(output),
+    code,
+    timedOut,
   }
 }
 

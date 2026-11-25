@@ -12,6 +12,7 @@ import {
   type Task,
 } from '../../src/ledger'
 import { sessionName } from '../../src/place'
+import { runLine } from '../../src/runs'
 import { Tmux } from '../../src/tmux'
 import {
   type Found,
@@ -83,6 +84,8 @@ export type Detail = {
   after: { id: number; status: string }[]
   // Each turn with its report. The prompt is left out, as in `nod show`.
   attempts: Omit<Attempt, 'prompt'>[]
+  // The commands nod ran for its worker, under the turn that asked.
+  runs: { id: number; attemptId: number; line: string; output: string | null }[]
   decisions: Decision[]
   place: Place
   // With the rule it added, on or off now.
@@ -164,6 +167,12 @@ export function detail(id: number): Detail | null {
     links: ledger.links(id),
     after: ledger.after(id).map((a) => ({ id: a.id, status: a.status })),
     attempts: attempts.map(({ prompt: _, ...a }) => a),
+    runs: ledger.runs(id).map((r) => ({
+      id: r.id,
+      attemptId: r.attemptId,
+      line: runLine(r),
+      output: r.output,
+    })),
     decisions: ledger.decisions(id),
     place: place(todos, task),
     retro: task.retroId === null ? null : retroOf(task.retroId),
