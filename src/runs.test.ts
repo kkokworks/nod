@@ -239,7 +239,6 @@ it("a task's asks run out until a person answers a decision on it, refused ones 
   const other = taskIn(['ok=true'])
   ledger.answer(ledger.ask(other.task.id, other.turn, 'question', 'go on?'), 'yes')
   expect(runsSpent(ledger, t.task.id)).toBe(true)
-  await Bun.sleep(2)
   ledger.answer(ledger.ask(t.task.id, t.turn, 'question', 'more?'), 'yes')
   expect(runsSpent(ledger, t.task.id)).toBe(false)
 })

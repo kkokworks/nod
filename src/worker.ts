@@ -1127,11 +1127,11 @@ export async function settle(
     // Background work the worker started still runs, and Claude Code starts its next turn once that
     // is done (2.1.309), so what it asks now waits on nothing the person can give yet. Not past
     // WAIT_LIMIT_MS of waiting in a row with no turn open, though (overdueWaits does it between
-    // turns): this turn's own run is not waiting.
+    // turns): this turn's own run is not waiting. Nor is an ask for a run, which nod answers now.
     const run = spent ? null : asked
     const wait = waited(ledger, task.id, Date.now()) ?? 0
     const overdue = wait >= WAIT_LIMIT_MS
-    const waiting = run === null && work.length > 0 && !overdue
+    const waiting = asked === null && work.length > 0 && !overdue
     ledger.endAttempt(attemptId, {
       outcome: run !== null ? 'run' : waiting ? 'waiting' : 'needs_decision',
       summary,
@@ -1147,9 +1147,9 @@ export async function settle(
       return said === null ? null : goOn('run', said)
     }
     const still = work.map((w) => w.description ?? w.type ?? '?').join(', ')
-    const note = work.length > 0 ? `${waitedNote(wait)} Still running: ${still}.\n` : ''
+    const note = work.length > 0 && overdue ? `${waitedNote(wait)} Still running: ${still}.\n` : ''
     const limit = spent
-      ? `May its worker have nod run its repo's commands ${MAX_RUNS} more times? It asks for another run, and nod has answered ${MAX_RUNS} such asks since a person last answered a decision on it. Answer yes, or how it should go on instead.\n`
+      ? `May its worker have nod run its repo's commands ${MAX_RUNS} more times? It asks for another run, and nod has answered ${MAX_RUNS} such asks since a person last answered a decision on it. Answer yes, or how it should go on instead, to this decision: a nod tell or words typed into its terminal leave the count as it is.\n`
       : ''
     const question = limit + note + askedIn(ledger, task, text)
     await decide(ledger, home, task.id, attemptId, 'question', question)
