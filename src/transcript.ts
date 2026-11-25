@@ -103,7 +103,7 @@ export function transcriptSince(
 
 // Where Claude Code keeps the transcript of the task's session `sessionId`: in the account its
 // worker runs as, where '' is Claude Code's default folder and null an account nod never recorded.
-function transcriptOf(
+export function transcriptOf(
   ledger: Ledger,
   home: string,
   taskId: number,
@@ -111,6 +111,16 @@ function transcriptOf(
 ): string | null {
   const { account } = ledger.get(taskId)
   return transcriptPath(account === null ? configDir(home) : account || null, sessionId)
+}
+
+// The transcripts of the subagents of the session whose transcript is the file `path`: in a folder
+// beside it, and the folders in that (a workflow's).
+export function subagentsOf(path: string): string[] {
+  const beside = join(path.replace(/\.jsonl$/, ''), 'subagents')
+  if (!existsSync(beside)) return []
+  return readdirSync(beside, { recursive: true, encoding: 'utf8' })
+    .filter((f) => f.endsWith('.jsonl'))
+    .map((f) => join(beside, f))
 }
 
 // Whether Claude Code keeps a transcript of session `sessionId` in the config dir `config`.
@@ -367,19 +377,15 @@ const Denied = z.object({
 })
 
 // Whether auto mode's check denied a call as unsafe in the session whose transcript is the file
-// `path`, or in a subagent of it (theirs are in a folder beside it), ever: what the check counts
-// toward asking the person goes on past a turn. Throws when the transcript, or that of the subagent
-// `agentId`, cannot be read.
+// `path`, or in a subagent of it, ever: what the check counts toward asking the person goes on past a
+// turn. Throws when the transcript, or that of the subagent `agentId`, cannot be read.
 // ponytail: a call denied beside the one asked about, in the same response, may not be in it yet.
 export function autoModeDenied(path: string, agentId: string | undefined): boolean {
-  const beside = join(path.replace(/\.jsonl$/, ''), 'subagents')
-  const agents = existsSync(beside)
-    ? readdirSync(beside, { recursive: true, encoding: 'utf8' }).filter((f) => f.endsWith('.jsonl'))
-    : []
+  const agents = subagentsOf(path)
   if (agentId !== undefined && !agents.some((f) => basename(f) === `agent-${agentId}.jsonl`)) {
     throw new Error(`no transcript of subagent ${agentId}`)
   }
-  return [path, ...agents.map((f) => join(beside, f))].some((file) => {
+  return [path, ...agents].some((file) => {
     const text = readFileSync(file, 'utf8')
     return MAY_BE_DENIED.test(text) && text.split('\n').some(denies)
   })

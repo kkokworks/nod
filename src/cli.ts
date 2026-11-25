@@ -77,6 +77,7 @@ import {
   toldHelper,
 } from './todo-cli'
 import { cleared, type Found, NAMED_ROLES, oneOf, parseRef, SELF, Todos } from './todos'
+import { taskTokens, tokenLines, tokensSince } from './tokens'
 import { scheduleEnv, scheduleOff, scheduleOn, tick } from './triggers'
 import {
   clean,
@@ -113,6 +114,8 @@ import {
 // How long the permission hook gives each send of what it allowed (permissionHook); a local socket
 // takes far less.
 const ALLOWED_SEND_MS = 1000
+// How far back nod stats counts tokens.
+const TOKENS_MS = 7 * 86_400_000
 
 const USAGE = `usage:
   nod [--issue <key,...>] [--mine] open decisions (--issue: only those of tasks on these issues;
@@ -251,14 +254,21 @@ const USAGE = `usage:
                                    the note's first line, issue, links, pushes); --json, a JSON
                                    line a task
   nod show <task>                  history, links, then each turn's full report, the last at the
-                                   very end. root: is the Claude session whose task it is: its
+                                   very end. tokens: what its worker, the subagents it started and
+                                   the independent reviews used, by model (calls, output, cache
+                                   write, cache read, input), counted from Claude Code's
+                                   transcripts; no transcript: none is left, or there never was
+                                   one. root: is the Claude session whose task it is: its
                                    helper or its project's latest session, by the project and how
                                    to reopen it, with the session that added it when that was
                                    another; else the session that added it (claude --resume
                                    <session>)
   nod search <ref>                 find by number: t<n>, n<n>, r<n>, p<n>, d<n>, or <n> for every
                                    kind
-  nod stats
+  nod stats                        tasks by status, turns and decisions, and the tokens the tasks
+                                   used in the last 7 days, as nod show has them (missing: the
+                                   tasks with a turn in them and a session or subagent with no
+                                   transcript)
   nod gc [<task...> | --older-than <days>]
                                    close sessions and delete workspaces and worktrees of the named
                                    finished tasks, or of tasks finished that long ago, or, with
@@ -573,9 +583,11 @@ switch (command) {
   case 'gc':
     await gc(rest)
     break
-  case 'stats':
-    console.log(JSON.stringify(ledger.stats(), null, 2))
+  case 'stats': {
+    const tokens = tokensSince(ledger, home, new Date(Date.now() - TOKENS_MS))
+    console.log(JSON.stringify({ ...ledger.stats(), tokens }, null, 2))
     break
+  }
   case 'rule':
     rule(rest)
     break
@@ -1425,6 +1437,7 @@ async function show(id: number): Promise<void> {
     console.log(`  after: ${after.map((a) => `n${a.id} (${a.status})`).join(', ')}`)
   }
   if (live.has(sessionName(id))) console.log(`  terminal: nod attach n${id}`)
+  for (const line of usedTokens(task)) console.log(`  ${line}`)
   for (const a of ledger.attempts(id)) printAttempt(a)
   for (const t of ledger.pendingTells(id)) {
     const state = t.lostAt === null ? 'kept for its start' : 'not passed on'
@@ -1449,6 +1462,16 @@ async function show(id: number): Promise<void> {
     const head =
       reported.length > 1 ? `--- attempt ${attempts.indexOf(a) + 1} (${a.kind}) ---\n` : ''
     console.log(`\n${head}${a.report}`)
+  }
+}
+
+// The task's tokens; what goes wrong as they are counted does not keep show from the rest.
+function usedTokens(task: Task): string[] {
+  if (ledger.attempts(task.id).length === 0) return []
+  try {
+    return tokenLines(taskTokens(ledger, home, task))
+  } catch (error) {
+    return [`tokens: could not read the transcripts: ${message(error)}`]
   }
 }
 
