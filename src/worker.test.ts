@@ -1464,39 +1464,26 @@ it('a repo worker is told to have a subagent review its branch from where it sta
   const [inRepo, alone] = [task('/repo'), task(null)]
   // Read as one line, so rewrapping the prompt does not break the checks.
   const prompt = workerPrompt(ledger, inRepo).replaceAll('\n', ' ')
-  // The worker reviews the diff itself first (a trial, see SUBAGENT_REVIEW_PROMPT), under a marker
-  // its transcript is searched for, and fixes nothing until the subagent, which never hears what it
-  // found, has reviewed the same diff. No other agent helps the self-review, and a fork would
-  // inherit the conversation with its findings.
+  // A fork would inherit the conversation, and with it the worker's reasons.
   expect(prompt).toContain(
-    'commit, then review `git diff <start>..HEAD` yourself, starting no agent for it, then have a new subagent (Agent tool, not a fork) review it',
+    'commit, then have a new subagent (Agent tool, not a fork) review `git diff <start>..HEAD`',
   )
+  // The self-review trial (2026-11-09 to 11-25, docs/design.md 「자기 검토 시험」) is over: the
+  // worker no longer reviews the diff itself first, nor holds its fixes until the first review.
+  // From where the review rule starts, so wording other rules add before it cannot trip this.
+  const review = prompt.slice(prompt.indexOf('Before you report done, commit, then have'))
+  expect(review).toStartWith('Before you report done')
+  expect(review).not.toMatch(/self-review|first review/i)
   expect(prompt).toContain(
-    'first line starts with `Self-review findings:` in English, word for word',
+    'Fix the findings that have a scenario, commit, and have it review again,',
   )
-  expect(prompt).toContain('with none, that line is `Self-review findings: none`')
-  // In the response that starts the subagent: a response of text alone would end the turn with no
-  // report line, and nod would ask the human about it.
-  expect(prompt).toContain(
-    'Then, in one response, write your result as text of its own whose first line starts with',
-  )
-  expect(prompt).toContain(
-    'and start the subagent. Change or commit no files here until its first review reports.',
-  )
-  expect(prompt).toContain('not your reasons or your findings')
-  expect(prompt).toContain('Fix the findings that have a scenario, yours and its')
-  // One self-review, paired with the first review.
-  expect(prompt).toContain('have it review again with no second self-review')
-  expect(prompt).toContain('who found it (your self-review, the subagent, or both)')
+  expect(prompt).toContain('list each finding and what you did (fixed, or why not)')
   // nod tells a new start as it lands the branch, and a worker that moves the branch knows its own.
   expect(prompt).toContain(
     'start: the commit nod last said your branch starts at, or the one you rebased it onto since',
   )
-  // A review-only task has nothing to review, and a turn nod tells to skip the subagent review
-  // (a conflict, the PR text) skips the self-review with it.
-  expect(prompt).toContain(
-    'Skip both if that diff is empty or you are told to skip the subagent review.',
-  )
+  // A review-only task has nothing to review.
+  expect(prompt).toContain('skip it if that diff is empty')
   // Where the Agent tool runs only in the background, a worker cannot keep its turn open until the
   // review reports; it stops, and nod waits for the review (settle).
   expect(prompt).toContain('Report done only once it has reported')
