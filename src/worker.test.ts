@@ -1524,6 +1524,11 @@ it('a repo worker is told to have a subagent review its branch from where it sta
   // Every worker may wait on background work, and tell another task's worker something.
   const every = workerPrompt(ledger, null).replaceAll('\n', ' ')
   expect(every).toContain('nod then waits for that work instead of asking the human')
+  // What it asks comes first, as a decision shows a long message from its start (reportStart); a
+  // question that only waits is no decision.
+  expect(every).toContain(
+    'to ask one, put what they decide on its first line, in one sentence, then the options and what each leads to, then the one you recommend and why, and background and evidence last. A question that only waits for background work needs none of this: If you stop while background work you started',
+  )
   expect(every).toContain('NOD: tell n<task> <message, on one line>')
   // Not one made up from an issue key the brief names.
   expect(every).toContain(
@@ -4195,6 +4200,56 @@ it('a task that has waited on background work past the limit asks the person, at
   })
   expect(await overdueWaits(ledger, home, later)).toEqual([])
   expect(ledger.decisions(back)).toEqual([])
+})
+
+it('a long message is asked from its start, with its report line and where all of it is; a failed check keeps its end', async () => {
+  const events = listen()
+  const report = `Merge it now or next week?\n- now: ${'x'.repeat(5000)} the end\n**NOD: question | Now or next week?**`
+  // The address nod names is the one ui/ starts on.
+  const { scripts } = JSON.parse(
+    readFileSync(resolve(import.meta.dir, '../ui/package.json'), 'utf8'),
+  ) as { scripts: { start: string } }
+  const [, host, port] = /--host (\S+) --port (\d+)/.exec(scripts.start) ?? []
+  const all = (id: number): string =>
+    `\n\n… nod cut this message: nod show n${id} shows all of it, and so does http://${host}:${port}/tasks/${id}\n\n**NOD: question | Now or next week?**`
+  const stays = (id: number): string =>
+    `\n\nAn answer does not change the acceptance check \`false\`. To judge the work by another, run nod check n${id} '<command>' before you answer: nod runs it once the turn your answer starts ends.`
+
+  const id = started('merge it', 'asks-long')
+  ledger.setCheck(id, 'false', 'human')
+  await stopped('asks-long', report)
+  const [asked] = ledger.decisions(id)
+  expect(asked?.question).toStartWith('Merge it now or next week?\n- now: xxx')
+  expect(asked?.question).toEndWith(`x${all(id)}${stays(id)}`)
+  // 2,000 characters of the worker's own.
+  const own = (asked?.question ?? '').replace(stays(id), '').replace(all(id), '')
+  expect(own.length + '**NOD: question | Now or next week?**'.length).toBe(2000)
+  // Where it says all of it is: the turn's report, which nod show and the task's page show.
+  expect(ledger.lastAttempt(id)?.report).toBe(report)
+  // <home>/notify gets the words the ledger has, which the notice, nod and the web UI show too.
+  const { id: d, reason, question } = asked ?? {}
+  expect(events()).toMatchObject([{ event: 'decision', decision: { id: d, reason, question } }])
+
+  // The same of the last message of one that waited past the limit, after nod's own words.
+  const waits = started('merge it', 'waits-long-words')
+  ledger.setCheck(waits, 'false', 'human')
+  await stopped('waits-long-words', report, ['review'])
+  await overdueWaits(ledger, home, new Date(Date.now() + 61 * 60_000))
+  const [late] = ledger.decisions(waits)
+  expect(late?.question).toContain(
+    'No turn has come since it stopped.\nMerge it now or next week?\n- now: xxx',
+  )
+  expect(late?.question).toEndWith(`x${all(waits)}${stays(waits)}`)
+
+  // What a check printed is shown from its end, where a check says what failed.
+  const fails = started('merge it', 'fails-long')
+  ledger.setCheck(fails, "printf 'first %05000d last' 0; exit 1", 'human')
+  for (let i = 0; i < 3; i++) await stopped('fails-long', 'NOD: done | merged')
+  const [failed] = ledger.decisions(fails)
+  expect(failed?.reason).toBe('check_failed')
+  const printed = failed?.question.split('` failed:\n')[1]
+  expect(printed).toMatch(/^0+ last\n/)
+  expect(printed).not.toContain('nod cut this message')
 })
 
 it('only the time a task waited with no turn open counts toward the wait limit, not a turn that ran between waits', async () => {

@@ -43,7 +43,15 @@ import {
   workspaceOf,
 } from './place'
 import { message, spawn } from './proc'
-import { type Capture, nodLines, parseCaptures, parseReport, parseTells, type Tell } from './report'
+import {
+  type Capture,
+  nodLines,
+  parseCaptures,
+  parseReport,
+  parseTells,
+  reportStart,
+  type Tell,
+} from './report'
 import { REBUILT, withoutRebuilt } from './review'
 import { activeRules, hadTrouble, isNoRule, retroBrief } from './rules'
 import {
@@ -104,7 +112,10 @@ Whenever you stop, end your final message with exactly one line in one of these 
 NOD: done | <one-line summary>      (finished, and you checked the result yourself)
 NOD: question | <your question>     (you need a human decision, a permission, or access you lack)
 NOD: failed | <reason>              (you cannot do the task)
-A human answers questions later in this same conversation.
+A human answers questions later in this same conversation, and of a long final message sees only the
+start at first. So to ask one, put what they decide on its first line, in one sentence, then the
+options and what each leads to, then the one you recommend and why, and background and evidence last.
+A question that only waits for background work needs none of this:
 If you stop while background work you started (an agent, a shell, a monitor) still runs, end with
 NOD: question | <what you wait for>: nod then waits for that work instead of asking the human, and
 your next turn starts once it is done.
@@ -205,6 +216,9 @@ const TOLD_OPTION = 'nod_told'
 // Set from when keepWorker's Claude Code ends, or keepWorker is asked to end it, until the next one
 // is up: a message pasted in between would be lost, so it waits in the prompt file.
 const RESTARTING_OPTION = 'nod_restarting'
+
+// Where the web UI is, once the person runs it (ui/package.json).
+const UI = 'http://127.0.0.1:4800'
 
 // What a permission decision gets once its turn ended otherwise: its dialog went with the turn.
 const TURN_ENDED = '(its turn ended)'
@@ -751,6 +765,15 @@ const checkStays = (ledger: Ledger, task: Task): string => {
   return `\n\nAn answer does not change the acceptance check \`${cmd}\`.${byAnother(ledger, task)}`
 }
 
+// What a worker's last message asks, as its decision shows it: cut to its start, if it is long. The
+// turn keeps all of it as its report, which nod show and the task's page in the web UI show.
+const askedIn = (ledger: Ledger, task: Task, report: string): string =>
+  reportStart(
+    report,
+    QUESTION_LIMIT,
+    `nod cut this message: nod show n${task.id} shows all of it, and so does ${UI}/tasks/${task.id}`,
+  ) + checkStays(ledger, task)
+
 // Landing work given to the worker, or a decision on landing it (land.ts): the task's work succeeded,
 // and what goes on is its landing.
 const landingOn = (ledger: Ledger, taskId: number): boolean =>
@@ -1100,7 +1123,7 @@ export async function settle(
     if (waiting || newer()) return null
     const still = work.map((w) => w.description ?? w.type ?? '?').join(', ')
     const note = work.length > 0 ? `${waitedNote(wait)} Still running: ${still}.\n` : ''
-    const asked = note + text.slice(-QUESTION_LIMIT) + checkStays(ledger, task)
+    const asked = note + askedIn(ledger, task, text)
     await decide(ledger, home, task.id, attemptId, 'question', asked)
     return null
   }
@@ -2312,7 +2335,7 @@ export async function overdueWaits(ledger: Ledger, home: string, now: Date): Pro
     const past = turns.filter((a) => a.id > last.id && noTurn(a)).map((a) => a.id)
     if (!ledger.endWait(last.id, 'needs_decision', past)) continue
     const note = `${waitedNote(wait)} No turn has come since it stopped.\n`
-    const question = note + report.slice(-QUESTION_LIMIT) + checkStays(ledger, t)
+    const question = note + askedIn(ledger, t, report)
     await decide(ledger, home, t.id, last.id, 'question', question)
     asked.push(t.id)
   }
