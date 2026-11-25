@@ -27,6 +27,7 @@ import {
 } from 'node:fs'
 import { basename, dirname, join, resolve } from 'node:path'
 import { FakeTerminals } from '../test/fake-terminals'
+import { huskyHooks, marking } from '../test/git-commands'
 import { projectFolder, tempFolder } from '../test/projects'
 import { git } from '../test/remote'
 import { tempDirs } from '../test/tmp'
@@ -1950,6 +1951,57 @@ test('a compacted conversation of a task resume started again hears the first me
   expect(again).not.toContain('not sent')
   // The reviewer reads the brief itself, never a start's message.
   expect(reviewBrief(ledger, ledger.get(id), 'NOD: done | did it', null)).not.toContain('not sent')
+}, 30_000)
+
+test('a task on an earlier task’s branch starts without running the hooks its worker committed there', async () => {
+  const { command, ran } = marking(tmp.make('nod-marks-'))
+  const repo = newRepo()
+  git(repo, 'config', 'core.hooksPath', '.husky/_')
+  git(repo, 'checkout', '-q', '-b', 'feat/hooks')
+  huskyHooks(repo, command)
+  git(repo, 'add', '.husky')
+  git(repo, 'commit', '-qm', 'hooks')
+  git(repo, 'checkout', '-q', '-')
+  const task = (branch: string, after: number[]): number =>
+    ledger.add({
+      brief: 'build on it',
+      repo,
+      branch,
+      checkCmd: null,
+      model: null,
+      after,
+      issue: null,
+    })
+  const first = task('feat/hooks', [])
+  ledger.setRunning(first, join(home, 'elsewhere'))
+  ledger.succeed(first)
+  const next = task('feat/next', [first])
+
+  await startTask(ledger, home, terminals, next)
+  expect(ran()).toEqual([])
+  const hooks = join(ledger.get(next).workspace ?? '', '.husky', '_')
+  expect(existsSync(join(hooks, 'post-checkout'))).toBe(true)
+  await reaches(next, 'succeeded')
+  await settled(next)
+  expect(ran()).toEqual([])
+}, 30_000)
+
+test('a resume that takes over a cut-off start runs none of the hooks in the worktree it looks at', async () => {
+  const { command, ran } = marking(tmp.make('nod-marks-'))
+  const { repo, id } = unfilledLib()
+  await failure(startTask(ledger, home, terminals, id))
+  const folder = workspaceOf(home, ledger.get(id))
+  git(repo, 'config', 'core.hooksPath', '.husky/_')
+  expect(ledger.claimRestart(id, restartMark(gone(), id), null)).toBe(true)
+  git(repo, 'worktree', 'add', '-q', '-b', 'feat/lib', folder)
+  // Hooks where the repo names them, and a file git looks at again, so status writes the index.
+  huskyHooks(folder, command)
+  const blob = git(folder, 'rev-parse', 'HEAD:.gitmodules')
+  git(folder, 'update-index', '--cacheinfo', `100644,${blob},.gitmodules`)
+
+  // The hooks are not committed, so the worktree stays, and the start fails on it.
+  expect(await failure(resume(ledger, home, terminals, id))).toContain('already exists')
+  expect(ran()).toEqual([])
 }, 30_000)
 
 function newRepo(): string {

@@ -175,8 +175,10 @@ async function review(
 // What the branch changed since its own commits start (ownStart, from `base`, where nod rebased it
 // to as it lands it, once there is one), with the diff saved in `dir`. The reviewer reads that file
 // with its Read tool rather than running git: a user's hook may rewrite the shell commands it runs,
-// and one that shortens their output cut lines out of the diff. No color and no external diff tool,
-// whatever the human's git config says, so the diff is plain.
+// and one that shortens their output cut lines out of the diff. No color, no external diff tool and
+// a submodule as the commits it moved between, whatever the human's git config says, so the diff is
+// plain: diff.submodule=diff would diff in each submodule with its config, the worker's to write,
+// and the textconv it names.
 async function changesOf(
   worktree: string,
   branch: string,
@@ -193,8 +195,9 @@ async function changesOf(
   if (start === null) throw new Error(`${branch}'s reflog no longer says where it was created`)
   const range = `${start}..${head}`
   const saved = join(dir, 'changes.diff')
-  writeFileSync(saved, await git('diff', '--no-color', '--no-ext-diff', range))
-  return { start, head, stat: await git('diff', '--no-color', '--stat', range), saved }
+  const diff = ['diff', '--no-color', '--submodule=short']
+  writeFileSync(saved, await git(...diff, '--no-ext-diff', range))
+  return { start, head, stat: await git(...diff, '--stat', range), saved }
 }
 
 // A done of landing work (land.ts), checked as the branch now lands. A rebase whose conflict the

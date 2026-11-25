@@ -83,9 +83,11 @@ export const worktreeStatus = (ws: string, ...args: string[]) =>
 // timeout also ends the remote helper or ssh git starts, which would hold the output open.
 const GIT_TIMEOUT_MS = 2 * 60_000
 
-// git on the remote, which may never answer and must not ask (GIT_TIMEOUT_MS).
+// git on the remote, which may never answer and must not ask (GIT_TIMEOUT_MS). A fetch does not go
+// on into submodules, which it does by default once a fetched commit moves one: it would fetch with
+// that submodule's config, the worker's to write, and the remote command it names.
 export function onRemote(cwd: string, args: string[]): Promise<{ code: number; output: string }> {
-  return spawn([...NOD_GIT, ...args], cwd, {
+  return spawn([...NOD_GIT, '-c', 'fetch.recurseSubmodules=false', ...args], cwd, {
     env: { GIT_TERMINAL_PROMPT: '0' },
     timeoutMs: GIT_TIMEOUT_MS,
   })

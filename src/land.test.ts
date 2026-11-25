@@ -10,6 +10,7 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { join, resolve } from 'node:path'
+import { marking, textconvSubmodule, workerSubmodules } from '../test/git-commands'
 import { NOISY_FAILURE } from '../test/noisy-failure'
 import { projectFolder } from '../test/projects'
 import { calls, clonedRepo, fakeService, git } from '../test/remote'
@@ -339,6 +340,28 @@ test('a conflict goes to the worker, which stages its resolution; nod goes on wi
   const [review] = reviews()
   expect(review).toContain('What nod asked as it landed the branch')
   expect(review).toContain(`since ${ledger.landing(id)?.base}`)
+}, 30_000)
+
+test('landing runs none of the commands named in the config of a submodule its worker made', async () => {
+  setRepo('pr')
+  const id = finished('feat/sub', { 's.txt': 's\n' })
+  const { command, ran } = marking(tmp.make('nod-land-marks-'))
+  workerSubmodules(ws(id), command)
+
+  const [landed] = await land(ledger, home, Tmux.of(home), { send })
+  expect(landed?.did).toContain('git status failed')
+  expect(ran()).toEqual([])
+}, 30_000)
+
+test('the review reads a submodule as the commits it moved between, whatever diff.submodule the person set', async () => {
+  const id = working('feat/t', { 't.txt': 't\n' })
+  const { command, ran } = marking(tmp.make('nod-land-marks-'))
+  textconvSubmodule(ws(id), command)
+  git(repo, 'config', 'diff.submodule', 'diff')
+
+  await stops(id, 'NOD: done | did it')
+  expect(reviews()).toHaveLength(1)
+  expect(ran()).toEqual([])
 }, 30_000)
 
 test('a gate that fails asks the person, and dropping it stops landing while the task stays succeeded', async () => {

@@ -321,8 +321,11 @@ export function onlyCopy(repo: string, workspace: string, branch: string): strin
     if (lone.exitCode !== 0) throw new Error(`git rev-list in ${sub}: ${lone.stderr}`)
     const commits = lone.stdout.toString().trim()
     if (commits === '') continue
+    // In the repo's own checkout of the submodule, whose git folder is in the shared one, which the
+    // worker writes too; a commit it lacks stays missing, so the worktree stays.
     const there = Bun.spawnSync(['git', '-C', join(repo, name), 'cat-file', '--batch-check'], {
       stdin: Buffer.from(`${commits}\n`),
+      env: { ...process.env, ...NO_LAZY_FETCH },
     })
     const missing = there.stdout
       .toString()
@@ -458,8 +461,10 @@ export function landed(repo: string, ref: string): boolean {
   )
   if (changed.exitCode !== 0) throw new Error(`git diff in ${repo}: ${changed.stderr}`)
   const files = changed.stdout.toString().split('\0').filter(Boolean)
-  // Literal, so a name is the file and not a pattern that matches others or none.
-  const same = () => git('--literal-pathspecs', 'diff', '--quiet', ref, main, '--', ...files)
+  // Literal, so a name is the file and not a pattern that matches others or none. A submodule as its
+  // commit: diff.submodule=diff would diff in it with its config and the textconv it names.
+  const same = () =>
+    git('--literal-pathspecs', 'diff', '--quiet', '--submodule=short', ref, main, '--', ...files)
   return files.length === 0 || same().exitCode === 0
 }
 

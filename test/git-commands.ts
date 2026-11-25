@@ -1,5 +1,13 @@
-import { chmodSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import {
+  appendFileSync,
+  chmodSync,
+  copyFileSync,
+  mkdirSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs'
+import { dirname, join, resolve } from 'node:path'
 import { git } from './remote'
 
 // Commands for a git config to name, for the tests that nod's git outside the sandbox runs none
@@ -66,4 +74,37 @@ export function workerSubmodules(ws: string, command: (name: string) => string):
     'remote.origin.promisor': 'true',
     'remote.origin.uploadpack': command('upload-pack'),
   })
+}
+
+// A submodule `t` a worker made in `ws`, as workerSubmodules makes one, whose config names a
+// textconv for its files, and two commits on the branch checked out in `ws` that add it and move it:
+// a diff of them under diff.submodule=diff diffs in it.
+export function textconvSubmodule(ws: string, command: (name: string) => string): void {
+  const sub = join(ws, 't')
+  git(ws, 'init', '-q', `--separate-git-dir=${join(ws, 't-git')}`, sub)
+  writeFileSync(join(sub, '.gitattributes'), '* diff=x\n')
+  writeFileSync(join(sub, 'f'), 'a\n')
+  git(sub, 'add', '-A')
+  git(sub, 'commit', '-q', '-m', 'one')
+  git(ws, 'add', 't')
+  git(ws, 'commit', '-q', '-m', 'submodule t')
+  writeFileSync(join(sub, 'f'), 'b\n')
+  git(sub, 'commit', '-q', '-am', 'two')
+  git(ws, 'add', 't')
+  git(ws, 'commit', '-q', '-m', 'move t')
+  git(sub, 'config', 'diff.x.textconv', command('textconv'))
+  // Its git folder untracked but ignored, so the worktree reads as committed.
+  appendFileSync(resolve(ws, git(ws, 'rev-parse', '--git-path', 'info/exclude')), '/t-git/\n')
+}
+
+// Hooks from `command` in `dir`'s .husky/_, the hooks folder that a repo whose config says
+// core.hooksPath=.husky/_ (husky's) names in each worktree.
+export function huskyHooks(dir: string, command: (name: string) => string): string {
+  const hooks = join(dir, '.husky', '_')
+  mkdirSync(hooks, { recursive: true })
+  for (const hook of ['post-checkout', 'post-index-change', 'reference-transaction']) {
+    copyFileSync(command(hook), join(hooks, hook))
+    chmodSync(join(hooks, hook), 0o755)
+  }
+  return hooks
 }
