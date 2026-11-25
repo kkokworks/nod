@@ -137,6 +137,17 @@ test('a task’s tokens are counted by part and model: a response once for its I
   ])
 })
 
+test('a model named as what every object has is counted as any other', () => {
+  const { start, keep, count } = setup()
+  const id = start()
+  keep(`session-${id}.jsonl`, says('m1', 'constructor', 1), says('m2', '__proto__', 2))
+  expect(tokenLines(count(id)).slice(0, 2)).toEqual([
+    'tokens worker constructor: calls 1, output 10, cache write 100, cache read 1,000, input 1',
+    'tokens worker __proto__: calls 1, output 20, cache write 200, cache read 2,000, input 2',
+  ])
+  expect(Object.keys(Object.prototype)).toEqual([])
+})
+
 test('what no transcript is left of is said, never counted as 0', () => {
   const { ledger, start, keep, count, config } = setup()
   const id = start()
@@ -185,12 +196,17 @@ test('what no transcript is left of is said, never counted as 0', () => {
     'tokens review big: calls 1, output 40, cache write 400, cache read 4,000, input 4',
     'tokens: no transcript of subagent a4',
   ])
-  // A task of two sessions, one of which is left.
+  // A task of two sessions, one of which is left: the other may have started subagents.
   const attempt = ledger.openAttempt(id)?.id ?? 0
   ledger.endAttempt(attempt, { outcome: 'succeeded', summary: 'did it', report: null })
   const turn = { kind: 'start' as const, decisionId: null, prompt: 'again' }
   ledger.startAttempt({ ...turn, taskId: id, sessionId: 'session-2nd' })
-  expect(count(id).missing).toEqual(['session session-2nd', 'subagent a4'])
+  expect(tokenLines(count(id))).toEqual([
+    'tokens worker: no calls',
+    'tokens subagents: no transcript',
+    'tokens review big: calls 1, output 40, cache write 400, cache read 4,000, input 4',
+    'tokens: no transcript of session session-2nd, subagent a4',
+  ])
   // No account's folder at all.
   rmSync(join(config, 'projects'), { recursive: true })
   expect(tokenLines(count(id)).slice(0, 3)).toEqual(gone)
@@ -214,6 +230,13 @@ test('the last days’ tokens are those of the calls made then, of every task to
   const two = start()
   turnAt(two, before, since)
   keep(`session-${two}.jsonl`, says('m5', 'big', 16))
+  // A turn that ended before then, reviewed since, and the task ended with it.
+  const reviewed = start()
+  turnAt(reviewed, before, before)
+  ledger.succeed(reviewed)
+  keep(`session-${reviewed}.jsonl`, says('m6', 'big', 32, before))
+  const brief = reviewBrief(ledger, ledger.get(reviewed), 'the report', null)
+  keep('r1.jsonl', user(brief), says('m7', 'small', 64, since))
   // With no transcript: a task of then, and three with no turn then: an earlier one, one whose turn
   // was left open as it ended, and one that has not started.
   const gone = start()
@@ -221,6 +244,9 @@ test('the last days’ tokens are those of the calls made then, of every task to
   const left = start()
   turnAt(left, before, null)
   ledger.succeed(left)
+  ledger.db
+    .query('update tasks set finished_at = $at where id = $id')
+    .run({ id: left, at: before.toISOString() })
   ledger.add({ ...NEW, after: [one] })
   // One that cannot be read.
   const broken = start()
@@ -233,7 +259,7 @@ test('the last days’ tokens are those of the calls made then, of every task to
       since: since.toISOString(),
       worker: { big: use(2, 18) },
       subagents: { small: use(1, 8) },
-      review: null,
+      review: { small: use(1, 64) },
       missing: [`n${gone}`, `n${broken}`],
     })
   } finally {

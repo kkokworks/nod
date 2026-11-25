@@ -22,6 +22,8 @@ type Use = { calls: number; output: number; cacheWrite: number; cacheRead: numbe
 export type Tokens = Record<Part, Record<string, Use> | null>
 
 const none = (): Tokens => ({ worker: null, subagents: null, review: null })
+// With no prototype, whose names a model's may be.
+const noCalls = (): Record<string, Use> => Object.create(null)
 
 // A call to the model as Claude Code keeps it: an assistant row for each block of the response, every
 // one with the response's ID and the whole of its usage (2.1.309 to 2.1.332: of 170,038 rows past a
@@ -62,8 +64,9 @@ export function taskTokens(
   return { tokens, missing: addTask(tokens, ledger, home, task, 0) }
 }
 
-// What the tasks' calls since `since` used together, and which of the tasks with a turn since then
-// have a session or subagent with no transcript, or one that cannot be read (which goes to stderr).
+// What the tasks' calls since `since` used together, and which of the tasks with a turn or an end
+// since then have a session or subagent with no transcript, or one that cannot be read (which goes to
+// stderr).
 export function tokensSince(
   ledger: Ledger,
   home: string,
@@ -77,7 +80,8 @@ export function tokensSince(
     // A turn still open goes on now, unless its task ended past it.
     const open = FINISHED.has(task.status) ? null : now
     const ends = ledger.attempts(task.id).map((a) => a.finishedAt ?? open ?? a.startedAt)
-    if (!ends.some((at) => at >= from)) continue
+    // Its end too: the review of its last turn runs once that is closed (settle in worker.ts).
+    if (![task.finishedAt ?? '', ...ends].some((at) => at >= from)) continue
     try {
       if (addTask(tokens, ledger, home, task, since.getTime()).length > 0)
         missing.push(`n${task.id}`)
@@ -98,7 +102,7 @@ function addTask(total: Tokens, ledger: Ledger, home: string, task: Task, since:
   const add = (part: Part, files: string[]): string[] => {
     const started: string[] = []
     for (const file of files) {
-      const models = total[part] ?? {}
+      const models = total[part] ?? noCalls()
       total[part] = models
       for (const line of linesOf(file)) {
         if (line.includes('"toolUseResult"') && line.includes('"agentId":"')) {
@@ -138,8 +142,8 @@ function addTask(total: Tokens, ledger: Ledger, home: string, task: Task, since:
     return [...new Set(started)].filter((id) => !kept.has(`agent-${id}.jsonl`))
   }
   const lost = addAll('worker', workers, 'subagents')
-  // The workers' transcripts are there and name no other: they started none.
-  if (workers.length > 0 && lost.length === 0) total.subagents ??= {}
+  // The sessions' transcripts are all there and name no other: they started none.
+  if (workers.length > 0 && missing.length + lost.length === 0) total.subagents ??= noCalls()
   lost.push(...addAll('review', reviewsOf(task.id, workers), 'review'))
   return [...missing, ...lost.map((id) => `subagent ${id}`)]
 }

@@ -267,8 +267,8 @@ const USAGE = `usage:
                                    kind
   nod stats                        tasks by status, turns and decisions, and the tokens the tasks
                                    used in the last 7 days, as nod show has them (missing: the
-                                   tasks with a turn in them and a session or subagent with no
-                                   transcript)
+                                   tasks of those days with a session or subagent that no
+                                   transcript can be read of)
   nod gc [<task...> | --older-than <days>]
                                    close sessions and delete workspaces and worktrees of the named
                                    finished tasks, or of tasks finished that long ago, or, with
