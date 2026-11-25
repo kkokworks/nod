@@ -289,6 +289,7 @@ const detail = (id: number) => ({
   links: [],
   after: [],
   attempts: [{ id: 1, kind: 'start', outcome: null, startedAt: AT, finishedAt: null }],
+  runs: [],
   decisions: [open[id]]
     .filter((d) => d !== undefined)
     .map((d) => ({ ...d, taskId: id, attemptId: 1, question: 'ok?', answer: null, createdAt: AT })),

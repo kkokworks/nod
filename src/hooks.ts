@@ -56,8 +56,8 @@ import {
 // What a permission decision gets once the tool it asked for ran (onToolRan): the person allowed it
 // in the worker's terminal, nod not having answered it.
 const ALLOWED_HERE = '(allowed in the terminal)'
-const UNHEARD =
-  'Claude Code ended while nod checked its turn, so the failed check nod sent back reached no one.'
+const unheard = (sent: string): string =>
+  `Claude Code ended while nod checked its turn, so ${sent} reached no one.`
 
 // What Claude Code's hooks pass on stdin (measured on 2.1.290); only the fields nod reads. The Stop
 // hook's is StopEvent in worker.ts, which settle takes.
@@ -135,8 +135,10 @@ export async function onStop(
   // sent back now reaches no one, so the turn it would have gone on in was cut off.
   if (out !== null && claude !== 0 && !running(claude)) {
     out = null
-    const retry = ledger.openAttempt(taskId)
-    if (retry !== null) await cutOff(ledger, home, taskId, retry, UNHEARD)
+    const next = ledger.openAttempt(taskId)
+    const sent =
+      next?.kind === 'run' ? 'what came of the command nod ran' : 'the failed check nod sent back'
+    if (next !== null) await cutOff(ledger, home, taskId, next, unheard(sent))
   }
   await followWork(ledger, SELF, null)
   // A task that just succeeded may let others start.

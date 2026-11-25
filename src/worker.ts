@@ -48,12 +48,14 @@ import {
   nodLines,
   parseCaptures,
   parseReport,
+  parseRun,
   parseTells,
   reportStart,
   type Tell,
 } from './report'
 import { REBUILT, withoutRebuilt } from './review'
 import { activeRules, hadTrouble, isNoRule, retroBrief } from './rules'
+import { MAX_RUNS, runAsked, runPrompt, runsOf, runsSpent } from './runs'
 import {
   lastLines,
   listen,
@@ -1050,15 +1052,25 @@ export async function settle(
   event: z.infer<typeof StopEvent>,
 ): Promise<string | null> {
   const text = event.last_assistant_message.trim()
-  const report = parseReport(text)
+  // What it asks nod to run, in a repo with commands for that (runs.ts); past MAX_RUNS a question.
+  const asked =
+    runsOf(task.repo === null ? null : ledger.repo(task.repo)).size > 0 ? parseRun(text) : null
+  const spent = asked !== null && runsSpent(ledger, task.id)
+  const report = asked === null ? parseReport(text) : null
   const summary = report?.text ?? oneLine(text, 200)
   const work = event.background_tasks ?? []
   // A worker that keeps going after a failed check often drops the report line; the check decides.
   // Not while background work it started still runs: it stopped to wait for that (waiting below).
   // Nor once that wait is past WAIT_LIMIT_MS: a turn that never reported and whose work still runs
-  // is not done, so it asks the person as any other wait does.
+  // is not done, so it asks the person as any other wait does. Nor one that goes on after a command
+  // nod ran, unless a check sent it back before that: it had not reported done.
   const done =
-    report?.status === 'done' || (report === null && event.stop_hook_active && work.length === 0)
+    report?.status === 'done' ||
+    (report === null &&
+      asked === null &&
+      event.stop_hook_active &&
+      work.length === 0 &&
+      (ledger.attempt(attemptId).kind !== 'run' || trailingRetries(ledger, task.id) > 0))
   // A message that came while this hook ran started another turn, which Claude Code runs once the
   // hook ends: that turn's stop decides, not this one. So does one that came in the turn but that
   // the worker had not taken in by its end (carryUnheard). Asked again in the transaction that acts
@@ -1094,26 +1106,53 @@ export async function settle(
       notifyError(ledger, home, task.id),
     )
   }
+  // Blocking the stop makes Claude Code continue the same turn with `prompt` as feedback.
+  const goOn = (kind: AttemptKind, prompt: string): string | null => {
+    const started = ledger.db
+      .transaction((): boolean => {
+        if (newer() || ended(ledger, task.id)) return false
+        ledger.startAttempt({
+          taskId: task.id,
+          kind,
+          decisionId: null,
+          sessionId: event.session_id,
+          prompt,
+        })
+        return true
+      })
+      .immediate()
+    return started ? JSON.stringify({ decision: 'block', reason: prompt }) : null
+  }
   if (!done) {
     // Background work the worker started still runs, and Claude Code starts its next turn once that
     // is done (2.1.309), so what it asks now waits on nothing the person can give yet. Not past
     // WAIT_LIMIT_MS of waiting in a row with no turn open, though (overdueWaits does it between
     // turns): this turn's own run is not waiting.
+    const run = spent ? null : asked
     const wait = waited(ledger, task.id, Date.now()) ?? 0
     const overdue = wait >= WAIT_LIMIT_MS
-    const waiting = work.length > 0 && !overdue
+    const waiting = run === null && work.length > 0 && !overdue
     ledger.endAttempt(attemptId, {
-      outcome: waiting ? 'waiting' : 'needs_decision',
+      outcome: run !== null ? 'run' : waiting ? 'waiting' : 'needs_decision',
       summary,
       report: text,
     })
     await dialogs()
     await carryUnheard(ledger, home, terminals, task, attemptId, event.session_id)
     if (waiting || newer()) return null
+    if (run !== null) {
+      // A message that came meanwhile starts the next turn, and what came of the run is only recorded.
+      const gone = (): boolean => newer() || ended(ledger, task.id)
+      const said = await runAsked(ledger, task, attemptId, run, gone)
+      return said === null ? null : goOn('run', said)
+    }
     const still = work.map((w) => w.description ?? w.type ?? '?').join(', ')
     const note = work.length > 0 ? `${waitedNote(wait)} Still running: ${still}.\n` : ''
-    const asked = note + askedIn(ledger, task, text)
-    await decide(ledger, home, task.id, attemptId, 'question', asked)
+    const limit = spent
+      ? `May its worker have nod run its repo's commands ${MAX_RUNS} more times? It asks for another run, and nod has answered ${MAX_RUNS} such asks since a person last answered a decision on it. Answer yes, or how it should go on instead.\n`
+      : ''
+    const question = limit + note + askedIn(ledger, task, text)
+    await decide(ledger, home, task.id, attemptId, 'question', question)
     return null
   }
   ledger.endAttempt(attemptId, { outcome: 'succeeded', summary, report: text })
@@ -1220,22 +1259,9 @@ export async function settle(
     )
     return null
   }
-  const reason = check.next ? check.output : `${check.output}\nFix the problem, then finish.`
-  const retried = ledger.db
-    .transaction((): boolean => {
-      if (newer() || ended(ledger, task.id)) return false
-      ledger.startAttempt({
-        taskId: task.id,
-        kind: check.next ? 'land' : 'retry',
-        decisionId: null,
-        sessionId: event.session_id,
-        prompt: reason,
-      })
-      return true
-    })
-    .immediate()
-  // Blocking the stop makes Claude Code continue the same turn with `reason` as feedback.
-  return retried ? JSON.stringify({ decision: 'block', reason }) : null
+  return check.next
+    ? goOn('land', check.output)
+    : goOn('retry', `${check.output}\nFix the problem, then finish.`)
 }
 
 // Recorded as the worker's: what goes in is its judgment, nod only writes it down.
@@ -1480,11 +1506,13 @@ function trailingRetries(ledger: Ledger, taskId: number): number {
   return nodsTurns(ledger, taskId).filter((a) => a.kind === 'retry').length
 }
 
-// The turns since the last one someone else asked for: nod's retries, and its asks to report a turn
-// whose check was cut off again (goOnCut), which leave the retries as they were.
+// The turns since the last one someone else asked for: nod's retries, its asks to report a turn whose
+// check was cut off again (goOnCut), and those a command it ran started, which both leave the retries
+// as they were.
 function nodsTurns(ledger: Ledger, taskId: number): Attempt[] {
   const turns = ledger.attempts(taskId)
-  const ours = (a: Attempt): boolean => a.kind === 'retry' || a.prompt === REPORT_AGAIN
+  const ours = (a: Attempt): boolean =>
+    a.kind === 'retry' || a.kind === 'run' || a.prompt === REPORT_AGAIN
   return turns.slice(turns.findLastIndex((a) => !ours(a)) + 1)
 }
 
@@ -2411,12 +2439,13 @@ export async function restartDue(
 }
 
 // The built-in rules, then the ledger's rules that are on. `task`: null for what every worker gets,
-// which leaves out a repo worker's subagent review and what nod lands.
+// which leaves out a repo worker's subagent review, what nod lands and what it runs for the worker.
 export function workerPrompt(ledger: Ledger, task: Task | null): string {
+  const repo = task?.repo == null ? null : ledger.repo(task.repo)
   let built = task?.repo == null ? WORKER_PROMPT : `${WORKER_PROMPT}\n${SUBAGENT_REVIEW_PROMPT}`
-  if (task !== null && lands(ledger, task)) {
-    built += `\n${landingPrompt(ledger.repo(task.repo ?? '')?.land === 'merge')}`
-  }
+  if (task !== null && lands(ledger, task)) built += `\n${landingPrompt(repo?.land === 'merge')}`
+  const runs = runPrompt(repo)
+  if (runs !== null) built += `\n${runs}`
   const rules = activeRules(ledger)
   if (rules === '') return built
   return `${built}\nRules the human approved for every task:\n${rules}`

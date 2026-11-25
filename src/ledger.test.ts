@@ -26,7 +26,7 @@ test('reopening a ledger keeps its data and does not re-run migrations', () => {
   })
   const reopened = new Ledger(home)
   expect(reopened.get(id).brief).toBe('keep me')
-  expect(reopened.db.query('pragma user_version').get()).toEqual({ user_version: 38 })
+  expect(reopened.db.query('pragma user_version').get()).toEqual({ user_version: 39 })
 })
 
 test('v18 leaves the tasks before it without a root session', () => {
@@ -40,7 +40,7 @@ test('v18 leaves the tasks before it without a root session', () => {
 
   const ledger = new Ledger(home)
   expect(ledger.get(1)).toMatchObject({ brief: 'x', rootSession: null })
-  expect(ledger.db.query('pragma user_version').get()).toEqual({ user_version: 38 })
+  expect(ledger.db.query('pragma user_version').get()).toEqual({ user_version: 39 })
 })
 
 test('v23 gives a ledger of v22 project sessions, none yet, and leaves its projects as they were', () => {
@@ -80,7 +80,7 @@ test('v29 moves the project sessions of a v28 ledger to sessions under their ids
 
   const ledger = new Ledger(home)
   const todos = new Todos(ledger)
-  expect(ledger.db.query('pragma user_version').get()).toEqual({ user_version: 38 })
+  expect(ledger.db.query('pragma user_version').get()).toEqual({ user_version: 39 })
   expect(ledger.db.query('pragma foreign_key_check').all()).toEqual([])
   expect(todos.latestSession(1)).toEqual({
     id: 9,
@@ -125,7 +125,7 @@ test('v30 leaves the description of a v29 ledger’s projects empty and all else
 
   const ledger = new Ledger(home)
   const todos = new Todos(ledger)
-  expect(ledger.db.query('pragma user_version').get()).toEqual({ user_version: 38 })
+  expect(ledger.db.query('pragma user_version').get()).toEqual({ user_version: 39 })
   expect(todos.project(1)).toEqual({
     id: 1,
     title: 'Release',
@@ -151,7 +151,7 @@ test('v31 leaves a v30 ledger’s projects as they were, with no orchestrator, a
 
   const ledger = new Ledger(home)
   const todos = new Todos(ledger)
-  expect(ledger.db.query('pragma user_version').get()).toEqual({ user_version: 38 })
+  expect(ledger.db.query('pragma user_version').get()).toEqual({ user_version: 39 })
   expect(ledger.db.query('select * from project_orchestrators').all()).toEqual([])
   expect(todos.project(1)).toEqual({
     id: 1,
@@ -225,15 +225,16 @@ test('v32 drops the triggers of a v31 ledger that had none, and keeps every othe
   before.close()
 
   const ledger = new Ledger(home)
-  expect(ledger.db.query('pragma user_version').get()).toEqual({ user_version: 38 })
+  expect(ledger.db.query('pragma user_version').get()).toEqual({ user_version: 39 })
   const after = shape(ledger)
-  // and the tables v34 to v37 add, empty
+  // and the tables v34 to v39 add, empty
   expect(after.tables).toEqual({
     ...tables,
     task_changes: 0,
     task_hands: 0,
     helper_descriptions: 0,
     limit_waits: 0,
+    runs: 0,
   })
   expect(after.taskColumns).not.toContain('trigger_id')
   expect(ledger.get(1).brief).toBe('first')
@@ -397,14 +398,15 @@ test('v33 drops the unused columns and table of a v32 ledger that held nothing i
   before.close()
 
   const ledger = new Ledger(home)
-  expect(ledger.db.query('pragma user_version').get()).toEqual({ user_version: 38 })
-  // and the tables v34 to v37 add, empty
+  expect(ledger.db.query('pragma user_version').get()).toEqual({ user_version: 39 })
+  // and the tables v34 to v39 add, empty
   expect(shape(ledger).tables).toEqual({
     ...tables,
     task_changes: 0,
     task_hands: 0,
     helper_descriptions: 0,
     limit_waits: 0,
+    runs: 0,
   })
   expect(columns(ledger, 'todos')).not.toContain('context')
   expect(columns(ledger, 'todos')).not.toContain('back_to')
@@ -437,7 +439,7 @@ test('v33 keeps what a v32 ledger held of a context or a task to go back to in e
     insert into unmatched_notice_sessions (notice_id, session_key) values (2, 'key-gone');`)
   const ledger = new Ledger(home)
   const todos = new Todos(ledger)
-  expect(ledger.db.query('pragma user_version').get()).toEqual({ user_version: 38 })
+  expect(ledger.db.query('pragma user_version').get()).toEqual({ user_version: 39 })
   expect(ledger.db.query('pragma foreign_key_check').all()).toEqual([])
   expect(
     ledger.db
@@ -504,7 +506,7 @@ test('v35 keeps a v34 ledger’s sessions under their ids, with what refers to t
 
   const ledger = new Ledger(home)
   const todos = new Todos(ledger)
-  expect(ledger.db.query('pragma user_version').get()).toEqual({ user_version: 38 })
+  expect(ledger.db.query('pragma user_version').get()).toEqual({ user_version: 39 })
   expect(ledger.db.query('pragma foreign_keys').get()).toEqual({ foreign_keys: 1 })
   expect(ledger.db.query('pragma foreign_key_check').all()).toEqual([])
   expect(ledger.db.query('select * from sessions order by id').all()).toEqual(before)
@@ -547,7 +549,7 @@ test('a row a ledger edited by hand left pointing at no task does not stop the m
   old.close()
 
   const ledger = new Ledger(home)
-  expect(ledger.db.query('pragma user_version').get()).toEqual({ user_version: 38 })
+  expect(ledger.db.query('pragma user_version').get()).toEqual({ user_version: 39 })
   expect(ledger.db.query('select "table", parent from pragma_foreign_key_check').all()).toEqual([
     { table: 'links', parent: 'tasks' },
   ])
@@ -1292,7 +1294,7 @@ test('v37 has the tasks a usage limit stopped before it wait as from when they e
   old.close()
 
   const ledger = new Ledger(home)
-  expect(ledger.db.query('pragma user_version').get()).toEqual({ user_version: 38 })
+  expect(ledger.db.query('pragma user_version').get()).toEqual({ user_version: 39 })
   // Nov 21 of the year it errored, not of the year the ledger opened.
   expect(ledger.limitWait(1)).toEqual({ resumeAt: '2099-11-21T10:01:00.000Z', resumed: 0 })
   for (const id of [2, 3, 4]) expect(ledger.limitWait(id)).toBeNull()
@@ -1310,9 +1312,32 @@ test("v38 keeps a v37 ledger's notices, each for no helper, and what waits still
   old.close()
 
   const ledger = new Ledger(home)
-  expect(ledger.db.query('pragma user_version').get()).toEqual({ user_version: 38 })
+  expect(ledger.db.query('pragma user_version').get()).toEqual({ user_version: 39 })
   expect(ledger.notice(1)).toMatchObject({ note: 'sent one', sentAt: 'sent', helper: null })
   expect(ledger.unsentNotices()).toMatchObject([
     { id: 2, projectId: 1, note: 'waits', helper: null },
   ])
+})
+
+test("v39 keeps a v38 ledger's repos, with no command for nod to run", () => {
+  const home = freshHome()
+  const old = new Database(join(home, 'nod.db'), { create: true, strict: true })
+  for (const sql of MIGRATIONS.slice(0, 38)) old.exec(sql)
+  old.exec(`pragma user_version = 38;
+    insert into tasks (id, brief, created_at) values (1, 'x', 'at');
+    insert into repos (path, land, check_cmd, changed_at) values ('/r', 'pr', 'bun test', 'at');`)
+  old.close()
+
+  const ledger = new Ledger(home)
+  expect(ledger.db.query('pragma user_version').get()).toEqual({ user_version: 39 })
+  expect(ledger.repo('/r')).toEqual({
+    path: '/r',
+    land: 'pr',
+    checkCmd: 'bun test',
+    gateCmd: null,
+    runs: null,
+    raisedAt: null,
+    changedAt: 'at',
+  })
+  expect(ledger.runs(1)).toEqual([])
 })

@@ -318,6 +318,9 @@ async function turn(message: string, continuing: boolean): Promise<void> {
     reply = 'NOD: done | allowed'
   } else if (head.includes('give-up')) {
     reply = 'NOD: failed | cannot do it'
+  } else if (head.startsWith('NOD: run |')) {
+    // Asks nod to run what its first line says, as it says it.
+    reply = head
   } else if (head.includes('silent')) {
     reply = 'Stopped without a report.'
   } else if (head.includes('ask-first')) {

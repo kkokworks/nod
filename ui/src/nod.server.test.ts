@@ -61,6 +61,18 @@ test('the task page gets the report of its work turn and of its landing turn, ea
     ['start', 'the work report'],
     ['land', 'the pull request'],
   ])
+  // And what nod ran for its worker, with the turn that asked.
+  const attemptId = ledger.attempts(task)[0]?.id ?? 0
+  const run = { taskId: task, attemptId, repo: '/r', asked: 'pg', command: 'bun test', pid: 1 }
+  ledger.endRun(ledger.startRun(run, '', () => false) ?? 0, 'exit code 1 after 2s', 'it failed')
+  expect(detail(task)?.runs).toEqual([
+    {
+      id: expect.any(Number),
+      attemptId,
+      line: 'nod ran `bun test` (pg): exit code 1 after 2s',
+      output: 'it failed',
+    },
+  ])
 })
 
 test('a status sent from the web goes in only from the status the page showed', () => {

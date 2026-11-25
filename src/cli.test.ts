@@ -2051,6 +2051,35 @@ test('repo sets how far nod lands a repo, records who changed what, and refuses 
   ])
   expect((await ok('repo'))[0]).toBe(`${repo}  off`)
 
+  // Commands nod runs for the repo's workers: a person's to add, anyone's but a worker's to take away.
+  const run = await ok('repo', repo, '--run', 'pg=bun test', '--run', 'e2e=bun e2e')
+  expect(run.slice(0, 5)).toEqual([
+    `${repo}  off`,
+    '  check: bun test',
+    '  gate: sh gate.sh',
+    '  run pg: bun test',
+    '  run e2e: bun e2e',
+  ])
+  expect(run[5]).toContain('register no command that reaches a production database or a secret')
+  const kept = ledger.repo(repo)?.runs
+  for (const added of ['pg=sh x', 'new=bun x', 'pg=env A=', 'pg= =']) {
+    const refused = await nod({ CLAUDECODE: '1' }, 'repo', repo, '--run', 'e2e=', '--run', added)
+    expect(refused.err).toContain('can only turn a repo off or take a command away')
+  }
+  expect((await nod({ CLAUDECODE: '1' }, 'repo', repo, '--run', 'e2e=', '--gate', '')).code).toBe(1)
+  for (const args of [['pg='], ['pg=bun test']]) {
+    expect((await nod({ NOD_TASK: '5' }, 'repo', repo, '--run', ...args)).err).toContain(
+      'a worker cannot change what nod may do in a repo',
+    )
+  }
+  expect((await nod({}, 'repo', repo, '--run', 'pg=a | b')).err).toContain('with no shell')
+  expect(ledger.repo(repo)?.runs).toBe(kept ?? '')
+  expect((await nod({ CLAUDECODE: '1' }, 'repo', repo, '--run', 'e2e=')).code).toBe(0)
+  expect((await ok('repo', repo)).slice(-2).map((l) => l.replace(/^ {2}\d{4}-\S+ /, ''))).toEqual([
+    'human: runs — → {"pg":"bun test","e2e":"bun e2e"}',
+    'claude: runs {"pg":"bun test","e2e":"bun e2e"} → {"pg":"bun test"}',
+  ])
+
   // Off, a task of the repo does not land even when named.
   const task = ledger.add({
     brief: 'x',
