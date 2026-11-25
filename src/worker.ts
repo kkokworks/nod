@@ -18,6 +18,7 @@ import {
   refuseEnded,
   WENT_ON,
 } from './decisions'
+import { askNext, toAnswer } from './dialog'
 import { followWork, lands } from './done'
 import { workerEnv } from './env'
 import { hasRef, onlyCopy } from './gc'
@@ -508,6 +509,8 @@ export async function answer(
     )
   }
   await restore(ledger, home, decision.taskId)
+  const dialog =
+    decision.reason === 'permission' && yes ? toAnswer(ledger, terminals, decision) : null
   // Closed first, so of two answers at once only one reaches the worker.
   ledger.answer(decisionId, text)
   await told()
@@ -539,6 +542,7 @@ export async function answer(
   // The permission dialog has "Yes" selected first (measured on 2.1.290).
   if (yes) {
     terminals.keys(name, 'Enter')
+    await askNext(ledger, home, terminals, decision, dialog)
     return true
   }
   // Escape answers no, but also ends the turn without a Stop hook (measured on 2.1.290), so close

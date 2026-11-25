@@ -9,10 +9,12 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { join, resolve } from 'node:path'
+import { blocked, dialog, UNCHECKED } from '../test/dialog'
 import { git } from '../test/remote'
 import { tempDirs } from '../test/tmp'
 import { ALLOW, back, harmless, LIMITS, loses, onPermissionRequest } from './allow'
 import { NO_PERSON } from './decisions'
+import { WAIT } from './dialog'
 import { onNotification, onPrompt } from './hooks'
 import { sendNotices } from './inbox'
 import { Ledger, type NewTask } from './ledger'
@@ -28,7 +30,7 @@ afterAll(tmp.removeAll)
 const cli = resolve(import.meta.dir, 'cli.ts')
 
 // Tests whose dialog never shows do not wait for it.
-LIMITS.dialogMs = 0
+WAIT.dialogMs = 0
 
 // A worker's terminal up, which tmux stands in for: `shows` on its screen, and its Claude Code takes
 // what is pasted, as the prompt hook marks it (listen in sending.ts).
@@ -340,36 +342,6 @@ test('nod hook permission prints the allow only for what nod allows, nothing oth
   expect(show.stdout.toString()).toMatch(/\n {2}allowed by nod \S+: rm -rf node_modules\n/)
 }, 15_000)
 
-// The dialog as Claude Code draws it (2.1.331), under what the terminal showed before: `says`, why
-// it shows; for auto mode's, the last call it blocked.
-const UNCHECKED =
-  'A call in this response changed (or may have changed) after auto mode reviewed it, so auto mode could not check what would run'
-const blocked = (why = UNCHECKED, times = '3 consecutive actions were blocked.'): string =>
-  `Auto mode needs your confirmation for this command.\n${times} Please review the transcript before continuing.\n\nLatest blocked action: ${why}`
-function dialog(command: string, says = blocked(), width = 60): string {
-  const boxed = (body: string): string[] =>
-    body
-      .split('\n')
-      .flatMap((l) => l.match(new RegExp(`.{1,${width}}`, 'g')) ?? [''])
-      .map((l) => ` │ ${l}`)
-  return [
-    `  Bash(${command})`,
-    '  ⎿  Waiting…',
-    '─'.repeat(width),
-    ' Bash command',
-    ' Show it',
-    '╌'.repeat(width),
-    ...boxed(command),
-    '╌'.repeat(width),
-    ...boxed(says),
-    ' ⚠ Claude Code will automatically block this request in 1:53, to avoid holding up an unattended session',
-    '',
-    ' Do you want to proceed?',
-    ' ❯ 1. Yes',
-    '   2. No',
-  ].join('\n')
-}
-
 // A prompt of auto mode's in a running task's session: its transcript, kept as Claude Code keeps it.
 function asking() {
   const task = running()
@@ -656,7 +628,7 @@ test('nod waits for the dialog: until it is drawn, and while another call’s co
   const { ledger, event } = asking()
   const command = 'git log -1'
   const shown = ['', dialog('git status'), dialog(command)]
-  LIMITS.dialogMs = 60_000
+  WAIT.dialogMs = 60_000
   try {
     expect(onPermissionRequest(ledger, event(command), () => shown.shift() ?? '')).toEqual(
       back(command),
@@ -667,7 +639,7 @@ test('nod waits for the dialog: until it is drawn, and while another call’s co
     const other = [dialog(again, 'Ask rule Bash(git log*) overrides auto mode for this command')]
     expect(onPermissionRequest(ledger, event(again), () => other.pop() ?? dialog(again))).toBeNull()
   } finally {
-    LIMITS.dialogMs = 0
+    WAIT.dialogMs = 0
   }
 })
 

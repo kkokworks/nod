@@ -41,8 +41,9 @@ export async function decide(
   attemptId: number,
   reason: DecisionReason,
   question: string,
-  // What goes into the ledger with the decision, in its transaction.
+  // What goes into the ledger with the decision, in its transaction, and what keeps it from opening.
   along: () => void = () => {},
+  unless: () => boolean = () => false,
 ): Promise<boolean> {
   // What the worker asks as a turn ends replaces what it asked as an earlier one ended, and a
   // retrospective's proposal the one before it. A task that ended takes none (ended).
@@ -51,7 +52,7 @@ export async function decide(
   const same = (d: Decision): boolean => (rule ? d.reason === 'rule' : ASKED.includes(d.reason))
   const made = ledger.db
     .transaction(() => {
-      if (ended(ledger, taskId)) return null
+      if (ended(ledger, taskId) || unless()) return null
       along()
       const replaced =
         rule || ASKED.includes(reason) ? closeDecisions(ledger, taskId, same, why) : []

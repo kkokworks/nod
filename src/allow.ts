@@ -1,6 +1,7 @@
 import { lstatSync, realpathSync } from 'node:fs'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { z } from 'zod'
+import { squeeze, WAIT } from './dialog'
 import type { Ledger, Notice } from './ledger'
 import { message } from './proc'
 import { autoModeDenied, inBackground } from './transcript'
@@ -201,9 +202,8 @@ const LOSES = new RegExp(
 )
 export const loses = (command: string): boolean => LOSES.test(command)
 
-// How long nod waits for the dialog (it may not be drawn yet, or other calls' come first), and how many
-// of a task's calls go back in how long (mayGoBack). In the open so a test can lower them.
-export const LIMITS = { dialogMs: 2000, backs: 30, backsMs: 10 * 60_000 }
+// How many of a task's calls go back in how long (mayGoBack). In the open so a test can lower them.
+export const LIMITS = { backs: 30, backsMs: 10 * 60_000 }
 
 // A command goes back once in a task (`before`: what went back so far), so it never goes round: the
 // second time is the person's. Nor do more than LIMITS.backs of them in LIMITS.backsMs: something
@@ -216,7 +216,6 @@ const mayGoBack = (command: string, before: Notice[]): boolean =>
 // What the dialog says under the command, around how many times in a row (2.1.331's binary, and as
 // nod's decisions show it since 2.1.321): only of calls a hook changed, or that ran beside one. And
 // what every dialog of a command's ends with.
-const squeeze = (text: string): string => text.replace(/[─╌]{3,}/g, '─').replace(/[\s│]/g, '')
 const ASKS = squeeze('Auto mode needs your confirmation for this command.')
 const UNJUDGED = squeeze(
   'consecutive actions were blocked. Please review the transcript before continuing. Latest blocked action: A call in this response changed (or may have changed) after auto mode reviewed it, so auto mode could not check what would run',
@@ -249,10 +248,10 @@ function unjudged(
 }
 
 // Whether the dialog of `command`, the one that shows, says under the command that auto mode had
-// nothing to judge; waits for it to show.
+// nothing to judge; waits for it to show (it may not be drawn yet, or other calls' come first).
 function says(command: string, screen: () => string): boolean {
   const dialog = `─${squeeze(command)}─`
-  for (const until = Date.now() + LIMITS.dialogMs; ; Bun.sleepSync(100)) {
+  for (const until = Date.now() + WAIT.dialogMs; ; Bun.sleepSync(100)) {
     const under = squeeze(screen()).split(dialog).slice(1).at(-1) ?? ''
     // With no other dialog under it, which would be the one that shows.
     if (under !== '' && !under.includes('─')) {
