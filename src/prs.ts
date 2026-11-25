@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import type { PrLookup, PullRequest } from './done'
+import type { PullRequest } from './done'
 import { spawn } from './proc'
 
 // Reads a linked pull request through its git service's own CLI, already logged in: gh for GitHub,
@@ -13,10 +13,22 @@ const GITHUB = /^https:\/\/github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)/
 const GITEA = /^(https?:\/\/[^/]+)\/([^/]+)\/([^/]+)\/pulls\/(\d+)/
 const TIMEOUT_MS = 30_000
 
-// Whether a link reads as a pull request pullRequests can look up, without looking it up.
-export const isPullRequest = (url: string): boolean => GITHUB.test(url) || GITEA.test(url)
+// The address of the pull request a link is to, without what follows it (`/files`), if it reads as one
+// pullRequests can look up; it is not looked up.
+export const prAddress = (url: string): string | null =>
+  (url.match(GITHUB) ?? url.match(GITEA))?.[0] ?? null
+export const isPullRequest = (url: string): boolean => prAddress(url) !== null
 
 type Review = { login: string | null; state: string; at: string | null }
+// A linked pull request with what pr-events.ts tells of it: who opened it (null for an account since
+// deleted), its head commit, and its reviews, oldest first, one dismissed as DISMISSED. `id`: what tells
+// a review from the others on its pull request; `comments`: how many comments on the code it holds, 0
+// on GitHub, where each reply is a review of its own.
+export type LinkedPr = PullRequest & {
+  author: string | null
+  sha: string
+  reviews: (Review & { id: string; comments: number })[]
+}
 const CHANGES = new Set(['CHANGES_REQUESTED', 'REQUEST_CHANGES'])
 
 // When the person approved, if their last review that approved or asked for changes approved; a
@@ -28,23 +40,53 @@ export function approvedAt(reviews: Review[], me: string): string | null {
   return last?.state === 'APPROVED' ? last.at : null
 }
 
+// A read its service failed, or turned away for now (a limit). Any other that fails is of its one pull
+// request: gone, or not this login's to read.
+export class ServiceDown extends Error {}
+// What gh prints of one.
+const GH_DOWN = /HTTP (429|5\d\d)|rate limit|error connecting/i
+// tea fails only when no answer came, and prints an answer that says no as any other, so nod reads
+// the status it prints to stderr with -i (tea 0.12 to 0.14.2).
+const TEA_STATUS = /^HTTP\/\S+ (\d{3})/m
+
+function reader(cwd: string) {
+  const run = async (cmd: string[]): Promise<string> => {
+    const { code, timedOut, stdout, output } = await spawn(cmd, cwd, { timeoutMs: TIMEOUT_MS })
+    if (code !== 0) {
+      const why = `${cmd.join(' ')} exited ${code}: ${output.trim().slice(-500)}`
+      const down = timedOut || cmd[0] === 'tea' || GH_DOWN.test(output)
+      throw down ? new ServiceDown(why) : new Error(why)
+    }
+    const status = Number(TEA_STATUS.exec(output.slice(stdout.length))?.[1] ?? 0)
+    if (status < 400) return stdout
+    const why = `${cmd.join(' ')} was answered ${status}: ${stdout.trim().slice(0, 200)}`
+    // Not the service's JSON: what stands in front of it answered.
+    const down = status === 429 || status >= 500 || !stdout.trimStart().startsWith('{')
+    throw down ? new ServiceDown(why) : new Error(why)
+  }
+  const json = async (cmd: string[]): Promise<unknown> => {
+    const out = await run(cmd)
+    try {
+      return JSON.parse(out)
+    } catch {
+      throw new ServiceDown(`${cmd.join(' ')} printed no JSON: ${out.trim().slice(0, 200)}`)
+    }
+  }
+  return { run, json }
+}
+
 // One lookup per sweep: links to the same pull request (several comments on it) ask once.
-export function pullRequests(cwd: string): PrLookup {
-  const seen = new Map<string, Promise<PullRequest>>()
+export function pullRequests(cwd: string): (url: string) => Promise<LinkedPr | null> {
+  const { run, json } = reader(cwd)
+  const seen = new Map<string, Promise<LinkedPr>>()
   const logins = new Map<string, Promise<string>>()
   const once = <T>(cache: Map<string, Promise<T>>, key: string, read: () => Promise<T>) => {
     const known = cache.get(key) ?? read()
     cache.set(key, known)
     return known
   }
-  const run = async (cmd: string[]): Promise<string> => {
-    const { code, stdout, output } = await spawn(cmd, cwd, { timeoutMs: TIMEOUT_MS })
-    if (code !== 0) throw new Error(`${cmd.join(' ')} exited ${code}: ${output.trim().slice(-500)}`)
-    return stdout
-  }
-  const json = async (cmd: string[]): Promise<unknown> => JSON.parse(await run(cmd))
 
-  const github = async (repo: string, n: string): Promise<PullRequest> => {
+  const github = async (repo: string, n: string): Promise<LinkedPr> => {
     const pr = GH_PR.parse(
       await json([
         'gh',
@@ -54,7 +96,7 @@ export function pullRequests(cwd: string): PrLookup {
         '--repo',
         repo,
         '--json',
-        'state,reviews,headRefName,headRepository,headRepositoryOwner,mergedAt',
+        'state,reviews,headRefName,headRepository,headRepositoryOwner,mergedAt,author,headRefOid',
       ]),
     )
     const owner = pr.headRepositoryOwner?.login
@@ -62,10 +104,13 @@ export function pullRequests(cwd: string): PrLookup {
     const me = await once(logins, 'github', async () =>
       (await run(['gh', 'api', 'user', '--jq', '.login'])).trim(),
     )
+    // By who and when, which tells it from the others: one person submits one review at a time.
     const reviews = pr.reviews.map((r) => ({
+      id: `${r.author?.login ?? ''} ${r.submittedAt}`,
       login: r.author?.login ?? null,
       state: r.state,
       at: r.submittedAt,
+      comments: 0,
     }))
     return {
       state: GH_STATE[pr.state],
@@ -73,34 +118,48 @@ export function pullRequests(cwd: string): PrLookup {
       headRepo: owner && name ? `https://github.com/${owner}/${name}` : null,
       mergedAt: pr.mergedAt,
       approvedAt: approvedAt(reviews, me),
+      // gh writes an app's login as app/<login> here, though not on its reviews.
+      author: pr.author?.login.replace(/^app\//, '') ?? null,
+      sha: pr.headRefOid,
+      reviews,
     }
   }
-  const gitea = async (base: string, repo: string, n: string): Promise<PullRequest> => {
+  const gitea = async (base: string, repo: string, n: string): Promise<LinkedPr> => {
     const api = `${base}/api/v1`
-    const pr = GITEA_PR.parse(await json(['tea', 'api', `${api}/repos/${repo}/pulls/${n}`]))
-    // ponytail: one page of 50 reviews; follow the pages if a pull request gets more.
-    const reviews = GITEA_REVIEWS.parse(
-      await json(['tea', 'api', `${api}/repos/${repo}/pulls/${n}/reviews?page=1&limit=50`]),
-    )
+    const pr = GITEA_PR.parse(await json(['tea', 'api', '-i', `${api}/repos/${repo}/pulls/${n}`]))
+    // Oldest first, 50 to a page, so the newest are on the last. ponytail: a service whose
+    // MAX_RESPONSE_ITEMS is below 50 gives one page; 20 pages at most, so one that ignores the page
+    // does not hold the tick.
+    const listed: z.infer<typeof GITEA_REVIEWS> = []
+    for (let page = 1; page <= 20 && listed.length === (page - 1) * 50; page++) {
+      const reviews = `${api}/repos/${repo}/pulls/${n}/reviews?page=${page}&limit=50`
+      listed.push(...GITEA_REVIEWS.parse(await json(['tea', 'api', '-i', reviews])))
+    }
     const me = await once(
       logins,
       base,
-      async () => GITEA_USER.parse(await json(['tea', 'api', `${api}/user`])).login,
+      async () => GITEA_USER.parse(await json(['tea', 'api', '-i', `${api}/user`])).login,
     )
-    const standing = reviews
-      .filter((r) => !r.dismissed)
-      .map((r) => ({ login: r.user?.login ?? null, state: r.state, at: r.submitted_at }))
+    const reviews = listed.map((r) => ({
+      id: String(r.id),
+      login: r.user?.login ?? null,
+      state: r.dismissed ? 'DISMISSED' : r.state,
+      at: r.submitted_at,
+      comments: r.comments_count ?? 0,
+    }))
     return {
       state: pr.merged ? 'merged' : pr.state,
       head: pr.head.label,
       headRepo: pr.head.repo ? `${base}/${pr.head.repo.full_name}` : null,
       mergedAt: pr.merged_at,
-      approvedAt: approvedAt(standing, me),
+      approvedAt: approvedAt(reviews, me),
+      author: pr.user?.login ?? null,
+      sha: pr.head.sha,
+      reviews,
     }
   }
 
   return async (url) => {
-    // The whole match is the pull request's address, without what follows it (`/files`).
     const gh = url.match(GITHUB)
     if (gh !== null) {
       const [key, owner, repo, n] = gh
@@ -115,6 +174,80 @@ export function pullRequests(cwd: string): PrLookup {
   }
 }
 
+// What pr-events.ts reads of an open pull request beside its lookup: the comments on the code in one of
+// its reviews, whoever wrote them (on Gitea and Forgejo a reply goes into the review it answers), and
+// its head whose CI failed, null while that has not. `head`: as the lookup read it.
+export type PrReads = {
+  comments(url: string, review: string): Promise<{ id: string; login: string | null; at: string }[]>
+  failedHead(url: string, head: string): Promise<string | null>
+}
+export function prReads(cwd: string): PrReads {
+  const { json } = reader(cwd)
+  const repoApi = (url: string): { api: string; n: string } => {
+    const [, base, owner, repo, n] = url.match(GITEA) ?? []
+    if (n === undefined) throw new Error(`not a pull request of Gitea or Forgejo: ${url}`)
+    return { api: `${base}/api/v1/repos/${owner}/${repo}`, n }
+  }
+  return {
+    comments: async (url, review) => {
+      const { api, n } = repoApi(url)
+      const listed = await json([
+        'tea',
+        'api',
+        '-i',
+        `${api}/pulls/${n}/reviews/${review}/comments`,
+      ])
+      return GITEA_COMMENTS.parse(listed).map((c) => ({
+        id: String(c.id),
+        login: c.user?.login ?? null,
+        at: c.created_at,
+      }))
+    },
+    failedHead: async (url, head) => {
+      const gh = url.match(GITHUB)
+      if (gh === null) {
+        // The commit's statuses put together, as the service's own pages show them. Not its Actions
+        // runs, which are heavy for the service to list. Forgejo puts the state together from all the
+        // statuses and pages only the list, which is not read.
+        const { api } = repoApi(url)
+        const status = await json([
+          'tea',
+          'api',
+          '-i',
+          `${api}/commits/${head}/status?page=1&limit=50`,
+        ])
+        const state = GITEA_STATUS.parse(status)?.state
+        return state === 'failure' || state === 'error' ? head : null
+      }
+      const [, owner, name, n] = gh
+      const pr = GH_CHECKS.parse(
+        await json([
+          'gh',
+          'pr',
+          'view',
+          String(n),
+          '--repo',
+          `${owner}/${name}`,
+          '--json',
+          'headRefOid,statusCheckRollup',
+        ]),
+      )
+      // The last run of each check: one run again keeps its earlier runs in the list. gh pr checks
+      // also tells apart what event ran a workflow, which --json leaves out.
+      const runs = (pr.statusCheckRollup ?? []).toSorted((a, b) =>
+        (a.startedAt ?? '').localeCompare(b.startedAt ?? ''),
+      )
+      const failed = new Map(
+        runs.map((c) => [
+          c.context ?? `${c.workflowName}/${c.name}`,
+          GH_FAILED.has(c.state || c.conclusion || ''),
+        ]),
+      )
+      return [...failed.values()].includes(true) ? pr.headRefOid : null
+    },
+  }
+}
+
 const GH_STATE = { OPEN: 'open', MERGED: 'merged', CLOSED: 'closed' } as const
 const GH_PR = z.object({
   state: z.enum(['OPEN', 'MERGED', 'CLOSED']),
@@ -123,6 +256,8 @@ const GH_PR = z.object({
   headRepository: z.object({ name: z.string() }).nullish(),
   headRepositoryOwner: z.object({ login: z.string() }).nullish(),
   mergedAt: z.string().nullable(),
+  author: z.object({ login: z.string() }).nullish(),
+  headRefOid: z.string(),
   reviews: z.array(
     z.object({
       author: z.object({ login: z.string() }).nullable(),
@@ -131,25 +266,56 @@ const GH_PR = z.object({
     }),
   ),
 })
+// One that only waits for a person (ACTION_REQUIRED) or was stopped (CANCELLED) did not fail.
+const GH_FAILED = new Set(['FAILURE', 'ERROR', 'TIMED_OUT', 'STARTUP_FAILURE'])
+// A check run has a name, workflow and conclusion, a commit status a context and state.
+const GH_CHECKS = z.object({
+  headRefOid: z.string(),
+  statusCheckRollup: z
+    .array(
+      z.object({
+        context: z.string().nullish(),
+        name: z.string().nullish(),
+        workflowName: z.string().nullish(),
+        state: z.string().nullish(),
+        conclusion: z.string().nullish(),
+        startedAt: z.string().nullish(),
+      }),
+    )
+    .nullish(),
+})
 const GITEA_PR = z.object({
   state: z.enum(['open', 'closed']),
   merged: z.boolean(),
   merged_at: z.string().nullable(),
+  user: z.object({ login: z.string() }).nullish(),
   // The branch's name; `ref` says refs/pull/<n>/head once the branch is deleted. `repo`: the repo
   // the branch is in, a fork's for a pull request from a fork, null once that repo is deleted.
   head: z.object({
     label: z.string(),
+    sha: z.string(),
     repo: z.object({ full_name: z.string() }).nullish(),
   }),
 })
 const GITEA_REVIEWS = z.array(
   z.object({
+    id: z.number(),
     user: z.object({ login: z.string() }).nullable(),
     state: z.string(),
     submitted_at: z.string(),
     dismissed: z.boolean().optional(),
+    comments_count: z.number().nullish(),
   }),
 )
+const GITEA_COMMENTS = z.array(
+  z.object({
+    id: z.number(),
+    user: z.object({ login: z.string() }).nullable(),
+    created_at: z.string(),
+  }),
+)
+// Forgejo answers a commit with no status as pending; null or an empty state reads as none too.
+const GITEA_STATUS = z.object({ state: z.string() }).nullable()
 const GITEA_USER = z.object({ login: z.string() })
 
 // The pull request nod opened for a task, as its git service has it now. `merge`: whether the

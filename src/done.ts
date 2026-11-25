@@ -272,7 +272,7 @@ export function followWork(ledger: Ledger, actor: string, prs: PrLookup | null):
 }
 
 // The links on a task and on its todo, each once.
-function linksOf(ledger: Ledger, task: Task): string[] {
+export function linksOf(ledger: Ledger, task: Task): string[] {
   const todoLinks = task.todoId === null ? [] : new Todos(ledger).links(task.todoId)
   return [...new Set([...ledger.links(task.id), ...todoLinks.map((l) => l.url)])]
 }
