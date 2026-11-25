@@ -188,17 +188,24 @@ function committed(root: string, paths: string[]): boolean {
 // a few more, wherever they stand: behind rtk or env, in a shell of its own, in a script's text. The
 // person wants to see these, so none goes back. Not what only writes over a file (`>`, mv, cp).
 // ponytail: by its words. One it misses goes back, which runs nothing: auto mode judges it alone.
-const VALUE = String.raw`(?!-)(?:"[^"]*"|'[^']*'|\\.|[^\s"'\\])+`
-const GIT = String.raw`(?<![\w.-])git(?:\s+(?:-[Cc]|--(?:git-dir|work-tree|namespace))\s+${VALUE}|\s+-\S+)*\s+`
+// A value of an option of git's: quoted, escaped, `$(…)`; and up to 20 of git's options before what it
+// runs, on its line, so that a long command is read at once.
+const VALUE = String.raw`(?!-)(?:"[^"]*"|'[^']*'|\$\([^()]*\)|\$(?!\()|\\.|[^\s"'\\$])+`
+const GIT = String.raw`(?<![\w.-])git(?:[ \t]+(?:-[Cc]|--(?:git-dir|work-tree|namespace))[ \t]+${VALUE}|[ \t]+--[\w-]+=${VALUE}|[ \t]+-[^\s="'$]+){0,20}[ \t]+["']?`
+// What is between a git command and the option that makes it lose something, on its line.
+const ARGS = String.raw`(?:[ \t]+[^\s;&|]+){0,30}?[ \t]+`
 const LOSES = new RegExp(
   [
     String.raw`(?<![\w.-])(?:rm|shred|unlink|rimraf)(?![\w./-])`,
-    String.raw`\s--?delete(?:-\w+)*(?![\w-])`,
-    String.raw`(?:\brm(?:tree|Sync|dir|dirSync)|\bunlink(?:Sync)?|\.rm|\bos\.remove(?:dirs)?)\s*\(|\brm_(?:r|f|rf)\b`,
-    String.raw`${GIT}(?:clean|reset|restore|rm|checkout(?!\s+-b\s)|filter-branch|filter-repo)(?![\w-])`,
+    String.raw`\s--?(?:delete(?:-\w+)*|del|remove-source-files)(?![\w-])`,
+    String.raw`(?:\brm(?:tree|Sync|dir|dirSync)|\bunlink(?:Sync)?|\.rm|\b(?:os|fs|fse|Deno)\.remove\w*)\s*\(`,
+    String.raw`\.delete\s*\(\s*\)|\brm_(?:r|f|rf)\b|\bFileUtils\.(?:rm|remove)|\bFile\.(?:delete|unlink)\b`,
+    String.raw`${GIT}(?:clean|reset|restore|rm|read-tree|checkout-index|filter-branch|filter-repo)(?![\w-])`,
+    String.raw`${GIT}checkout(?![\w-])(?!\s+-b\s+[^\s;&|()-]\S*(?:\s+[^\s;&|()-]\S*)?(?=\s*(?:$|[;&|)\n])))`,
     String.raw`${GIT}(?:stash\s+(?:drop|clear)|worktree\s+(?:remove|prune)|reflog\s+(?:expire|delete)|update-ref\s+-d)(?![\w-])`,
-    String.raw`${GIT}branch(?:\s+[^\s;&|]+)*?\s+-(?:[A-Za-z]*[dDfM]|-force)(?![\w-])`,
-    String.raw`${GIT}switch(?:\s+[^\s;&|]+)*?\s+-(?:[fC]|-force(?:-create)?|-discard-changes)(?![\w-])`,
+    String.raw`${GIT}branch${ARGS}-(?:[A-Za-z]*[dDfM]|-force)(?![\w-])`,
+    String.raw`${GIT}switch${ARGS}-(?:[fC]|-force(?:-create)?|-discard-changes)(?![\w-])`,
+    String.raw`${GIT}push${ARGS}(?:-[A-Za-z]*[df](?![\w-])|--force|\+\S|:\S)`,
   ].join('|'),
 )
 export const loses = (command: string): boolean => LOSES.test(command.replace(/\\\n/g, ' '))

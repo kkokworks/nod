@@ -2006,10 +2006,10 @@ ask 규칙은 auto mode 와 샌드박스의 `autoAllowBashIfSandboxed` 보다 �
   그래서 명령의 모양으로 더 거를 것은 지우는 명령뿐입니다.
 - **지우는 명령 (`loses`).**
   사용자는 위험한 `rm -rf` 를 직접 보고 싶어 합니다.
-  `rm`·`shred`·`unlink`·`rimraf`, `--delete…`·`-delete`, 스크립트의 `rmtree(`·`rmSync(`·`rmdir(`·`unlink(`·`unlinkSync(`·`.rm(`·`os.remove(`·`rm_rf`, git 의 `clean`·`reset`·`restore`·`rm`·`checkout`(`-b` 로 브랜치를 만드는 것은 빼고)·`filter-branch`·`filter-repo`·`stash drop`·`stash clear`·`worktree remove`·`worktree prune`·`reflog expire`·`reflog delete`·`update-ref -d`, 브랜치를 지우거나 옮기는 `branch`·`switch` 의 옵션이 명령의 글 어디에든 있으면 전처럼 사람에게 갑니다.
-  git 앞의 옵션(`-C "a b"`, `-c`, `--git-dir .git` 등)과 줄 끝 `\` 로 이은 줄을 지나서 봅니다.
+  `rm`·`shred`·`unlink`·`rimraf`, `--delete…`·`-delete`·`--del`·`--remove-source-files`, 스크립트의 `rmtree(`·`rmSync(`·`rmdir(`·`unlink(`·`unlinkSync(`·`.rm(`·`os.remove(`(`fs.`·`Deno.` 도)·인자 없는 `.delete()`·`rm_rf`·`FileUtils.rm`·`File.delete`, git 의 `clean`·`reset`·`restore`·`rm`·`read-tree`·`checkout-index`·`checkout`(`-b <이름> [<시작>]` 만으로 브랜치를 만드는 것은 빼고)·`filter-branch`·`filter-repo`·`stash drop`·`stash clear`·`worktree remove`·`worktree prune`·`reflog expire`·`reflog delete`·`update-ref -d`, 브랜치를 지우거나 옮기는 `branch`·`switch` 의 옵션, 원격의 것을 지우거나 덮어쓰는 `push`(`-d`·`-f`·`--force…`·`:<브랜치>`·`+<브랜치>`)가 명령의 글 어디에든 있으면 전처럼 사람에게 갑니다.
+  git 앞의 옵션(`-C "a b"`, `-c`, `--git-dir="a b"`, `$(…)` 등 20개까지)과 줄 끝 `\` 로 이은 줄, 따옴표 친 하위 명령(`git "reset"`)을 지나서 봅니다. git 의 하위 명령과 그 옵션 사이는 같은 줄의 낱말 30개까지만 봅니다(긴 명령도 한 번에 읽게).
   글로만 보므로 커밋 메시지에 든 `rm` 도 사람에게 갑니다(안전한 쪽).
-  판정 없음으로 막힌 Bash 2,720건 가운데 4건, 사람이 허락한 확인창 50건 가운데 0건이 여기에 걸립니다.
+  판정 없음으로 막힌 Bash 2,795건 가운데 5건, 사람이 허락한 확인창 52건 가운데 0건이 여기에 걸립니다(11-10 이후 기록).
   덮어쓰는 것(`>`·`mv`·`cp`)은 돌려보냅니다. 놓친 모양이 있어도 돌려보낸 것은 돌지 않고, 자동 모드가 혼자 다시 판정합니다(`ponytail:` 주석).
 - **메시지.**
   판단이 아니라는 것, 이 호출 하나만 담은 응답으로 다시 보낼 것, 훅이 명령을 바꾸는 곳이면 처음부터 바뀐 꼴로 보낼 것(그 명령을 붙임, 500자까지), 또 물으면 사람이 답하니 말을 바꿔 피하지 말 것을 적습니다.
