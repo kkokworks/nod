@@ -10,11 +10,9 @@ export function dialog(
   width = 60,
   title = 'Bash command',
 ): string {
-  const boxed = (body: string): string[] =>
-    body
-      .split('\n')
-      .flatMap((l) => l.match(new RegExp(`.{1,${width}}`, 'g')) ?? [''])
-      .map((l) => ` │ ${l}`)
+  const wrapped = (body: string): string[] =>
+    body.split('\n').flatMap((l) => l.match(new RegExp(`.{1,${width}}`, 'g')) ?? [''])
+  const boxed = (body: string): string[] => wrapped(body).map((l) => ` │ ${l}`)
   return [
     `  Bash(${command})`,
     '  ⎿  Waiting…',
@@ -25,7 +23,9 @@ export function dialog(
     ...boxed(command),
     '╌'.repeat(width),
     ...boxed(says),
-    ' ⚠ Claude Code will automatically block this request in 1:53, to avoid holding up an unattended session',
+    ...wrapped(
+      '⚠ Claude Code will automatically block this request in 1:53, to avoid holding up an unattended session',
+    ).map((l) => ` ${l}`),
     '',
     ' Do you want to proceed?',
     ' ❯ 1. Yes',

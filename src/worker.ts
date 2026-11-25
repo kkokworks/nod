@@ -509,8 +509,8 @@ export async function answer(
     )
   }
   await restore(ledger, home, decision.taskId)
-  const dialog =
-    decision.reason === 'permission' && yes ? toAnswer(ledger, terminals, decision) : null
+  const asksYes = decision.reason === 'permission' && yes
+  const dialog = asksYes ? await toAnswer(ledger, home, terminals, decision) : null
   // Closed first, so of two answers at once only one reaches the worker.
   ledger.answer(decisionId, text)
   await told()

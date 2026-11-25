@@ -1,4 +1,4 @@
-import { decide } from './decisions'
+import { announce, closeDecisions, decide } from './decisions'
 import type { Decision, Ledger } from './ledger'
 import { sessionName } from './place'
 import { message } from './proc'
@@ -25,9 +25,13 @@ export const squeeze = (text: string): string =>
 export type Dialog = {
   // As it shows.
   text: string
+  // Whether all of it does: the top of a tall one may be out of sight, and what it asks with it.
+  whole: boolean
   // What it asks, up to its answers, to compare: without the place in the queue and the time left,
   // which change as it shows.
   asks: string
+  // What it holds between its rules, as a Bash call's command; null for none.
+  holds: string | null
   // Whether a subagent asks, which has no hook-opened decision (onPermissionAsk).
   subagents: boolean
   // Whether another waits behind it.
@@ -35,25 +39,39 @@ export type Dialog = {
 }
 
 // The dialog on `screen`, the last thing there, under a rule as wide as the terminal (2.1.332's binary,
-// and as nod's decisions show it). Null for none, one whose top is out of sight, and one nod cannot read.
+// and as nod's decisions show it). Null for none, and one nod cannot read.
 // ponytail: by how Claude Code draws it; one drawn otherwise reads as none, and its decision says so.
 export function dialogOn(screen: string): Dialog | null {
   const lines = screen.split('\n').map((l) => l.trimEnd())
   const rule = lines.findLastIndex((l) => /^─{10,}$/.test(l))
-  return rule === -1 ? null : readDialog(lines.slice(rule + 1))
+  return readDialog(lines.slice(rule + 1), rule !== -1)
 }
 
-function readDialog(lines: string[]): Dialog | null {
+function readDialog(lines: string[], whole: boolean): Dialog | null {
   const answers = lines.findLastIndex((l) => /^\s*(❯\s+)?1\. /.test(l))
   if (answers === -1 || !lines.slice(answers).some((l) => /^\s*❯\s+\d+\. /.test(l))) return null
-  const [title = '', ...rest] = lines.slice(0, answers)
+  const [title = '', ...rest] = untimed(lines.slice(0, answers))
   const [, name = title, at, of] = /^(.*?)\s+(\d+) of (\d+)$/.exec(title) ?? []
+  const isRule = (l: string): boolean => /^\s*╌{10,}$/.test(l)
+  const [from, to] = [rest.findIndex(isRule), rest.findLastIndex(isRule)]
   return {
     text: lines.join('\n').trimEnd(),
-    asks: squeeze([name, ...rest.filter((l) => !/^\s*⚠/.test(l))].join('\n')),
+    whole,
+    asks: squeeze([name, ...rest].join('\n')),
+    holds: from === to ? null : squeeze(rest.slice(from + 1, to).join('\n')),
     subagents: / · from (a subagent|a workflow|the .+ (agent|workflow))$/.test(name),
     more: at !== undefined && Number(at) < Number(of),
   }
+}
+
+// Without the warning of the time left, which is gone once a person is there. It may wrap; a blank
+// line or the question follows it.
+function untimed(lines: string[]): string[] {
+  let warns = false
+  return lines.filter((l) => {
+    warns = /^\s*⚠/.test(l) || (warns && l.trim() !== '' && !/^\s*Do you want/.test(l))
+    return !warns
+  })
 }
 
 function shown(terminals: Terminals, taskId: number): Dialog | null {
@@ -65,43 +83,56 @@ function shown(terminals: Terminals, taskId: number): Dialog | null {
   }
 }
 
-// What a decision says when nod cannot tell what its dialog asks: no other command's words.
+// How a decision's first line ends when the dialog's words follow it, and what follows it when nod
+// cannot tell what its dialog asks: no other command's words.
+const SHOWS = ' Its dialog:'
 const UNSEEN = '어느 명령인지 확인하지 못함'
-const isUnseen = (d: Decision): boolean => bodyOf(d).startsWith(UNSEEN)
-const SHORT = /^.{1,200}$/
-const bodyOf = (d: Decision): string => d.question.slice(d.question.indexOf('\n') + 1)
-// The dialog it was worded from, if one. Until 2026-11-25 that was the end of the screen, what is
-// above the dialog with it or its top missing.
-const drawnIn = (d: Decision): Dialog | null =>
-  dialogOn(bodyOf(d)) ?? readDialog(bodyOf(d).split('\n'))
+// Closes one nod could not read, once it can.
+const READ = '(nod can read its dialog now)'
 
-// Whether decision `d` is about `dialog`, for sure: worded from that dialog, or from the command in
-// it (permissionQuestion).
+const FIRST = /^.*/
+const bodyOf = (d: Decision): string => d.question.replace(FIRST, '').slice(1)
+const isUnseen = (d: Decision): boolean => bodyOf(d).startsWith(UNSEEN)
+// The dialog it was worded from, if one: one the hook words (permissionQuestion) is worded from none.
+const drawnIn = (d: Decision): Dialog | null =>
+  FIRST.exec(d.question)?.[0].endsWith(SHOWS) ? readDialog(bodyOf(d).split('\n'), true) : null
+
+// Whether decision `d` is about `dialog`, for sure: worded from that dialog, or from the command it
+// holds.
 function isFor(d: Decision, dialog: Dialog): boolean {
+  if (!dialog.whole) return false
   const drawn = drawnIn(d)
-  if (drawn !== null) return dialog.asks.endsWith(drawn.asks)
-  return !dialog.subagents && squeeze(dialog.text).includes(`─${squeeze(bodyOf(d))}─`)
+  if (drawn !== null) return dialog.asks === drawn.asks
+  return !dialog.subagents && dialog.holds === squeeze(bodyOf(d))
 }
 
-// Whether it may be: one nod could not tell, or one the hook worded, for all nod can tell of a long
-// command's or another tool's.
-const mayBe = (d: Decision, dialog: Dialog): boolean =>
-  isFor(d, dialog) || isUnseen(d) || (!dialog.subagents && drawnIn(d) === null)
+// Whether the hook worded it from a Bash command, and one its dialog holds whole, and shows whole.
+const isBash = (d: Decision): boolean =>
+  d.question.startsWith('Claude needs your permission to use Bash.')
+const isShort = (d: Decision): boolean => isBash(d) && /^.{1,200}$/.test(bodyOf(d))
 
-// Whether the hook worded it from another command than the Bash command that shows: a dialog holds a
-// short command whole, and no other tool's is one.
+// Whether it may be: one the hook worded, for all nod can tell of a long command's or another tool's;
+// of a dialog whose top is out of sight, not a short command's, but one nod could not read.
+function mayBe(d: Decision, dialog: Dialog): boolean {
+  if (isFor(d, dialog)) return true
+  if (isUnseen(d)) return !dialog.whole
+  return !dialog.subagents && drawnIn(d) === null && (dialog.whole || !isShort(d))
+}
+
+// Whether the hook worded it from another command than the Bash command that shows, or for another
+// tool.
 // ponytail: not told of a long command's, nor while another tool's dialog shows, whose words are not
 // the input's (a file's edit, also one of sed's).
 const isOther = (d: Decision, dialog: Dialog): boolean =>
+  dialog.whole &&
   /^\s*Bash command\b/.test(dialog.text) &&
   !isFor(d, dialog) &&
-  !isUnseen(d) &&
-  (!d.question.startsWith('Claude needs your permission to use Bash.') || SHORT.test(bodyOf(d)))
+  (!isBash(d) || isShort(d))
 
 const ofTurn = (ledger: Ledger, taskId: number, attemptId: number): Decision[] =>
   ledger.decisions(taskId).filter((d) => d.reason === 'permission' && d.attemptId === attemptId)
 
-// Whether one of `decisions` is open for the dialog that shows; any, when nod cannot read it.
+// Whether one of `decisions` is open for the dialog that shows; any, when nod reads none there.
 const covered = (decisions: Decision[], dialog: Dialog | null): boolean =>
   decisions.some((d) => d.answer === null && (dialog === null || mayBe(d, dialog)))
 
@@ -122,48 +153,65 @@ export async function askOnScreen(
     const dialog = shown(terminals, taskId)
     const turn = ofTurn(ledger, taskId, attemptId)
     if (covered(turn, dialog) || (dialog === null && turn.some(answeredNow))) return
-    const stands = dialog !== null && !turn.some((d) => d.answer !== null && isFor(d, dialog))
+    const stands = dialog?.whole && !turn.some((d) => d.answer !== null && isFor(d, dialog))
     if (stands || Date.now() >= until) {
-      await open(ledger, home, taskId, attemptId, said, dialog)
+      await open(ledger, home, taskId, attemptId, dialog, said)
       return
     }
   }
 }
 
-// Two Notifications at once read the same screen, so whether it is open is looked at as it opens.
+// Opens the decision of `dialog`, or of one nod cannot read. Two Notifications at once read the same
+// screen, so whether it is open is looked at as it opens. One of those nod could not read closes as
+// it can read what shows: it would take the same answer again.
 async function open(
   ledger: Ledger,
   home: string,
   taskId: number,
   attemptId: number,
-  said: string,
   dialog: Dialog | null,
+  said = 'Claude needs your permission',
 ): Promise<void> {
-  const asks = dialog?.text ?? `${UNSEEN} (nod attach n${taskId})`
+  const whole = dialog?.whole === true
+  const asks = whole ? `${SHOWS}\n${dialog.text}` : `\n${UNSEEN} (nod attach n${taskId})`
+  let read: Decision[] = []
   await decide(
     ledger,
     home,
     taskId,
     attemptId,
     'permission',
-    `${said}. Answer yes to allow; anything else denies.\n${asks}`,
-    undefined,
-    () => covered(ofTurn(ledger, taskId, attemptId), dialog),
+    `${said}. Answer yes to allow; anything else denies.${asks}`,
+    () => {
+      const unseen = ofTurn(ledger, taskId, attemptId).filter((d) => whole && isUnseen(d))
+      read = closeDecisions(ledger, taskId, (d) => unseen.some((u) => u.id === d.id), READ)
+    },
+    () =>
+      ledger.openAttempt(taskId)?.id !== attemptId ||
+      covered(ofTurn(ledger, taskId, attemptId), dialog),
   )
+  await announce(home, ledger.get(taskId), read, READ)
 }
 
-// The dialog a yes to the permission decision `decision` goes to, null when nod cannot read it.
-// Refuses one that would go to another dialog: one answered in the terminal, or tools that ran at
-// once, leave a decision whose dialog is not the one that shows.
-export function toAnswer(ledger: Ledger, terminals: Terminals, decision: Decision): Dialog | null {
+// The dialog a yes to the permission decision `decision` goes to, null when nod reads none. Refuses
+// one that would go to another dialog, and opens that one's decision if it has none: one answered in
+// the terminal, or tools that ran at once, leave a decision whose dialog is not the one that shows.
+export async function toAnswer(
+  ledger: Ledger,
+  home: string,
+  terminals: Terminals,
+  decision: Decision,
+): Promise<Dialog | null> {
   const { id, taskId, attemptId } = decision
   const dialog = shown(terminals, taskId)
   if (dialog === null || isFor(decision, dialog)) return dialog
-  const other = ofTurn(ledger, taskId, attemptId).find(
-    (d) => d.id !== id && d.answer === null && isFor(d, dialog),
-  )
-  if (other === undefined && mayBe(decision, dialog) && !isOther(decision, dialog)) return dialog
-  const first = other === undefined ? `look at it (nod attach n${taskId})` : `answer d${other.id}`
+  const itsOwn = (): Decision | undefined =>
+    ofTurn(ledger, taskId, attemptId).find((d) => d.answer === null && isFor(d, dialog))
+  const mayTake = mayBe(decision, dialog) && !isOther(decision, dialog)
+  if (mayTake && itsOwn() === undefined) return dialog
+  await open(ledger, home, taskId, attemptId, dialog)
+  const own = itsOwn()
+  const first = own === undefined ? `look at it (nod attach n${taskId})` : `answer d${own.id}`
   throw new Error(`n${taskId}'s terminal shows another dialog than d${id}'s: ${first} first`)
 }
 
@@ -180,9 +228,8 @@ export async function askNext(
   if (!dialog?.more || covered(ofTurn(ledger, taskId, attemptId), null)) return
   for (const until = Date.now() + WAIT.dialogMs; ; await Bun.sleep(POLL_MS)) {
     const next = shown(terminals, taskId)
-    if (ledger.openAttempt(taskId)?.id !== attemptId) return
-    if (next !== null && next.asks !== dialog.asks) {
-      await open(ledger, home, taskId, attemptId, 'Claude needs your permission', next)
+    if (next?.whole && next.asks !== dialog.asks) {
+      await open(ledger, home, taskId, attemptId, next)
       return
     }
     if (Date.now() >= until) return
