@@ -1,4 +1,4 @@
-import { afterAll, expect, spyOn, test } from 'bun:test'
+import { afterAll, expect, setSystemTime, spyOn, test } from 'bun:test'
 import {
   chmodSync,
   existsSync,
@@ -423,7 +423,15 @@ test('a command goes back once in a task, so it never goes round; and no more th
   const turn = (taskId: number, sessionId: string) =>
     ledger.startAttempt({ taskId, kind: 'start', decisionId: null, sessionId, prompt: '' })
   expect(asks('git log -1')).toEqual(back('git log -1'))
-  expect([1, 2, 3].map(() => asks('git log -1'))).toEqual([null, null, null])
+  // The person's at once: there is no dialog to wait for.
+  let reads = 0
+  const again = () =>
+    onPermissionRequest(ledger, event('git log -1'), () => {
+      reads += 1
+      return dialog('git log -1')
+    })
+  expect([1, 2, 3].map(again)).toEqual([null, null, null])
+  expect(reads).toBe(0)
   expect(asks('git log -2')).toEqual(back('git log -2'))
   // In a later turn too; for another worker's nothing of this counts.
   ledger.endAttempt(attemptId, { outcome: 'succeeded', summary: '', report: '' })
@@ -489,8 +497,16 @@ test('what loses files never goes back: its prompt is the person’s, but for th
     'rsync -a --delete-after a/ b/',
     'shred -u src/a.ts',
     'unlink src/a.ts',
+    'bunx rimraf src',
     'git clean -fdx',
+    'git \\\n  clean -fdx',
     'git -C src clean -fd',
+    'git -C "a b" clean -fd',
+    "git -C '/a b' reset --hard",
+    'git -C a\\ b reset --hard',
+    'git -c user.name="a b" reset --hard',
+    'git --git-dir .git --work-tree "a b" reset --hard',
+    'git --git-dir=.git reset --hard',
     'rtk git reset --hard',
     'git -c core.pager=cat --no-pager reset --hard HEAD~1',
     'git checkout -- src/a.ts',
@@ -510,6 +526,11 @@ test('what loses files never goes back: its prompt is the person’s, but for th
     'git update-ref -d refs/heads/feat/y',
     'git push origin --delete feat/y',
     `python3 -c "import shutil; shutil.rmtree('src')"`,
+    `python3 -c "import os; os.remove('src/a.ts')"`,
+    `python3 -c "import os; os.rmdir('src')"`,
+    `python3 -c "from pathlib import Path; Path('src/a.ts').unlink()"`,
+    `node -e "require('fs').promises.unlink('src/a.ts')"`,
+    `ruby -e "FileUtils.rm_rf 'src'"`,
     `bun -e "fs.rmSync('src', { recursive: true })"`,
     `node -e "fs.unlinkSync('src/a.ts')"`,
     `perl -e 'unlink glob "src/*"'`,
@@ -522,6 +543,8 @@ test('what loses files never goes back: its prompt is the person’s, but for th
   expect(ledger.sentBack(id)).toEqual([])
   for (const command of [
     'git log -1 --diff-filter=D',
+    'git -C "a b" log -1 -- clean',
+    'git log --grep "reset --hard"',
     'git checkout -b feat/y',
     'git switch -c feat/y',
     'git switch main',
@@ -816,6 +839,22 @@ test('nod hook permission reads the dialog off the worker’s terminal and print
   const { sentBack } = JSON.parse(nod('stats')) as { sentBack: Record<string, number> }
   expect(Object.values(sentBack).reduce((a, b) => a + b, 0)).toBe(3)
 }, 20_000)
+
+test('nod stats counts the calls sent back by the days where it runs', () => {
+  const { home, ledger, id } = running()
+  setSystemTime(new Date('2026-01-15T20:00:00Z'))
+  try {
+    ledger.sendBack(id, 'git log -1', () => true)
+  } finally {
+    setSystemTime()
+  }
+  const days = (TZ: string): unknown => {
+    const env = { ...process.env, NOD_HOME: home, TZ }
+    return JSON.parse(Bun.spawnSync(['bun', cli, 'stats'], { env }).stdout.toString()).sentBack
+  }
+  expect(days('Asia/Seoul')).toEqual({ '2026-01-16': 1 })
+  expect(days('America/New_York')).toEqual({ '2026-01-15': 1 })
+})
 
 // The PermissionRequest hook runs as the dialog shows, its Notification some 6 s later (2.1.310).
 test('a prompt nod does not allow holds back nod tell from its turn as it shows, before its Notification, which opens no second decision; so does the next prompt of the turn once the first is answered', async () => {

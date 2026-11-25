@@ -2000,12 +2000,14 @@ ask 규칙은 auto mode 와 샌드박스의 `autoAllowBashIfSandboxed` 보다 �
   돌려보낸 호출은 돌지 않습니다.
   다시 보낸 호출은 자동 모드가 처음 보는 호출처럼 판정하고, 위험하다고 보면 막습니다.
   남는 것은 백그라운드 서브 에이전트입니다. 창의 글을 볼 수 없어, 검사가 실제로 거절해 뜬 창도 한 번 돌아갑니다.
-  그때 그 호출은 같은 검사를 한 번 더 받습니다. 앞의 두 번이 판정 없음이고 이번만 실제 거절일 때뿐이고(앞에 실제 거절이 하나라도 있으면 돌려보내지 않음), 다시 거절되면 확인창이 떠 사람에게 갑니다.
+  그때 그 호출은 같은 검사를 한 번 더 받습니다. 앞의 두 번이 판정 없음이고 이번만 실제 거절일 때뿐입니다(앞에 실제 거절이 하나라도 있으면 돌려보내지 않음).
+  다시 거절되면 막힘이 아직 이어지고 있으면 확인창이 떠 사람에게 가고, 그사이 다른 호출이 허락돼 수가 0 이 됐으면 보통 거절로 끝납니다. 어느 쪽이든 돌지 않습니다.
   ask 규칙이 띄운 창도 한 번 돌아가지만, 다시 보내면 규칙이 또 물어 사람에게 갑니다.
   그래서 명령의 모양으로 더 거를 것은 지우는 명령뿐입니다.
 - **지우는 명령 (`loses`).**
   사용자는 위험한 `rm -rf` 를 직접 보고 싶어 합니다.
-  `rm`·`shred`·`unlink`, `--delete…`·`-delete`, 스크립트의 `rmtree(`·`rmSync(`·`unlinkSync(`·`.rm(`, git 의 `clean`·`reset`·`restore`·`rm`·`checkout`(`-b` 로 브랜치를 만드는 것은 빼고)·`filter-branch`·`filter-repo`·`stash drop`·`stash clear`·`worktree remove`·`worktree prune`·`reflog expire`·`reflog delete`·`update-ref -d`, 브랜치를 지우거나 옮기는 `branch`·`switch` 의 옵션이 명령의 글 어디에든 있으면 전처럼 사람에게 갑니다.
+  `rm`·`shred`·`unlink`·`rimraf`, `--delete…`·`-delete`, 스크립트의 `rmtree(`·`rmSync(`·`rmdir(`·`unlink(`·`unlinkSync(`·`.rm(`·`os.remove(`·`rm_rf`, git 의 `clean`·`reset`·`restore`·`rm`·`checkout`(`-b` 로 브랜치를 만드는 것은 빼고)·`filter-branch`·`filter-repo`·`stash drop`·`stash clear`·`worktree remove`·`worktree prune`·`reflog expire`·`reflog delete`·`update-ref -d`, 브랜치를 지우거나 옮기는 `branch`·`switch` 의 옵션이 명령의 글 어디에든 있으면 전처럼 사람에게 갑니다.
+  git 앞의 옵션(`-C "a b"`, `-c`, `--git-dir .git` 등)과 줄 끝 `\` 로 이은 줄을 지나서 봅니다.
   글로만 보므로 커밋 메시지에 든 `rm` 도 사람에게 갑니다(안전한 쪽).
   판정 없음으로 막힌 Bash 2,720건 가운데 4건, 사람이 허락한 확인창 50건 가운데 0건이 여기에 걸립니다.
   덮어쓰는 것(`>`·`mv`·`cp`)은 돌려보냅니다. 놓친 모양이 있어도 돌려보낸 것은 돌지 않고, 자동 모드가 혼자 다시 판정합니다(`ponytail:` 주석).

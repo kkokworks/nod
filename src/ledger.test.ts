@@ -1106,7 +1106,7 @@ test('median decision wait uses answered decisions only', () => {
   expect(ledger.stats().decisions).toEqual({ total: 4, open: 1, medianWaitSecs: 20 })
 })
 
-test('stats count the calls sent back by the days here, the latest of them; each is told to nobody', () => {
+test('stats count the calls sent back by day, the latest days of them; each is told to nobody', () => {
   const ledger = new Ledger(freshHome())
   const id = task(ledger)
   let calls = 0

@@ -188,19 +188,20 @@ function committed(root: string, paths: string[]): boolean {
 // a few more, wherever they stand: behind rtk or env, in a shell of its own, in a script's text. The
 // person wants to see these, so none goes back. Not what only writes over a file (`>`, mv, cp).
 // ponytail: by its words. One it misses goes back, which runs nothing: auto mode judges it alone.
-const GIT = String.raw`(?<![\w.-])git(?:\s+-[Cc]\s+[^-\s]\S*|\s+-\S+)*\s+`
+const VALUE = String.raw`(?!-)(?:"[^"]*"|'[^']*'|\\.|[^\s"'\\])+`
+const GIT = String.raw`(?<![\w.-])git(?:\s+(?:-[Cc]|--(?:git-dir|work-tree|namespace))\s+${VALUE}|\s+-\S+)*\s+`
 const LOSES = new RegExp(
   [
-    String.raw`(?<![\w.-])(?:rm|shred|unlink)(?![\w./-])`,
+    String.raw`(?<![\w.-])(?:rm|shred|unlink|rimraf)(?![\w./-])`,
     String.raw`\s--?delete(?:-\w+)*(?![\w-])`,
-    String.raw`(?:\brm(?:tree|Sync|dirSync)|\bunlinkSync|\.rm)\s*\(`,
+    String.raw`(?:\brm(?:tree|Sync|dir|dirSync)|\bunlink(?:Sync)?|\.rm|\bos\.remove(?:dirs)?)\s*\(|\brm_(?:r|f|rf)\b`,
     String.raw`${GIT}(?:clean|reset|restore|rm|checkout(?!\s+-b\s)|filter-branch|filter-repo)(?![\w-])`,
     String.raw`${GIT}(?:stash\s+(?:drop|clear)|worktree\s+(?:remove|prune)|reflog\s+(?:expire|delete)|update-ref\s+-d)(?![\w-])`,
     String.raw`${GIT}branch(?:\s+[^\s;&|]+)*?\s+-(?:[A-Za-z]*[dDfM]|-force)(?![\w-])`,
     String.raw`${GIT}switch(?:\s+[^\s;&|]+)*?\s+-(?:[fC]|-force(?:-create)?|-discard-changes)(?![\w-])`,
   ].join('|'),
 )
-export const loses = (command: string): boolean => LOSES.test(command)
+export const loses = (command: string): boolean => LOSES.test(command.replace(/\\\n/g, ' '))
 
 // How many of a task's calls go back in how long (mayGoBack). In the open so a test can lower them.
 export const LIMITS = { backs: 30, backsMs: 10 * 60_000 }
