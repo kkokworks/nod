@@ -6,6 +6,7 @@ import { decide, permissionQuestion } from './decisions'
 import { dialogOn } from './dialog'
 import { type DecisionReason, Ledger, type NewTask } from './ledger'
 import { mcpServer, WAIT } from './mcp'
+import { DECIDE_TOOL, openMcp } from './settings'
 import { Tmux } from './tmux'
 import { Todos } from './todos'
 
@@ -317,6 +318,9 @@ test('shows no dialog where the person could not read all of it, nor in a Claude
   expect((await none.call(`d${short}`)).text).toBe(
     `this Claude Code shows nod no dialog (it said no elicitation): the person answers d${short} on http://127.0.0.1:4800/tasks/1`,
   )
+  // One that says URL mode alone shows no form either.
+  const urls = await client({ elicitation: { url: {} } })
+  expect((await urls.call(`d${short}`)).text).toContain('it said no elicitation')
   const c = await client({ elicitation: {} })
   expect((await c.call(`d${long}`)).text).toBe(
     `d${long} is too long for a dialog: the person reads and answers it on http://127.0.0.1:4800/tasks/2`,
@@ -422,6 +426,16 @@ test('gives up on a person who does not answer, withdrawing the dialog, and leav
   const asks = c.out.filter((m) => m.method === 'elicitation/create').length
   expect((await c.call(`d${d}`)).text).toBe(`d${d} stays open: the client went away`)
   expect(c.out.filter((m) => m.method === 'elicitation/create')).toHaveLength(asks)
+})
+
+test("nod open's flags run this nod's mcp for the session, named as the tool the notices name", () => {
+  const [flag, config, allow, tool] = openMcp('key-1', { PATH: '/bin', NOD_HOME: '/h' })
+  expect([flag, allow, tool]).toEqual(['--mcp-config', '--allowedTools', DECIDE_TOOL])
+  expect(DECIDE_TOOL).toBe('mcp__nod__decide')
+  const { nod } = JSON.parse(config ?? '').mcpServers
+  expect(nod).toMatchObject({ type: 'stdio', command: process.execPath })
+  expect(nod.args).toEqual([resolve(import.meta.dir, 'cli.ts'), 'mcp', '--session', 'key-1'])
+  expect(nod.env).toMatchObject({ PATH: '/bin', NOD_HOME: '/h' })
 })
 
 test('nod mcp speaks on stdout alone, a line a message', async () => {
