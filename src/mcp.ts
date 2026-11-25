@@ -166,10 +166,9 @@ export function mcpServer(o: {
     try {
       // The person's answer: the model's session is only where they gave it, which hears it here.
       const took = await answer(o.ledger, o.home, o.terminals, d.id, said, 'human', me.sessionKey)
-      const done = took
-        ? `sent to task n${task.id}`
-        : `task n${task.id} had ended, so it only closed`
-      return { line: `d${d.id} ${d.reason}: the person answered ${said}; ${done}` }
+      return {
+        line: `d${d.id} ${d.reason}: the person answered ${said}${did(task.id, d.reason, said, took)}`,
+      }
     } catch (error) {
       const closed = o.ledger.decision(d.id).answer
       if (/is already answered$/.test(message(error)) && closed !== null) return elsewhere(closed)
@@ -300,6 +299,16 @@ function dialogText(todos: Todos, d: Decision, task: Task): string {
     '',
     `Accept says yes. Decline says no, which ${NO[d.reason]}. Esc leaves it open.`,
   ].join('\n')
+}
+
+// What the answer did, as the tool says it: a no as the dialog said it would, and a yes to landing
+// waits for the next pass, as the web UI's does (a pass runs the check, which may take minutes).
+function did(taskId: number, reason: string, said: string, took: boolean): string {
+  if (!took) return `; task n${taskId} had ended, so it only closed`
+  if (said === 'no') return `, which ${NO[reason]}`
+  return reason === 'land'
+    ? `; nod lands n${taskId} again at its next pass (nod land n${taskId} does now)`
+    : `; sent to task n${taskId}`
 }
 
 const rows = (text: string): number =>

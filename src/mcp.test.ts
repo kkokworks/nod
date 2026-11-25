@@ -166,7 +166,7 @@ test("the person's Accept is yes and Decline no, in a dialog nod words from its 
   ]
   const c = await client({ person: () => ({ action: 'accept', content: {} }) })
   expect(await c.call(`d${d1}`)).toEqual({
-    text: `d${d1} land: the person answered yes; sent to task n1`,
+    text: `d${d1} land: the person answered yes; nod lands n1 again at its next pass (nod land n1 does now)`,
     isError: false,
   })
   expect(c.shown).toEqual([
@@ -175,7 +175,7 @@ test("the person's Accept is yes and Decline no, in a dialog nod words from its 
   expect(ledger.decision(d1).answer).toBe('yes')
   const no = await client({ person: () => ({ action: 'decline' }) })
   expect((await no.call(String(d2))).text).toBe(
-    `d${d2} land: the person answered no; sent to task n2`,
+    `d${d2} land: the person answered no, which stops landing the task; its work stands`,
   )
   expect(ledger.landing(2)?.stopped).toBe('stopped by the person: no')
   const esc = await client({ person: () => ({ action: 'cancel' }) })
@@ -285,8 +285,8 @@ test('with no decision named, each open yes-or-no one of the session in turn, un
   const all = await client()
   expect((await all.call()).text).toBe(
     [
-      `d${a} land: the person answered yes; sent to task n1`,
-      `d${b} land: the person answered yes; sent to task n2`,
+      `d${a} land: the person answered yes; nod lands n1 again at its next pass (nod land n1 does now)`,
+      `d${b} land: the person answered yes; nod lands n2 again at its next pass (nod land n2 does now)`,
     ].join('\n'),
   )
   expect(all.shown.map((s) => s.split('\n')[2])).toEqual(['First?', 'Second?'])
