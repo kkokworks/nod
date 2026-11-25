@@ -272,13 +272,19 @@ test('a decision on a dialog nod cannot read says so, and shows no other command
 })
 
 test('once nod can read what shows, its decision takes the place of one nod could not read; a yes to that one goes to no dialog it did not show', async () => {
-  for (const screen of ['', topless(agents(ONE))]) {
-    const { show, notified, asked, ledger, id } = running(screen)
+  // Also another tool's.
+  const edit = dialog('1 - a\n2 + b', undefined, 80, 'Edit file · from the general-purpose agent')
+  for (const [screen, next] of [
+    ['', agents(TWO)],
+    [topless(agents(ONE)), agents(TWO)],
+    ['', edit],
+  ]) {
+    const { show, notified, asked, ledger, id } = running(screen ?? '')
     await notified()
-    show(agents(TWO))
+    show(next ?? '')
     await notified()
     await notified()
-    expect(asked()).toEqual([words(agents(TWO))])
+    expect(asked()).toEqual([words(next ?? '')])
     expect(ledger.decisions(id)[0]?.answer).toBe('(nod can read its dialog now)')
   }
   const { show, notified, asked, yes, terminal } = running('')
