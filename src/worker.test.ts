@@ -1470,7 +1470,10 @@ it('a repo worker is told to have a subagent review its branch from where it sta
   )
   // The self-review trial (2026-11-09 to 11-25, docs/design.md 「자기 검토 시험」) is over: the
   // worker no longer reviews the diff itself first, nor holds its fixes until the first review.
-  expect(prompt).not.toMatch(/self-review|first review/i)
+  // From where the review rule starts, so wording other rules add before it cannot trip this.
+  const review = prompt.slice(prompt.indexOf('Before you report done, commit, then have'))
+  expect(review).toStartWith('Before you report done')
+  expect(review).not.toMatch(/self-review|first review/i)
   expect(prompt).toContain(
     'Fix the findings that have a scenario, commit, and have it review again,',
   )
