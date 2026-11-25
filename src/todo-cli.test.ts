@@ -4,7 +4,7 @@ import { join, resolve } from 'node:path'
 import { projectFolder } from '../test/projects'
 import { tempDirs } from '../test/tmp'
 import { Ledger } from './ledger'
-import { openSettings } from './settings'
+import { openMcp, openSettings } from './settings'
 import {
   actorFromEnv,
   checkTell,
@@ -585,19 +585,20 @@ test('nod open resumes the latest session where it was opened, or starts one: wi
     openSession(todos, ref, fresh, cwd, config)
   const key = (): string => todos.latestSession(p.id)?.sessionKey ?? ''
   // Claude in the session hears its project, opened anew or resumed.
-  const told = [
+  const told = (session: string) => [
     '--append-system-prompt',
     `nod open opened this session for project p${p.id} Release: nod add here puts work in that project, and the project's tasks and decisions are this session's.`,
-    // Its hooks tell nod where it takes the project's notices.
+    // Its hooks tell nod where it takes the project's notices, and nod's MCP server is for it.
     '--settings',
     openSettings(),
+    ...openMcp(session),
   ]
 
   const first = open(false, here)
   const opened = key()
   expect(opened).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$/)
   expect(first).toEqual({
-    argv: ['claude', '--name', 'Release', '--session-id', opened, ...told],
+    argv: ['claude', '--name', 'Release', '--session-id', opened, ...told(opened)],
     cwd: here,
   })
   // Closed before a word was said, it has no transcript, so it starts again where it was opened.
@@ -613,7 +614,10 @@ test('nod open resumes the latest session where it was opened, or starts one: wi
   // Once something is said in it, it is resumed there, wherever nod open runs.
   keep(opened, here, said)
   // Resumed, it is named again, so a /rename goes back to the project's title.
-  const resumed = { argv: ['claude', '--resume', opened, '--name', 'Release', ...told], cwd: here }
+  const resumed = {
+    argv: ['claude', '--resume', opened, '--name', 'Release', ...told(opened)],
+    cwd: here,
+  }
   expect(open(false, there)).toEqual(resumed)
   expect(open(false, there, 'Release')).toEqual(resumed)
   // --new opens another here, which is the project's from now on: nod open opens it after.
@@ -621,14 +625,14 @@ test('nod open resumes the latest session where it was opened, or starts one: wi
   const newer = key()
   expect(newer).not.toBe(opened)
   expect(second).toEqual({
-    argv: ['claude', '--name', 'Release', '--session-id', newer, ...told],
+    argv: ['claude', '--name', 'Release', '--session-id', newer, ...told(newer)],
     cwd: there,
   })
   expect(todos.sessionPlace(opened)?.latest).toBe(false)
   expect(open(false, here)).toEqual(second)
   keep(newer, there, said)
   expect(open(false, here)).toEqual({
-    argv: ['claude', '--resume', newer, '--name', 'Release', ...told],
+    argv: ['claude', '--resume', newer, '--name', 'Release', ...told(newer)],
     cwd: there,
   })
   expect(key()).toBe(newer)
@@ -644,7 +648,7 @@ test('nod open resumes the latest session where it was opened, or starts one: wi
   const fourth = open(false, here)
   expect(key()).not.toBe(titled)
   expect(fourth).toEqual({
-    argv: ['claude', '--name', 'Release', '--session-id', key(), ...told],
+    argv: ['claude', '--name', 'Release', '--session-id', key(), ...told(key())],
     cwd: here,
   })
   // So does an empty one, and one whose folder is gone: the new session opens here, not there.
@@ -658,7 +662,7 @@ test('nod open resumes the latest session where it was opened, or starts one: wi
   rmSync(gone, { recursive: true })
   const before = key()
   expect(open(false, here)).toEqual({
-    argv: ['claude', '--name', 'Release', '--session-id', key(), ...told],
+    argv: ['claude', '--name', 'Release', '--session-id', key(), ...told(key())],
     cwd: here,
   })
   expect(key()).not.toBe(before)
@@ -693,11 +697,13 @@ for (const role of OPEN_ROLES) {
     const open = (fresh: boolean, cwd: string, r?: OpenRole) =>
       openSession(todos, 'north', fresh, cwd, config, r)
     const key = (): string => todos.latestNamed('north')?.sessionKey ?? ''
-    const told = [
+    // A relay hears of no decision, so it gets no MCP server of nod's.
+    const told = (session: string) => [
       '--append-system-prompt',
       expect.stringContaining(`nod open opened this session as the ${role} north: `),
       '--settings',
       openSettings(),
+      ...(role === 'relay' ? [] : openMcp(session)),
     ]
 
     expect(() => open(false, here)).toThrow(
@@ -706,7 +712,7 @@ for (const role of OPEN_ROLES) {
     const first = open(false, here, role)
     const opened = key()
     expect(first).toEqual({
-      argv: ['claude', '--name', 'north', '--session-id', opened, ...told],
+      argv: ['claude', '--name', 'north', '--session-id', opened, ...told(opened)],
       cwd: here,
     })
     expect(todos.session(opened)).toMatchObject({ role, name: 'north', cwd: here, socket: null })
@@ -716,7 +722,10 @@ for (const role of OPEN_ROLES) {
     expect(key()).toBe(opened)
     // Once something is said in it, it is resumed there, with its role named or not.
     keep(opened, here, said)
-    const resumed = { argv: ['claude', '--resume', opened, '--name', 'north', ...told], cwd: here }
+    const resumed = {
+      argv: ['claude', '--resume', opened, '--name', 'north', ...told(opened)],
+      cwd: here,
+    }
     expect(open(false, there)).toEqual(resumed)
     expect(open(false, there, role)).toEqual(resumed)
     // --new opens another here, under the same name, which stands for it from now on.
@@ -724,7 +733,7 @@ for (const role of OPEN_ROLES) {
     const newer = key()
     expect(newer).not.toBe(opened)
     expect(second).toEqual({
-      argv: ['claude', '--name', 'north', '--session-id', newer, ...told],
+      argv: ['claude', '--name', 'north', '--session-id', newer, ...told(newer)],
       cwd: there,
     })
     keep(newer, there, said)
@@ -753,11 +762,12 @@ test("nod open <name> --role helper --project opens a project's helper beside it
   open(`p${p.id}`, false, here)
   const main = todos.latestSession(p.id)
   if (main === null) throw new Error('nod open opened no session for the project')
-  const told = [
+  const told = (session: string) => [
     '--append-system-prompt',
     `nod open opened this session as the helper review of project p${p.id} Release: nod add here puts work in that project, and nod tells this session of the project's tasks it adds or is handed (nod hand) while it takes messages; the project's own session hears of the rest, and of these while this one is off.`,
     '--settings',
     openSettings(),
+    ...openMcp(session),
   ]
 
   expect(() => open('review', false, here, 'helper')).toThrow(
@@ -770,7 +780,7 @@ test("nod open <name> --role helper --project opens a project's helper beside it
   const first = open('review', false, there, 'helper', `p${p.id}`)
   const opened = key('review')
   expect(first).toEqual({
-    argv: ['claude', '--name', 'Release · review', '--session-id', opened, ...told],
+    argv: ['claude', '--name', 'Release · review', '--session-id', opened, ...told(opened)],
     cwd: there,
   })
   expect(todos.session(opened)).toMatchObject({ role: 'helper', name: 'review', cwd: there })
@@ -785,7 +795,7 @@ test("nod open <name> --role helper --project opens a project's helper beside it
   // nod open knows it by, the project's title going before it in Claude Code.
   keep(opened, there, said)
   const resumed = (title: string) => ({
-    argv: ['claude', '--resume', opened, '--name', title, ...told],
+    argv: ['claude', '--resume', opened, '--name', title, ...told(opened)],
     cwd: there,
   })
   expect(open('review', false, here)).toEqual(resumed('Release · review'))

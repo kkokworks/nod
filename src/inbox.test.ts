@@ -91,6 +91,14 @@ test("each end of a project's task and each decision opened on one go once, in o
     'question',
     'Which branch?\nmain or next',
   )
+  // One the person answers yes or no names nod's tool, which shows it them as a dialog.
+  const allowing = task('Run the migration')
+  ledger.ask(
+    allowing,
+    turn(allowing, 'needs_decision', 'asks'),
+    'permission',
+    'Allow bun x?\nbun x',
+  )
 
   await sendNotices(ledger, send)
   expect(sent).toEqual([
@@ -101,12 +109,13 @@ test("each end of a project's task and each decision opened on one go once, in o
       message: {
         role: 'user',
         content: [
-          'nod, project p1 Release: 4 notices, oldest first',
+          'nod, project p1 Release: 5 notices, oldest first',
           'task n1 t1 succeeded, attempt 1: Added the export button\nnext: nod show n1, then send its result out',
           'task n2 t2 error, attempt 1: the worktree is gone\nnext: nod show n2 says why; settle with the person what to do',
           // Its decision was answered (dropped) before anything went, so only its end goes.
           'task n3 t3 cancelled, attempt 1: Drop me\nnext: tell the person (nod show n3)',
           'decision d2 question (task n4 t4: Pick a branch)\n  Which branch?\n  main or next\nnext: tell the person; nod d2 <their answer> answers it, nod drop d2 drops it',
+          'decision d3 permission (task n5 t5: Run the migration)\n  Allow bun x?\n  bun x\nnext: mcp__nod__decide d3 lets the person pick yes or no in a dialog; without that tool, tell the person; nod d3 <their answer> answers it, nod drop d3 drops it',
         ].join('\n\n'),
       },
     },
