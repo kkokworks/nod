@@ -14,13 +14,15 @@ import { type LinkedPr, type PrReads, prAddress, ServiceDown } from './prs'
 // What a review's state says, as GitHub or as Gitea and Forgejo name it. Any other (one not sent yet,
 // asked for, dismissed) tells nothing.
 const COMMENTED = 'left review comments'
-const WHAT: Record<string, string> = {
-  APPROVED: 'approved',
-  CHANGES_REQUESTED: 'requested changes',
-  REQUEST_CHANGES: 'requested changes',
-  COMMENTED,
-  COMMENT: COMMENTED,
-}
+const WHAT = new Map([
+  ['APPROVED', 'approved'],
+  ['CHANGES_REQUESTED', 'requested changes'],
+  ['REQUEST_CHANGES', 'requested changes'],
+  ['COMMENTED', COMMENTED],
+  ['COMMENT', COMMENTED],
+])
+// How many comments a review held when nod last read them, by the key of the review.
+const HELD = / has (\d+)$/
 
 type Happened = { who: string | null; what: string; at: string | null; key: string }
 
@@ -35,10 +37,16 @@ export async function tellPrEvents(
     if (task.collectedAt !== null || !FINISHED.has(task.status)) continue
     for (const url of linksOf(ledger, task)) {
       const address = prAddress(url)
-      if (address !== null) linked.set(address, task)
+      // One URL cannot read (a port past 65535, a space in the host) is no service's.
+      if (address !== null && URL.canParse(address)) linked.set(address, task)
     }
   }
   const known = ledger.prKeys()
+  const held = new Map<string, number>()
+  for (const key of known.keys()) {
+    const count = HELD.exec(key)
+    if (count !== null) held.set(key.slice(0, count.index), Number(count[1]))
+  }
   // A service that fails or turns a read away gets no more of them this time; what one pull request
   // alone fails on holds back only that. Either way the next time tells what this one could not.
   const down = new Set<string>()
@@ -57,19 +65,18 @@ export async function tellPrEvents(
     const pr = await read(url, () => lookup(url))
     if (pr?.state !== 'open') continue
     const happened: Happened[] = []
-    // How many comments each review held when nod last read them, told or not.
+    // How many comments each review held as nod read them now, told or not.
     const counts: string[] = []
     for (const r of pr.reviews) {
-      const what = WHAT[r.state]
+      const what = WHAT.get(r.state)
       const id = `${url}#${r.id}`
       if (what !== undefined) happened.push({ who: r.login, what, at: r.at, key: id })
       // ponytail: one taken back and another added between two reads go unseen, as many as before.
-      const count = `${id}/${r.comments}`
-      if ((what === undefined && r.state !== 'DISMISSED') || r.comments === 0 || known.has(count))
-        continue
+      const told = held.get(id) ?? 0
+      if ((what === undefined && r.state !== 'DISMISSED') || r.comments === told) continue
       const comments = await read(url, () => reads.comments(url, r.id))
       if (comments === null) continue
-      counts.push(count)
+      counts.push(`${id} has ${r.comments}`)
       for (const c of comments)
         happened.push({ who: c.login, what: COMMENTED, at: c.at, key: `${url}#c${c.id}` })
     }
@@ -77,12 +84,15 @@ export async function tellPrEvents(
     const news = happened.filter(
       // Not what the account that opened it wrote, nor what was there before the task, which was
       // added with it, to answer it say.
-      (h) => h.who !== pr.author && Date.parse(h.at ?? '') >= since && !known.has(h.key),
+      (h) =>
+        (pr.author === null || h.who !== pr.author) &&
+        Date.parse(h.at ?? '') >= since &&
+        !known.has(h.key),
     )
-    // Several of one kind by one person (a comment on each of ten lines) are one line.
-    for (const same of Map.groupBy(news, (h) => `${h.what} ${h.who}`).values()) {
-      const { who, what } = same[0] as Happened
-      const line = `${url}: ${shownLogin(who)} ${what}`
+    // What one person did is one line: a review with a comment on each of ten lines too.
+    for (const same of Map.groupBy(news, (h) => h.who).values()) {
+      const what = [...new Set(same.map((h) => h.what))].join(', ')
+      const line = `${url}: ${shownLogin(same[0]?.who ?? null)} ${what}`
       ledger.addPrNotice(
         task.id,
         line,

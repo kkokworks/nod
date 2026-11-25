@@ -160,19 +160,25 @@ test("a review that approves, asks for changes or comments, and CI that failed, 
   expect(await pass()).toEqual([`${label} CI failed on its head cccccccc`])
 })
 
-test("Gitea and Forgejo's names of the same states are told the same; several comments by one person in one pass are one line", async () => {
-  const { task, prs, pass } = setup()
+test("Gitea and Forgejo's names of the same states are told the same; what one person did in one pass is one line", async () => {
+  const { task, prs, comments, pass } = setup()
   const n = task(`${GE}1`)
   prs[`${GE}1`] = open(
-    review('alice', 'REQUEST_CHANGES'),
+    // A review that asks for changes with a comment on each of two lines.
+    review('alice', 'REQUEST_CHANGES', AT, { id: '7', comments: 2 }),
     review('bob', 'COMMENT'),
     review('bob', 'COMMENT', later(5)),
     review('carol', 'COMMENT'),
+    review('carol', 'APPROVED', later(6)),
   )
+  comments['7'] = [
+    { id: '1', login: 'alice', at: AT },
+    { id: '2', login: 'alice', at: AT },
+  ]
   expect(await pass()).toEqual([
-    `task n${n} t1 pull request ${GE}1: alice requested changes`,
+    `task n${n} t1 pull request ${GE}1: alice requested changes, left review comments`,
     `task n${n} t1 pull request ${GE}1: bob left review comments`,
-    `task n${n} t1 pull request ${GE}1: carol left review comments`,
+    `task n${n} t1 pull request ${GE}1: carol left review comments, approved`,
   ])
   expect(await pass()).toEqual([])
 })
@@ -189,8 +195,53 @@ test('what the account that opened it wrote, reviews not sent, asked for or dism
     review('alice', ''),
     review('alice', 'APPROVED', later(-10)),
     review('alice', 'COMMENT', 'not a time'),
+    review('alice', 'constructor'),
+    review('alice', 'toString'),
+    // What is told beside them.
+    review('bob', 'APPROVED'),
   )
+  expect(await pass()).toEqual([`task n1 t1 pull request ${GE}1: bob approved`])
+})
+
+test('a reply is read once the count of comments moves off the one last read, though it comes back to one read before', async () => {
+  const { task, prs, comments, pass } = setup()
+  const n = task(`${GE}1`)
+  const held = (count: number) => {
+    prs[`${GE}1`] = open({ id: '12', login: 'alice', comments: count, state: 'COMMENT', at: AT })
+  }
+  const label = `task n${n} t1 pull request ${GE}1:`
+  held(2)
+  comments['12'] = [
+    { id: '1', login: 'alice', at: AT },
+    { id: '2', login: 'bob', at: AT },
+  ]
+  expect(await pass()).toEqual([
+    `${label} alice left review comments`,
+    `${label} bob left review comments`,
+  ])
+  // Bob's taken back, then carol answers.
+  held(1)
+  comments['12'] = [{ id: '1', login: 'alice', at: AT }]
   expect(await pass()).toEqual([])
+  held(2)
+  comments['12'].push({ id: '3', login: 'carol', at: later(2) })
+  expect(await pass()).toEqual([`${label} carol left review comments`])
+  expect(await pass()).toEqual([])
+})
+
+test('a link no URL can be made of is passed over, and the pull requests after it are read', async () => {
+  const { task, prs, pass } = setup()
+  task('https://git.example.com:99999/o/r/pulls/1', 'https://git example.com/o/r/pulls/2')
+  const n = task(`${GE}3`)
+  prs[`${GE}3`] = open(review('alice', 'APPROVED'))
+  expect(await pass()).toEqual([`task n${n} t${n} pull request ${GE}3: alice approved`])
+})
+
+test('a review by a deleted account is told on a pull request whose opener is deleted too', async () => {
+  const { task, prs, pass } = setup()
+  const n = task(`${GH}1`)
+  prs[`${GH}1`] = { ...open(review(null, 'APPROVED')), author: null }
+  expect(await pass()).toEqual([`task n${n} t1 pull request ${GH}1: someone approved`])
 })
 
 test('a reply in a review already told is told by who wrote it, and the comments are read only when there are more', async () => {
@@ -465,8 +516,7 @@ test('the tick tells of the pull requests on its fifth minutes alone, before it 
   const told = (await heard()).map((h) => h.split('\n')[0])
   const label = `task n${n} t1 pull request ${pr}:`
   expect(told).toEqual([
-    `${label} alice requested changes`,
-    `${label} alice left review comments`,
+    `${label} alice requested changes, left review comments`,
     `${label} bob approved`,
     expect.stringMatching(/ CI failed on its head [0-9a-f]{8}$/),
   ])

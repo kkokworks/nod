@@ -2064,23 +2064,34 @@ export class Ledger {
 
   // Something on a task's pull request (pr-events.ts) as one line, and below it, a line each, the keys
   // of what it tells of, which are how nod knows what it has told (prKeys). Not when all of them are
-  // known by now: another tick told it. `line` null only keeps the keys, with nothing to tell.
+  // known by now: another tick told it. `line` null only keeps the keys, with nothing to tell, again
+  // and again if need be: the last says how things stand.
   addPrNotice(taskId: number, line: string | null, keys: string[]): void {
     this.db.transaction(() => {
       // One line each, whatever a key or the line was made of.
       const one = (s: string): string => s.replace(/[\r\n]/g, ' ')
       const known = this.prKeys()
-      if (keys.every((k) => known.has(one(k)))) return
+      if (line !== null && keys.every((k) => known.has(one(k)))) return
       const note = [one(line ?? ''), ...keys.map(one)].join('\n')
       const id = this.addNotice({ taskId, event: 'pr', note })
       if (line === null) this.claimNotices([id], null)
     })()
   }
 
-  // ponytail: reads every such notice there ever was; keep to the open pull requests' if it grows.
-  prKeys(): Set<string> {
-    const notes = this.run(q.selectFrom('notices').select('note').where('event', '=', 'pr'))
-    return new Set(notes.flatMap((n) => (n.note ?? '').split('\n').slice(1)))
+  // Each key, with the notice that last held it. ponytail: reads every such notice there ever was;
+  // keep to the open pull requests' if it grows.
+  prKeys(): Map<string, number> {
+    const notes = this.run(
+      q.selectFrom('notices').select(['id', 'note']).where('event', '=', 'pr').orderBy('id'),
+    )
+    return new Map(
+      notes.flatMap((n) =>
+        (n.note ?? '')
+          .split('\n')
+          .slice(1)
+          .map((k) => [k, n.id]),
+      ),
+    )
   }
 
   // What nod allowed a task's worker itself (Notice), oldest first.
