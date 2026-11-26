@@ -1,8 +1,8 @@
 import { afterAll, expect, test } from 'bun:test'
-import { writeFileSync } from 'node:fs'
+import { appendFileSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { tempDirs } from '../test/tmp'
-import { HIDES_DRAFT, onAsk } from './hooks'
+import { HIDES_DRAFT, onAsk, readGrown } from './hooks'
 import { openSettings, workerSettings } from './settings'
 import { QUEUED_TURN_MS } from './transcript'
 
@@ -263,6 +263,21 @@ test('a transcript the hook cannot read, or does not know, gets no answer; one t
     ),
   ).toEqual(HIDES_DRAFT)
   expect(reads).toBe(2)
+})
+
+test('the hook reads the transcript again only once it has grown', () => {
+  const file = join(tmp.make('nod-ask-grown-'), 'session.jsonl')
+  writeFileSync(file, 'one\n')
+  const read = readGrown()
+  expect(read(file)).toBe('one\n')
+  // Written over with as many bytes: what it read last.
+  writeFileSync(file, 'two\n')
+  expect(read(file)).toBe('one\n')
+  appendFileSync(file, 'three\n')
+  expect(read(file)).toBe('two\nthree\n')
+  // Another reader reads it afresh; one that is gone throws.
+  expect(readGrown()(file)).toBe('two\nthree\n')
+  expect(() => read(join(file, 'gone'))).toThrow()
 })
 
 test('nod hook ask prints the deny for a hidden draft and nothing else, exiting 0 whatever goes wrong', async () => {

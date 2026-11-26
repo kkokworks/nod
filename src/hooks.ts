@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs'
+import { readFileSync, statSync } from 'node:fs'
 import { z } from 'zod'
 import type { PermissionEvent } from './allow'
 import {
@@ -422,12 +422,12 @@ export const HIDES_DRAFT = {
 // a question with a preview, a turn with no draft, a transcript that does not read as one (the call
 // or the start of its turn not in it, textsThisTurn). `read` throws for a transcript it cannot read,
 // which the hook takes as no answer too. The call may not be written yet as the hook starts, so it
-// reads again for a while (UNWRITTEN_TRIES, `wait`).
+// reads again for a while (UNWRITTEN_TRIES, `wait`), once it has grown (readGrown).
 // ponytail: measured with `claude -p`, whose transcript the sandbox kept from being written; not
 // whether an interactive session has the call written before this hook runs.
 export async function onAsk(
   event: z.infer<typeof AskEvent>,
-  read: (path: string) => string = (path) => readFileSync(path, 'utf8'),
+  read: (path: string) => string = readGrown(),
   wait: () => Promise<unknown> = () => Bun.sleep(100),
 ): Promise<typeof HIDES_DRAFT | null> {
   const previews = event.tool_input.questions
@@ -435,14 +435,28 @@ export async function onAsk(
     .flatMap((q) => (q.options ?? []).map((o) => o.preview))
   if (previews.some((p) => typeof p === 'string' && p.trim() !== '')) return null
   let text = read(event.transcript_path)
-  for (let i = 0; i < UNWRITTEN_TRIES && !text.includes(event.tool_use_id); i++) {
+  let written = text.includes(event.tool_use_id)
+  for (let i = 0; i < UNWRITTEN_TRIES && !written; i++) {
     await wait()
-    text = read(event.transcript_path)
+    const now = read(event.transcript_path)
+    if (now !== text) [text, written] = [now, now.includes(event.tool_use_id)]
   }
   // Not parsed whole for a call it would not find: a transcript of 379 MB took 7.7 s.
-  if (!text.includes(event.tool_use_id)) return null
+  if (!written) return null
   const texts = textsThisTurn(text.split('\n'), event.tool_use_id)
   return texts?.some((t) => DRAFT.test(t)) ? HIDES_DRAFT : null
+}
+
+// A reader of a file that reads it again only once its size changed, and else gives what it read
+// last: reading a transcript of 476 MB 21 times while the call was not in it took 4.4 s (review).
+export function readGrown(): (path: string) => string {
+  let size = -1
+  let text = ''
+  return (path) => {
+    const now = statSync(path).size
+    if (now !== size) [size, text] = [now, readFileSync(path, 'utf8')]
+    return text
+  }
 }
 
 // The attempt a hook event belongs to. A turn nod did not send, one a person typed straight into
