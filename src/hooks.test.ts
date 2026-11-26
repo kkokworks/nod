@@ -4,6 +4,7 @@ import { join, resolve } from 'node:path'
 import { tempDirs } from '../test/tmp'
 import { HIDES_DRAFT, onAsk } from './hooks'
 import { openSettings, workerSettings } from './settings'
+import { QUEUED_TURN_MS } from './transcript'
 
 const tmp = tempDirs()
 afterAll(tmp.removeAll)
@@ -171,6 +172,41 @@ test('the turn is what came after the row Claude Code marks as its start, whoeve
     message: { content: [{ type: 'text', text: DRAFT }] },
   })
   expect(await judge([person('go'), sub, called('toolu_ask')])).toBeNull()
+})
+
+test("a turn that a message not the person's started right after the previous one ended goes on from it: the person had no time to read the draft", async () => {
+  const at = (ms: number) => new Date(Date.UTC(2026, 10, 26, 1, 57, 56) + ms).toISOString()
+  const started = (turnOrigin: string, ms: number) =>
+    row({
+      type: 'user',
+      isMeta: turnOrigin !== 'human',
+      turnOrigin,
+      timestamp: at(ms),
+      message: { role: 'user', content: 'task n1 succeeded' },
+    })
+  const ended = (ms: number) => row({ type: 'system', subtype: 'turn_duration', timestamp: at(ms) })
+  // A turn another session's message started writes a draft and ends at 0 ms.
+  const drafted = [person('watch the release'), started('peer', -80_000), wrote(DRAFT), ended(0)]
+  const next = (start: string) => [...drafted, start, called('toolu_ask')]
+  // The next message starts a turn 0.19 s later, which asks with no words of its own: denied, as in
+  // the case this was made for. Up to QUEUED_TURN_MS it is the same, and through several such turns.
+  expect(await judge(next(started('peer', 190)))).toEqual(HIDES_DRAFT)
+  expect(await judge(next(started('task_notification', QUEUED_TURN_MS)))).toEqual(HIDES_DRAFT)
+  const twice = [...drafted, started('peer', 190), ended(5_000), started('peer', 6_000)]
+  expect(await judge([...twice, called('toolu_ask')])).toEqual(HIDES_DRAFT)
+  // Later than that, the person had time to read it, and a turn the person started is theirs.
+  expect(await judge(next(started('peer', QUEUED_TURN_MS + 1)))).toBeNull()
+  expect(await judge(next(started('human', 190)))).toBeNull()
+  // A turn that ended with no turn_duration (stopped) does not go on, nor one with no times.
+  const stopped = [person('watch'), started('peer', -80_000), wrote(DRAFT), started('peer', 190)]
+  expect(await judge([...stopped, called('toolu_ask')])).toBeNull()
+  const untimed = row({
+    type: 'user',
+    isMeta: true,
+    turnOrigin: 'peer',
+    message: { content: 'n1' },
+  })
+  expect(await judge([...drafted, untimed, called('toolu_ask')])).toBeNull()
 })
 
 test("a transcript with no turnOrigin (an older Claude Code's) has the turn start at the person's last message", async () => {

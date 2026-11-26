@@ -433,27 +433,62 @@ function denies(line: string): boolean {
 // a compacted summary that carries the turn on into a new file. What comes in while a turn runs (a
 // queued message, a record-only notice) has no `turnOrigin` (2.1.278 to 2.1.332, read from every
 // such row of this machine's transcripts by its parentUuid), so it does not end the turn.
+// But a turn that a message not the person's started right after the previous one ended
+// (QUEUED_TURN_MS) goes on from it, as the person had no time to read what that one wrote.
 // A transcript with no `turnOrigin` (an older Claude Code's) has the turn start at the person's last
 // message instead (personSaid).
 // Null when the call is not in `lines`, or no turn's start is before it.
 export function textsThisTurn(lines: string[], call: string): string[] | null {
   const marked = lines.some((line) => line.includes('"turnOrigin":'))
+  const rowAt = (i: number): Row | null => {
+    const parsed = TranscriptEntry.safeParse(jsonOrNull(lines[i] ?? ''))
+    return parsed.success && parsed.data.isSidechain !== true ? parsed.data : null
+  }
+  // Whether the turn row `i` starts goes on from the one before: started by no message of the
+  // person's within QUEUED_TURN_MS of that one's end (its turn_duration row). One that ended with no
+  // such row (stopped, an API error) does not.
+  const goesOn = (i: number, start: Row): boolean => {
+    if (start.turnOrigin === 'human') return false
+    for (let j = i - 1; j >= 0; j--) {
+      const row = rowAt(j)
+      if (row?.type === 'system' && row.subtype === 'turn_duration') {
+        const gap = Date.parse(start.timestamp ?? '') - Date.parse(row.timestamp ?? '')
+        return gap <= QUEUED_TURN_MS
+      }
+      if (row?.type === 'user' && row.turnOrigin !== undefined) return false
+    }
+    return false
+  }
   const texts: string[] = []
   let found = false
-  for (const line of lines.toReversed()) {
-    const parsed = TranscriptEntry.safeParse(jsonOrNull(line))
-    if (!parsed.success || parsed.data.isSidechain === true) continue
-    const row = parsed.data
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const row = rowAt(i)
+    if (row === null) continue
     if (row.type === 'assistant') {
       found ||= blocksOf(row).some((b) => b?.type === 'tool_use' && b.id === call)
       const said = textsOf(row.message?.content).filter((t) => typeof t === 'string')
       if (found) texts.unshift(...said)
     }
-    const starts = marked ? row.type === 'user' && row.turnOrigin !== undefined : personSaid(row)
-    if (found && starts) return texts
+    if (!found) continue
+    if (
+      marked
+        ? row.type === 'user' && row.turnOrigin !== undefined && !goesOn(i, row)
+        : personSaid(row)
+    )
+      return texts
   }
   return null
 }
+
+// How soon after a turn's end a turn that a message not the person's started counts as that turn
+// going on (textsThisTurn). In the case the ask hook was made for (2.1.332), a turn that another
+// session's message started wrote a draft and ended; 0.19 s later the next such message started a
+// turn that opened the dialog, 18 s on, with no words of its own. Claude Code's queue does not tell
+// such a message apart: it was enqueued after that turn's end (turn_duration at .084 s, enqueue at
+// .270 s), not while the turn ran. Of the AskUserQuestion calls in the transcripts it was measured
+// on (201), 2 s brought that one back and none of those denied before for an earlier turn's draft
+// the person had seen.
+export const QUEUED_TURN_MS = 2000
 
 // Whether a row of a transcript with no `turnOrigin` is a message of the person's. Not a tool's
 // result, a meta row (a reminder, another session's message), a compacted conversation's summary, a
