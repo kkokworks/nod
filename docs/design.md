@@ -3403,7 +3403,7 @@ Claude Code 는 worktree 에서 도는 워커의 명령에 레포의 공용 git 
     도구는 돌지 않았고, SDK 쪽에 묻는 요청(`can_use_tool`)도 가지 않았습니다. 모델은 `PreToolUse:AskUserQuestion hook error: <이유>` 를 그 호출의 오류 결과로 받아 그대로 옮겼습니다.
     훅 입력은 `session_id`·`transcript_path`·`cwd`·`prompt_id`·`permission_mode`·`effort`·`hook_event_name`·`tool_name`·`tool_input`·`tool_use_id` 였고, preview 를 비운 선택지에는 `preview` 칸이 없었습니다.
     호출의 `tool_use` 행은 훅이 뜨기 21ms 전에 만들어져 출력 스트림에 먼저 나왔습니다.
-  - 대화형 세션(이 기능을 만든 세션)의 기록에서, Bash 도구가 도는 동안 그 호출의 `tool_use` 행과 그 앞의 text 행이 이미 파일에 있었습니다. 블록마다 행 하나이고, 사람 메시지는 `origin: {kind: "human"}`, 다른 세션의 메시지는 `isMeta` 와 `origin.kind: "peer"`, 백그라운드 작업의 알림은 `origin.kind: "task-notification"`, 안내는 `attachment` 행이었습니다.
+  - 대화형 세션(이 기능을 만든 세션)의 기록에서, Bash 도구가 도는 동안 그 호출의 `tool_use` 행과 그 앞의 text 행이 이미 파일에 있었고, 그 호출의 PreToolUse 훅 결과(`hook_success` attachment)는 아직 없었습니다. 행이 훅의 결과와 함께 적히지는 않는다는 뜻이지만, 훅이 뜨기 전에 적히는지는 아닙니다. 블록마다 행 하나이고, 사람 메시지는 `origin: {kind: "human"}`, 다른 세션의 메시지는 `isMeta` 와 `origin.kind: "peer"`, 백그라운드 작업의 알림은 `origin.kind: "task-notification"`, 안내는 `attachment` 행이었습니다.
   - 이 PC 의 기록에 남은 AskUserQuestion 호출 192건(2.1.309~2.1.332)에 이 판정을 그때 모습대로 돌려 개수만 셌습니다. 막음 12건(한 세션에서 인용 초안 뒤 「올리기」 선택지로 연 4건, 보고된 모양. 다른 세션에서 인용이나 코드 블록 뒤 preview 없이 연 8건), preview 에 초안을 넣은 12건과 초안 없는 167건은 둠, 판정하지 않음 1건(압축 뒤 이어진 기록에서 다른 세션의 메시지로 시작한 차례라 파일에 사람 메시지가 없음)이었습니다. 다른 세션의 8건이 정말 초안이었는지는 내용을 읽지 않아 모릅니다.
 - **재지 못한 것.**
   - 대화형 세션에서 deny 가 선택창을 띄우지 않는지. 샌드박스가 가상 터미널을 막아 띄울 수 없었습니다. `claude -p` 에서 SDK 로 묻는 요청이 가지 않은 것으로 미루어 봅니다.
