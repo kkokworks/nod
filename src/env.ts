@@ -47,7 +47,9 @@ const hasUser = (key: string, value: string): boolean =>
 // What PASS_ENV keeps of nod's environment.
 function passedEnv(): Record<string, string> {
   const env: Record<string, string> = {}
-  for (const key of new Set([...Object.keys(process.env), ...PROXY_ENV])) {
+  // Sorted: the order process.env gives differs between processes once TZ comes from the shell
+  // (bun test sets its own otherwise), and `nod open` and its test write these out as text.
+  for (const key of [...new Set([...Object.keys(process.env), ...PROXY_ENV])].sort()) {
     const value = process.env[key]
     if (value !== undefined && PASS_ENV.test(key)) env[key] = value
   }

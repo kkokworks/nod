@@ -2,7 +2,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileS
 import { join } from 'node:path'
 import { z } from 'zod'
 import { accountChanged, accountRule, configDir } from './account'
-import { headOf, NOD_GIT, rebasing, worktreeStatus } from './branch'
+import { headOf, NOD_GIT, rebasing, sharedGitDenies, worktreeStatus } from './branch'
 import {
   ASKED,
   announce,
@@ -1742,7 +1742,11 @@ export function claudeArgs(
     '--permission-mode',
     'auto',
     '--settings',
-    workerSettings(started, sockets),
+    workerSettings(
+      started,
+      sockets,
+      task.repo === null ? [] : sharedGitDenies(task.repo, branchOf(task)),
+    ),
     '--append-system-prompt',
     workerPrompt(ledger, task),
     ...(task.model === null ? [] : ['--model', task.model]),

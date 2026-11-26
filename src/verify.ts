@@ -9,6 +9,7 @@ import {
   ownStart,
   rebaseEnv,
   rebasing,
+  sharedGitDenies,
   unmergedFiles,
   worktreeStatus,
 } from './branch'
@@ -27,14 +28,26 @@ import { type Changes, reviewBrief } from './review'
 // The OS sandbox is the boundary, not a command allowlist: once a worker may run tests it can run
 // anything, so limit where it can write and what it can reach instead. Measured on 2.1.289:
 // writes outside the workspace and network to unlisted domains fail; worktree commits still work.
-// The reviewer runs in it as it is; a worker's settings add its sockets folder (workerSettings in
-// settings.ts).
+// A worker's settings add its sockets folder (workerSettings in settings.ts). Both keep it out of
+// parts of the repo's shared git folder (sharedGitDenies in branch.ts).
 export const SANDBOX = {
   enabled: true,
   autoAllowBashIfSandboxed: true,
   allowUnsandboxedCommands: false,
   network: { allowedDomains: ['registry.npmjs.org'] },
 }
+
+// The reviewer's settings: it runs commands in the task's worktree, after reading what the worker
+// wrote, so the sandbox keeps it out of the shared git folder as it does the worker.
+export const reviewSettings = (task: Task): string =>
+  JSON.stringify({
+    sandbox: {
+      ...SANDBOX,
+      filesystem: {
+        denyWrite: task.repo === null ? [] : sharedGitDenies(task.repo, branchOf(task)),
+      },
+    },
+  })
 
 // The check and the review both run inside the Stop hook, so the hook outlasts them
 // (STOP_HOOK_TIMEOUT_SECS in settings.ts). In the open so a test can shorten it.
@@ -116,7 +129,7 @@ async function review(
         '--session-id',
         session,
         '--settings',
-        JSON.stringify({ sandbox: SANDBOX }),
+        reviewSettings(task),
         ...(task.model === null ? [] : ['--model', task.model]),
         ...(dir === null ? [] : ['--add-dir', dir]),
         '--disallowedTools',

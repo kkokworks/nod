@@ -24,15 +24,21 @@ export const CLI = join(import.meta.dirname, 'cli.ts')
 
 // `started`: a file the SessionStart hook creates, so nod knows the session got past the trust
 // dialog. Claude Code runs SessionStart hooks again once it has compacted the conversation, with
-// the matcher `compact` (2.1.310), for onCompact. `sockets`: the worker's socketsDir.
-export function workerSettings(started: string | null, sockets: string): string {
+// the matcher `compact` (2.1.310), for onCompact. `sockets`: the worker's socketsDir. `denyWrite`:
+// what its sandbox may not write although Claude Code opens it, a repo's shared git folder
+// (sharedGitDenies in branch.ts); a deny there wins over any allow.
+export function workerSettings(
+  started: string | null,
+  sockets: string,
+  denyWrite: string[],
+): string {
   const touch = (file: string) => [
     { hooks: [{ type: 'command', command: `touch ${quote(file)}` }] },
   ]
   return JSON.stringify({
     sandbox: {
       ...SANDBOX,
-      filesystem: { allowWrite: [sockets] },
+      filesystem: { allowWrite: [sockets], denyWrite },
       network: { ...SANDBOX.network, allowUnixSockets: [sockets] },
     },
     hooks: {
