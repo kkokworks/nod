@@ -88,8 +88,8 @@ function keepTemp(name: string): void {
 // Code prints it, until a file `lifted` is in its folder. Like Claude Code under a user's UserPromptSubmit hook that
 // screens for personal data, a brief with a value shaped like a national ID number is blocked
 // before any model runs: it prints why, then the whole brief, and exits 0 (2.1.310). It logs the
-// diff file its brief names as it reads it then, and the folder it may read (--add-dir), as given
-// and with its links resolved.
+// diff file its brief names as it reads it then, the folder it may read (--add-dir), as given
+// and with its links resolved, and its settings.
 if (args.includes('-p')) {
   const stdin = await Bun.stdin.text()
   keepTemp('tasks')
@@ -101,6 +101,7 @@ if (args.includes('-p')) {
     diff: saved !== undefined && existsSync(saved) ? readFileSync(saved, 'utf8') : null,
     addDir: flag('--add-dir'),
     addDirReal: existsSync(flag('--add-dir') ?? '') ? realpathSync(flag('--add-dir') ?? '') : null,
+    settings: flag('--settings'),
   })
   if (/\d{6}-\d{7}/.test(stdin)) {
     // Claude Code names the hook by its command, which may be a long inline script.

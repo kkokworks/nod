@@ -3347,7 +3347,7 @@ Claude Code 는 worktree 에서 도는 워커의 명령에 레포의 공용 git 
   - `refs/remotes/…`: 원격 추적 ref. gc 는 `origin/<브랜치>` 를 원격에 있는 사본으로 읽어 로컬 브랜치를 지우고(`remotesHolding`), `origin/HEAD` 와 견주어 합쳐졌는지 봅니다(`landed`).
   - `refs/replace/…`: 어떤 객체 대신 다른 객체를 읽게 합니다. nod 가 샌드박스 밖에서 읽는 리뷰 diff 도 바뀝니다.
   - `refs/tags/…`: 태그.
-  - 본 체크아웃의 진행 상태(`MERGE_HEAD`·`MERGE_MSG`, `CHERRY_PICK_HEAD`, `rebase-merge/`·`rebase-apply/`·`sequencer/`, `ORIG_HEAD`, `logs/HEAD`): 사람의 다음 커밋이 워커가 고른 부모를 단 병합 커밋이 되거나, 사람의 `rebase --continue` 가 워커가 넣은 `exec` 줄을 사람 권한으로 돌리거나, `reset --hard ORIG_HEAD`·`HEAD@{1}` 이 워커가 고른 커밋으로 갑니다.
+  - 본 체크아웃의 진행 상태(`MERGE_HEAD`·`MERGE_MSG`, `CHERRY_PICK_HEAD`, `rebase-merge/`·`rebase-apply/`·`sequencer/`, 그 rebase·bisect 의 ref `refs/rewritten/`·`refs/bisect/`·`refs/worktree/`, `ORIG_HEAD`, `logs/HEAD`): 사람의 다음 커밋이 워커가 고른 부모를 단 병합 커밋이 되거나, 사람의 `rebase --continue` 가 워커가 넣은 `exec` 줄을 사람 권한으로 돌리거나 워커가 고친 `refs/rewritten/onto` 로 `reset` 하거나(리뷰에서 잼), `reset --hard ORIG_HEAD`·`HEAD@{1}` 이 워커가 고른 커밋으로 갑니다.
   - `info/`: `exclude`(본 체크아웃의 `git status` 에서 파일을 숨김), `attributes`, `sparse-checkout`(본 체크아웃이 꺼내는 파일).
   - `modules/<이름>/`: 본 체크아웃 서브모듈의 git 폴더. 그 `config` 의 `core.fsmonitor` 는 사람이 본 체크아웃에서 `git status` 를 할 때 사람 권한으로 돕니다.
 - **워커가 써야 하는 것.**
@@ -3359,15 +3359,18 @@ Claude Code 는 worktree 에서 도는 워커의 명령에 레포의 공용 git 
   워커의 Claude Code 를 띄울 때마다(`claudeArgs`) nod 가 워커 설정의 `sandbox.filesystem.denyWrite` 에 공용 git 폴더의 다음 경로를 넣습니다(`sharedGitDenies`).
   독립 리뷰어(`claude -p`, `reviewSettings`)도 같은 경로를 받습니다. 리뷰어도 워커가 쓴 글을 읽은 뒤 그 worktree 에서 명령을 돌리기 때문입니다(리뷰에서 찾음).
   Claude Code 설정에서 막기는 열기보다 앞섭니다. 사람의 Claude 설정 파일은 바꾸지 않습니다.
-  - 본 체크아웃의 것: `HEAD`·`HEAD.lock`, `index`·`index.lock`, `ORIG_HEAD`·`FETCH_HEAD`·`MERGE_HEAD`·`MERGE_MSG`·`MERGE_MODE`·`SQUASH_MSG`·`AUTO_MERGE`·`CHERRY_PICK_HEAD`·`REVERT_HEAD`·`REBASE_HEAD`, `rebase-merge`·`rebase-apply`·`sequencer`, `modules`, `info`, 그리고 `logs/` 가 있을 때 `logs/HEAD`. ref 로그를 끈 레포(`core.logAllRefUpdates=false`)에는 `logs/` 가 없고, 그때 stash 가 `logs/refs/stash` 를 쓰려고 그 폴더를 만듭니다(git 2.53 으로 잼). 막은 경로의 상위 폴더는 만들 수 없게 되므로(아래) 그때는 넣지 않습니다.
+  - 본 체크아웃의 것: `HEAD`·`HEAD.lock`, `index`·`index.lock`, `ORIG_HEAD`·`FETCH_HEAD`·`MERGE_HEAD`·`MERGE_MSG`·`MERGE_MODE`·`SQUASH_MSG`·`AUTO_MERGE`·`CHERRY_PICK_HEAD`·`REVERT_HEAD`·`REBASE_HEAD`, `rebase-merge`·`rebase-apply`·`sequencer`, `refs/rewritten`·`refs/bisect`·`refs/worktree`(linked worktree 의 것은 그 git 폴더 안에 있음), `modules`, `info`, 그리고 `logs/` 가 있을 때 `logs/HEAD`. ref 로그를 끈 레포(`core.logAllRefUpdates=false`)에는 `logs/` 가 없고, 그때 stash 가 `logs/refs/stash` 를 쓰려고 그 폴더를 만듭니다(git 2.53 으로 잼). 막은 경로의 상위 폴더는 만들 수 없게 되므로(아래) 그때는 넣지 않습니다.
   - ref: `packed-refs` 와 그것을 새로 쓸 때의 `packed-refs.new`, `refs/tags`, `refs/remotes`, `refs/replace`, 그리고 사람의 브랜치의 `refs/heads/<브랜치>`·`<브랜치>.lock` 과 (`logs/refs/heads/` 가 있으면) 그 로그 `logs/refs/heads/<브랜치>`. 사람의 브랜치는 작업을 넣은 레포(`--repo`)가 꺼낸 브랜치, 그 레포가 linked worktree 이면 본 체크아웃이 꺼낸 브랜치(리뷰에서 찾음), 원격의 기본 브랜치(`origin/HEAD` 가 가리키는 것)이고, 워커를 띄울 때의 것입니다.
-  - 자기 브랜치와 같은 폴더의 브랜치(`fix/…` 옆의 `fix/…`)는 막지 않습니다. 실행 파일에서 읽은 바로는 macOS 샌드박스가 막은 경로의 상위 폴더도 만들거나 지우지 못하게 하는데, gc 가 `refs/heads/fix/` 의 ref 를 모두 묶으면 그 폴더가 사라지고 워커의 다음 커밋이 그것을 다시 만들어야 합니다.
+  - 자기 브랜치와 같은 폴더의 브랜치(`fix/…` 옆의 `fix/…`, 막기가 대소문자를 가리지 않으므로 `FIX/…` 도)는 막지 않습니다. 실행 파일에서 읽은 바로는 macOS 샌드박스가 막은 경로의 상위 폴더도 만들거나 지우지 못하게 하는데, gc 가 `refs/heads/fix/` 의 ref 를 모두 묶으면 그 폴더가 사라지고 워커의 다음 커밋이 그것을 다시 만들어야 합니다.
   - Linux 에서는 git 이 한 번 만들면 지우지 않는 경로 가운데 워커를 띄울 때 있는 것만 넣습니다: `HEAD`, `index`, `info`, `modules`, `logs/HEAD`, `packed-refs`, `refs/tags`, `refs/remotes`, `refs/replace`(git 은 ref 를 묶고 빈 폴더를 지울 때 `refs/` 와 그 바로 아래 폴더는 남깁니다).
     실행 파일에서 읽은 바로는 Linux 샌드박스가 명령마다 막은 경로가 있는지 보고, 없으면 명령이 도는 동안 그 자리에 빈 파일을 만듭니다.
     그러면 `HEAD.lock` 은 사람의 커밋을 막고, 워커가 뜬 뒤 묶인 브랜치의 느슨한 ref 자리에 생긴 빈 파일은 그 브랜치를 가립니다(리뷰에서 찾음).
     그래서 Linux 에서는 브랜치와 진행 상태 파일을 막지 못합니다. Linux 는 재지 못했습니다.
 - **바뀐 동작.**
-  - 사람의 gc 가 `refs/stash` 를 묶어 둔 뒤 워커가 마지막 stash 를 pop·drop 하면, stash 는 꺼내지고 목록에서 빠지지만 `packed-refs.new` 를 만들지 못한다는 오류가 나오고 `refs/stash` 가 남습니다(0 으로 끝남). 묶이지 않은 stash 는 그대로입니다.
+  - 묶인 ref 를 지우려면 `packed-refs` 를 다시 써야 해서, 사람의 gc 가 묶어 둔 ref 는 워커가 지우지 못합니다.
+    워커가 만든 임시 브랜치가 그새 묶였으면 `git branch -D` 가 `packed-refs.new` 를 만들지 못한다는 오류로 실패하고 브랜치가 남습니다(리뷰에서 잼).
+    `refs/stash` 가 묶였으면 마지막 stash 의 pop·drop 은 stash 를 꺼내고 목록에서 빼지만 같은 오류를 내고 `refs/stash` 를 남기며(0 으로 끝남), `git stash clear` 는 실패합니다.
+    묶이지 않은 ref 는 그대로입니다.
   - 워커 안의 gc(커밋 뒤의 자동 gc 포함)는 본 체크아웃 `HEAD` 와 지킨 브랜치의 로그를 정리하지 못해 오류를 내고 `packed-refs` 를 쓰지 못합니다. 커밋은 됩니다. 다른 worktree 의 git 폴더는 이미 막혀 있어 linked worktree 가 둘 이상이면 전에도 실패했고, 하나뿐일 때는 새로 실패합니다. git 2.53 의 `gc --auto` 는 이 단계를 백그라운드로 넘어가기 전에 돌다가 실패해, 사람의 자동 gc 를 하루 막는 `gc.log` 는 남기지 않았습니다.
   - 워커가 `info/exclude` 에 무시할 파일을 적지 못합니다.
 - **남은 것.**
@@ -3382,7 +3385,7 @@ Claude Code 는 worktree 에서 도는 워커의 명령에 레포의 공용 git 
   - `src/branch.test.ts`: `sharedGitDenies` 가 위 경로를 내고, 워커의 일이 쓰는 경로(자기 브랜치와 그 로그, `refs/stash`, `packed-refs.lock`, 객체, 자기 worktree 폴더)는 하나도 덮지 않는지. 사람의 linked worktree 에서 넣은 작업, 원격의 기본 브랜치에서 일하는 작업, 같은 폴더의 브랜치, Linux, `logs/` 가 없는 레포, 읽을 수 없는 레포도 봅니다. 이 PC 의 전역 git 설정에 따라 달라지지 않게 ref 로그와 `info/` 를 켜 두고 봅니다.
     그리고 그 경로를 막은 채 워커의 커밋, 충돌이 난 rebase 와 `--continue`, stash, cherry-pick(`CHERRY_PICK_HEAD` 가 남지 않음), merge, 브랜치 만들고 지우기가 되고, `main` 옮기기와 태그 만들기는 안 되며, 본 체크아웃의 `HEAD`·`main`·`origin/trunk` 이 그대로인지 봅니다.
     시험 안에서는 샌드박스를 띄울 수 없어 흉내 냅니다. git 이 파일을 쓸 때 만드는 `<이름>.lock`·`<이름>.new` 와 없는 경로는 같은 이름의 폴더로 막고, 있는 것은 읽기 전용으로 바꿉니다. 폴더가 `packed-refs` 를 대신하면 git 이 읽지 못하므로, gc 가 묶은 것처럼 ref 를 묶어 `packed-refs` 가 있는 채로 봅니다. `packed-refs.lock` 까지 막으면 이 시험이 `CHERRY_PICK_HEAD` 에서 실패했습니다.
-  - `src/worker.test.ts`: 레포 작업의 `claudeArgs` 가 그 경로를 `denyWrite` 로 넘기고, 레포 없는 작업은 빈 목록을 넘기는지. `src/verify.test.ts`: 리뷰어의 `reviewSettings` 도 그런지.
+  - `src/worker.test.ts`: 레포 작업의 `claudeArgs` 가 그 경로를 `denyWrite` 로 넘기고, 레포 없는 작업은 빈 목록을 넘기는지. `src/verify.test.ts`: 리뷰어의 `reviewSettings` 도 그런지. 작업의 done 에 실제로 뜬 리뷰어가 그 설정을 받는지는 `src/worker.test.ts` 에서 가짜 `claude` 가 받은 설정으로 봅니다(두 번째 리뷰에서 찾은 빈틈).
   - 재지 못한 것: 이 설정으로 뜬 실제 워커에서의 막힘. 머지 뒤 새 워커에서 볼 것은, 공용 git 폴더의 `HEAD`·`index`·`packed-refs`·`refs/heads/main` 을 쓰기로 열면 EPERM 인지, 자기 브랜치와 `refs/stash` 는 쓸 수 있는지, 커밋·rebase·cherry-pick 이 되는지입니다.
 
 ## 할 일 (G1, 2026-10-20)

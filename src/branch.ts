@@ -105,9 +105,10 @@ export function onRemote(cwd: string, args: string[]): Promise<{ code: number; o
 // 쓸 수 있는 공용 git 폴더」). Claude Code opens that folder to a worktree's commands, as a commit
 // writes its objects, its branch and their logs there, and itself keeps them out of only its config,
 // hooks and the other worktrees' folders (2.1.332). The main checkout's own files: its HEAD and
-// index, the merge or rebase it has going, its HEAD's log, its submodules' git folders, and info/
-// (exclude, sparse-checkout). Not packed-refs.lock: git takes it to delete any ref, the
-// CHERRY_PICK_HEAD a cherry-pick ends with too.
+// index, the merge, rebase or bisect it has going with its own refs, its HEAD's log, its submodules'
+// git folders, and info/ (exclude, sparse-checkout). A linked worktree keeps all of those in its
+// own folder. Not packed-refs.lock: git takes it to delete any ref, the CHERRY_PICK_HEAD a
+// cherry-pick ends with too.
 const MAIN_CHECKOUT = [
   'HEAD',
   'HEAD.lock',
@@ -126,6 +127,9 @@ const MAIN_CHECKOUT = [
   'rebase-merge',
   'rebase-apply',
   'sequencer',
+  'refs/rewritten',
+  'refs/bisect',
+  'refs/worktree',
   'modules',
   'info',
 ]
@@ -153,11 +157,19 @@ export function sharedGitDenies(repo: string, own: string, platform = process.pl
     const r = Bun.spawnSync([...NOD_GIT, ...args])
     return r.exitCode === 0 ? r.stdout.toString().trim() : ''
   }
-  const dir = read('-C', repo, 'rev-parse', '--path-format=absolute', '--git-common-dir')
+  // Not --path-format=absolute, which git before 2.31 prints back as it is.
+  const dir = read('-C', repo, 'rev-parse', '--git-common-dir')
   if (dir === '') return []
-  // Real, as a path that is not there yet is denied only as written.
-  const common = realpathSync(dir)
-  const folder = (branch: string) => (branch.includes('/') ? branch.split('/')[0] : null)
+  let common: string
+  try {
+    // Real, as a path that is not there yet is denied only as written.
+    common = realpathSync(resolve(repo, dir))
+  } catch {
+    return []
+  }
+  // The sandbox matches paths whatever their case (measured, docs/design.md).
+  const folder = (branch: string) =>
+    branch.includes('/') ? branch.split('/')[0]?.toLowerCase() : null
   const branches = [
     read('-C', repo, 'symbolic-ref', '-q', 'HEAD'),
     read('--git-dir', common, 'symbolic-ref', '-q', 'HEAD'),

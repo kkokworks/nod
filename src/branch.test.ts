@@ -115,6 +115,7 @@ test("a worker's sandbox may not write the main checkout's own files, packed-ref
       at(
         ...['HEAD', 'HEAD.lock', 'index', 'index.lock', 'ORIG_HEAD', 'MERGE_HEAD', 'logs/HEAD'],
         ...['rebase-merge', 'rebase-apply', 'sequencer', 'CHERRY_PICK_HEAD', 'modules', 'info'],
+        ...['refs/rewritten', 'refs/bisect', 'refs/worktree'],
         ...['packed-refs', 'packed-refs.new', 'refs/tags', 'refs/remotes', 'refs/replace'],
         // The branch the main checkout has out, and the remote's default branch, with their logs.
         ...['refs/heads/main', 'refs/heads/main.lock', 'logs/refs/heads/main'],
@@ -142,6 +143,10 @@ test("a worker's sandbox may not write the main checkout's own files, packed-ref
     at('refs/heads/trunk', 'refs/heads/trunk.lock'),
   )
   expect(sharedGitDenies(repo, 'feat/own', 'darwin')).toContain(
+    join(common, 'refs/heads/fix/human'),
+  )
+  // Whatever its case, as the sandbox matches paths.
+  expect(sharedGitDenies(repo, 'FIX/own', 'darwin')).not.toContain(
     join(common, 'refs/heads/fix/human'),
   )
 

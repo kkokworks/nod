@@ -203,6 +203,7 @@ type LogEntry = {
   diff?: string | null
   addDir?: string | null
   addDirReal?: string | null
+  settings?: string | null
   command?: string
   out?: string
 }
@@ -1400,6 +1401,17 @@ it('the reviewer reads the diff from a file nod saves, so a hook on its first me
   // it reads are one path however Claude Code compares them.
   expect(reviewEntry(id)?.addDir).toBe(reviewEntry(id)?.addDirReal)
   expect(existsSync(dirname(saved))).toBe(false)
+})
+
+it("the reviewer of a task's done is kept out of the shared git folder as its worker is", async () => {
+  const repo = newRepo()
+  const { id, cwd } = startedInRepo(repo, 'shut')
+  commit(cwd, 'shut.txt')
+  await stopped('shut', 'NOD: done | did it')
+  expect(status(id)).toBe('succeeded')
+  const { sandbox } = JSON.parse(reviewEntry(id)?.settings ?? '{}')
+  expect(sandbox.filesystem.denyWrite).toEqual(sharedGitDenies(repo, 'feat/shut'))
+  expect(sandbox.filesystem.denyWrite).toContain(join(realpathSync(join(repo, '.git')), 'HEAD'))
 })
 
 it("the review reads the task's own commits, from where its branch started on the default branch or on an earlier task's branch", async () => {
