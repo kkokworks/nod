@@ -1,5 +1,5 @@
-import { existsSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { existsSync, realpathSync } from 'node:fs'
+import { join, resolve } from 'node:path'
 import { spawn } from './proc'
 
 // A task's branch in its worktree, as nod's own git reads it: where its own commits start, its head,
@@ -99,6 +99,71 @@ export function onRemote(cwd: string, args: string[]): Promise<{ code: number; o
     env: { GIT_TERMINAL_PROMPT: '0' },
     timeoutMs: GIT_TIMEOUT_MS,
   })
+}
+
+// What a worker's sandbox may not write in the repo's shared git folder (docs/design.md, 「워커가
+// 쓸 수 있는 공용 git 폴더」). Claude Code opens that folder to a worktree's commands, as a commit
+// writes its objects, its branch and their logs there, and itself keeps them out of only its config,
+// hooks and the other worktrees' folders (2.1.332). The main checkout's own files: its HEAD and
+// index, the merge or rebase it has going, its HEAD's log, its submodules' git folders, and info/
+// (exclude, sparse-checkout). Not packed-refs.lock: git takes it to delete any ref, the
+// CHERRY_PICK_HEAD a cherry-pick ends with too.
+const MAIN_CHECKOUT = [
+  'HEAD',
+  'HEAD.lock',
+  'index',
+  'index.lock',
+  'ORIG_HEAD',
+  'FETCH_HEAD',
+  'MERGE_HEAD',
+  'MERGE_MSG',
+  'MERGE_MODE',
+  'SQUASH_MSG',
+  'AUTO_MERGE',
+  'CHERRY_PICK_HEAD',
+  'REVERT_HEAD',
+  'REBASE_HEAD',
+  'rebase-merge',
+  'rebase-apply',
+  'sequencer',
+  'modules',
+  'info',
+]
+// Refs no worker moves: every packed one, tags, remote-tracking refs (gc reads one as the branch's
+// copy on the remote), and replace refs, which would change what nod's review reads.
+const SHARED_REFS = ['packed-refs', 'packed-refs.new', 'refs/tags', 'refs/remotes', 'refs/replace']
+
+// Those paths for a task on branch `own` in `repo`, with the branch the main checkout has out and
+// the remote's default branch, as they are now; none once git cannot read the repo.
+export function sharedGitDenies(repo: string, own: string, platform = process.platform): string[] {
+  const read = (...args: string[]): string => {
+    const r = Bun.spawnSync([...NOD_GIT, '-C', repo, ...args])
+    return r.exitCode === 0 ? r.stdout.toString().trim() : ''
+  }
+  const dir = read('rev-parse', '--path-format=absolute', '--git-common-dir')
+  if (dir === '') return []
+  // Real, as a path that is not there yet is denied only as written.
+  const common = realpathSync(dir)
+  const folder = (branch: string) => (branch.includes('/') ? branch.split('/')[0] : null)
+  const branches = [
+    read('symbolic-ref', '-q', 'HEAD'),
+    read('symbolic-ref', '-q', 'refs/remotes/origin/HEAD'),
+  ]
+    .map((ref) => ref.replace(/^refs\/(heads|remotes\/origin)\//, ''))
+    // On macOS the sandbox also keeps a denied path's folders from being made (2.1.332), and a gc
+    // that packs the refs of a folder (fix/) removes it, which the worker's next commit makes again.
+    .filter((b) => b !== '' && b !== own && (folder(b) === null || folder(b) !== folder(own)))
+  const paths = [
+    ...MAIN_CHECKOUT,
+    // Only in a logs/ that is there: the sandbox would keep it from being made too (above), and a
+    // repo without one (logAllRefUpdates off) has a stash make it for its reflog.
+    ...(existsSync(join(common, 'logs')) ? ['logs/HEAD'] : []),
+    ...SHARED_REFS,
+    ...[...new Set(branches)].flatMap((b) => [`refs/heads/${b}`, `refs/heads/${b}.lock`]),
+  ].map((p) => join(common, p))
+  // On Linux the sandbox makes an empty file at a denied path that is not there for as long as
+  // each command runs (2.1.332): a HEAD.lock there would stop the person's commits.
+  return platform === 'linux' ? paths.filter((p) => existsSync(p)) : paths
 }
 
 export const gitPath = (ws: string, path: string): string =>

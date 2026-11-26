@@ -1866,7 +1866,7 @@ ask 규칙은 auto mode 와 샌드박스의 `autoAllowBashIfSandboxed` 보다 �
     사람만 답할 수 있다고 표시된 확인(작업 폴더 밖 경로, auto mode 판단기의 안전 차단 등)은 훅의 허락을 받지 않습니다.
     문서상 `permission_prompt` 알림은 확인창이 약 6초 기다린 뒤에야 오므로, 훅이 그보다 빨리 허락하면 결정이 열리지 않습니다.
   - 훅의 `cwd` 는 Bash 가 지금 있는 폴더입니다. 앞 호출에서 `cd .cache/measure` 한 뒤의 `rm -rf node_modules` 에 `cwd` 가 `.../.cache/measure` 로 왔습니다. 그래서 상대 경로는 `cwd` 기준으로 풉니다.
-  - 공용 git 폴더는 워커 샌드박스 안에서도 쓸 수 있습니다. worktree 안에서 `git update-ref refs/nod-measure/probe HEAD` 가 성공했고(`<원래 레포>/.git/refs` 에 씀), 바로 지웠습니다. worktree 에서 커밋이 되려면 그 폴더에 써야 하므로 샌드박스가 열어 둔 것입니다. 그래서 샌드박스만 믿지 않고, 지우는 경로가 그 폴더를 가리키는지 nod 가 따로 봅니다.
+  - 공용 git 폴더는 워커 샌드박스 안에서도 쓸 수 있습니다. worktree 안에서 `git update-ref refs/nod-measure/probe HEAD` 가 성공했고(`<원래 레포>/.git/refs` 에 씀), 바로 지웠습니다. worktree 에서 커밋이 되려면 그 폴더에 써야 하므로 샌드박스가 열어 둔 것입니다. 그래서 샌드박스만 믿지 않고, 지우는 경로가 그 폴더를 가리키는지 nod 가 따로 봅니다. 2026-11-26 부터 그 폴더의 일부는 워커 설정으로 막습니다(「워커가 쓸 수 있는 공용 git 폴더」).
 - **방법: PermissionRequest 훅.**
   워커 설정에 PermissionRequest 훅(`nod hook permission`)을 넣고(처음에는 `matcher: "Bash"` 였고, 지금은 아래 「권한 확인은 창이 뜰 때 결정으로」 때문에 모든 도구), 허락이면 `{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}` 를, 아니면 아무것도 내지 않습니다.
   다른 안은 지금처럼 `permission_prompt` 알림으로 결정을 연 뒤 범위 안이면 nod 가 스스로 yes 를 답하는 것이었습니다.
@@ -3296,9 +3296,9 @@ nod 가 샌드박스 밖에서 워커의 worktree 에 돌리는 git 이, 워커�
 
 - **워커가 쓸 수 있는 곳.** 워커 샌드박스에서 파일을 열거나 만들어 보았습니다(Claude Code 2.1.332, 내용은 바꾸지 않음).
   - 막힘: 공용 git 폴더의 `config` 와 `hooks/`, worktree git 폴더(`.git/worktrees/<worktree>`)의 `config.worktree`·`commondir`·`gitdir`, worktree 의 `.git` 파일, 그리고 어디서든 `.git/config`·`.git/hooks/` 아래·`.gitmodules` 라는 이름의 파일.
-  - 됨: worktree 안의 다른 파일(`.gitattributes`, 하위 폴더의 `.git` 파일, `.git` 이 아닌 이름의 git 폴더와 그 `config`), worktree git 폴더의 `HEAD`·`index`·`modules/<이름>/config`(그 worktree 서브모듈의 설정), 공용 git 폴더의 `HEAD`·`index`·`packed-refs`·`info/exclude`.
-  - 재지 않음: 공용 git 폴더의 `modules/<이름>/config`(본 체크아웃 서브모듈의 설정). 사람의 레포에 파일을 남기지 않으려고 만들어 보지 않았습니다. 같은 폴더의 다른 파일과 worktree 쪽 `modules/<이름>/config` 를 쓸 수 있어, 쓸 수 있다고 보고 막았습니다.
-  - 그래서 레포 자신의 설정은 워커가 못 씁니다. `config.worktree` 는 레포 설정에 `extensions.worktreeConfig` 가 있어야 읽히기도 합니다. 공용 git 폴더의 `HEAD`·`packed-refs` 에 쓸 수 있다는 것은 본 체크아웃과 다른 브랜치를 워커가 바꿀 수 있다는 뜻이지만, 설정의 명령과는 다른 일이라 여기서 고치지 않았습니다.
+  - 됨: worktree 안의 다른 파일(`.gitattributes`, 하위 폴더의 `.git` 파일, `.git` 이 아닌 이름의 git 폴더와 그 `config`), worktree git 폴더의 `HEAD`·`index`·`modules/<이름>/config`(그 worktree 서브모듈의 설정), 공용 git 폴더의 `HEAD`·`index`·`packed-refs`·`info/exclude`(이 넷은 다음 날부터 워커가 못 씀, 아래 「워커가 쓸 수 있는 공용 git 폴더」).
+  - 재지 않음: 공용 git 폴더의 `modules/<이름>/config`(본 체크아웃 서브모듈의 설정). 사람의 레포에 파일을 남기지 않으려고 만들어 보지 않았습니다. 같은 폴더의 다른 파일과 worktree 쪽 `modules/<이름>/config` 를 쓸 수 있어, 쓸 수 있다고 보고 막았습니다. 다음 날부터는 워커가 그 `modules` 에 쓰지도 못합니다.
+  - 그래서 레포 자신의 설정은 워커가 못 씁니다. `config.worktree` 는 레포 설정에 `extensions.worktreeConfig` 가 있어야 읽히기도 합니다. 공용 git 폴더의 `HEAD`·`packed-refs` 에 쓸 수 있다는 것은 본 체크아웃과 다른 브랜치를 워커가 바꿀 수 있다는 뜻이지만, 설정의 명령과는 다른 일이라 여기서 고치지 않고 다음 작업에서 막았습니다(아래 「워커가 쓸 수 있는 공용 git 폴더」).
 - **닿는 길.** git 2.53 으로, 워커가 쓸 수 있는 곳에 명령을 두고 nod 의 호출 모양 그대로 돌려 보았습니다(nod 의 환경처럼 샌드박스가 넣는 `GIT_SSH_COMMAND`·`GIT_CONFIG_*` 를 지우고).
   - 서브모듈: `git status` 와, 작업 트리를 인덱스와 견주는 `git diff` 는 서브모듈마다 그 서브모듈의 설정으로 `git status` 를 다시 띄웁니다. 레포의 서브모듈(`modules/<이름>`)도, 워커가 만든 것(이름을 바꾼 git 폴더, 그것을 가리키는 `.git` 파일, 커밋한 gitlink. `.gitmodules` 는 없어도 됨)도 그렇습니다. 그 안에서 `core.fsmonitor`, 훅(인덱스를 쓸 때의 `post-index-change`), clean 필터, 부분 클론의 지연 fetch 가 원격 명령(`core.sshCommand`, `remote.<이름>.uploadpack`)으로 돌았습니다. 자리는 Stop 훅의 `verify`, 착지, `nod gc`(`--ignore-submodules=none`)의 `git status`, 충돌 때의 `unmergedFiles`(`git diff --diff-filter=U`), 경로가 서브모듈을 덮을 때 rm 판정의 `committed` 입니다. gc 의 `onlyCopy` 는 worktree 의 `modules/<이름>` 에서 `rev-list` 를, 본 체크아웃의 서브모듈에서 `cat-file` 을 돌려 지연 fetch 가 닿았습니다(리뷰에서 찾음).
   - 서브모듈로 들어가는 fetch: 가져온 커밋이 서브모듈을 옮기면 fetch 는 기본값(`fetch.recurseSubmodules=on-demand`)대로 그 서브모듈도 그 설정으로 fetch 해, 설정이 이름 붙인 원격 명령이 돌았습니다. nod 의 fetch(착지, gc 의 `dropMerged`)는 본 체크아웃에서 돕니다(리뷰에서 찾음).
@@ -3324,6 +3324,60 @@ nod 가 샌드박스 밖에서 워커의 worktree 에 돌리는 git 이, 워커�
   - `src/verify.test.ts`: 같은 서브모듈이 있을 때의 `verify`. `src/land.test.ts`: 같은 서브모듈이 있을 때의 착지, 서로 옮긴 서브모듈의 착지 rebase, `diff.submodule=diff` 아래의 리뷰 diff.
   - `src/gc.test.ts`: 같은 서브모듈이 있을 때의 `nod gc`, `onlyCopy` 의 지연 fetch 둘(worktree 의 `modules/<이름>`, 본 체크아웃의 서브모듈), `diff.submodule=diff` 아래의 `landed`, husky 모양 훅 폴더의 gc 와 `nod resume`(시작 커밋에서는 커밋한 `reference-transaction` 훅이 `worktree add` 를 막기까지 함).
   - `src/worker.test.ts`: 앞 작업 브랜치의 훅이 있을 때의 작업 시작, 끊긴 시작을 이어받는 `clearCutOff`. `src/allow.test.ts`: 서브모듈을 덮는 `rm -rf` 의 판정.
+
+## 워커가 쓸 수 있는 공용 git 폴더 (2026-11-26)
+
+Claude Code 는 worktree 에서 도는 워커의 명령에 레포의 공용 git 폴더(`<원래 레포>/.git`)를 통째로 쓰기로 엽니다. worktree 의 커밋이 객체와 브랜치를 거기에 쓰기 때문입니다. 위 「워커가 쓸 수 있는 git 설정」에서 본 체크아웃의 `HEAD`·`index`·`packed-refs` 도 쓸 수 있다고 나와, 워커의 일이 쓰지 않는 것을 nod 가 워커 설정으로 막았습니다.
+
+- **잰 것.**
+  - 실제 워커 샌드박스(Claude Code 2.1.332, 이 설정 전의 nod, macOS)에서 공용 git 폴더에 이미 있는 파일을 쓰기로 열어 보았습니다. 덧붙이기로 열고 아무것도 쓰지 않았고, 새 파일은 만들지 않았습니다.
+    됨: `HEAD`, `index`, `packed-refs`, `info/exclude`·`info/refs`, `ORIG_HEAD`, `FETCH_HEAD`, `COMMIT_EDITMSG`, `description`, `refs/heads/main`(느슨한 ref), `refs/remotes/origin/HEAD`, `logs/HEAD`, `logs/refs/heads/<브랜치>`.
+    막힘: `config`(`CONFIG`·`Config` 로 써도), `hooks/` 아래, 다른 worktree 의 git 폴더(`worktrees/<다른 것>/HEAD`), 자기 worktree git 폴더의 `gitdir`.
+  - 샌드박스의 막기는 대소문자를 가리지 않았습니다. 막힌 경로 `.claude/skills` 는 없는데, `.claude/SKILLS` 로 만들어도 막혔습니다.
+  - 재지 못한 것: 새로 만들어야 쓰는 것(본 체크아웃 서브모듈의 `modules/<이름>/config`, `MERGE_HEAD`, `rebase-merge/` 등).
+    사람의 레포에는 파일을 남기지 않으려고 만들지 않았고, 따로 만든 레포로는 잴 수 없었습니다.
+    샌드박스 규칙은 이 세션의 레포 경로에 묶여 있고, 샌드박스 안에서 샌드박스를 하나 더 띄우는 것(`sandbox-exec`)은 `sandbox_apply: Operation not permitted` 로 거절됐기 때문입니다.
+    대신 Claude Code 2.1.332 실행 파일에서 공용 git 폴더에 막는 이름을 읽었습니다(넣고 돌려 보지는 않음): `hooks`, `config`·`config.lock`, `config.worktree`·`config.worktree.lock`, `commondir`, `objects/info/alternates`·`http-alternates`, 자기 것을 뺀 `worktrees/<이름>`.
+    `modules` 는 없어, 그 아래도 같은 폴더의 다른 파일처럼 쓸 수 있다고 봅니다.
+- **쓰면 바뀌는 것.**
+  - `HEAD`: 사람의 본 체크아웃이 가리키는 브랜치나 커밋. 사람의 다음 커밋이 다른 브랜치로 갑니다.
+  - `index`: 본 체크아웃의 스테이징. 사람의 다음 커밋에 들어갈 내용이 바뀝니다.
+  - `packed-refs`: gc 가 묶은 모든 ref(브랜치·태그)의 값. 옮기거나 지울 수 있습니다.
+  - `refs/heads/<브랜치>`: 그 브랜치. 느슨한 ref 가 묶인 값보다 앞서므로, 묶인 브랜치도 파일 하나로 옮겨집니다.
+  - `refs/remotes/…`: 원격 추적 ref. gc 는 `origin/<브랜치>` 를 원격에 있는 사본으로 읽어 로컬 브랜치를 지우고(`remotesHolding`), `origin/HEAD` 와 견주어 합쳐졌는지 봅니다(`landed`).
+  - `refs/replace/…`: 어떤 객체 대신 다른 객체를 읽게 합니다. nod 가 샌드박스 밖에서 읽는 리뷰 diff 도 바뀝니다.
+  - `refs/tags/…`: 태그.
+  - 본 체크아웃의 진행 상태(`MERGE_HEAD`·`MERGE_MSG`, `CHERRY_PICK_HEAD`, `rebase-merge/`·`rebase-apply/`·`sequencer/`, `ORIG_HEAD`, `logs/HEAD`): 사람의 다음 커밋이 워커가 고른 부모를 단 병합 커밋이 되거나, 사람의 `rebase --continue` 가 워커가 넣은 `exec` 줄을 사람 권한으로 돌리거나, `reset --hard ORIG_HEAD`·`HEAD@{1}` 이 워커가 고른 커밋으로 갑니다.
+  - `info/`: `exclude`(본 체크아웃의 `git status` 에서 파일을 숨김), `attributes`, `sparse-checkout`(본 체크아웃이 꺼내는 파일).
+  - `modules/<이름>/`: 본 체크아웃 서브모듈의 git 폴더. 그 `config` 의 `core.fsmonitor` 는 사람이 본 체크아웃에서 `git status` 를 할 때 사람 권한으로 돕니다.
+- **워커가 써야 하는 것.**
+  따로 만든 레포의 worktree 에서 git 2.53 으로 워커의 일을 하고, 공용 git 폴더에서 바뀐 파일을 보았습니다.
+  커밋·amend·reset·rebase(충돌 뒤 `--continue` 까지)·cherry-pick·revert·merge 는 자기 브랜치(`refs/heads/<브랜치>`)와 그 로그(`logs/refs/heads/<브랜치>`)를, stash 는 `refs/stash` 와 `logs/refs/stash` 를 썼고, 모두 객체를 썼습니다.
+  공용 git 폴더 맨 위에 새 파일을 못 만들게 하자(폴더를 읽기 전용으로), cherry-pick 이 0 으로 끝나면서 `CHERRY_PICK_HEAD` 를 남겨 다음 merge 가 거절됐고, `git branch -D` 가 실패했습니다.
+  git 은 ref 를 지울 때마다 `packed-refs.lock` 을 잡기 때문입니다. 그래서 그 잠금 파일은 열어 둡니다.
+- **막은 것.**
+  워커의 Claude Code 를 띄울 때마다(`claudeArgs`) nod 가 워커 설정의 `sandbox.filesystem.denyWrite` 에 공용 git 폴더의 다음 경로를 넣습니다(`sharedGitDenies`).
+  Claude Code 설정에서 막기는 열기보다 앞섭니다. 사람의 Claude 설정 파일은 바꾸지 않습니다.
+  - 본 체크아웃의 것: `HEAD`·`HEAD.lock`, `index`·`index.lock`, `ORIG_HEAD`·`FETCH_HEAD`·`MERGE_HEAD`·`MERGE_MSG`·`MERGE_MODE`·`SQUASH_MSG`·`AUTO_MERGE`·`CHERRY_PICK_HEAD`·`REVERT_HEAD`·`REBASE_HEAD`, `rebase-merge`·`rebase-apply`·`sequencer`, `modules`, `info`, 그리고 `logs/` 가 있을 때 `logs/HEAD`. ref 로그를 끈 레포(`core.logAllRefUpdates=false`)에는 `logs/` 가 없고, 그때 stash 가 `logs/refs/stash` 를 쓰려고 그 폴더를 만듭니다(git 2.53 으로 잼). 막은 경로의 상위 폴더는 만들 수 없게 되므로(아래) 그때는 넣지 않습니다.
+  - ref: `packed-refs` 와 그것을 새로 쓸 때의 `packed-refs.new`, `refs/tags`, `refs/remotes`, `refs/replace`, 그리고 본 체크아웃이 꺼낸 브랜치와 원격의 기본 브랜치(`origin/HEAD` 가 가리키는 것)의 `refs/heads/<브랜치>`·`<브랜치>.lock`. 브랜치는 워커를 띄울 때의 것입니다.
+  - 자기 브랜치와 같은 폴더의 브랜치(`fix/…` 옆의 `fix/…`)는 막지 않습니다. 실행 파일에서 읽은 바로는 macOS 샌드박스가 막은 경로의 상위 폴더도 만들거나 지우지 못하게 하는데, gc 가 `refs/heads/fix/` 의 ref 를 모두 묶으면 그 폴더가 사라지고 워커의 다음 커밋이 그것을 다시 만들어야 합니다.
+  - Linux 에서는 있는 경로만 넣습니다. 실행 파일에서 읽은 바로는 Linux 샌드박스가 없는 경로를 막으려고 명령이 도는 동안 그 자리에 빈 파일을 만드는데, 그러면 `HEAD.lock` 이 생겨 사람의 커밋이 막힙니다. Linux 는 재지 못했습니다.
+- **바뀐 동작.**
+  - 사람의 gc 가 `refs/stash` 를 묶어 둔 뒤 워커가 마지막 stash 를 pop·drop 하면, stash 는 꺼내지고 목록에서 빠지지만 `packed-refs.new` 를 만들지 못한다는 오류가 나오고 `refs/stash` 가 남습니다(0 으로 끝남). 묶이지 않은 stash 는 그대로입니다.
+  - 워커 안의 gc(커밋 뒤의 자동 gc 포함)는 본 체크아웃 `HEAD` 의 로그를 정리하지 못해 오류를 내고 `packed-refs` 를 쓰지 못합니다. 커밋은 됩니다. 다른 worktree 의 git 폴더는 이미 막혀 있어, worktree 가 둘 이상이면 전에도 실패하던 길입니다.
+  - 워커가 `info/exclude` 에 무시할 파일을 적지 못합니다.
+- **남은 것.**
+  - 다른 브랜치: 다른 작업의 브랜치, 사람의 다른 브랜치, 자기 브랜치와 같은 폴더의 브랜치, 워커가 뜬 뒤 본 체크아웃이 꺼낸 브랜치(그 워커가 다시 뜰 때까지). 느슨한 ref 파일과 그 로그를 워커가 쓰고 지울 수 있습니다.
+  - 차례 끝에 알아채 결정으로 올리는 길은 검토만 하고 만들지 않았습니다. 차례가 시작할 때 ref 를 적어 두고 Stop 훅에서 견주면, 같은 때 다른 워커가 자기 브랜치를, 사람이나 nod 의 착지가 브랜치를 옮긴 것과 이 워커가 옮긴 것을 가르지 못합니다. ref 로그로 가르려 해도 파일을 바로 쓰면 로그가 남지 않습니다. 사람에게 틀린 결정을 자꾸 올리게 되어 두었습니다.
+  - 객체: 커밋에 필요해 막지 못하고, 워커가 지울 수도 있습니다.
+  - `packed-refs.lock`: 워커가 남겨 두면 사람의 ref 지우기가 `File exists` 로 실패합니다.
+  - 막지 않은 그 밖의 것: `description`, `COMMIT_EDITMSG`, `BISECT_*`, 분할 인덱스의 `sharedindex.*`, `rr-cache/`(사람이 rerere 를 켜면 워커의 rebase 도 씀), `shallow`, `gc.pid`·`gc.log`, `refs/notes`, 옛 원격 정의(`remotes/`·`branches/`).
+- **시험.**
+  - `src/branch.test.ts`: `sharedGitDenies` 가 위 경로를 내고, 워커의 일이 쓰는 경로(자기 브랜치와 그 로그, `refs/stash`, `packed-refs.lock`, 객체, 자기 worktree 폴더)는 하나도 덮지 않는지. 원격의 기본 브랜치에서 일하는 작업, 같은 폴더의 브랜치, Linux, `logs/` 가 없는 레포, 읽을 수 없는 레포도 봅니다.
+    그리고 그 경로를 막은 채 워커의 커밋, 충돌이 난 rebase 와 `--continue`, stash, cherry-pick(`CHERRY_PICK_HEAD` 가 남지 않음), merge, 브랜치 만들고 지우기가 되고, `main` 옮기기와 태그 만들기는 안 되며, 본 체크아웃의 `HEAD`·`main`·`origin/trunk` 이 그대로인지 봅니다.
+    시험 안에서는 샌드박스를 띄울 수 없어 흉내 냅니다. git 이 파일을 쓸 때 만드는 `<이름>.lock`·`<이름>.new` 와 없는 경로는 같은 이름의 폴더로 막고, 있는 것은 읽기 전용으로 바꿉니다. `packed-refs.lock` 까지 막으면 이 시험이 `CHERRY_PICK_HEAD` 에서 실패했습니다.
+  - `src/worker.test.ts`: 레포 작업의 `claudeArgs` 가 그 경로를 `denyWrite` 로 넘기고, 레포 없는 작업은 빈 목록을 넘기는지.
+  - 재지 못한 것: 이 설정으로 뜬 실제 워커에서의 막힘. 머지 뒤 새 워커에서 볼 것은, 공용 git 폴더의 `HEAD`·`index`·`packed-refs`·`refs/heads/main` 을 쓰기로 열면 EPERM 인지, 자기 브랜치와 `refs/stash` 는 쓸 수 있는지, 커밋·rebase·cherry-pick 이 되는지입니다.
 
 ## 할 일 (G1, 2026-10-20)
 
@@ -4318,7 +4372,7 @@ M1~M3.5 의 워커는 `claude -p` 였습니다. 아래는 그때 잰 값이고, 
 - 네트워크는 기본으로 막히고, `network.allowedDomains` 에 넣은 곳만 통과했습니다. 기본 허용은 `registry.npmjs.org` 하나입니다.
 - `allowUnsandboxedCommands: false` 로 샌드박스를 끄고 다시 시도하는 탈출구를 닫았습니다.
 - Unix 소켓은 워커마다 `<홈>/sockets/<작업>` 에서만 만들고 붙을 수 있습니다(`allowUnixSockets`, 2026-10-27 「워커 샌드박스의 Unix 소켓」).
-- worktree 에서의 `git commit` 은 성공했고, 전역 git 작성자 정보도 보였습니다. 그래서 공용 git 폴더(`<원래 레포>/.git`)도 샌드박스 안에서 쓸 수 있습니다(2026-10-27, 위 「무해한 권한 확인은 nod 가 허락하기」).
+- worktree 에서의 `git commit` 은 성공했고, 전역 git 작성자 정보도 보였습니다. 그래서 공용 git 폴더(`<원래 레포>/.git`)도 샌드박스 안에서 쓸 수 있습니다(2026-10-27, 위 「무해한 권한 확인은 nod 가 허락하기」). 본 체크아웃의 `HEAD`·`index`, `packed-refs` 등 워커의 일이 쓰지 않는 것은 2026-11-26 부터 막습니다(위 「워커가 쓸 수 있는 공용 git 폴더」).
 - `git -c …` 처럼 설정을 덮어쓰는 명령은 권한 단계에서 거부됐습니다.
 - WebFetch·WebSearch·MCP 도구는 승인을 받아야 하는 도구입니다. 비대화 실행에서는 거부됐고, 대화형 워커에서는 권한 결정으로 올라옵니다.
 

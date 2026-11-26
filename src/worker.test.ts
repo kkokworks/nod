@@ -19,6 +19,7 @@ import {
   openSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   rmSync,
   statSync,
   symlinkSync,
@@ -38,6 +39,7 @@ import { testTmux } from '../test/tmux'
 import { tmuxTest } from '../test/tmux-server'
 import { setAccountRule, transcriptPath } from './account'
 import { ALLOW } from './allow'
+import { sharedGitDenies } from './branch'
 import { localTime } from './days'
 import { askToLand, permissionQuestion } from './decisions'
 import { workerEnv } from './env'
@@ -2603,6 +2605,8 @@ it("a worker's sandbox lets it keep Unix sockets in its own folder alone, which 
   expect(sandbox.network.allowUnixSockets).toEqual([own])
   // Its tests make the folders they keep sockets in there, and nothing else in nod's home.
   expect(sandbox.filesystem.allowWrite).toEqual([own])
+  // Without a repo there is no shared git folder to keep it out of.
+  expect(sandbox.filesystem.denyWrite).toEqual([])
   expect(sandbox.network.allowedDomains).toEqual(['registry.npmjs.org'])
   expect(sandbox.network).not.toHaveProperty('allowAllUnixSockets')
   // Made before Claude Code starts, so its tests can make theirs in it.
@@ -2630,6 +2634,26 @@ it("a worker's sandbox lets it keep Unix sockets in its own folder alone, which 
       false,
     )
   }
+})
+
+it("a repo task's worker may not write the main checkout's HEAD and index nor packed-refs in the shared git folder, which Claude Code opens to it", () => {
+  const repo = newRepo()
+  const id = ledger.add({
+    brief: 'Commit here',
+    repo,
+    branch: 'fix/here',
+    checkCmd: null,
+    model: null,
+    after: [],
+    issue: null,
+  })
+  const argv = claudeArgs(ledger, home, ledger.get(id), ['--session-id', 's'], null, null)
+  const { sandbox } = JSON.parse(argv[argv.indexOf('--settings') + 1] ?? '{}')
+  const common = realpathSync(join(repo, '.git'))
+  expect(sandbox.filesystem.denyWrite).toEqual(sharedGitDenies(repo, 'fix/here'))
+  expect(sandbox.filesystem.denyWrite).toEqual(
+    expect.arrayContaining(['HEAD', 'index', 'packed-refs'].map((p) => join(common, p))),
+  )
 })
 
 // Runs `body` with no CLAUDE_AUTOCOMPACT_PCT_OVERRIDE in nod's environment, whatever the shell
