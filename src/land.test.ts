@@ -10,6 +10,7 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { join, resolve } from 'node:path'
+import { marking, textconvSubmodule, workerSubmodules } from '../test/git-commands'
 import { NOISY_FAILURE } from '../test/noisy-failure'
 import { projectFolder } from '../test/projects'
 import { calls, clonedRepo, fakeService, git } from '../test/remote'
@@ -339,6 +340,68 @@ test('a conflict goes to the worker, which stages its resolution; nod goes on wi
   const [review] = reviews()
   expect(review).toContain('What nod asked as it landed the branch')
   expect(review).toContain(`since ${ledger.landing(id)?.base}`)
+}, 30_000)
+
+test('landing runs none of the commands named in the config of a submodule its worker made', async () => {
+  setRepo('pr')
+  const id = finished('feat/sub', { 's.txt': 's\n' })
+  const { command, ran } = marking(tmp.make('nod-land-marks-'))
+  workerSubmodules(ws(id), command)
+
+  const [landed] = await land(ledger, home, Tmux.of(home), { send })
+  expect(landed?.did).toContain('git status failed')
+  expect(ran()).toEqual([])
+}, 30_000)
+
+test('the landing rebase fetches nothing for a submodule both sides moved, whose config its worker can write', async () => {
+  setRepo('pr')
+  const { command, ran } = marking(tmp.make('nod-land-marks-'))
+  const files = ['-c', 'protocol.file.allow=always']
+  const lib = tmp.make('nod-land-lib-')
+  git(lib, 'init', '-q')
+  git(lib, 'commit', '-q', '--allow-empty', '-m', 'one')
+  // The default branch gets the submodule, and the repo its checkout of it.
+  const other = tmp.make('nod-other-')
+  git(other, 'clone', '-q', origin, '.')
+  git(other, ...files, 'submodule', 'add', '-q', lib, 'lib')
+  git(other, 'commit', '-q', '-m', 'add lib')
+  git(other, 'push', '-q', 'origin', 'main')
+  git(repo, 'pull', '-q')
+  git(repo, ...files, 'submodule', 'update', '-q', '--init')
+  const id = finished('feat/lib', { 'w.txt': 'w\n' })
+  // Filled as initSubmodules fills it.
+  const url = `submodule.lib.url=${join(repo, 'lib')}`
+  git(ws(id), ...files, '-c', url, 'submodule', 'update', '-q', '--init', 'lib')
+  // The default branch moves it to a commit the worktree's lacks, and the worker to another.
+  git(lib, 'commit', '-q', '--allow-empty', '-m', 'two')
+  git(join(other, 'lib'), 'pull', '-q')
+  git(other, 'commit', '-q', '-am', 'move lib')
+  git(other, 'push', '-q', 'origin', 'main')
+  git(join(ws(id), 'lib'), 'commit', '-q', '--allow-empty', '-m', 'mine')
+  git(ws(id), 'commit', '-q', '-am', 'move lib too')
+  // In its git folder in the worktree's: a partial clone whose fetch runs the upload-pack.
+  const config = {
+    'core.repositoryformatversion': '1',
+    'extensions.partialClone': 'origin',
+    'remote.origin.promisor': 'true',
+    'remote.origin.uploadpack': command('upload-pack'),
+  }
+  for (const [key, value] of Object.entries(config)) git(join(ws(id), 'lib'), 'config', key, value)
+
+  const [landed] = await land(ledger, home, Tmux.of(home), { send })
+  expect(ran()).toEqual([])
+  expect(landed?.did).toBe('its worker resolves a conflict')
+}, 30_000)
+
+test('the review reads a submodule as the commits it moved between, whatever diff.submodule the person set', async () => {
+  const id = working('feat/t', { 't.txt': 't\n' })
+  const { command, ran } = marking(tmp.make('nod-land-marks-'))
+  textconvSubmodule(ws(id), command)
+  git(repo, 'config', 'diff.submodule', 'diff')
+
+  await stops(id, 'NOD: done | did it')
+  expect(reviews()).toHaveLength(1)
+  expect(ran()).toEqual([])
 }, 30_000)
 
 test('a gate that fails asks the person, and dropping it stops landing while the task stays succeeded', async () => {

@@ -8,11 +8,13 @@ import {
   rmSync,
   writeFileSync,
 } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
+import { huskyHooks, marking, textconvSubmodule, workerSubmodules } from '../test/git-commands'
 import { projectFolder, tempFolder } from '../test/projects'
+import { git } from '../test/remote'
 import { tempDirs } from '../test/tmp'
 import { sweep } from './done'
-import { collect, dropTemps, landed } from './gc'
+import { collect, dropTemps, landed, onlyCopy } from './gc'
 import { Ledger } from './ledger'
 import { branchOf, workspaceOf } from './place'
 import { Tmux } from './tmux'
@@ -1097,6 +1099,153 @@ test("a task told to go on as gc ends it keeps its worker's temp folder", async 
   expect((await collect(ledger, home, Tmux.of(home), { ids: [id] })).removed).toEqual([id])
   expect(existsSync(kept)).toBe(false)
 })
+
+// A finished task of a repo of its own under `home`, with its worktree, and its marking commands.
+function repoTask(home: string, branch: string) {
+  process.env.CLAUDE_CONFIG_DIR = tmp.make('nod-gc-claude-')
+  const ledger = new Ledger(home)
+  const repo = join(home, 'repo')
+  git(home, 'init', '-q', repo)
+  git(repo, 'commit', '-q', '--allow-empty', '-m', 'init')
+  const id = ledger.add({
+    brief: branch,
+    repo,
+    branch,
+    checkCmd: null,
+    model: null,
+    after: [],
+    issue: null,
+  })
+  const cwd = workspaceOf(home, ledger.get(id))
+  git(repo, 'worktree', 'add', '-q', '-b', branch, cwd)
+  ledger.setRunning(id, cwd)
+  const sessionId = `session-${id}`
+  ledger.startAttempt({ taskId: id, kind: 'start', decisionId: null, sessionId, prompt: branch })
+  ledger.succeed(id)
+  const sessions = projectFolder(process.env.CLAUDE_CONFIG_DIR, cwd)
+  mkdirSync(sessions, { recursive: true })
+  writeFileSync(join(sessions, `${sessionId}.jsonl`), '{}\n')
+  return { ledger, repo, id, cwd, ...marking(tmp.make('nod-gc-marks-')) }
+}
+
+test('gc runs none of the commands named in the config of a submodule its worker made', async () => {
+  const home = tmp.make('nod-gc-')
+  const { ledger, id, cwd, command, ran } = repoTask(home, 'feat/sub')
+  workerSubmodules(cwd, command)
+
+  expect(await collect(ledger, home, Tmux.of(home), { ids: [id] })).toEqual({
+    removed: [],
+    clean: [],
+    skipped: [{ id, reason: 'uncommitted changes in worktree' }],
+  })
+  expect(ran()).toEqual([])
+}, 30_000)
+
+test('gc looks for a submodule commit in the repo’s own checkout of it without fetching it', () => {
+  const dir = tmp.make('nod-gc-')
+  const { command, ran } = marking(tmp.make('nod-gc-marks-'))
+  const files = ['-c', 'protocol.file.allow=always']
+  const lib = join(dir, 'lib')
+  git(dir, 'init', '-q', lib)
+  git(lib, 'commit', '-q', '--allow-empty', '-m', 'one')
+  const repo = join(dir, 'repo')
+  git(dir, 'init', '-q', repo)
+  git(repo, ...files, 'submodule', 'add', '-q', lib, 'lib')
+  git(repo, 'commit', '-q', '-m', 'add lib')
+  const cwd = join(dir, 'work')
+  git(repo, 'worktree', 'add', '-q', '-b', 'feat/sub', cwd)
+  git(
+    cwd,
+    ...files,
+    '-c',
+    `submodule.lib.url=${join(repo, 'lib')}`,
+    'submodule',
+    'update',
+    '-q',
+    '--init',
+  )
+  git(join(cwd, 'lib'), 'commit', '-q', '--allow-empty', '-m', 'only here')
+  // The repo's checkout of it, a partial clone whose config names the upload-pack a fetch runs.
+  const config = {
+    'core.repositoryformatversion': '1',
+    'extensions.partialClone': 'origin',
+    'remote.origin.promisor': 'true',
+    'remote.origin.uploadpack': command('upload-pack'),
+  }
+  for (const [key, value] of Object.entries(config)) git(join(repo, 'lib'), 'config', key, value)
+
+  expect(onlyCopy(repo, cwd, 'feat/sub')).toBe('submodule lib has commits no remote has')
+  expect(ran()).toEqual([])
+}, 30_000)
+
+test('gc fetches nothing for a submodule git folder of the worktree, whose config its worker can write', async () => {
+  const home = tmp.make('nod-gc-')
+  const { repo, cwd, command, ran } = repoTask(home, 'feat/sub')
+  // A partial clone's, with a branch at a commit it lacks.
+  const lib = join(resolve(cwd, git(cwd, 'rev-parse', '--git-path', 'modules')), 'lib')
+  git(home, 'init', '-q', '--bare', lib)
+  const config = {
+    'core.repositoryformatversion': '1',
+    'extensions.partialClone': 'origin',
+    'remote.origin.url': repo,
+    'remote.origin.promisor': 'true',
+    'remote.origin.uploadpack': command('upload-pack'),
+  }
+  for (const [key, value] of Object.entries(config)) git(lib, 'config', key, value)
+  writeFileSync(join(lib, 'refs', 'heads', 'x'), '0123456789012345678901234567890123456789\n')
+
+  expect(() => onlyCopy(repo, cwd, 'feat/sub')).toThrow('bad object refs/heads/x')
+  expect(ran()).toEqual([])
+}, 30_000)
+
+test('whether the default branch has a branch’s changes reads a submodule as its commit, whatever diff.submodule the person set', () => {
+  const repo = tmp.make('nod-gc-repo-')
+  const { command, ran } = marking(tmp.make('nod-gc-marks-'))
+  git(repo, 'init', '-q', '-b', 'main')
+  git(repo, 'commit', '-q', '--allow-empty', '-m', 'init')
+  git(repo, 'checkout', '-q', '-b', 'feat/t')
+  textconvSubmodule(repo, command)
+  git(repo, 'config', 'diff.submodule', 'diff')
+  // The default branch has the submodule at its first commit, the branch at its second.
+  git(repo, 'update-ref', 'refs/remotes/origin/main', 'feat/t~1')
+  git(repo, 'symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main')
+
+  expect(landed(repo, 'refs/heads/feat/t')).toBe(false)
+  expect(ran()).toEqual([])
+}, 30_000)
+
+// A task whose repo's config names a hooks folder in each worktree, as husky's does, and whose
+// worker committed hooks there, with a file git looks at again so that git status writes the index.
+function hookedTask(home: string) {
+  const task = repoTask(home, 'feat/hook')
+  const { repo, cwd, command } = task
+  git(repo, 'config', 'core.hooksPath', '.husky/_')
+  const hooks = huskyHooks(cwd, command)
+  writeFileSync(join(cwd, 'x.txt'), 'x')
+  git(cwd, 'add', '.husky', 'x.txt')
+  git(cwd, 'commit', '-q', '-m', 'hooks')
+  git(cwd, 'update-index', '--cacheinfo', `100644,${git(cwd, 'rev-parse', 'HEAD:x.txt')},x.txt`)
+  return { ...task, hooks }
+}
+
+test('gc runs none of the hooks a branch brings into a hooks folder its repo names in the worktree', async () => {
+  const home = tmp.make('nod-gc-')
+  const { ledger, id, ran } = hookedTask(home)
+
+  expect((await collect(ledger, home, Tmux.of(home), { ids: [id] })).removed).toEqual([id])
+  expect(ran()).toEqual([])
+}, 30_000)
+
+test('resume brings a worktree back without running the hooks its branch brings', async () => {
+  const home = tmp.make('nod-gc-')
+  const { ledger, id, hooks, ran, forget } = hookedTask(home)
+  await collect(ledger, home, Tmux.of(home), { ids: [id] })
+  forget()
+
+  await restore(ledger, home, id)
+  expect(existsSync(join(hooks, 'post-index-change'))).toBe(true)
+  expect(ran()).toEqual([])
+}, 30_000)
 
 function sh(cmd: string[], cwd: string): string {
   const result = Bun.spawnSync(cmd, { cwd })

@@ -1,6 +1,6 @@
 import { existsSync, readdirSync, realpathSync, rmdirSync, rmSync } from 'node:fs'
 import { dirname, join, relative, resolve } from 'node:path'
-import { onRemote } from './branch'
+import { NO_LAZY_FETCH, onRemote, worktreeStatus } from './branch'
 import { removeTmp, tmpRoot } from './claude-tmp'
 import { FINISHED, type Ledger, type Task } from './ledger'
 import { branchOf, sessionName, settling } from './place'
@@ -140,10 +140,7 @@ export async function collect(
 
       if (task.repo !== null) {
         // Submodules too, even one the repo tells status to ignore: their changes go with --force.
-        const status = await spawn(
-          ['git', '-C', task.workspace, 'status', '--porcelain', '--ignore-submodules=none'],
-          undefined,
-        )
+        const status = await worktreeStatus(task.workspace, '--ignore-submodules=none')
         if (status.code !== 0 || status.stdout.trim()) {
           skip('uncommitted changes in worktree')
           continue
@@ -315,21 +312,20 @@ export function onlyCopy(repo: string, workspace: string, branch: string): strin
     const sub = join(root, name)
     // The git folder stands in for the work tree it names, which is gone for a submodule since
     // removed; this only reads.
-    // The commits HEAD and every ref reach (branches, tags, stash) that no remote branch does.
-    const lone = Bun.spawnSync([
-      'git',
-      `--git-dir=${sub}`,
-      `--work-tree=${sub}`,
-      'rev-list',
-      '--all',
-      '--not',
-      '--remotes',
-    ])
+    // The commits HEAD and every ref reach (branches, tags, stash) that no remote branch does. Its
+    // config is the worker's to write (NO_LAZY_FETCH).
+    const lone = Bun.spawnSync(
+      ['git', `--git-dir=${sub}`, `--work-tree=${sub}`, 'rev-list', '--all', '--not', '--remotes'],
+      { env: { ...process.env, ...NO_LAZY_FETCH } },
+    )
     if (lone.exitCode !== 0) throw new Error(`git rev-list in ${sub}: ${lone.stderr}`)
     const commits = lone.stdout.toString().trim()
     if (commits === '') continue
+    // In the repo's own checkout of the submodule, whose git folder is in the shared one, which the
+    // worker writes too; a commit it lacks stays missing, so the worktree stays.
     const there = Bun.spawnSync(['git', '-C', join(repo, name), 'cat-file', '--batch-check'], {
       stdin: Buffer.from(`${commits}\n`),
+      env: { ...process.env, ...NO_LAZY_FETCH },
     })
     const missing = there.stdout
       .toString()
@@ -465,8 +461,10 @@ export function landed(repo: string, ref: string): boolean {
   )
   if (changed.exitCode !== 0) throw new Error(`git diff in ${repo}: ${changed.stderr}`)
   const files = changed.stdout.toString().split('\0').filter(Boolean)
-  // Literal, so a name is the file and not a pattern that matches others or none.
-  const same = () => git('--literal-pathspecs', 'diff', '--quiet', ref, main, '--', ...files)
+  // Literal, so a name is the file and not a pattern that matches others or none. A submodule as its
+  // commit: diff.submodule=diff would diff in it with its config and the textconv it names.
+  const same = () =>
+    git('--literal-pathspecs', 'diff', '--quiet', '--submodule=short', ref, main, '--', ...files)
   return files.length === 0 || same().exitCode === 0
 }
 

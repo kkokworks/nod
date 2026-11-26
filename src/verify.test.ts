@@ -1,7 +1,9 @@
 import { afterAll, expect, test } from 'bun:test'
 import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { marking, workerSubmodules } from '../test/git-commands'
 import { bunTest, NOISY_FAILURE } from '../test/noisy-failure'
+import { git } from '../test/remote'
 import { tempDirs } from '../test/tmp'
 import { Ledger, type Task } from './ledger'
 import { OUTPUT_LIMIT } from './proc'
@@ -137,3 +139,26 @@ test("a check that is not bun's test runner keeps the end of its output alone, w
   const all = `(fail) the one that fails\nerror: it failed\n${lines.join('')}`
   expect(check).toEqual({ passed: false, output: said(cmd) + all.slice(-OUTPUT_LIMIT) })
 })
+
+test('verify runs none of the commands named in the config of a submodule its worker made', async () => {
+  const dir = tmp.make('nod-verify-repo-')
+  const { command, ran } = marking(tmp.make('nod-verify-marks-'))
+  git(dir, 'init', '-q')
+  git(dir, 'commit', '-q', '--allow-empty', '-m', 'init')
+  workerSubmodules(dir, command)
+  const id = ledger.add({
+    brief: 'check it',
+    repo: dir,
+    branch: 'main',
+    checkCmd: null,
+    model: null,
+    after: [],
+    issue: null,
+  })
+  ledger.setRunning(id, dir)
+
+  await expect(verify(ledger, ledger.get(id), 'NOD: done | did it')).rejects.toThrow(
+    'git status failed',
+  )
+  expect(ran()).toEqual([])
+}, 30_000)

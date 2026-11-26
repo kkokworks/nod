@@ -1,7 +1,16 @@
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Subprocess } from 'bun'
-import { conflictBrief, createdFrom, NOD_GIT, onRemote, ownStart, rebasing } from './branch'
+import {
+  conflictBrief,
+  createdFrom,
+  NOD_GIT,
+  onRemote,
+  ownStart,
+  rebaseEnv,
+  rebasing,
+  worktreeStatus,
+} from './branch'
 import { askToLand } from './decisions'
 import { lands } from './done'
 import { hasRef, landed } from './gc'
@@ -237,7 +246,11 @@ async function landTask(
     ledger.setLanding(task.id, { stopped: 'nothing to land: its branch has no commits of its own' })
     return 'nothing to land'
   }
-  if ((await git(ws, 'status', '--porcelain')) !== '') {
+  const status = await worktreeStatus(ws)
+  if (status.code !== 0) {
+    throw new Error(`git status failed: ${status.output.trim().slice(-OUTPUT_LIMIT)}`)
+  }
+  if (status.stdout.trim() !== '') {
     return noteFor(pass, task, 'its worktree has uncommitted changes')
   }
 
@@ -261,6 +274,7 @@ async function landTask(
     const r = await spawn(
       [...GIT, 'rebase', '--merge', '--no-update-refs', '--onto', tip.commit, base],
       ws,
+      { env: rebaseEnv(ws) },
     )
     if (r.code === 0) {
       const moved = await git(ws, 'rev-parse', 'HEAD')
