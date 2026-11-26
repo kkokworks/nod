@@ -697,12 +697,13 @@ for (const role of OPEN_ROLES) {
     const open = (fresh: boolean, cwd: string, r?: OpenRole) =>
       openSession(todos, 'north', fresh, cwd, config, r)
     const key = (): string => todos.latestNamed('north')?.sessionKey ?? ''
-    // A relay hears of no decision, so it gets no MCP server of nod's.
+    // A relay hears of no decision and asks the person nothing, so it gets no MCP server of nod's
+    // and no hook on its question dialogs.
     const told = (session: string) => [
       '--append-system-prompt',
       expect.stringContaining(`nod open opened this session as the ${role} north: `),
       '--settings',
-      openSettings(),
+      openSettings(role === 'relay'),
       ...(role === 'relay' ? [] : openMcp(session)),
     ]
 
@@ -715,6 +716,8 @@ for (const role of OPEN_ROLES) {
       argv: ['claude', '--name', 'north', '--session-id', opened, ...told(opened)],
       cwd: here,
     })
+    const settings = first.argv[first.argv.indexOf('--settings') + 1] ?? ''
+    expect(settings.includes('"matcher":"AskUserQuestion"')).toBe(role !== 'relay')
     expect(todos.session(opened)).toMatchObject({ role, name: 'north', cwd: here, socket: null })
     expect(todos.sessionPlace(opened)).toBeNull()
     // Closed before a word was said, it starts again under its ID where it was opened.

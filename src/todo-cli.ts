@@ -312,15 +312,15 @@ export function openSession(
   if (description !== undefined && helps === null) throw new Error(DESCRIBES)
   // The session's name is for the person; Claude in it learns its project or role from this line
   // alone. Claude Code keeps a conversation's first system prompt on resume until it compacts, so a
-  // resume passes it too. Its hooks tell nod where it takes its notices (inbox.ts).
-  // Nod's MCP server (mcp.ts), for the session's ID, in every role but a relay's, which hears of no
-  // decision.
+  // resume passes it too. Its hooks tell nod where it takes its notices (inbox.ts), and but for a
+  // relay's keep its question dialogs from hiding a draft (onAsk). Nod's MCP server (mcp.ts), for the
+  // session's ID, in every role but a relay's, which hears of no decision.
   const relays = typeof owner === 'object' && owner.role === 'relay'
   const told = (key: string): string[] => [
     '--append-system-prompt',
     line,
     '--settings',
-    openSettings(),
+    openSettings(relays),
     ...(relays ? [] : openMcp(key)),
   ]
   const last = fresh ? null : latest

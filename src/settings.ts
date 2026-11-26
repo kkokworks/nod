@@ -74,9 +74,13 @@ const hook = (event: string): string => `${quote(process.execPath)} ${quote(CLI)
 // it starts (startup, resume, compact: Claude Code exports the socket to hooks before any runs), and
 // that it takes none once it ends (onInbox in inbox.ts). SessionEnd hooks share a
 // budget of 1.5 s unless one sets a longer timeout (docs), less than a busy ledger may wait for.
-export function openSettings(): string {
+// And, but for a relay's (`relays`), which asks the person nothing, one that denies a question dialog
+// that would hide a draft written before it (onAsk).
+export function openSettings(relays = false): string {
   const inbox = [{ hooks: [{ type: 'command', command: hook('inbox'), timeout: INBOX_HOOK_SECS }] }]
-  return JSON.stringify({ hooks: { SessionStart: inbox, SessionEnd: inbox } })
+  const ask = [{ matcher: 'AskUserQuestion', hooks: [{ type: 'command', command: hook('ask') }] }]
+  const asks = relays ? {} : { PreToolUse: ask }
+  return JSON.stringify({ hooks: { SessionStart: inbox, SessionEnd: inbox, ...asks } })
 }
 
 // The tool of nod's MCP server (mcp.ts) as the model calls it, allowed so no prompt asks for it:
