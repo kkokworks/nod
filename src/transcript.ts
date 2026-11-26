@@ -19,7 +19,8 @@ import { pasted } from './tmux'
 // Reading the transcript Claude Code keeps of a worker's session (JSONL): whether there is one, its
 // lines or its end, how its last turn ended, whether a tool runs, what became of a message pasted in
 // while a turn ran, which tool calls the person refused or auto mode denied, and whether a subagent
-// runs in the background. It only reads: what nod changes in the ledger by it is turns.ts's
+// runs in the background; and of any session, what the model wrote in its turn (textsThisTurn). It
+// only reads: what nod changes in the ledger by it is turns.ts's
 // (endTurnWithoutStop, forgetHeldBack, stoppedDialogs, refusedDialogs, unseenHeldBack), worker.ts's
 // (carryUnheard, restingTurns) and allow.ts's (unjudged). This module imports none of worker.ts,
 // hooks.ts or land.ts.
@@ -135,6 +136,10 @@ const TranscriptEntry = z.object({
   timestamp: z.string().optional().catch(undefined),
   isSidechain: z.boolean().optional(),
   isMeta: z.boolean().optional(),
+  isCompactSummary: z.boolean().optional().catch(undefined),
+  // Who a user row's message is from: `human`, another session's (`peer`), a background task's
+  // notice (2.1.332; none on older rows).
+  origin: z.object({ kind: z.string() }).optional().catch(undefined),
   queueTranscriptOnly: z.boolean().optional().catch(undefined),
   interruptedByShutdown: z.boolean().optional(),
   promptSubmitEnding: z.object({ promptKept: z.unknown() }).partial().optional().catch({}),
@@ -419,6 +424,36 @@ function denies(line: string): boolean {
       textsOf(result.data.content).some((t) => typeof t === 'string' && DENIED.test(t))
     )
   })
+}
+
+// What the model wrote before its tool call `call` (its id) in the turn the person's last message
+// started, as the transcript `lines` keep it: the text blocks of the main thread's messages after
+// that message, oldest first. Not the person's: a tool's result, a meta row (a reminder, another
+// session's message), a compacted conversation's summary, or a row of any `origin` but `human`
+// (2.1.332). Null when the call is not in `lines`, or no message of the person's is before it.
+// ponytail: an older Claude Code's row with no `origin`, a background task's notice say, counts as
+// the person's, so the turn reads shorter.
+export function textsThisTurn(lines: string[], call: string): string[] | null {
+  const texts: string[] = []
+  let found = false
+  for (const line of lines.toReversed()) {
+    const parsed = TranscriptEntry.safeParse(jsonOrNull(line))
+    if (!parsed.success || parsed.data.isSidechain === true) continue
+    const row = parsed.data
+    if (row.type === 'assistant') {
+      found ||= blocksOf(row).some((b) => b?.type === 'tool_use' && b.id === call)
+      const said = textsOf(row.message?.content).filter((t) => typeof t === 'string')
+      if (found) texts.unshift(...said)
+    }
+    const person =
+      row.type === 'user' &&
+      row.isMeta !== true &&
+      row.isCompactSummary !== true &&
+      (row.origin?.kind ?? 'human') === 'human' &&
+      resultsOf(row).length === 0
+    if (found && person) return texts
+  }
+  return null
 }
 
 // The blocks of a transcript row's message, and the tool calls whose results it holds, by their ids.

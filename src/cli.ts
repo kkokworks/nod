@@ -11,7 +11,9 @@ import { followWork, sweep } from './done'
 import { AUTOCOMPACT_PCT } from './env'
 import { collect, dropTemps, type GcPick, type GcReport, remotesHolding } from './gc'
 import {
+  AskEvent,
   NotificationEvent,
+  onAsk,
   onCompact,
   onNotification,
   onPermissionAsk,
@@ -370,9 +372,12 @@ const USAGE = `usage:
                                    empty means Claude Code's default. With a file or a command,
                                    every nod command and tick restarts the workers that run as
                                    another account than the current one, as nod restart does
-  nod hook stop|notification|permission|prompt|inbox
-                                   called by Claude Code hooks in worker sessions, and (inbox) in
-                                   the sessions nod open opens. permission allows a worker's
+  nod hook stop|notification|permission|prompt|inbox|ask
+                                   called by Claude Code hooks in worker sessions, and (inbox, ask)
+                                   in the sessions nod open opens. ask refuses a question dialog
+                                   (AskUserQuestion) with no option's preview in a turn that wrote
+                                   a draft (a quoted line or code block): the dialog hides it.
+                                   permission allows a worker's
                                    command that only touches what its folder can make again:
                                    rm -rf of paths holding no uncommitted work in its worktree,
                                    or a package manager adding or removing registry packages.
@@ -444,6 +449,7 @@ if (command === 'hook' && rest[0] === 'prompt') await promptHook()
 if (command === 'hook' && rest[0] === 'inbox') await inboxHook()
 if (command === 'hook' && rest[0] === 'permission') await permissionHook()
 if (command === 'hook' && rest[0] === 'tool') await toolHook()
+if (command === 'hook' && rest[0] === 'ask') await askHook()
 if (command === 'mcp') await mcpCommand()
 const ledger = new Ledger(home)
 // The projects this command told stderr nobody hears, each told once (onCommand, warnUnheard).
@@ -1175,6 +1181,20 @@ async function toolHook(): Promise<never> {
     await onToolRan(new Ledger(home), home, event)
   } catch (error) {
     console.error(`nod: could not close the decision of the tool's dialog: ${message(error)}`)
+  }
+  process.exit(0)
+}
+
+// The PreToolUse hook of AskUserQuestion in a session nod open opens (onAsk), the same way: it
+// prints Claude Code's deny for a dialog that would hide a draft, and else nothing, whatever goes
+// wrong (a transcript it cannot read, an input it does not know), so the dialog shows.
+async function askHook(): Promise<never> {
+  console.log = console.error
+  try {
+    const answer = await onAsk(AskEvent.parse(JSON.parse(await Bun.stdin.text())))
+    if (answer !== null) await Bun.write(Bun.stdout, `${JSON.stringify(answer)}\n`)
+  } catch (error) {
+    console.error(`nod: could not check the question for a draft it hides: ${message(error)}`)
   }
   process.exit(0)
 }

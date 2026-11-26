@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs'
 import { z } from 'zod'
 import type { PermissionEvent } from './allow'
 import {
@@ -26,7 +27,7 @@ import { askedAgain } from './review'
 import { wentIn } from './sending'
 import { pasted, running, type Terminals } from './tmux'
 import { SELF } from './todos'
-import { HELD_BACK, PASTE_WRAP, promptMark, transcriptTail } from './transcript'
+import { HELD_BACK, PASTE_WRAP, promptMark, textsThisTurn, transcriptTail } from './transcript'
 import {
   currentTurn,
   cutOff,
@@ -50,8 +51,8 @@ import {
 // What nod does as a worker's Claude Code hooks come (`nod hook <event>` in cli.ts): what each
 // hook passes on stdin, and the step of the worker's lifecycle (worker.ts, its turns and decisions
 // in turns.ts and decisions.ts) it takes. Which hooks a session gets is settings.ts's; the
-// PermissionRequest hook's answer is allow.ts's, a project session's inbox hook inbox.ts's.
-// worker.ts does not import this module.
+// PermissionRequest hook's answer is allow.ts's, a project session's inbox hook inbox.ts's; its
+// question dialog's hook is here too (onAsk). worker.ts does not import this module.
 
 // What a permission decision gets once the tool it asked for ran (onToolRan): the person allowed it
 // in the worker's terminal, nod not having answered it.
@@ -377,6 +378,59 @@ export function onCompact(ledger: Ledger, event: z.infer<typeof SessionStartEven
   if (event.source !== 'compact') return null
   const taskId = ledger.taskOfSession(event.session_id)
   return taskId === null ? null : askedAgain(ledger, ledger.get(taskId))
+}
+
+// Sent before AskUserQuestion runs (PreToolUse, measured on 2.1.332 with `claude -p`: session_id,
+// transcript_path, cwd, prompt_id, permission_mode, effort, hook_event_name, tool_name, tool_input,
+// tool_use_id); only what onAsk reads.
+export const AskEvent = z.object({
+  transcript_path: z.string(),
+  tool_use_id: z.string(),
+  tool_input: z.object({
+    questions: z.array(
+      z.object({ options: z.array(z.object({ preview: z.unknown() }).partial()) }),
+    ),
+  }),
+})
+
+// A draft for someone else: a quoted line or a code block, as the model writes one in its reply.
+const DRAFT = /^\s*(>|```)/m
+// How often, 100 ms apart, onAsk reads the transcript again while the call is not in it yet.
+const UNWRITTEN_TRIES = 20
+// The hook's answer to a question dialog that would hide a draft: Claude Code runs no dialog for a
+// PreToolUse deny, and gives the model the reason as the call's result (2.1.332, `claude -p`).
+export const HIDES_DRAFT = {
+  hookSpecificOutput: {
+    hookEventName: 'PreToolUse',
+    permissionDecision: 'deny',
+    permissionDecisionReason:
+      'Not asked: while a question dialog is open the person sees only the dialog, and what you wrote earlier in this turn, the draft you quoted or put in a code block with it, is hidden from them. To have the draft approved, put its full text in the preview of an option, or ask in plain text without the dialog and end your turn.',
+  },
+}
+
+// Called by the PreToolUse hook of AskUserQuestion in a session nod open opens: the dialog hides
+// what the model wrote before it in the same turn, so one asked about a draft written there with no
+// option's preview to show it is denied (HIDES_DRAFT). Anything else gets no answer, never an allow:
+// a question with a preview, a turn with no draft, a transcript that does not read as one (the call
+// or the person's message not in it, textsThisTurn). `read` throws for a transcript it cannot read,
+// which the hook takes as no answer too. The call may not be written yet as the hook starts, so it
+// reads again for a while (UNWRITTEN_TRIES, `wait`).
+// ponytail: measured with `claude -p`, whose transcript the sandbox kept from being written; not
+// whether an interactive session has the call written before this hook runs.
+export async function onAsk(
+  event: z.infer<typeof AskEvent>,
+  read: (path: string) => string = (path) => readFileSync(path, 'utf8'),
+  wait: () => Promise<unknown> = () => Bun.sleep(100),
+): Promise<typeof HIDES_DRAFT | null> {
+  const previews = event.tool_input.questions.flatMap((q) => q.options.map((o) => o.preview))
+  if (previews.some((p) => typeof p === 'string' && p.trim() !== '')) return null
+  let text = read(event.transcript_path)
+  for (let i = 0; i < UNWRITTEN_TRIES && !text.includes(event.tool_use_id); i++) {
+    await wait()
+    text = read(event.transcript_path)
+  }
+  const texts = textsThisTurn(text.split('\n'), event.tool_use_id)
+  return texts?.some((t) => DRAFT.test(t)) ? HIDES_DRAFT : null
 }
 
 // The attempt a hook event belongs to. A turn nod did not send, one a person typed straight into
