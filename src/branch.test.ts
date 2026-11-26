@@ -1,6 +1,6 @@
 import { afterAll, expect, test } from 'bun:test'
 import { existsSync, mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
-import { join, resolve } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { marking, workerSubmodules } from '../test/git-commands'
 import { GIT, git } from '../test/remote'
 import { tempDirs } from '../test/tmp'
@@ -75,6 +75,9 @@ function sharedRepo(): { repo: string; ws: string; common: string } {
   const dir = tmp.make('nod-branch-')
   const repo = join(dir, 'repo')
   git(dir, 'init', '-q', '-b', 'main', repo)
+  // As git makes a repo by default, whatever this machine's git config says.
+  git(repo, 'config', 'core.logAllRefUpdates', 'true')
+  mkdirSync(join(repo, '.git', 'info'), { recursive: true })
   writeFileSync(join(repo, 'f'), 'base\n')
   git(repo, 'add', 'f')
   git(repo, 'commit', '-q', '-m', 'base')
@@ -113,13 +116,21 @@ test("a worker's sandbox may not write the main checkout's own files, packed-ref
         ...['HEAD', 'HEAD.lock', 'index', 'index.lock', 'ORIG_HEAD', 'MERGE_HEAD', 'logs/HEAD'],
         ...['rebase-merge', 'rebase-apply', 'sequencer', 'CHERRY_PICK_HEAD', 'modules', 'info'],
         ...['packed-refs', 'packed-refs.new', 'refs/tags', 'refs/remotes', 'refs/replace'],
-        // The branch the main checkout has out, and the remote's default branch.
-        ...['refs/heads/main', 'refs/heads/main.lock', 'refs/heads/trunk', 'refs/heads/trunk.lock'],
+        // The branch the main checkout has out, and the remote's default branch, with their logs.
+        ...['refs/heads/main', 'refs/heads/main.lock', 'logs/refs/heads/main'],
+        ...['refs/heads/trunk', 'refs/heads/trunk.lock', 'logs/refs/heads/trunk'],
       ),
     ),
   )
   for (const path of at(...OWN_WRITES))
     expect({ path, denied: covers(denied, path) }).toEqual({ path, denied: false })
+
+  // A task added from a linked worktree of the person's: that one's branch, and the main checkout's.
+  const side = join(dirname(repo), 'side')
+  git(repo, 'worktree', 'add', '-q', '-b', 'person/side', side)
+  expect(sharedGitDenies(side, 'fix/own', 'darwin')).toEqual(
+    expect.arrayContaining(at('refs/heads/person/side', 'refs/heads/main', 'refs/heads/trunk')),
+  )
 
   // A task on the remote's default branch keeps it.
   expect(sharedGitDenies(repo, 'trunk', 'darwin')).not.toContain(join(common, 'refs/heads/trunk'))
@@ -134,13 +145,12 @@ test("a worker's sandbox may not write the main checkout's own files, packed-ref
     join(common, 'refs/heads/fix/human'),
   )
 
-  // On Linux only what is there: the sandbox would make the rest as empty files in the repo.
-  const linux = sharedGitDenies(repo, 'fix/own', 'linux')
-  expect(linux).toEqual(besides.filter((p) => existsSync(p)))
-  expect(linux).toEqual(
-    expect.arrayContaining(at('HEAD', 'index', 'info', 'logs/HEAD', 'refs/tags')),
+  // On Linux only what is there and stays there: the sandbox would make the rest, a branch's loose
+  // ref packed since too, as empty files in the repo while each command runs.
+  expect(sharedGitDenies(repo, 'feat/own', 'linux')).toEqual(
+    at('HEAD', 'index', 'info', 'logs/HEAD', 'refs/tags', 'refs/remotes'),
   )
-  expect(linux).not.toContain(join(common, 'HEAD.lock'))
+  expect(existsSync(join(common, 'refs/heads/fix/human'))).toBe(true)
 
   // Nothing in a logs/ that is not there (a repo without reflogs), which a stash makes.
   rmSync(join(common, 'logs'), { recursive: true })

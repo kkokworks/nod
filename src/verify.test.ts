@@ -1,13 +1,14 @@
 import { afterAll, expect, test } from 'bun:test'
-import { writeFileSync } from 'node:fs'
+import { realpathSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { marking, workerSubmodules } from '../test/git-commands'
 import { bunTest, NOISY_FAILURE } from '../test/noisy-failure'
 import { git } from '../test/remote'
 import { tempDirs } from '../test/tmp'
+import { sharedGitDenies } from './branch'
 import { Ledger, type Task } from './ledger'
 import { OUTPUT_LIMIT } from './proc'
-import { verify } from './verify'
+import { reviewSettings, SANDBOX, verify } from './verify'
 
 const tmp = tempDirs()
 afterAll(tmp.removeAll)
@@ -162,3 +163,30 @@ test('verify runs none of the commands named in the config of a submodule its wo
   )
   expect(ran()).toEqual([])
 }, 30_000)
+
+// The reviewer runs commands in the task's worktree after reading what the worker wrote there.
+test("the independent reviewer's sandbox keeps it out of the shared git folder as its worker's does", () => {
+  const repo = tmp.make('nod-verify-')
+  git(repo, 'init', '-q', '-b', 'main')
+  git(repo, 'commit', '-q', '--allow-empty', '-m', 'init')
+  const id = ledger.add({
+    brief: 'review it',
+    repo,
+    branch: 'fix/it',
+    checkCmd: null,
+    model: null,
+    after: [],
+    issue: null,
+  })
+  const { sandbox } = JSON.parse(reviewSettings(ledger.get(id)))
+  expect(sandbox.filesystem.denyWrite).toEqual(sharedGitDenies(repo, 'fix/it'))
+  const common = realpathSync(join(repo, '.git'))
+  expect(sandbox.filesystem.denyWrite).toEqual(
+    expect.arrayContaining(
+      ['HEAD', 'index', 'packed-refs', 'refs/heads/main'].map((p) => join(common, p)),
+    ),
+  )
+  expect(sandbox).toMatchObject(SANDBOX)
+  const none = JSON.parse(reviewSettings(taskIn(tmp.make('nod-verify-'))))
+  expect(none.sandbox.filesystem.denyWrite).toEqual([])
+})

@@ -132,38 +132,59 @@ const MAIN_CHECKOUT = [
 // Refs no worker moves: every packed one, tags, remote-tracking refs (gc reads one as the branch's
 // copy on the remote), and replace refs, which would change what nod's review reads.
 const SHARED_REFS = ['packed-refs', 'packed-refs.new', 'refs/tags', 'refs/remotes', 'refs/replace']
+// Of those, what git does not remove once it is there (it spares refs/ and the folders right in it).
+const KEPT = new Set([
+  'HEAD',
+  'index',
+  'info',
+  'modules',
+  'logs/HEAD',
+  'packed-refs',
+  'refs/tags',
+  'refs/remotes',
+  'refs/replace',
+])
 
-// Those paths for a task on branch `own` in `repo`, with the branch the main checkout has out and
-// the remote's default branch, as they are now; none once git cannot read the repo.
+// Those paths for a task on branch `own` in `repo`, with the person's branches as they are now: the
+// one `repo` has out, the main checkout's when `repo` is a linked worktree, and the remote's default
+// branch, each with its log. None once git cannot read the repo.
 export function sharedGitDenies(repo: string, own: string, platform = process.platform): string[] {
   const read = (...args: string[]): string => {
-    const r = Bun.spawnSync([...NOD_GIT, '-C', repo, ...args])
+    const r = Bun.spawnSync([...NOD_GIT, ...args])
     return r.exitCode === 0 ? r.stdout.toString().trim() : ''
   }
-  const dir = read('rev-parse', '--path-format=absolute', '--git-common-dir')
+  const dir = read('-C', repo, 'rev-parse', '--path-format=absolute', '--git-common-dir')
   if (dir === '') return []
   // Real, as a path that is not there yet is denied only as written.
   const common = realpathSync(dir)
   const folder = (branch: string) => (branch.includes('/') ? branch.split('/')[0] : null)
   const branches = [
-    read('symbolic-ref', '-q', 'HEAD'),
-    read('symbolic-ref', '-q', 'refs/remotes/origin/HEAD'),
+    read('-C', repo, 'symbolic-ref', '-q', 'HEAD'),
+    read('--git-dir', common, 'symbolic-ref', '-q', 'HEAD'),
+    read('-C', repo, 'symbolic-ref', '-q', 'refs/remotes/origin/HEAD'),
   ]
     .map((ref) => ref.replace(/^refs\/(heads|remotes\/origin)\//, ''))
     // On macOS the sandbox also keeps a denied path's folders from being made (2.1.332), and a gc
     // that packs the refs of a folder (fix/) removes it, which the worker's next commit makes again.
     .filter((b) => b !== '' && b !== own && (folder(b) === null || folder(b) !== folder(own)))
+  // Logs only in a folder that is there, which that keeps from being made: a repo without reflogs
+  // (logAllRefUpdates off) has no logs/, and a stash makes logs/refs/ for its own.
+  const there = (path: string) => existsSync(join(common, path))
   const paths = [
     ...MAIN_CHECKOUT,
-    // Only in a logs/ that is there: the sandbox would keep it from being made too (above), and a
-    // repo without one (logAllRefUpdates off) has a stash make it for its reflog.
-    ...(existsSync(join(common, 'logs')) ? ['logs/HEAD'] : []),
+    ...(there('logs') ? ['logs/HEAD'] : []),
     ...SHARED_REFS,
-    ...[...new Set(branches)].flatMap((b) => [`refs/heads/${b}`, `refs/heads/${b}.lock`]),
+    ...[...new Set(branches)].flatMap((b) => [
+      `refs/heads/${b}`,
+      `refs/heads/${b}.lock`,
+      ...(there('logs/refs/heads') ? [`logs/refs/heads/${b}`] : []),
+    ]),
   ].map((p) => join(common, p))
-  // On Linux the sandbox makes an empty file at a denied path that is not there for as long as
-  // each command runs (2.1.332): a HEAD.lock there would stop the person's commits.
-  return platform === 'linux' ? paths.filter((p) => existsSync(p)) : paths
+  // On Linux the sandbox checks each command for a denied path that is not there and makes an
+  // empty file at it while the command runs (2.1.332), where a HEAD.lock would stop the person's
+  // commits and a loose ref packed since would hide the branch: only what stays there.
+  if (platform !== 'linux') return paths
+  return paths.filter((p) => KEPT.has(p.slice(common.length + 1)) && existsSync(p))
 }
 
 export const gitPath = (ws: string, path: string): string =>
