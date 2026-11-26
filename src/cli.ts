@@ -375,8 +375,9 @@ const USAGE = `usage:
   nod hook stop|notification|permission|prompt|inbox|ask
                                    called by Claude Code hooks in worker sessions, and (inbox, ask)
                                    in the sessions nod open opens. ask refuses a question dialog
-                                   (AskUserQuestion) with no option's preview in a turn that wrote
-                                   a draft (a quoted line or code block): the dialog hides it.
+                                   (AskUserQuestion) with no preview on a single-select question's
+                                   option in a turn that wrote a draft (a quoted line or code
+                                   block): the dialog hides it.
                                    permission allows a worker's
                                    command that only touches what its folder can make again:
                                    rm -rf of paths holding no uncommitted work in its worktree,

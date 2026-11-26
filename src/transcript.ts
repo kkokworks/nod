@@ -163,10 +163,7 @@ function* turnRows(lines: string[]): Generator<Row> {
     if (!parsed.success || parsed.data.isSidechain === true) continue
     const row = parsed.data
     if (row.type === 'user') {
-      if (row.isMeta === true || row.queueTranscriptOnly === true) continue
-      const local = /^<(command-|local-command-)/
-      if (textsOf(row.message?.content).some((t) => typeof t === 'string' && local.test(t)))
-        continue
+      if (row.isMeta === true || row.queueTranscriptOnly === true || localCommand(row)) continue
     }
     if (['user', 'assistant', 'system'].includes(row.type)) yield row
   }
@@ -429,10 +426,13 @@ function denies(line: string): boolean {
 // What the model wrote before its tool call `call` (its id) in the turn the person's last message
 // started, as the transcript `lines` keep it: the text blocks of the main thread's messages after
 // that message, oldest first. Not the person's: a tool's result, a meta row (a reminder, another
-// session's message), a compacted conversation's summary, or a row of any `origin` but `human`
-// (2.1.332). Null when the call is not in `lines`, or no message of the person's is before it.
+// session's message), a compacted conversation's summary, a row kept for the record only
+// (`queueTranscriptOnly`), or a row of any `origin` but `human` (2.1.332). Nor a local command's,
+// which leaves no `origin` (2.1.332) and runs while a turn does; one with `origin: human` is a
+// command such as a skill's, which starts a turn.
+// Null when the call is not in `lines`, or no message of the person's is before it.
 // ponytail: an older Claude Code's row with no `origin`, a background task's notice say, counts as
-// the person's, so the turn reads shorter.
+// the person's, so the turn reads shorter; its skill's command reads as no message of theirs.
 export function textsThisTurn(lines: string[], call: string): string[] | null {
   const texts: string[] = []
   let found = false
@@ -449,12 +449,19 @@ export function textsThisTurn(lines: string[], call: string): string[] | null {
       row.type === 'user' &&
       row.isMeta !== true &&
       row.isCompactSummary !== true &&
-      (row.origin?.kind ?? 'human') === 'human' &&
+      row.queueTranscriptOnly !== true &&
+      (row.origin === undefined ? !localCommand(row) : row.origin.kind === 'human') &&
       resultsOf(row).length === 0
     if (found && person) return texts
   }
   return null
 }
+
+// What a local command such as /exit leaves in the transcript, the command and its output.
+const localCommand = (row: Row): boolean =>
+  textsOf(row.message?.content).some(
+    (t) => typeof t === 'string' && /^<(command-|local-command-)/.test(t),
+  )
 
 // The blocks of a transcript row's message, and the tool calls whose results it holds, by their ids.
 const blocksOf = (row: Row) => (Array.isArray(row.message?.content) ? row.message.content : [])

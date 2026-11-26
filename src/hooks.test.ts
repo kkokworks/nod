@@ -47,7 +47,7 @@ const asked = (previews: (string | undefined)[] = [undefined, undefined], id = '
     ],
   },
 })
-const judge = (lines: string[], event = asked()) =>
+const judge = (lines: string[], event: Parameters<typeof onAsk>[0] = asked()) =>
   onAsk(
     event,
     () => lines.join('\n'),
@@ -67,6 +67,25 @@ test('a question dialog with no preview, in a turn that wrote a draft, is denied
   // A preview on any option of any question shows the draft; a blank one shows nothing.
   expect(await judge(turn(DRAFT), asked([undefined, DRAFT]))).toBeNull()
   expect(await judge(turn(DRAFT), asked([' \n', '']))).toEqual(HIDES_DRAFT)
+  // A multi-select question shows no preview, and a question with no options (a typed answer) none
+  // either: neither shows the draft, beside a single-select one with a preview or alone.
+  const mixed = (multiSelect: boolean, previews: (string | undefined)[]) => {
+    const event = asked(previews)
+    const [question] = event.tool_input.questions
+    if (question === undefined) throw new Error('no question')
+    return {
+      ...event,
+      tool_input: {
+        questions: [
+          { ...question, multiSelect },
+          { question: 'Why?', multiSelect: false },
+        ],
+      },
+    }
+  }
+  expect(await judge(turn(DRAFT), mixed(true, [DRAFT, DRAFT]))).toEqual(HIDES_DRAFT)
+  expect(await judge(turn(DRAFT), mixed(false, [DRAFT, undefined]))).toBeNull()
+  expect(await judge(turn(DRAFT), mixed(false, [undefined]))).toEqual(HIDES_DRAFT)
   // No draft: a plain question, inline code, a `>` inside a line.
   expect(await judge(turn('Which branch should the fix go on, `main` or `next`? a > b'))).toBeNull()
   expect(await judge([person('hi'), called('toolu_ask')])).toBeNull()
@@ -99,15 +118,29 @@ test("the turn is what came after the person's last message: tool results, Claud
       message: { role: 'user', content: '<task-notification>done</task-notification>' },
     }),
     row({ type: 'user', isCompactSummary: true, message: { role: 'user', content: 'summary' } }),
+    row({
+      type: 'user',
+      queueTranscriptOnly: true,
+      message: { role: 'user', content: 'a background agent finished' },
+    }),
+    // A local command the person ran while the turn did, and its output: no origin (2.1.332).
+    row({ type: 'user', message: { role: 'user', content: '<command-name>/cost</command-name>' } }),
+    row({
+      type: 'user',
+      message: { role: 'user', content: '<local-command-stdout>$0.12</local-command-stdout>' },
+    }),
     row({ type: 'attachment', attachment: { type: 'hook_success' } }),
     row({ type: 'system', subtype: 'turn_duration' }),
   ]
   expect(await judge([...earlier, wrote(DRAFT), ...between, called('toolu_ask')])).toEqual(
     HIDES_DRAFT,
   )
-  // A row of an older Claude Code, with no origin, is the person's.
+  // A row of an older Claude Code, with no origin, is the person's; so is a command of theirs that
+  // starts a turn (a skill's).
   const older = row({ type: 'user', message: { role: 'user', content: 'go on' } })
   expect(await judge([person('draft it'), wrote(DRAFT), older, called('toolu_ask')])).toBeNull()
+  const skill = person('<command-message>nod</command-message>\n<command-name>/nod</command-name>')
+  expect(await judge([person('draft it'), wrote(DRAFT), skill, called('toolu_ask')])).toBeNull()
   // A subagent's draft is not the main thread's.
   const sub = row({
     type: 'assistant',

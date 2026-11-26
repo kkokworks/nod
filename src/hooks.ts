@@ -382,13 +382,19 @@ export function onCompact(ledger: Ledger, event: z.infer<typeof SessionStartEven
 
 // Sent before AskUserQuestion runs (PreToolUse, measured on 2.1.332 with `claude -p`: session_id,
 // transcript_path, cwd, prompt_id, permission_mode, effort, hook_event_name, tool_name, tool_input,
-// tool_use_id); only what onAsk reads.
+// tool_use_id); only what onAsk reads. A question may come with no options (a typed answer, which
+// 2.1.332's binary has a shape for), so none of them shows a preview.
 export const AskEvent = z.object({
   transcript_path: z.string(),
   tool_use_id: z.string(),
   tool_input: z.object({
     questions: z.array(
-      z.object({ options: z.array(z.object({ preview: z.unknown() }).partial()) }),
+      z
+        .object({
+          multiSelect: z.unknown(),
+          options: z.array(z.object({ preview: z.unknown() }).partial()),
+        })
+        .partial(),
     ),
   }),
 })
@@ -404,13 +410,15 @@ export const HIDES_DRAFT = {
     hookEventName: 'PreToolUse',
     permissionDecision: 'deny',
     permissionDecisionReason:
-      'Not asked: while a question dialog is open the person sees only the dialog, and what you wrote earlier in this turn, the draft you quoted or put in a code block with it, is hidden from them. To have the draft approved, put its full text in the preview of an option, or ask in plain text without the dialog and end your turn.',
+      'Not asked: while a question dialog is open the person sees only the dialog, and what you wrote earlier in this turn, the draft you quoted or put in a code block with it, is hidden from them. To have the draft approved, put its full text in the preview of an option of a single-select question, or ask in plain text without the dialog and end your turn.',
   },
 }
 
 // Called by the PreToolUse hook of AskUserQuestion in a session nod open opens: the dialog hides
 // what the model wrote before it in the same turn, so one asked about a draft written there with no
-// option's preview to show it is denied (HIDES_DRAFT). Anything else gets no answer, never an allow:
+// option's preview to show it is denied (HIDES_DRAFT). A multi-select question's preview does not
+// count: the tool shows previews of single-select questions only (its description, 2.1.332).
+// Anything else gets no answer, never an allow:
 // a question with a preview, a turn with no draft, a transcript that does not read as one (the call
 // or the person's message not in it, textsThisTurn). `read` throws for a transcript it cannot read,
 // which the hook takes as no answer too. The call may not be written yet as the hook starts, so it
@@ -422,7 +430,9 @@ export async function onAsk(
   read: (path: string) => string = (path) => readFileSync(path, 'utf8'),
   wait: () => Promise<unknown> = () => Bun.sleep(100),
 ): Promise<typeof HIDES_DRAFT | null> {
-  const previews = event.tool_input.questions.flatMap((q) => q.options.map((o) => o.preview))
+  const previews = event.tool_input.questions
+    .filter((q) => q.multiSelect !== true)
+    .flatMap((q) => (q.options ?? []).map((o) => o.preview))
   if (previews.some((p) => typeof p === 'string' && p.trim() !== '')) return null
   let text = read(event.transcript_path)
   for (let i = 0; i < UNWRITTEN_TRIES && !text.includes(event.tool_use_id); i++) {

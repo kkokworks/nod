@@ -716,6 +716,8 @@ for (const role of OPEN_ROLES) {
       argv: ['claude', '--name', 'north', '--session-id', opened, ...told(opened)],
       cwd: here,
     })
+    const settings = first.argv[first.argv.indexOf('--settings') + 1] ?? ''
+    expect(settings.includes('"matcher":"AskUserQuestion"')).toBe(role !== 'relay')
     expect(todos.session(opened)).toMatchObject({ role, name: 'north', cwd: here, socket: null })
     expect(todos.sessionPlace(opened)).toBeNull()
     // Closed before a word was said, it starts again under its ID where it was opened.
