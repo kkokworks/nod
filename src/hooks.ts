@@ -449,6 +449,7 @@ export async function onAsk(
 
 // A reader of a file that reads it again only once its size changed, and else gives what it read
 // last: reading a transcript of 476 MB 21 times while the call was not in it took 4.4 s (review).
+// For one file: what it keeps is not by path, so each onAsk makes its own.
 export function readGrown(): (path: string) => string {
   let size = -1
   let text = ''

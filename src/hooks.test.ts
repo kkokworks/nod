@@ -265,7 +265,7 @@ test('a transcript the hook cannot read, or does not know, gets no answer; one t
   expect(reads).toBe(2)
 })
 
-test('the hook reads the transcript again only once it has grown', () => {
+test('the hook reads the transcript again only once it has grown', async () => {
   const file = join(tmp.make('nod-ask-grown-'), 'session.jsonl')
   writeFileSync(file, 'one\n')
   const read = readGrown()
@@ -275,9 +275,22 @@ test('the hook reads the transcript again only once it has grown', () => {
   expect(read(file)).toBe('one\n')
   appendFileSync(file, 'three\n')
   expect(read(file)).toBe('two\nthree\n')
-  // Another reader reads it afresh; one that is gone throws.
+  // Another reader reads it afresh; a file that is not there throws.
   expect(readGrown()(file)).toBe('two\nthree\n')
-  expect(() => read(join(file, 'gone'))).toThrow()
+  expect(() => read(join(file, '..', 'gone.jsonl'))).toThrow('ENOENT')
+
+  // onAsk reads with it: written over at the same size while it waits (a transcript only grows),
+  // the call is not seen; written to the end, it is.
+  const transcript = join(tmp.make('nod-ask-wait-'), 'session.jsonl')
+  const head = `${person('draft it')}\n${wrote(DRAFT)}\n`
+  const call = called('toolu_ask')
+  const event = { ...asked(), transcript_path: transcript }
+  writeFileSync(transcript, `${head}${'x'.repeat(call.length)}\n`)
+  const over = async () => writeFileSync(transcript, `${head}${call}\n`)
+  expect(await onAsk(event, undefined, over)).toBeNull()
+  writeFileSync(transcript, head)
+  const appended = async () => appendFileSync(transcript, `${call}\n`)
+  expect(await onAsk(event, undefined, appended)).toEqual(HIDES_DRAFT)
 })
 
 test('nod hook ask prints the deny for a hidden draft and nothing else, exiting 0 whatever goes wrong', async () => {
