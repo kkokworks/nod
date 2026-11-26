@@ -140,8 +140,8 @@ const TranscriptEntry = z.object({
   // Who a user row's message is from: `human`, another session's (`peer`), a background task's
   // notice (2.1.332; none on older rows).
   origin: z.object({ kind: z.string() }).optional().catch(undefined),
-  // The same of a row that starts a turn, on some rows with no `origin` (2.1.332): `human`, `peer`,
-  // `task_notification`, `scheduled`.
+  // Who started the turn, on the user row that starts it (2.1.278 to 2.1.332): `human`, `peer`,
+  // `task_notification`, `scheduled`, `sdk`, `system`, `auto_continuation`.
   turnOrigin: z.string().optional().catch(undefined),
   queueTranscriptOnly: z.boolean().optional().catch(undefined),
   interruptedByShutdown: z.boolean().optional(),
@@ -426,18 +426,18 @@ function denies(line: string): boolean {
   })
 }
 
-// What the model wrote before its tool call `call` (its id) in the turn the person's last message
-// started, as the transcript `lines` keep it: the text blocks of the main thread's messages after
-// that message, oldest first. Not the person's: a tool's result, a meta row (a reminder, another
-// session's message), a compacted conversation's summary, a row kept for the record only
-// (`queueTranscriptOnly`), or a row of any `origin` (or, with none, `turnOrigin`) but `human`
-// (2.1.332). Nor a local command's, which leaves neither (2.1.332) and runs while a turn does; one
-// with `origin: human` is a command such as a skill's, which starts a turn.
-// Null when the call is not in `lines`, or no message of the person's is before it.
-// ponytail: a row with neither, an older Claude Code's background task's notice say (2.1.332 too
-// leaves some), counts as the person's, so the turn reads shorter; an older one's skill command
-// reads as no message of theirs.
+// What the model wrote before its tool call `call` (its id) in its turn, as the transcript `lines`
+// keep it: the text blocks of the main thread's messages after the row that started the turn,
+// oldest first. That row is the one Claude Code marks as a turn's start (`turnOrigin`), whoever's
+// message it is: the person's, another session's, a background task's notice, a scheduled run's, or
+// a compacted summary that carries the turn on into a new file. What comes in while a turn runs (a
+// queued message, a record-only notice) has no `turnOrigin` (2.1.278 to 2.1.332, read from every
+// such row of this machine's transcripts by its parentUuid), so it does not end the turn.
+// A transcript with no `turnOrigin` (an older Claude Code's) has the turn start at the person's last
+// message instead (personSaid).
+// Null when the call is not in `lines`, or no turn's start is before it.
 export function textsThisTurn(lines: string[], call: string): string[] | null {
+  const marked = lines.some((line) => line.includes('"turnOrigin":'))
   const texts: string[] = []
   let found = false
   for (const line of lines.toReversed()) {
@@ -449,18 +449,26 @@ export function textsThisTurn(lines: string[], call: string): string[] | null {
       const said = textsOf(row.message?.content).filter((t) => typeof t === 'string')
       if (found) texts.unshift(...said)
     }
-    const from = row.origin?.kind ?? row.turnOrigin
-    const person =
-      row.type === 'user' &&
-      row.isMeta !== true &&
-      row.isCompactSummary !== true &&
-      row.queueTranscriptOnly !== true &&
-      (from === undefined ? !localCommand(row) : from === 'human') &&
-      resultsOf(row).length === 0
-    if (found && person) return texts
+    const starts = marked ? row.type === 'user' && row.turnOrigin !== undefined : personSaid(row)
+    if (found && starts) return texts
   }
   return null
 }
+
+// Whether a row of a transcript with no `turnOrigin` is a message of the person's. Not a tool's
+// result, a meta row (a reminder, another session's message), a compacted conversation's summary, a
+// row kept for the record only (`queueTranscriptOnly`), or a row of any `origin` but `human`. Nor a
+// local command's, which leaves no `origin` and runs while a turn does; one with `origin: human` is
+// a command such as a skill's, which starts a turn.
+// ponytail: a row with no `origin`, a background task's notice say, counts as the person's, so the
+// turn reads shorter; a skill's command with none reads as no message of theirs.
+const personSaid = (row: Row): boolean =>
+  row.type === 'user' &&
+  row.isMeta !== true &&
+  row.isCompactSummary !== true &&
+  row.queueTranscriptOnly !== true &&
+  (row.origin === undefined ? !localCommand(row) : row.origin.kind === 'human') &&
+  resultsOf(row).length === 0
 
 // What a local command such as /exit leaves in the transcript, the command and its output.
 const localCommand = (row: Row): boolean =>

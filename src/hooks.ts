@@ -420,7 +420,7 @@ export const HIDES_DRAFT = {
 // count: the tool shows previews of single-select questions only (its description, 2.1.332).
 // Anything else gets no answer, never an allow:
 // a question with a preview, a turn with no draft, a transcript that does not read as one (the call
-// or the person's message not in it, textsThisTurn). `read` throws for a transcript it cannot read,
+// or the start of its turn not in it, textsThisTurn). `read` throws for a transcript it cannot read,
 // which the hook takes as no answer too. The call may not be written yet as the hook starts, so it
 // reads again for a while (UNWRITTEN_TRIES, `wait`).
 // ponytail: measured with `claude -p`, whose transcript the sandbox kept from being written; not

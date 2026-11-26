@@ -9,10 +9,16 @@ const tmp = tempDirs()
 afterAll(tmp.removeAll)
 const cli = resolve(import.meta.dir, 'cli.ts')
 
-// Transcript rows as Claude Code 2.1.332 writes them, one block to a row.
+// Transcript rows as Claude Code 2.1.332 writes them, one block to a row; the row that starts a
+// turn says who started it (turnOrigin).
 const row = (r: object): string => JSON.stringify(r)
 const person = (text: string) =>
-  row({ type: 'user', origin: { kind: 'human' }, message: { role: 'user', content: text } })
+  row({
+    type: 'user',
+    origin: { kind: 'human' },
+    turnOrigin: 'human',
+    message: { role: 'user', content: text },
+  })
 const wrote = (text: string) =>
   row({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text }] } })
 const called = (id: string, name = 'AskUserQuestion') =>
@@ -93,61 +99,71 @@ test('a question dialog with no preview, in a turn that wrote a draft, is denied
   expect(HIDES_DRAFT.hookSpecificOutput.permissionDecision).toBe('deny')
 })
 
-test("the turn is what came after the person's last message: tool results, Claude Code's own messages and other sessions' do not end it, and an earlier turn's draft does not count", async () => {
-  const earlier = [person('draft it'), wrote(DRAFT), person('now the other thing')]
-  expect(await judge([...earlier, wrote('Which one?'), called('toolu_ask')])).toBeNull()
-  // Drafted in this turn, before a tool ran, a reminder, another session's message, a background
-  // task's notice, a compacted summary, attachments and system rows: still this turn's.
-  const between = [
+// What comes in while a turn runs, and rows of Claude Code's own: a tool's call and result, a
+// reminder, another session's message and a background task's notice that came during the turn (no
+// turnOrigin), a compacted summary, a record-only notice, a local command the person ran meanwhile
+// and its output, an attachment, a system row.
+const during = () =>
+  [
     called('toolu_read', 'Read'),
     result('toolu_read'),
-    row({
-      type: 'user',
-      isMeta: true,
-      message: { role: 'user', content: '<system-reminder>x</system-reminder>' },
-    }),
-    row({
-      type: 'user',
-      isMeta: true,
-      origin: { kind: 'peer', from: 'n' },
-      message: { role: 'user', content: 'task n1 succeeded' },
-    }),
+    { isMeta: true, content: '<system-reminder>x</system-reminder>' },
+    { isMeta: true, origin: { kind: 'peer', from: 'n' }, content: 'task n1 succeeded' },
+    {
+      origin: { kind: 'task-notification' },
+      content: '<task-notification>done</task-notification>',
+    },
+    { isCompactSummary: true, content: 'summary' },
+    { queueTranscriptOnly: true, content: 'a background agent finished' },
+    { content: '<command-name>/cost</command-name>' },
+    { content: '<local-command-stdout>$0.12</local-command-stdout>' },
+    row({ type: 'attachment', attachment: { type: 'queued_command', prompt: 'task n2 failed' } }),
+    row({ type: 'system', subtype: 'turn_duration' }),
+  ].map((r) =>
+    typeof r === 'string'
+      ? r
+      : row({ type: 'user', ...r, message: { role: 'user', content: r.content } }),
+  )
+
+test('the turn is what came after the row Claude Code marks as its start, whoever started it; what comes in during the turn does not end it, and an earlier turn does not count', async () => {
+  // The person asked for a draft, and saw it as that turn ended.
+  const earlier = [person('draft it'), wrote(DRAFT), wrote('Shall I post it?')]
+  const peer = row({
+    type: 'user',
+    isMeta: true,
+    origin: { kind: 'peer', from: 'n' },
+    turnOrigin: 'peer',
+    message: { role: 'user', content: 'task n1 succeeded' },
+  })
+  // A turn another session's message started, with no draft: the earlier one does not count.
+  expect(await judge([...earlier, peer, wrote('Which branch?'), called('toolu_ask')])).toBeNull()
+  // One with a draft of its own is denied.
+  expect(await judge([...earlier, peer, wrote(DRAFT), called('toolu_ask')])).toEqual(HIDES_DRAFT)
+  // So for each start: the person's, a background task's notice, a scheduled run, another
+  // session's message with no origin, a compacted summary carrying the turn into a new file.
+  const starts = [
+    person('now the other thing'),
     row({
       type: 'user',
       origin: { kind: 'task-notification' },
+      turnOrigin: 'task_notification',
       message: { role: 'user', content: '<task-notification>done</task-notification>' },
     }),
-    row({ type: 'user', isCompactSummary: true, message: { role: 'user', content: 'summary' } }),
-    row({
-      type: 'user',
-      queueTranscriptOnly: true,
-      message: { role: 'user', content: 'a background agent finished' },
-    }),
-    // A local command the person ran while the turn did, and its output: no origin (2.1.332).
-    row({ type: 'user', message: { role: 'user', content: '<command-name>/cost</command-name>' } }),
-    row({
-      type: 'user',
-      message: { role: 'user', content: '<local-command-stdout>$0.12</local-command-stdout>' },
-    }),
-    row({ type: 'attachment', attachment: { type: 'hook_success' } }),
-    row({ type: 'system', subtype: 'turn_duration' }),
+    row({ type: 'user', isMeta: true, turnOrigin: 'scheduled', message: { content: 'check' } }),
+    row({ type: 'user', turnOrigin: 'peer', message: { role: 'user', content: 'n1' } }),
+    row({ type: 'user', isCompactSummary: true, turnOrigin: 'human', message: { content: 's' } }),
   ]
-  expect(await judge([...earlier, wrote(DRAFT), ...between, called('toolu_ask')])).toEqual(
+  for (const start of starts) {
+    expect(await judge([...earlier, start, wrote('Which one?'), called('toolu_ask')])).toBeNull()
+    expect(await judge([...earlier, start, wrote(CODE), called('toolu_ask')])).toEqual(HIDES_DRAFT)
+  }
+  // Drafted in this turn before what came in during it: still this turn's.
+  expect(await judge([person('draft it'), wrote(DRAFT), ...during(), called('toolu_ask')])).toEqual(
     HIDES_DRAFT,
   )
-  // A row with no origin goes by its turnOrigin (2.1.332): another session's is not the person's.
-  const peer = row({ type: 'user', turnOrigin: 'peer', message: { role: 'user', content: 'n1' } })
-  expect(await judge([person('draft it'), wrote(DRAFT), peer, called('toolu_ask')])).toEqual(
+  expect(await judge([...earlier, peer, wrote(DRAFT), ...during(), called('toolu_ask')])).toEqual(
     HIDES_DRAFT,
   )
-  const human = row({ type: 'user', turnOrigin: 'human', message: { role: 'user', content: 'go' } })
-  expect(await judge([person('draft it'), wrote(DRAFT), human, called('toolu_ask')])).toBeNull()
-  // A row of an older Claude Code, with neither, is the person's; so is a command of theirs that
-  // starts a turn (a skill's).
-  const older = row({ type: 'user', message: { role: 'user', content: 'go on' } })
-  expect(await judge([person('draft it'), wrote(DRAFT), older, called('toolu_ask')])).toBeNull()
-  const skill = person('<command-message>nod</command-message>\n<command-name>/nod</command-name>')
-  expect(await judge([person('draft it'), wrote(DRAFT), skill, called('toolu_ask')])).toBeNull()
   // A subagent's draft is not the main thread's.
   const sub = row({
     type: 'assistant',
@@ -155,6 +171,24 @@ test("the turn is what came after the person's last message: tool results, Claud
     message: { content: [{ type: 'text', text: DRAFT }] },
   })
   expect(await judge([person('go'), sub, called('toolu_ask')])).toBeNull()
+})
+
+test("a transcript with no turnOrigin (an older Claude Code's) has the turn start at the person's last message", async () => {
+  const said = (text: string) => row({ type: 'user', message: { role: 'user', content: text } })
+  const theirs = (text: string) =>
+    row({ type: 'user', origin: { kind: 'human' }, message: { role: 'user', content: text } })
+  // An earlier turn's draft does not count, with origin or without.
+  for (const start of [said, theirs]) {
+    const earlier = [start('draft it'), wrote(DRAFT), start('now the other thing')]
+    expect(await judge([...earlier, wrote('Which one?'), called('toolu_ask')])).toBeNull()
+  }
+  // What came in during the turn, and Claude Code's own rows, are not the person's.
+  expect(await judge([said('draft it'), wrote(DRAFT), ...during(), called('toolu_ask')])).toEqual(
+    HIDES_DRAFT,
+  )
+  // A command of theirs that starts a turn (a skill's) is theirs.
+  const skill = theirs('<command-message>nod</command-message>\n<command-name>/nod</command-name>')
+  expect(await judge([said('draft it'), wrote(DRAFT), skill, called('toolu_ask')])).toBeNull()
 })
 
 test('a transcript the hook cannot read, or does not know, gets no answer; one the call is written to on a later read is judged then', async () => {
