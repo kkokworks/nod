@@ -135,7 +135,14 @@ test("the turn is what came after the person's last message: tool results, Claud
   expect(await judge([...earlier, wrote(DRAFT), ...between, called('toolu_ask')])).toEqual(
     HIDES_DRAFT,
   )
-  // A row of an older Claude Code, with no origin, is the person's; so is a command of theirs that
+  // A row with no origin goes by its turnOrigin (2.1.332): another session's is not the person's.
+  const peer = row({ type: 'user', turnOrigin: 'peer', message: { role: 'user', content: 'n1' } })
+  expect(await judge([person('draft it'), wrote(DRAFT), peer, called('toolu_ask')])).toEqual(
+    HIDES_DRAFT,
+  )
+  const human = row({ type: 'user', turnOrigin: 'human', message: { role: 'user', content: 'go' } })
+  expect(await judge([person('draft it'), wrote(DRAFT), human, called('toolu_ask')])).toBeNull()
+  // A row of an older Claude Code, with neither, is the person's; so is a command of theirs that
   // starts a turn (a skill's).
   const older = row({ type: 'user', message: { role: 'user', content: 'go on' } })
   expect(await judge([person('draft it'), wrote(DRAFT), older, called('toolu_ask')])).toBeNull()

@@ -140,6 +140,9 @@ const TranscriptEntry = z.object({
   // Who a user row's message is from: `human`, another session's (`peer`), a background task's
   // notice (2.1.332; none on older rows).
   origin: z.object({ kind: z.string() }).optional().catch(undefined),
+  // The same of a row that starts a turn, on some rows with no `origin` (2.1.332): `human`, `peer`,
+  // `task_notification`, `scheduled`.
+  turnOrigin: z.string().optional().catch(undefined),
   queueTranscriptOnly: z.boolean().optional().catch(undefined),
   interruptedByShutdown: z.boolean().optional(),
   promptSubmitEnding: z.object({ promptKept: z.unknown() }).partial().optional().catch({}),
@@ -427,12 +430,13 @@ function denies(line: string): boolean {
 // started, as the transcript `lines` keep it: the text blocks of the main thread's messages after
 // that message, oldest first. Not the person's: a tool's result, a meta row (a reminder, another
 // session's message), a compacted conversation's summary, a row kept for the record only
-// (`queueTranscriptOnly`), or a row of any `origin` but `human` (2.1.332). Nor a local command's,
-// which leaves no `origin` (2.1.332) and runs while a turn does; one with `origin: human` is a
-// command such as a skill's, which starts a turn.
+// (`queueTranscriptOnly`), or a row of any `origin` (or, with none, `turnOrigin`) but `human`
+// (2.1.332). Nor a local command's, which leaves neither (2.1.332) and runs while a turn does; one
+// with `origin: human` is a command such as a skill's, which starts a turn.
 // Null when the call is not in `lines`, or no message of the person's is before it.
-// ponytail: an older Claude Code's row with no `origin`, a background task's notice say, counts as
-// the person's, so the turn reads shorter; its skill's command reads as no message of theirs.
+// ponytail: a row with neither, an older Claude Code's background task's notice say (2.1.332 too
+// leaves some), counts as the person's, so the turn reads shorter; an older one's skill command
+// reads as no message of theirs.
 export function textsThisTurn(lines: string[], call: string): string[] | null {
   const texts: string[] = []
   let found = false
@@ -445,12 +449,13 @@ export function textsThisTurn(lines: string[], call: string): string[] | null {
       const said = textsOf(row.message?.content).filter((t) => typeof t === 'string')
       if (found) texts.unshift(...said)
     }
+    const from = row.origin?.kind ?? row.turnOrigin
     const person =
       row.type === 'user' &&
       row.isMeta !== true &&
       row.isCompactSummary !== true &&
       row.queueTranscriptOnly !== true &&
-      (row.origin === undefined ? !localCommand(row) : row.origin.kind === 'human') &&
+      (from === undefined ? !localCommand(row) : from === 'human') &&
       resultsOf(row).length === 0
     if (found && person) return texts
   }

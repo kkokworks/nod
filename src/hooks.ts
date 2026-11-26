@@ -439,6 +439,8 @@ export async function onAsk(
     await wait()
     text = read(event.transcript_path)
   }
+  // Not parsed whole for a call it would not find: a transcript of 379 MB took 7.7 s.
+  if (!text.includes(event.tool_use_id)) return null
   const texts = textsThisTurn(text.split('\n'), event.tool_use_id)
   return texts?.some((t) => DRAFT.test(t)) ? HIDES_DRAFT : null
 }
